@@ -15,7 +15,7 @@ import { UserModule } from './user/user.module';
       autoLoadEntities: true,      
       synchronize: true,          
     }),
-    TypeOrmModule.forFeature([User]),
+    //TypeOrmModule.forFeature([User]),
     UserModule,
   ],
 })
