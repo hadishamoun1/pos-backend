@@ -14,18 +14,18 @@ export class Customer {
   @Column()
   phoneNumber: string;
 
-  @Column({ unique: true })
+  @Column({ unique: true, nullable: true })
   financialNumber: string;
 
   @Column()
   address: string;
 
-  @Column()
-  invoiceType: string; // Should be either 'S' or 'G'
+  @Column("simple-array") // Allows storing 'S,G' for both types
+  invoiceType: string[];  
 
   @Column()
   companyName: string;
 
-  @Column()
+  @Column({ nullable: true })
   location: string;
 }
