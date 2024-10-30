@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Put, Delete, Param, Body } from '@nestjs/common';
 import { RequestService } from './request.service';
 import { Request } from '../entities/request.entity';
-import { RequestItem } from '../entities/request-item.entity';
+import { RequestItem } from '../entities/requestItem.entity';
 
 @Controller('requests')
 export class RequestController {
