@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { RequestService } from './request.service';
 
-@Module({})
+@Module({
+  providers: [RequestService]
+})
 export class RequestModule {}
