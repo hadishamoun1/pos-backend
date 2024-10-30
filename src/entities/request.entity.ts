@@ -1,6 +1,6 @@
 import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
 import { Customer } from './customer.entity';
-import { RequestItem } from './request-item.entity';
+import { RequestItem } from './requestItem.entity';
 
 @Entity()
 export class Request {
