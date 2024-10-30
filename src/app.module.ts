@@ -4,6 +4,8 @@ import { User } from 'src/entities/user.entity';
 import { UserModule } from './user/user.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { CustomerModule } from './customer/customer.module';
+import { ReuestModule } from './reuest/reuest.module';
+import { RequestModule } from './request/request.module';
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { CustomerModule } from './customer/customer.module';
     UserModule,
     InventoryModule,
     CustomerModule,
+    ReuestModule,
+    RequestModule,
   ],
 })
 export class AppModule {}
