@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from 'src/entities/user.entity';
 import { UserModule } from './user/user.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { CustomerModule } from './customer/customer.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { InventoryModule } from './inventory/inventory.module';
     //TypeOrmModule.forFeature([User]),
     UserModule,
     InventoryModule,
+    CustomerModule,
   ],
 })
 export class AppModule {}
