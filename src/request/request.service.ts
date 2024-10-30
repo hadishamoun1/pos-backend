@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Request } from '../entities/request.entity';
-import { RequestItem } from '../entities/request-item.entity';
+import { RequestItem } from '../entities/requestItem.entity';
 
 @Injectable()
 export class RequestService {
