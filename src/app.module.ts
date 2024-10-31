@@ -9,6 +9,7 @@ import { SettingsService } from './settings/settings.service';
 import { InvoiceService } from './invoice/invoice.service';
 import { SettingsController } from './settings/settings.controller';
 import { InvoiceController } from './invoice/invoice.controller';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { InvoiceController } from './invoice/invoice.controller';
     CustomerModule,
     RequestModule,
     RequestModule,
+    SettingsModule,
   ],
   providers: [SettingsService, InvoiceService],
   controllers: [SettingsController, InvoiceController],
