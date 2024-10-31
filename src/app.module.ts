@@ -8,6 +8,7 @@ import { RequestModule } from './request/request.module';
 import { SettingsService } from './settings/settings.service';
 import { InvoiceService } from './invoice/invoice.service';
 import { SettingsController } from './settings/settings.controller';
+import { InvoiceController } from './invoice/invoice.controller';
 
 @Module({
   imports: [
@@ -29,6 +30,6 @@ import { SettingsController } from './settings/settings.controller';
     RequestModule,
   ],
   providers: [SettingsService, InvoiceService],
-  controllers: [SettingsController],
+  controllers: [SettingsController, InvoiceController],
 })
 export class AppModule {}
