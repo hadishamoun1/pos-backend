@@ -1,8 +1,12 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Invoice } from '../entities/invoice.entity';
-import { SettingsService } from './settings.service';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class InvoiceService {
@@ -12,23 +16,42 @@ export class InvoiceService {
     private readonly settingsService: SettingsService,
   ) {}
 
+  // Method to create a new invoice
   async createInvoice(data: Partial<Invoice>): Promise<Invoice> {
     try {
-      // Step 1: Get active year prefix from Settings
       const activeYear = await this.settingsService.getActiveYear();
-
-      // Step 2: Set the invoiceYear to the active year prefix
       data.invoiceYear = activeYear;
-
-      // Step 3: Save the invoice
       const invoice = this.invoiceRepository.create(data);
       return await this.invoiceRepository.save(invoice);
-
     } catch (error) {
-      if (error.code === '23505') { // Handle duplicate error
-        throw new ConflictException('Duplicate invoice number within this type');
+      if (error.code === '23505') {
+        throw new ConflictException(
+          'Duplicate invoice number within this type',
+        );
       }
       throw error;
+    }
+  }
+
+  // Method to find one invoice by ID
+  async findOne(id: number): Promise<Invoice> {
+    const invoice = await this.invoiceRepository.findOne({ where: { id } });
+    if (!invoice) {
+      throw new NotFoundException(`Invoice with ID ${id} not found`);
+    }
+    return invoice;
+  }
+
+  // Method to retrieve all invoices
+  async findAll(): Promise<Invoice[]> {
+    return await this.invoiceRepository.find();
+  }
+
+  // Optional: Method to delete an invoice by ID
+  async deleteInvoice(id: number): Promise<void> {
+    const result = await this.invoiceRepository.delete(id);
+    if (result.affected === 0) {
+      throw new NotFoundException(`Invoice with ID ${id} not found`);
     }
   }
 }
