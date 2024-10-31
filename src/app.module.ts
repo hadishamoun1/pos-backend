@@ -6,6 +6,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { CustomerModule } from './customer/customer.module';
 import { RequestModule } from './request/request.module';
 import { SettingsService } from './settings/settings.service';
+import { InvoiceService } from './invoice/invoice.service';
 
 @Module({
   imports: [
@@ -26,6 +27,6 @@ import { SettingsService } from './settings/settings.service';
     RequestModule,
     RequestModule,
   ],
-  providers: [SettingsService],
+  providers: [SettingsService, InvoiceService],
 })
 export class AppModule {}
