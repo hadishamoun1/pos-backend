@@ -5,6 +5,7 @@ import { UserModule } from './user/user.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { CustomerModule } from './customer/customer.module';
 import { RequestModule } from './request/request.module';
+import { SettingsService } from './settings/settings.service';
 
 @Module({
   imports: [
@@ -25,5 +26,6 @@ import { RequestModule } from './request/request.module';
     RequestModule,
     RequestModule,
   ],
+  providers: [SettingsService],
 })
 export class AppModule {}
