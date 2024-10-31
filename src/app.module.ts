@@ -7,6 +7,7 @@ import { CustomerModule } from './customer/customer.module';
 import { RequestModule } from './request/request.module';
 import { SettingsService } from './settings/settings.service';
 import { InvoiceService } from './invoice/invoice.service';
+import { SettingsController } from './settings/settings.controller';
 
 @Module({
   imports: [
@@ -28,5 +29,6 @@ import { InvoiceService } from './invoice/invoice.service';
     RequestModule,
   ],
   providers: [SettingsService, InvoiceService],
+  controllers: [SettingsController],
 })
 export class AppModule {}
