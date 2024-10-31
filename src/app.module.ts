@@ -10,6 +10,7 @@ import { InvoiceService } from './invoice/invoice.service';
 import { SettingsController } from './settings/settings.controller';
 import { InvoiceController } from './invoice/invoice.controller';
 import { SettingsModule } from './settings/settings.module';
+import { InvoiceModule } from './invoice/invoice.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { SettingsModule } from './settings/settings.module';
     RequestModule,
     RequestModule,
     SettingsModule,
+    InvoiceModule,
   ],
   providers: [SettingsService, InvoiceService],
   controllers: [SettingsController, InvoiceController],
