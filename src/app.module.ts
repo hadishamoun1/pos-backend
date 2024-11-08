@@ -29,11 +29,9 @@ import { InvoiceModule } from './invoice/invoice.module';
     InventoryModule,
     CustomerModule,
     RequestModule,
-    RequestModule,
     SettingsModule,
     InvoiceModule,
   ],
-  providers: [SettingsService, InvoiceService],
-  controllers: [SettingsController, InvoiceController],
+  
 })
 export class AppModule {}
