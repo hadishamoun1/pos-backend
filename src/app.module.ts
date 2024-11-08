@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from 'src/entities/user.entity';
 import { UserModule } from './user/user.module';
-import { InventoryModule } from './inventory/inventory.module';
+
 import { CustomerModule } from './customer/customer.module';
 import { RequestModule } from './request/request.module';
 import { SettingsService } from './settings/settings.service';
@@ -11,6 +11,7 @@ import { SettingsController } from './settings/settings.controller';
 import { InvoiceController } from './invoice/invoice.controller';
 import { SettingsModule } from './settings/settings.module';
 import { InvoiceModule } from './invoice/invoice.module';
+import { InventoryModule } from './inv/inv.module';
 
 @Module({
   imports: [
@@ -26,11 +27,12 @@ import { InvoiceModule } from './invoice/invoice.module';
     }),
     //TypeOrmModule.forFeature([User]),
     UserModule,
-    InventoryModule,
+    
     CustomerModule,
     RequestModule,
     SettingsModule,
     InvoiceModule,
+    InventoryModule,
   ],
   
 })
