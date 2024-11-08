@@ -1,6 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany } from 'typeorm';
 import { Item } from './item.entity';
-import { AdjustedBox } from './adjustedBox.entity';
+import { AdjustedBox } from './adjustedBox.entity'
 import { OpenedSheet } from './openedSheet.entity';
 
 @Entity()
