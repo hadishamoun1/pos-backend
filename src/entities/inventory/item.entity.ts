@@ -12,9 +12,6 @@ export class Item {
   @Column()
   type: string; // Type of item, such as "box" or "sheet"
 
-  @Column()
-  origin: string; // Origin of the item (e.g., "China")
-
   @OneToMany(() => Dimension, (dimension) => dimension.item)
-  dimensions: Dimension[]; // Various dimensions (length, width) available for this item
+  dimensions: Dimension[]; // Various dimensions (length, width, origin) available for this item
 }
