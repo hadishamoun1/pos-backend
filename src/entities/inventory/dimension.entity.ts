@@ -1,6 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany } from 'typeorm';
 import { Item } from './item.entity';
-import { AdjustedBox } from './adjustedBox.entity'
+import { AdjustedBox } from './adjustedBox.entity';
 import { OpenedSheet } from './openedSheet.entity';
 
 @Entity()
@@ -18,14 +18,17 @@ export class Dimension {
   width: number; // Width of the item in cm (e.g., 321)
 
   @Column()
-  sheetsPerBox: number; // Number of sheets per box for this dimension
+  sheetsPerBox: number; // Number of sheets per unopened box for this dimension
 
   @Column()
-  quantityUnopenedBoxes: number; // Total unopened boxes available for this dimension
+  quantityUnopenedBoxes: number; // Quantity of unopened boxes available for this dimension
+
+  @Column()
+  origin: string; // Origin of this specific dimension (e.g., "China")
 
   @OneToMany(() => AdjustedBox, (adjustedBox) => adjustedBox.dimension)
-  adjustedBoxes: AdjustedBox[]; // Collection of boxes with adjusted sheet counts
+  adjustedBoxes: AdjustedBox[]; // Collection of adjusted boxes for this dimension
 
   @OneToMany(() => OpenedSheet, (openedSheet) => openedSheet.dimension)
-  openedSheets: OpenedSheet[]; // Collection of opened boxes where sheets are sold individually
+  openedSheets: OpenedSheet[]; // Collection of opened sheets for individual sale
 }
