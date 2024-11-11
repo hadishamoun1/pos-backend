@@ -12,6 +12,7 @@ import { InvoiceController } from './invoice/invoice.controller';
 import { SettingsModule } from './settings/settings.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { InventoryModule } from './inv/inv.module';
+import { PurchasesInvoiceService } from './purchases-invoice/purchases-invoice.service';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { InventoryModule } from './inv/inv.module';
     InvoiceModule,
     InventoryModule,
   ],
+  providers: [PurchasesInvoiceService],
   
 })
 export class AppModule {}
