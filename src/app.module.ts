@@ -13,6 +13,7 @@ import { SettingsModule } from './settings/settings.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { InventoryModule } from './inv/inv.module';
 import { PurchasesInvoiceService } from './purchases-invoice/purchases-invoice.service';
+import { PurchasesInvoiceModule } from './purchases-invoice/purchases-invoice.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { PurchasesInvoiceService } from './purchases-invoice/purchases-invoice.s
     SettingsModule,
     InvoiceModule,
     InventoryModule,
+    PurchasesInvoiceModule,
   ],
   providers: [PurchasesInvoiceService],
   
