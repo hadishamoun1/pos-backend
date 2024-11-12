@@ -1,4 +1,4 @@
-// supplier.controller.ts
+
 import {
   Controller,
   Get,
