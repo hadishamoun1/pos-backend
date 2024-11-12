@@ -1,13 +1,23 @@
-import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  OneToMany,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
 import { PurchaseItem } from './purchaseItem.entity';
-
+import { Supplier } from './suppliers.entity';
 @Entity()
 export class PurchaseInvoice {
   @PrimaryGeneratedColumn()
   id: number; // Unique identifier for each purchase invoice
 
-  @Column()
-  supplierName: string; // Name of the supplier from whom items are purchased
+  @ManyToOne(() => Supplier, (supplier) => supplier.purchaseInvoices, {
+    eager: true,
+  })
+  @JoinColumn({ name: 'supplierId' })
+  supplier: Supplier; // Link to the supplier
 
   @Column({ type: 'date' })
   purchaseDate: Date; // Date of the purchase
