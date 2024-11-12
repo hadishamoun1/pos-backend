@@ -14,7 +14,7 @@ import { InvoiceModule } from './invoice/invoice.module';
 import { InventoryModule } from './inv/inv.module';
 
 import { PurchaseInvoiceModule } from './purchases-invoice/purchases-invoice.module';
-import { SuppliersModule } from './suppliers/suppliers.module';
+import { SupplierModule } from './suppliers/suppliers.module';
 
 @Module({
   imports: [
@@ -30,14 +30,13 @@ import { SuppliersModule } from './suppliers/suppliers.module';
     }),
     //TypeOrmModule.forFeature([User]),
     UserModule,
-    
     CustomerModule,
     RequestModule,
     SettingsModule,
     InvoiceModule,
     InventoryModule,
     PurchaseInvoiceModule,
-    SuppliersModule,
+    SupplierModule,
   ],
  
   
