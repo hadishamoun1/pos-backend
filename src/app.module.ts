@@ -9,6 +9,7 @@ import { InventoryModule } from './inv/inv.module';
 import { PurchaseInvoiceModule } from './purchases-invoice/purchases-invoice.module';
 import { SupplierModule } from './suppliers/suppliers.module';
 import { ItemsModule } from './items/items.module';
+import { DimensionsModule } from './dimensions/dimensions.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ItemsModule } from './items/items.module';
     PurchaseInvoiceModule,
     SupplierModule,
     ItemsModule,
+    DimensionsModule,
   ],
  
   
