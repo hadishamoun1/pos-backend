@@ -3,6 +3,7 @@ import {
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
+  JoinColumn,
   OneToMany,
 } from 'typeorm';
 import { Item } from './item.entity';
@@ -14,9 +15,12 @@ import { PurchaseItem } from '../purchaseItem.entity';
 export class Dimension {
   @PrimaryGeneratedColumn()
   dimensionId: number; // Unique identifier for each dimension variant
-
-  @ManyToOne(() => Item, (item) => item.dimensions)
-  item: Item; // Reference to the parent item
+  @ManyToOne(() => Item, (item) => item.dimensions, {
+    nullable: false,
+    onDelete: 'CASCADE',
+  })
+  @JoinColumn({ name: 'itemId' })
+  item: Item;
 
   @Column()
   length: number; // Length of the item in cm (e.g., 225)
@@ -27,7 +31,7 @@ export class Dimension {
   @Column()
   sheetsPerBox: number; // Number of sheets per unopened box for this dimension
 
-  @Column()
+  @Column({ nullable: true })
   quantityUnopenedBoxes: number; // Quantity of unopened boxes available for this dimension
 
   @Column()
@@ -38,7 +42,7 @@ export class Dimension {
 
   @OneToMany(() => OpenedSheet, (openedSheet) => openedSheet.dimension)
   openedSheets: OpenedSheet[]; // Collection of opened sheets for individual sale
- 
+
   @OneToMany(() => PurchaseItem, (purchaseItem) => purchaseItem.dimension)
   purchaseItems: PurchaseItem[]; // Collection of purchase items referencing this dimension
 }

@@ -1,19 +1,54 @@
 // dimension.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Dimension } from '../entities/inventory/dimension.entity';
+import { Item } from '../entities/inventory/item.entity'; // Import the Item entity
 
 @Injectable()
 export class DimensionService {
   constructor(
     @InjectRepository(Dimension)
     private readonly dimensionRepository: Repository<Dimension>,
+
+    @InjectRepository(Item)
+    private readonly itemRepository: Repository<Item>, // Inject the Item repository
   ) {}
 
-  async createDimension(data: Partial<Dimension>): Promise<Dimension> {
-    const dimension = this.dimensionRepository.create(data);
-    return this.dimensionRepository.save(dimension);
+  async createDimension(data: {
+    itemId: number;
+    length: number;
+    width: number;
+    sheetsPerBox: number;
+    origin: string;
+    quantityUnopenedBoxes?: number;
+  }): Promise<Dimension> {
+    const {
+      itemId,
+      length,
+      width,
+      sheetsPerBox,
+      origin,
+      quantityUnopenedBoxes,
+    } = data;
+
+    // Fetch the related item
+    const item = await this.itemRepository.findOneBy({ itemId });
+    if (!item) {
+      throw new NotFoundException(`Item with ID ${itemId} not found`);
+    }
+
+    // Create and set all fields explicitly
+    const dimension = this.dimensionRepository.create({
+      item,
+      length,
+      width,
+      sheetsPerBox,
+      origin,
+      quantityUnopenedBoxes: quantityUnopenedBoxes ?? 0, // Default to 0 if undefined
+    });
+
+    return await this.dimensionRepository.save(dimension);
   }
 
   async findAll(): Promise<Dimension[]> {

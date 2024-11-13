@@ -1,12 +1,12 @@
 // dimension.controller.ts
 import {
   Controller,
-  Get,
   Post,
+  Body,
+  Get,
+  Param,
   Put,
   Delete,
-  Param,
-  Body,
 } from '@nestjs/common';
 import { DimensionService } from './dimensions.service';
 import { Dimension } from '../entities/inventory/dimension.entity';
@@ -16,8 +16,18 @@ export class DimensionController {
   constructor(private readonly dimensionService: DimensionService) {}
 
   @Post()
-  async create(@Body() data: Partial<Dimension>): Promise<Dimension> {
-    return this.dimensionService.createDimension(data);
+  async create(
+    @Body()
+    createDimensionDto: {
+      itemId: number;
+      length: number;
+      width: number;
+      sheetsPerBox: number;
+      origin: string;
+    },
+  ): Promise<Dimension> {
+    // Call the service to create a new dimension and link it to an item
+    return this.dimensionService.createDimension(createDimensionDto);
   }
 
   @Get()
@@ -33,9 +43,9 @@ export class DimensionController {
   @Put(':id')
   async update(
     @Param('id') id: number,
-    @Body() data: Partial<Dimension>,
+    @Body() updateDimensionDto: { quantityUnopenedBoxes?: number },
   ): Promise<Dimension> {
-    return this.dimensionService.updateDimension(id, data);
+    return this.dimensionService.updateDimension(id, updateDimensionDto);
   }
 
   @Delete(':id')
