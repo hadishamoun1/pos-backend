@@ -8,20 +8,20 @@ import { InvoiceModule } from './invoice/invoice.module';
 import { InventoryModule } from './inv/inv.module';
 import { PurchaseInvoiceModule } from './purchases-invoice/purchases-invoice.module';
 import { SupplierModule } from './suppliers/suppliers.module';
-import { ItemsModule } from './items/items.module';
-import { DimensionsModule } from './dimensions/dimensions.module';
+import { ItemModule } from './items/items.module';
+import { DimensionModule } from './dimensions/dimensions.module';
 
 @Module({
   imports: [
     TypeOrmModule.forRoot({
       type: 'mysql',
-      host: 'localhost',          
-      port: 3306,                  
-      username: 'root', 
+      host: 'localhost',
+      port: 3306,
+      username: 'root',
       password: '70631859HADI',
-      database: 'pos_system_db',       
-      autoLoadEntities: true,      
-      synchronize: true,          
+      database: 'pos_system_db',
+      autoLoadEntities: true,
+      synchronize: true,
     }),
     //TypeOrmModule.forFeature([User]),
     UserModule,
@@ -32,10 +32,8 @@ import { DimensionsModule } from './dimensions/dimensions.module';
     InventoryModule,
     PurchaseInvoiceModule,
     SupplierModule,
-    ItemsModule,
-    DimensionsModule,
+    ItemModule,
+    DimensionModule,
   ],
- 
-  
 })
 export class AppModule {}
