@@ -2,65 +2,66 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PurchaseInvoice } from '../entities/purchaseInvoice.entity';
-import { PurchaseItem } from '../entities/purchaseItem.entity';
-import { Dimension } from '../entities/inventory/dimension.entity';
-import { Supplier } from '../entities/suppliers.entity';
+import { PurchaseInvoiceItem } from '../entities/purchaseItem.entity';
+import { CreatePurchaseInvoiceDto } from '../dto/create-purchase-invoice.dto';
 
 @Injectable()
 export class PurchaseInvoiceService {
   constructor(
     @InjectRepository(PurchaseInvoice)
-    private purchaseInvoiceRepository: Repository<PurchaseInvoice>,
-    @InjectRepository(PurchaseItem)
-    private purchaseItemRepository: Repository<PurchaseItem>,
-    @InjectRepository(Dimension)
-    private dimensionRepository: Repository<Dimension>, // Add Dimension repository to handle inventory
-    @InjectRepository(Supplier)
-    private supplierRepository: Repository<Supplier>, // Inject Supplier repository
+    private readonly purchaseInvoiceRepo: Repository<PurchaseInvoice>,
+    @InjectRepository(PurchaseInvoiceItem)
+    private readonly purchaseInvoiceItemRepo: Repository<PurchaseInvoiceItem>,
   ) {}
 
-  async createPurchaseInvoice(data: any): Promise<PurchaseInvoice> {
-    // Step 1: Find the supplier by name or ID
-    const supplier = await this.supplierRepository.findOne({
-      where: { id: data.supplierId },
+  async create(dto: CreatePurchaseInvoiceDto) {
+    const { items, ...invoiceData } = dto;
+
+    // Generate invoice number
+    const currentYear = new Date().getFullYear();
+    const prefix = invoiceData.type === 'S' ? 'S' : 'G';
+    const lastInvoice = await this.purchaseInvoiceRepo.findOne({
+      order: { id: 'DESC' },
     });
+    const invoiceNumber = `${prefix}${currentYear}-${(lastInvoice?.id || 0) + 1}`;
 
-    if (!supplier) {
-      throw new Error('Supplier not found');
-    }
-
-    // Step 2: Create and save the purchase invoice with supplier reference
-    const purchaseInvoice = this.purchaseInvoiceRepository.create({
-      supplier,
-      purchaseDate: data.purchaseDate,
-      totalAmountUSD: data.totalAmountUSD,
+    // Create invoice
+    const invoice = this.purchaseInvoiceRepo.create({
+      ...invoiceData,
+      invoiceNumber,
     });
-    const savedInvoice = await this.purchaseInvoiceRepository.save(purchaseInvoice);
+    const savedInvoice = await this.purchaseInvoiceRepo.save(invoice);
 
-    // Step 3: Create and save each purchase item with associated invoice
-    const purchaseItems = data.purchaseItems.map((item) => {
-      return this.purchaseItemRepository.create({
-        ...item,
-        purchaseInvoice: savedInvoice,
-      });
-    });
-    await this.purchaseItemRepository.save(purchaseItems);
-
-    // Step 4: Update inventory based on each purchase item
-    await Promise.all(
-      data.purchaseItems.map(async (item) => {
-        const dimension = await this.dimensionRepository.findOne({
-          where: { dimensionId: item.dimensionId },
-        });
-
-        if (dimension) {
-          // Increment the quantity of unopened boxes based on the purchased amount
-          dimension.quantityUnopenedBoxes += item.quantity;
-          await this.dimensionRepository.save(dimension); // Save updated dimension
-        }
-      }),
-    );
+    // Create items
+    const invoiceItems = items.map((item) => ({
+      ...item,
+      purchaseInvoice: savedInvoice,
+    }));
+    await this.purchaseInvoiceItemRepo.save(invoiceItems);
 
     return savedInvoice;
+  }
+
+  async findAll() {
+    return this.purchaseInvoiceRepo.find({
+      relations: ['items', 'items.dimension'],
+    });
+  }
+
+  async findOne(id: number) {
+    return this.purchaseInvoiceRepo.findOne({
+      where: { id },
+      relations: ['items', 'items.dimension'],
+    });
+  }
+
+  async update(id: number, updateData: Partial<PurchaseInvoice>) {
+    await this.purchaseInvoiceRepo.update(id, updateData);
+    return this.findOne(id);
+  }
+
+  async remove(id: number) {
+    await this.purchaseInvoiceRepo.delete(id);
+    return { deleted: true };
   }
 }

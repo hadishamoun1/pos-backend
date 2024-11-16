@@ -4,12 +4,12 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { PurchaseInvoiceService } from './purchases-invoice.service';
 import { PurchaseInvoiceController } from './purchases-invoice.controller';
 import { PurchaseInvoice } from '../entities/purchaseInvoice.entity';
-import { PurchaseItem } from '../entities/purchaseItem.entity';
+import { PurchaseInvoiceItem } from '../entities/purchaseItem.entity';
 import { Dimension } from '../entities/inventory/dimension.entity';
 import { Supplier } from '../entities/suppliers.entity';
 @Module({
   imports: [
-    TypeOrmModule.forFeature([PurchaseInvoice, PurchaseItem, Dimension, Supplier]),
+    TypeOrmModule.forFeature([PurchaseInvoice, PurchaseInvoiceItem, Dimension, Supplier]),
   ],
   controllers: [PurchaseInvoiceController],
   providers: [PurchaseInvoiceService],
