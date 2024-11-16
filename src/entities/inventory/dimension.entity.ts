@@ -28,7 +28,7 @@ export class Dimension {
   @Column()
   width: number; // Width of the item in cm (e.g., 321)
 
-  @Column()
+  @Column({ nullable: true })
   sheetsPerBox: number; // Number of sheets per unopened box for this dimension
 
   @Column({ nullable: true })

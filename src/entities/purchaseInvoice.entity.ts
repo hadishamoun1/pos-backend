@@ -2,45 +2,46 @@ import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
+  CreateDateColumn,
+  UpdateDateColumn,
   OneToMany,
-  ManyToOne,
-  JoinColumn,
 } from 'typeorm';
-import { PurchaseItem } from './purchaseItem.entity';
-import { Supplier } from './suppliers.entity';
-@Entity()
+import { PurchaseInvoiceItem } from './purchase-invoice-item.entity';
+
+@Entity('purchase_invoices')
 export class PurchaseInvoice {
   @PrimaryGeneratedColumn()
-  id: number; // Unique identifier for each purchase invoice
+  id: number;
 
-  @ManyToOne(() => Supplier, (supplier) => supplier.purchaseInvoices, {
-    eager: true,
-  })
-  @JoinColumn({ name: 'supplierId' })
-  supplier: Supplier; // Link to the supplier
+  @Column({ unique: true })
+  invoiceNumber: string;
 
-  @Column({ type: 'date' })
-  purchaseDate: Date; // Date of the purchase
-
-  @Column({ type: 'decimal', precision: 15, scale: 2, nullable: true })
-  totalAmountUSD: number; // Total amount for the purchase in USD
-
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
-  exchangeRate: number; // Exchange rate if currency conversion is needed
+  @Column({ type: 'varchar', length: 1 })
+  type: string; // 'S' or 'G'
 
   @Column()
-  status: string; // Status of the invoice, e.g., "pending," "completed"
+  supplierName: string;
 
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @Column('decimal', { precision: 10, scale: 2 })
+  exchangeRate: number;
+
+  @Column('decimal', { precision: 10, scale: 2 })
+  vatAmount: number;
+
+  @Column('decimal', { precision: 10, scale: 2 })
+  grandAmount: number;
+
+  @Column({ type: 'date' })
+  date: string;
+
+  @CreateDateColumn()
   createdAt: Date;
 
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @UpdateDateColumn()
   updatedAt: Date;
 
-  @OneToMany(
-    () => PurchaseItem,
-    (purchaseItem) => purchaseItem.purchaseInvoice,
-    { cascade: true },
-  )
-  purchaseItems: PurchaseItem[];
+  @OneToMany(() => PurchaseInvoiceItem, (item) => item.purchaseInvoice, {
+    cascade: true,
+  })
+  items: PurchaseInvoiceItem[];
 }
