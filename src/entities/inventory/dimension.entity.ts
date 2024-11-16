@@ -9,7 +9,7 @@ import {
 import { Item } from './item.entity';
 import { AdjustedBox } from './adjustedBox.entity';
 import { OpenedSheet } from './openedSheet.entity';
-import { PurchaseItem } from '../purchaseItem.entity';
+import { PurchaseInvoiceItem } from '../purchaseItem.entity';
 
 @Entity()
 export class Dimension {
@@ -43,6 +43,6 @@ export class Dimension {
   @OneToMany(() => OpenedSheet, (openedSheet) => openedSheet.dimension)
   openedSheets: OpenedSheet[]; // Collection of opened sheets for individual sale
 
-  @OneToMany(() => PurchaseItem, (purchaseItem) => purchaseItem.dimension)
-  purchaseItems: PurchaseItem[]; // Collection of purchase items referencing this dimension
+  @OneToMany(() => PurchaseInvoiceItem, (purchaseItem) => purchaseItem.dimension)
+  purchaseItems: PurchaseInvoiceItem[]; // Collection of purchase items referencing this dimension
 }
