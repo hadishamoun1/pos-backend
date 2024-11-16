@@ -6,7 +6,7 @@ import {
   UpdateDateColumn,
   OneToMany,
 } from 'typeorm';
-import { PurchaseInvoiceItem } from './purchase-invoice-item.entity';
+import { PurchaseInvoiceItem } from './purchaseItem.entity';
 
 @Entity('purchase_invoices')
 export class PurchaseInvoice {
