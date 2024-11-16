@@ -7,9 +7,12 @@ import { PurchaseInvoice } from '../entities/purchaseInvoice.entity';
 import { PurchaseInvoiceItem } from '../entities/purchaseItem.entity';
 import { Dimension } from '../entities/inventory/dimension.entity';
 import { Supplier } from '../entities/suppliers.entity';
+import { Settings } from '../entities/settings.entity';
+
+
 @Module({
   imports: [
-    TypeOrmModule.forFeature([PurchaseInvoice, PurchaseInvoiceItem, Dimension, Supplier]),
+    TypeOrmModule.forFeature([PurchaseInvoice, PurchaseInvoiceItem, Dimension, Supplier,Settings]),
   ],
   controllers: [PurchaseInvoiceController],
   providers: [PurchaseInvoiceService],
