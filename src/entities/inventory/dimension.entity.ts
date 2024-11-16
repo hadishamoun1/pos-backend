@@ -14,7 +14,7 @@ import { PurchaseInvoiceItem } from '../purchaseItem.entity';
 @Entity()
 export class Dimension {
   @PrimaryGeneratedColumn()
-  dimensionId: number; // Unique identifier for each dimension variant
+  dimensionId: number; 
   @ManyToOne(() => Item, (item) => item.dimensions, {
     nullable: false,
     onDelete: 'CASCADE',
