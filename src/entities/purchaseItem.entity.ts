@@ -1,26 +1,39 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 import { PurchaseInvoice } from './purchaseInvoice.entity';
 import { Dimension } from './inventory/dimension.entity';
 
-@Entity()
-export class PurchaseItem {
+@Entity('purchase_invoice_items')
+export class PurchaseInvoiceItem {
   @PrimaryGeneratedColumn()
-  id: number; // Unique identifier for each item in the purchase
+  id: number;
 
-  @ManyToOne(() => PurchaseInvoice, (purchaseInvoice) => purchaseInvoice.purchaseItems)
-  @JoinColumn({ name: 'purchaseInvoiceId' })
-  purchaseInvoice: PurchaseInvoice; // Link to the parent PurchaseInvoice
+  @ManyToOne(() => PurchaseInvoice, (invoice) => invoice.items, {
+    onDelete: 'CASCADE',
+  })
+  purchaseInvoice: PurchaseInvoice;
 
-  @ManyToOne(() => Dimension, { eager: true })
-  @JoinColumn({ name: 'dimensionId' })
-  dimension: Dimension; // Reference to the specific dimension of the item being purchased
+  @ManyToOne(() => Dimension, { onDelete: 'CASCADE' })
+  dimension: Dimension;
 
-  @Column()
-  quantity: number; // Quantity of the item being purchased (in boxes or sheets)
+  @Column('decimal', { precision: 10, scale: 2 })
+  sqm: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
-  pricePerUnit: number; // Price per unit of the item
+  @Column('decimal', { precision: 10, scale: 2 })
+  unitPrice: number;
 
-  @Column({ type: 'decimal', precision: 15, scale: 2 })
-  totalPriceUSD: number; // Total price in USD for this item (quantity * pricePerUnit)
+  @Column('decimal', { precision: 10, scale: 2 })
+  totalAmount: number;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
 }
