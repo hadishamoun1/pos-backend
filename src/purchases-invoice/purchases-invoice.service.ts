@@ -52,11 +52,13 @@ export class PurchaseInvoiceService {
 
     // Create items
     const invoiceItems = items.map((item) => ({
-      ...item,
       purchaseInvoice: savedInvoice,
+      dimension: { dimensionId: item.dimensionId },
+      unitPrice: item.unitPrice,
+      totalAmount: item.totalAmount,
     }));
     await this.purchaseInvoiceItemRepo.save(invoiceItems);
-
+  
     return savedInvoice;
   }
 

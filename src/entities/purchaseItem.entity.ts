@@ -5,6 +5,7 @@ import {
   ManyToOne,
   CreateDateColumn,
   UpdateDateColumn,
+  JoinColumn,
 } from 'typeorm';
 import { PurchaseInvoice } from './purchaseInvoice.entity';
 import { Dimension } from './inventory/dimension.entity';
@@ -20,6 +21,7 @@ export class PurchaseInvoiceItem {
   purchaseInvoice: PurchaseInvoice;
 
   @ManyToOne(() => Dimension, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'dimensionId' })
   dimension: Dimension;
 
   @Column('decimal', { precision: 10, scale: 2 })
