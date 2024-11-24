@@ -10,6 +10,9 @@ import { PurchaseInvoiceModule } from './purchases-invoice/purchases-invoice.mod
 import { SupplierModule } from './suppliers/suppliers.module';
 import { ItemModule } from './items/items.module';
 import { DimensionModule } from './dimensions/dimensions.module';
+import { SupplierProformaService } from './supplier-proforma/supplier-proforma.service';
+import { SupplierProformaController } from './supplier-proforma/supplier-proforma.controller';
+import { SupplierProformaModule } from './supplier-proforma/supplier-proforma.module';
 
 @Module({
   imports: [
@@ -34,6 +37,8 @@ import { DimensionModule } from './dimensions/dimensions.module';
     SupplierModule,
     ItemModule,
     DimensionModule,
+    SupplierProformaModule,
   ],
+ 
 })
 export class AppModule {}

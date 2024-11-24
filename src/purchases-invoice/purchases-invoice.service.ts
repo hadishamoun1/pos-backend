@@ -54,6 +54,7 @@ export class PurchaseInvoiceService {
     const invoiceItems = items.map((item) => ({
       purchaseInvoice: savedInvoice,
       dimension: { dimensionId: item.dimensionId },
+      sqm: item.sqm || 0, 
       unitPrice: item.unitPrice,
       totalAmount: item.totalAmount,
     }));
