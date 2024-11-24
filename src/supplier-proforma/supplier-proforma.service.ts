@@ -2,59 +2,93 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like } from 'typeorm';
 import { SupplierProforma } from '../entities/supplierProforma.entity';
-import { Settings } from '../entities/settings.entity'; // Assuming you have a Settings entity
+import { SupplierProformaItem } from '../entities/supplierProformaItem.entity';
+import { Settings } from '../entities/settings.entity';
 
 @Injectable()
 export class SupplierProformaService {
   constructor(
     @InjectRepository(SupplierProforma)
     private readonly supplierProformaRepository: Repository<SupplierProforma>,
+    @InjectRepository(SupplierProformaItem)
+    private readonly supplierProformaItemRepository: Repository<SupplierProformaItem>,
     @InjectRepository(Settings)
     private readonly settingsRepository: Repository<Settings>,
   ) {}
 
   async create(
-    supplierProformaData: Partial<SupplierProforma>,
+    proformaData: Partial<SupplierProforma> & {
+      items?: Partial<SupplierProformaItem>[];
+    },
   ): Promise<SupplierProforma> {
+    const { items = [], ...proformaMetadata } = proformaData;
+
     // Generate the proforma number
     const proformaNumber = await this.generateProformaNumber();
-    const supplierProforma = this.supplierProformaRepository.create({
-      ...supplierProformaData,
+    const proforma = this.supplierProformaRepository.create({
+      ...proformaMetadata,
       proformaNumber,
     });
-    return this.supplierProformaRepository.save(supplierProforma);
+
+    // Add items to the proforma
+    proforma.items = items.map((item) =>
+      this.supplierProformaItemRepository.create(item),
+    );
+
+    // Save the proforma and its items
+    return this.supplierProformaRepository.save(proforma);
   }
 
   async findAll(): Promise<SupplierProforma[]> {
-    return this.supplierProformaRepository.find();
+    return this.supplierProformaRepository.find({ relations: ['items'] });
   }
 
   async findOne(id: number): Promise<SupplierProforma> {
-    const supplierProforma = await this.supplierProformaRepository.findOne({
+    const proforma = await this.supplierProformaRepository.findOne({
       where: { id },
+      relations: ['items'],
     });
-    if (!supplierProforma) {
+
+    if (!proforma) {
       throw new NotFoundException(`SupplierProforma with ID ${id} not found`);
     }
-    return supplierProforma;
+
+    return proforma;
   }
 
   async update(
     id: number,
-    updateData: Partial<SupplierProforma>,
+    updateData: Partial<SupplierProforma> & {
+      items?: Partial<SupplierProformaItem>[];
+    },
   ): Promise<SupplierProforma> {
-    await this.findOne(id); // Ensure the entity exists
-    await this.supplierProformaRepository.update(id, updateData);
+    const existingProforma = await this.findOne(id); // Ensure the proforma exists
+
+    const { items, ...metadata } = updateData;
+
+    // Update proforma metadata
+    await this.supplierProformaRepository.update(id, metadata);
+
+    // Update items
+    if (items) {
+      await this.supplierProformaItemRepository.delete({
+        proforma: existingProforma,
+      });
+      const newItems = items.map((item) =>
+        this.supplierProformaItemRepository.create(item),
+      );
+      await this.supplierProformaItemRepository.save(newItems);
+    }
+
     return this.findOne(id);
   }
 
   async remove(id: number): Promise<void> {
-    await this.findOne(id); // Ensure the entity exists
-    await this.supplierProformaRepository.delete(id);
+    const proforma = await this.findOne(id); // Ensure the proforma exists
+    await this.supplierProformaRepository.remove(proforma);
   }
 
   private async generateProformaNumber(): Promise<string> {
-    // Fetch the active year from the settings table
     const settings = await this.settingsRepository.findOne({
       where: { isActive: true },
     });
@@ -65,22 +99,17 @@ export class SupplierProformaService {
       );
     }
 
-    const activeYear = settings.year.toString().slice(-2); // Get the last two digits of the year (e.g., '24')
+    const activeYear = settings.year.toString().slice(-2);
 
-    // Find the last proforma for the active year
     const lastProforma = await this.supplierProformaRepository.findOne({
       where: { proformaNumber: Like(`PR${activeYear}-%`) },
-      order: { id: 'DESC' }, // Order by ID descending to get the last one
+      order: { id: 'DESC' },
     });
 
-    // Extract the last number and increment it
     const lastNumber = lastProforma
       ? parseInt(lastProforma.proformaNumber.split('-')[1], 10)
       : 0;
 
-    const nextNumber = lastNumber + 1;
-
-    // Return the new proforma number
-    return `PR${activeYear}-${nextNumber}`;
+    return `PR${activeYear}-${lastNumber + 1}`;
   }
 }
