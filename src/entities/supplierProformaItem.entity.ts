@@ -39,6 +39,6 @@ export class SupplierProformaItem {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   finalCost: number;
 
-  @Column({ type: 'decimal', precision: 5, scale: 2 })
+  @Column({ type: 'decimal', precision: 5, scale: 2, nullable: true })
   costPercentage: number;
 }

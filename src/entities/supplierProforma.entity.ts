@@ -42,16 +42,16 @@ export class SupplierProforma {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   customs: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2 ,nullable:(true)})
   customsLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2,nullable:(true) })
   customsExchangeRate: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   tva: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2 ,nullable:(true)})
   tvaLL: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
