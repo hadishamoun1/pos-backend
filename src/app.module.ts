@@ -16,6 +16,7 @@ import { SupplierProformaModule } from './supplier-proforma/supplier-proforma.mo
 import { CurrencyModule } from './currency/currency.module';
 import { GroupModule } from './group/group.module';
 import { ClassificationModule } from './classification/classification.module';
+import { CategoriesModule } from './categories/categories.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { ClassificationModule } from './classification/classification.module';
     CurrencyModule,
     GroupModule,
     ClassificationModule,
+    CategoriesModule,
   ],
  
 })
