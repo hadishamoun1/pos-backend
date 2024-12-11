@@ -10,8 +10,6 @@ import { PurchaseInvoiceModule } from './purchases-invoice/purchases-invoice.mod
 import { SupplierModule } from './suppliers/suppliers.module';
 import { ItemModule } from './items/items.module';
 import { DimensionModule } from './dimensions/dimensions.module';
-import { SupplierProformaService } from './supplier-proforma/supplier-proforma.service';
-import { SupplierProformaController } from './supplier-proforma/supplier-proforma.controller';
 import { SupplierProformaModule } from './supplier-proforma/supplier-proforma.module';
 import { CurrencyModule } from './currency/currency.module';
 import { GroupModule } from './group/group.module';
