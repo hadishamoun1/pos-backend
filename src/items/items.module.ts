@@ -1,14 +1,15 @@
-// item.module.ts
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ItemsService } from './items.service';
+import { ItemsController } from './items.controller';
 import { Item } from '../entities/inventory/item.entity';
-import { ItemService } from './items.service';
-import { ItemController } from './items.controller';
+import { Thickness } from '../entities/inventory/thickness.entity';
+import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Item])],
-  providers: [ItemService],
-  controllers: [ItemController],
-  exports: [TypeOrmModule, ItemService], 
+  imports: [TypeOrmModule.forFeature([Item, Thickness, ItemVariant])],
+  controllers: [ItemsController],
+  providers: [ItemsService],
+  exports: [ItemsService],
 })
-export class ItemModule {}
+export class ItemsModule {}
