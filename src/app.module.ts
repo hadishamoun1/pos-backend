@@ -15,6 +15,7 @@ import { SupplierProformaController } from './supplier-proforma/supplier-proform
 import { SupplierProformaModule } from './supplier-proforma/supplier-proforma.module';
 import { CurrencyModule } from './currency/currency.module';
 import { GroupModule } from './group/group.module';
+import { ClassificationModule } from './classification/classification.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { GroupModule } from './group/group.module';
     SupplierProformaModule,
     CurrencyModule,
     GroupModule,
+    ClassificationModule,
   ],
  
 })
