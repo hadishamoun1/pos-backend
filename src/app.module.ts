@@ -14,6 +14,7 @@ import { SupplierProformaService } from './supplier-proforma/supplier-proforma.s
 import { SupplierProformaController } from './supplier-proforma/supplier-proforma.controller';
 import { SupplierProformaModule } from './supplier-proforma/supplier-proforma.module';
 import { CurrencyModule } from './currency/currency.module';
+import { GroupModule } from './group/group.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { CurrencyModule } from './currency/currency.module';
     DimensionModule,
     SupplierProformaModule,
     CurrencyModule,
+    GroupModule,
   ],
  
 })
