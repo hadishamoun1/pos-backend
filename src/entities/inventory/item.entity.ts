@@ -1,17 +1,52 @@
-import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm';
-import { Dimension } from './dimension.entity';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
+import { Categories } from '../categories.entity';
+import { Group } from '../group.entity';
+import { Classification } from '../classification.entity';
 
 @Entity()
 export class Item {
   @PrimaryGeneratedColumn()
-  itemId: number; // Unique identifier for each item
+  itemCode: number;
 
-  @Column()
-  itemName: string; // Name of the item (e.g., "5.5mm Clear")
+  @Column({ length: 100 })
+  itemName: string;
 
-  @Column()
-  type: string; // Type of item, such as "box" or "sheet"
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  length: number;
 
-  @OneToMany(() => Dimension, (dimension) => dimension.item)
-  dimensions: Dimension[]; // Various dimensions (length, width, origin) available for this item
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  width: number;
+
+  @ManyToOne(() => Categories, { eager: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'categoriesId' })
+  categories: Categories;
+
+  @ManyToOne(() => Group, { eager: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'groupId' })
+  group: Group;
+
+  @ManyToOne(() => Classification, { eager: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'classificationId' })
+  classification: Classification;
+
+  @Column({ type: 'enum', enum: ['box', 'sheet'], default: 'box' })
+  type: string;
+
+  @Column('int', { nullable: true })
+  sheetsPerBox: number;
+
+  @Column({ default: false })
+  fixBox: boolean;
+
+  @Column({ default: false })
+  fixLength: boolean;
+
+  @Column({ default: false })
+  fixWidth: boolean;
 }
