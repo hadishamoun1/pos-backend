@@ -8,8 +8,8 @@ import {
   Param,
 } from '@nestjs/common';
 import { CurrencyService } from './currency.service';
-import { Currency } from './currency.entity';
-import { CurrencyRate } from './currency-rate.entity';
+import { Currency } from '../entities/currency.entity';
+import { CurrencyRate } from '../entities/currencyRate.entity';
 
 @Controller('currency')
 export class CurrencyController {

@@ -1,8 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Currency } from './currency.entity';
-import { CurrencyRate } from './currency-rate.entity';
+import { Currency } from '../entities/currency.entity';
+import { CurrencyRate } from '../entities/currencyRate.entity';
 
 @Injectable()
 export class CurrencyService {
