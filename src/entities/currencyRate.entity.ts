@@ -1,4 +1,10 @@
-import { Entity, Column, PrimaryGeneratedColumn, ManyToOne } from 'typeorm';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
 import { Currency } from './currency.entity';
 
 @Entity()
@@ -12,5 +18,6 @@ export class CurrencyRate {
   @ManyToOne(() => Currency, (currency) => currency.exchangeRates, {
     onDelete: 'CASCADE',
   })
+  @JoinColumn({ name: 'currencyId' })
   currency: Currency;
 }

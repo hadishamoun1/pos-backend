@@ -1,5 +1,5 @@
 import { Entity, Column, PrimaryColumn, OneToMany } from 'typeorm';
-import { CurrencyRate } from './CurrencyRate';
+import { CurrencyRate } from './currencyRate.entity';
 
 @Entity()
 export class Currency {
