@@ -5,6 +5,7 @@ import { CurrencyRate } from './currency-rate.entity';
 import { CurrencyService } from './currency.service';
 import { CurrencyController } from './currency.controller';
 import { CurrencyService } from './currency.service';
+import { CurrencyController } from './currency.controller';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Currency, CurrencyRate])],
