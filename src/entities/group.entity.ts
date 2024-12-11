@@ -1,8 +1,10 @@
-import { Entity, Column, PrimaryColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
 
 @Entity()
 export class Group {
-  @PrimaryColumn({ length: 10 })
+  @PrimaryGeneratedColumn()
+  id: number;
+  @Column({ length: 10 })
   groupCode: string; // e.g., G001, G002
 
   @Column({ length: 50 })
