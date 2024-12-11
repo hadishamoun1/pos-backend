@@ -13,6 +13,7 @@ import { DimensionModule } from './dimensions/dimensions.module';
 import { SupplierProformaService } from './supplier-proforma/supplier-proforma.service';
 import { SupplierProformaController } from './supplier-proforma/supplier-proforma.controller';
 import { SupplierProformaModule } from './supplier-proforma/supplier-proforma.module';
+import { CurrencyModule } from './currency/currency.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { SupplierProformaModule } from './supplier-proforma/supplier-proforma.mo
     ItemModule,
     DimensionModule,
     SupplierProformaModule,
+    CurrencyModule,
   ],
  
 })
