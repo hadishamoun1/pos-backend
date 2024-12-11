@@ -5,7 +5,7 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
-import { Thickness } from './thickness.enitity'
+import { Thickness } from './thickness.entity';
 
 @Entity()
 export class ItemVariant {
