@@ -1,34 +1,46 @@
-import { Entity, Column, PrimaryGeneratedColumn ,OneToMany} from 'typeorm';
-import { Invoice } from './invoice.entity';
-@Entity()
-export class Customer {
-  @PrimaryGeneratedColumn()
-  id: number;
+import {
+  IsNotEmpty,
+  IsString,
+  IsBoolean,
+  IsOptional,
+  IsEnum,
+  IsNumber,
+} from 'class-validator';
 
-  @Column()
-  firstName: string;
+export class CreateCustomerDto {
+  @IsNotEmpty()
+  @IsString()
+  customerName: string;
 
-  @Column()
-  lastName: string;
+  @IsNotEmpty()
+  @IsNumber()
+  currencyId: number;
 
-  @Column()
-  phoneNumber: string;
+  @IsOptional()
+  @IsBoolean()
+  accessible?: boolean;
 
-  @Column({ unique: true, nullable: true })
-  financialNumber: string;
+  @IsOptional()
+  @IsString()
+  address?: string;
 
-  @Column()
-  address: string;
+  @IsOptional()
+  @IsString()
+  location?: string;
 
-  @Column('simple-array') // Allows storing 'S,G' for both types
-  invoiceType: string[];
+  @IsOptional()
+  @IsString()
+  phoneNumber?: string;
 
-  @Column()
-  companyName: string;
+  @IsOptional()
+  @IsString()
+  financialNumber?: string;
 
-  @Column({ nullable: true })
-  location: string;
+  @IsOptional()
+  @IsEnum(['S', 'G'])
+  invoiceType?: 'S' | 'G';
 
-  @OneToMany(() => Invoice, (invoice) => invoice.customer)
-  invoices: Invoice[]; // One-to-many relationship with Invoice
+  @IsOptional()
+  @IsNumber()
+  vat?: number;
 }
