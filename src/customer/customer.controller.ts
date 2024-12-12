@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param } from '@nestjs/common';
 import { CustomerService } from './customer.service';
 import { Customer } from '../entities/customer.entity';
 
@@ -7,27 +7,19 @@ export class CustomerController {
   constructor(private readonly customerService: CustomerService) {}
 
   @Post()
-  create(@Body() data: Partial<Customer>): Promise<Customer> {
-    return this.customerService.create(data);
+  async createCustomer(
+    @Body() customerData: Partial<Customer>,
+  ): Promise<Customer> {
+    return this.customerService.createCustomer(customerData);
   }
 
   @Get()
-  findAll(): Promise<Customer[]> {
-    return this.customerService.findAll();
+  async getAllCustomers(): Promise<Customer[]> {
+    return this.customerService.getAllCustomers();
   }
 
   @Get(':id')
-  findOne(@Param('id') id: number): Promise<Customer> {
-    return this.customerService.findOne(id);
-  }
-
-  @Put(':id')
-  update(@Param('id') id: number, @Body() data: Partial<Customer>): Promise<Customer> {
-    return this.customerService.update(id, data);
-  }
-
-  @Delete(':id')
-  delete(@Param('id') id: number): Promise<void> {
-    return this.customerService.delete(id);
+  async getCustomerById(@Param('id') id: number): Promise<Customer> {
+    return this.customerService.getCustomerById(id);
   }
 }

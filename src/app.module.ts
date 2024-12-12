@@ -3,7 +3,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserModule } from './user/user.module';
 import { CustomerModule } from './customer/customer.module';
 import { SettingsModule } from './settings/settings.module';
-import { InvoiceModule } from './invoice/invoice.module';
 
 import { ItemsModule } from './items/items.module';
 import { CurrencyModule } from './currency/currency.module';
@@ -30,7 +29,7 @@ import { AccountsModule } from './accounts/accounts.module';
     CustomerModule,
 
     SettingsModule,
-    InvoiceModule,
+    
    
     ItemsModule,
     CurrencyModule,

@@ -1,46 +1,55 @@
 import {
-  IsNotEmpty,
-  IsString,
-  IsBoolean,
-  IsOptional,
-  IsEnum,
-  IsNumber,
-} from 'class-validator';
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
+import { Currency } from './currency.entity';
+import { Account } from './account.entity';
 
-export class CreateCustomerDto {
-  @IsNotEmpty()
-  @IsString()
+@Entity('customers')
+export class Customer {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column({ type: 'varchar', length: 50, unique: true })
+  customerAccountNumber: string;
+
+  @Column({ type: 'varchar', length: 255 })
   customerName: string;
 
-  @IsNotEmpty()
-  @IsNumber()
-  currencyId: number;
+  @Column({ type: 'boolean', default: true })
+  accessible: boolean;
 
-  @IsOptional()
-  @IsBoolean()
-  accessible?: boolean;
-
-  @IsOptional()
-  @IsString()
+  @Column({ type: 'varchar', length: 255, nullable: true })
   address?: string;
 
-  @IsOptional()
-  @IsString()
+  @Column({ type: 'varchar', length: 255, nullable: true })
   location?: string;
 
-  @IsOptional()
-  @IsString()
+  @Column({ type: 'varchar', length: 50, nullable: true })
   phoneNumber?: string;
 
-  @IsOptional()
-  @IsString()
+  @Column({ type: 'varchar', length: 50, nullable: true })
   financialNumber?: string;
 
-  @IsOptional()
-  @IsEnum(['S', 'G'])
+  @Column({ type: 'enum', enum: ['S', 'G'], nullable: true })
   invoiceType?: 'S' | 'G';
 
-  @IsOptional()
-  @IsNumber()
+  @Column({ type: 'decimal', nullable: true })
   vat?: number;
+
+  @Column({ type: 'int' })
+  currencyId: number;
+
+  @ManyToOne(() => Currency)
+  @JoinColumn({ name: 'currencyId' })
+  currency: Currency;
+
+  @ManyToOne(() => Account, (account) => account.children, {
+    onDelete: 'CASCADE',
+  })
+  @JoinColumn({ name: 'accountId' })
+  account: Account;
 }
