@@ -29,4 +29,13 @@ export class ItemVariant {
 
   @Column({ length: 50, nullable: false })
   origin: string; // Origin of the item
+
+  @Column({ type: 'boolean', default: false })
+  fixBox: boolean; // Whether the box size is fixed
+
+  @Column({ type: 'boolean', default: false })
+  fixLength: boolean; // Whether the length is fixed
+
+  @Column({ type: 'boolean', default: false })
+  fixWidth: boolean; // Whether the width is fixed
 }

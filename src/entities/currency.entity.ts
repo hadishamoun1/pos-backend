@@ -1,9 +1,11 @@
-import { Entity, Column, PrimaryColumn, OneToMany } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, OneToMany } from 'typeorm';
 import { CurrencyRate } from './currencyRate.entity';
 
 @Entity()
 export class Currency {
-  @PrimaryColumn({ length: 3 })
+  @PrimaryGeneratedColumn()
+  id: number;
+  @Column({ length: 3 })
   currencyCode: string; // e.g., LL, $
 
   @Column({ length: 50 })
