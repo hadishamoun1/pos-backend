@@ -7,26 +7,30 @@ import { Categories } from '../entities/categories.entity';
 export class CategoriesService {
   constructor(
     @InjectRepository(Categories)
-    private readonly categoriesRepository: Repository<Categories>,
+    private categoriesRepository: Repository<Categories>,
   ) {}
 
-  findAll() {
+  async findAll(): Promise<Categories[]> {
     return this.categoriesRepository.find();
   }
 
-  findOne(categoriesCode: string) {
+  async findOneById(id: number): Promise<Categories | undefined> {
+    return this.categoriesRepository.findOneBy({ id });
+  }
+
+  async findOneByCode(categoriesCode: string): Promise<Categories | undefined> {
     return this.categoriesRepository.findOneBy({ categoriesCode });
   }
 
-  create(categories: Categories) {
+  async create(categories: Categories): Promise<Categories> {
     return this.categoriesRepository.save(categories);
   }
 
-  update(categoriesCode: string, categories: Partial<Categories>) {
-    return this.categoriesRepository.update(categoriesCode, categories);
+  async update(id: number, categories: Partial<Categories>): Promise<void> {
+    await this.categoriesRepository.update(id, categories);
   }
 
-  delete(categoriesCode: string) {
-    return this.categoriesRepository.delete(categoriesCode);
+  async delete(id: number): Promise<void> {
+    await this.categoriesRepository.delete(id);
   }
 }

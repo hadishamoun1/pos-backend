@@ -1,12 +1,4 @@
-import {
-  Controller,
-  Get,
-  Post,
-  Put,
-  Delete,
-  Param,
-  Body,
-} from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
 import { Categories } from '../entities/categories.entity';
 
@@ -15,30 +7,32 @@ export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
   @Get()
-  findAll() {
+  async findAll(): Promise<Categories[]> {
     return this.categoriesService.findAll();
   }
 
-  @Get(':categoriesCode')
-  findOne(@Param('categoriesCode') categoriesCode: string) {
-    return this.categoriesService.findOne(categoriesCode);
+  @Get(':id')
+  async findOneById(@Param('id') id: number): Promise<Categories | undefined> {
+    return this.categoriesService.findOneById(id);
+  }
+
+  @Get('code/:code')
+  async findOneByCode(@Param('code') code: string): Promise<Categories | undefined> {
+    return this.categoriesService.findOneByCode(code);
   }
 
   @Post()
-  create(@Body() categories: Categories) {
+  async create(@Body() categories: Categories): Promise<Categories> {
     return this.categoriesService.create(categories);
   }
 
-  @Put(':categoriesCode')
-  update(
-    @Param('categoriesCode') categoriesCode: string,
-    @Body() categories: Partial<Categories>,
-  ) {
-    return this.categoriesService.update(categoriesCode, categories);
+  @Put(':id')
+  async update(@Param('id') id: number, @Body() categories: Partial<Categories>): Promise<void> {
+    await this.categoriesService.update(id, categories);
   }
 
-  @Delete(':categoriesCode')
-  delete(@Param('categoriesCode') categoriesCode: string) {
-    return this.categoriesService.delete(categoriesCode);
+  @Delete(':id')
+  async delete(@Param('id') id: number): Promise<void> {
+    await this.categoriesService.delete(id);
   }
 }
