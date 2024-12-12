@@ -10,6 +10,6 @@ import { SupplierController } from './suppliers.controller';
   imports: [TypeOrmModule.forFeature([Supplier, Account, Currency])],
   controllers: [SupplierController],
   providers: [SupplierService],
-  exports: [SupplierService], // Export if needed by other modules
+  exports: [SupplierService], 
 })
 export class SupplierModule {}
