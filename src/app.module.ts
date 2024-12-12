@@ -11,7 +11,7 @@ import { ClassificationModule } from './classification/classification.module';
 import { CategoriesModule } from './categories/categories.module';
 import { BranchModule } from './branch/branch.module';
 import { AccountsModule } from './accounts/accounts.module';
-import { SuppliersModule } from './suppliers/suppliers.module';
+import { SupplierModule } from './suppliers/suppliers.module';
 
 @Module({
   imports: [
@@ -28,10 +28,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
     //TypeOrmModule.forFeature([User]),
     UserModule,
     CustomerModule,
-
     SettingsModule,
-    
-   
     ItemsModule,
     CurrencyModule,
     GroupModule,
@@ -39,8 +36,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
     CategoriesModule,
     BranchModule,
     AccountsModule,
-    SuppliersModule,
+    SupplierModule,
   ],
-  
 })
 export class AppModule {}
