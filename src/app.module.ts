@@ -11,6 +11,7 @@ import { GroupModule } from './group/group.module';
 import { ClassificationModule } from './classification/classification.module';
 import { CategoriesModule } from './categories/categories.module';
 import { BranchModule } from './branch/branch.module';
+import { AccountsModule } from './accounts/accounts.module';
 
 @Module({
   imports: [
@@ -37,6 +38,8 @@ import { BranchModule } from './branch/branch.module';
     ClassificationModule,
     CategoriesModule,
     BranchModule,
+    AccountsModule,
   ],
+  
 })
 export class AppModule {}

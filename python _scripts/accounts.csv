@@ -1,0 +1,583 @@
+﻿Account Number,Account Name,Parent Account Number
+1,PERMANENT CAPITAL ACCOUNTS,
+10,CAPITAL,1
+101,Capital (company or personal),10
+1011,Subscribed but uncalled capital,101
+1012,"Subscribed, called but unpaid capital",101
+1013,"Subscribed, called and paid up capital",101
+102,Premiums,10
+1021,Premium on issue of capital,102
+1022,Premium on mergers,102
+1023,Premium on subscription in kind,102
+1024,Premium on conversion of debentures into shares,102
+103,Revaluation differences,10
+1031,Difference on revaluation of non depreciable fixed assets,103
+1032,Difference on revaluation of depreciable fixed assets,103
+11,RESERVES,1
+111,Legal reserves,11
+112,Statutory and contrctual reserves,11
+113,Other reserves,11
+12,RESULTS BROUGHT FORWARD,1
+121,Profits brought forward,12
+125,Losses brought forward,12
+13,NET RESULT FOR THE YEAR (PROFIT OR LOSS),1
+131,Commercial margin (sales of goods - cost of sales),13
+132,Added value (sales of production - cost of consumption),13
+133,Gross operating profit/loss,13
+134,Gross profit/loss before financial charges and income,13
+135,Current results before tax,13
+136,Non-operating results,13
+138,Results for the year - profits,13
+139,Results for the year - losses,13
+14,INVESTMENTS SUBSIDIES,1
+141,Investments subsidies received,14
+145,Investments subsidies translated to results,14
+15,PROVISIONS FOR CONTINGENCIES AND CHARGES,1
+151,Provisions for contingencies,15
+1511,Provisions for disputes and other probable contingencies,151
+1512,Provisions for guarantees granted to customers,151
+1513,Provisions for loss on exchange,151
+1514,Provisions for losses on term contracts,151
+1515,Provisions for fines and penalties,151
+155,Provisions for charges,15
+1551,Provisions for deferred charges,155
+1552,Provisions for pension and related expenses,155
+1553,Provisions for taxation,155
+16,LONG AND MEDIUM TERMS LOANS,1
+161,Loans against debenture bonds,16
+162,Loan from lending establishments,16
+168,Other loans and debts,16
+1681,Bills payable for purchase of a trading company,168
+1682,Deposits and guarantees,168
+1683,Government advances,168
+1684,Cumulative life annuity income,168
+1689,Other long and medium term debts,168
+18,ACCOUNTS WITH RELATED COMPANIES,1
+181,Individual accounts,18
+1811,Balance brought forward,181
+1815,Movements of the financial year,181
+186,Charges to branches,18
+187,Revenue from branches,18
+19,REVENUE AND EXPENSE AMALGAMATING ACCOUNTS,1
+191,Commercial margin,19
+192,Added value,19
+193,Gross operating profits/losses,19
+194,Gross profit/loss before financial charges and income,19
+195,Current results before tax,19
+196,Non-operating results,19
+197,Results for the year,19
+2,FIXED ASSETS ACCOUNT,
+21,INTANGIBLE FIXED ASSETS,2
+211,"Keymoney, Goodwill, Clientele, etc ...",21
+212,Constitution expenses,21
+213,Research and development cost,21
+214,"Patents, Licenses, Copy rights and similar items",21
+219,Other intangible fixed assets,21
+2198,Advances made on account of intangible fixed assets,219
+22,TANGIBLE FIXED ASSETS,2
+221,Land,22
+2211,Plain land,221
+2212,Land with construction,221
+2213,Leasehold land for exploration (mines etc...),221
+2214,Land improvements,221
+223,Buildings,22
+2231,Buildings,223
+2232,General improvements on buildings,223
+2233,"Building infrastructures (run-way, barrage )",223
+2234,Construction on third parties buildings,223
+224,Technical installations and industrial machinery,22
+2241,Specialized installations,224
+2242,Special purpose installations,224
+2243,Industrial equipment,224
+2244,Industrial tools,224
+225,Transport-vehicles,22
+226,Other tangible fixed assets,22
+2261,General installation and other repairs and maintenance,226
+2262,Stationery for office and computer,226
+2263,Furniture,226
+2264,Agricultural investments,226
+2265,Reusable wrapping material,226
+227,Tangible fixed assets under construction,22
+2271,Land,227
+2273,Buildings,227
+2274,"Technical, installation & industrial tools and equipment",227
+2276,Other tangible fixed assets,227
+228,Advances on purchase of tangible fixed assets,22
+25,FINANCIAL FIXED ASSETS,2
+251,Participation investments,25
+252,Accounts receivable on participations,25
+253,Other fixed investments,25
+2531,Investments (shares & parts),253
+2535,Debentures (bonds & coupons),253
+255,Long and medium terms loans,25
+2551,Loans to partners/shareholders,255
+2552,Loans to employees,255
+2558,Other loans,255
+259,Other fixed accounts receivable,25
+28,DEPRECIATION AND AMORTIZATION OF FIXED ASSETS,2
+280,"Amortization of keymoney, goodwill etc..",28
+281,Amortization of other intangible fixed assets,28
+2811,Constitution expenses,281
+2812,Research and development cost,281
+2813,"Patents, licenses, copy rights & other similar items",281
+2819,Other intangible fixed assets,281
+282,Depreciation of tangible fixed assets,28
+2821,Leasehold land for exploration (mines etc),282
+2823,Buildings,282
+2824,Technical installations and industrial machinery,282
+2825,Transport - vehicles,282
+2826,Other tangible fixed assets,282
+29,PROVISIONS FOR DIMINUTION IN VALUE OF FIXED ASSETS,2
+290,"Provision for diminution in value of keymoney, goodwill etc..",29
+291,Provision for diminution in value of intangible fixed assets,29
+2911,Trade marks and similar items,291
+2919,Other intangible fixed assets,291
+292,Provision for diminution in value of tangible fixed assets,29
+2921,Land other than leasehold land,292
+2926,Other tangible fixed assets,292
+295,Provision for diminution in value of financial fixed assets,29
+2951,Participation investments,295
+2952,Accounts receivable on participations,295
+2953,Other fixed investments,295
+2955,Long and medium term loans,295
+2959,Other fixed accounts receivable,295
+3,STOCKS AND WORK IN PROGRESS,
+31,RAW MATERIALS AND CONSUMABLES,3
+311,Raw materials,31
+315,Consumables,31
+33,"IN PROGRESS (GOODS, WORK AND SERVICES)",3
+331,Products in progress,33
+332,work in progress,33
+335,Research in progress,33
+336,services in progress,33
+35,PRODUCTIONS,3
+351,Intermediary products (semi finished goods),35
+355,Finished goods,35
+358,Residuals,35
+37,GOODS FOR RESALE,3
+371,........,37
+372,........,37
+39,PROVISION FOR DIMINUTION IN VALUE OF STOCKS AND WORK IN PROGRESS,3
+391,Provision for diminution in value of raw materials and consumables,39
+393,Provision for diminution in value of work in progress,39
+395,Provision for diminution in value of production in hand,39
+397,Provision for diminution in value of goods in hand,39
+4,ACCOUNTS PAYABLE AND RECEIVABLE,
+40,SUPPLIERS,4
+401,Bought ledger (suppliers of goods),40
+4011,Billings,401
+4015,Bills payable,401
+4018,Invoices in transit,401
+4019,Discounts received,401
+403,Suppliers of fixed assets,40
+4031,Billings,403
+4035,Bills payable,403
+4038,Invoices in transit,403
+4039,Discounts received,403
+409,Advances to suppliers of goods,40
+41,CUSTOMERS,4
+411,Sales ledger (debtors from sales),41
+4111,Current debtors,411
+4115,Doubtful-debtors,411
+4119,Discount allowed,411
+413,Bills receivable - customers,41
+415,unbilled accounts receivable,41
+418,Invoice in progress,41
+419,Advances received on purchase order in progress,41
+42,STAFF,4
+421,Amounts due to staff,42
+428,Amounts due from staff,42
+4281,Loans and advances to staff,428
+4282,Blocked staff accounts,428
+43,SOCIAL SECURITY ESTABLISHMENTS,4
+431,Amount due to social security establishments,43
+4311,Contributions payable,431
+4315,Bills payable-social security establishments,431
+4318,Accruals - unpaid charges,431
+438,Amounts due by social security establishments,43
+44,STATE AND PUBLIC ESTABLISHMENTS,4
+441,Operating taxes,44
+4411,Taxes and fees dues,441
+4415,Bills payable-taxes and fees,441
+4418,Accruals-taxes and fees,441
+443,Non-operating taxes,44
+4431,Taxes on profit,443
+445,Other payables-state and public establishments,44
+449,Receivables from-state and public establishments,44
+4491,Subsides receivables,449
+4497,Other receivables-state and public establishments,449
+4498,Income receivable,449
+45,PARTNERS,4
+451,Partner's current accounts-receivable and payable,45
+4511,Related companies,451
+45111,Holding companies,4511
+45112,Subsidiary companies,4511
+45113,Associated companies,4511
+45114,Multigroup cimpanies,4511
+4515,Other partners,451
+4518,Joint Ventures,451
+453,Dividends payable,45
+455,Other amounts due to partners,45
+4551,Partners' subscriptions,455
+4552,Redeemable capital (capital to reimburse),455
+4557,Other payables,455
+459,Amounts receivable from partners,45
+4591,Subscribed but uncalled capital,459
+4592,Subscribed called but unpaid capital,459
+4597,Other receivables,459
+46,MISCELLANEOUS RECEIVABLES AND PAYABLES,4
+461,Operating creditors,46
+4611,Creditors-package material and tool on consignment,461
+4619,Sundry operating creditors,461
+463,Balances payable on financial fixed assets,46
+4631,Unissued participations,463
+465,Non-operating creditors,46
+4651,Amounts due on purchase of trading investments,465
+4652,Debentures,465
+4653,Balance payable in investment,465
+4659,Sundry non-operating creditors,465
+468,Operating debtors,46
+4681,Debtors-packing material and tool on consignment,468
+4689,Sundry operating debtors,468
+469,Non-operating debtors,46
+4691,Amounts due from sale of fixed assets and investments securities,469
+4699,Sundry non-operating debtors,469
+47,REGULARIZATION ACCOUNTS,4
+471,Deferred charges,47
+4711,Pre-operating expenses,471
+4712,Depreciable major repairs,471
+4713,Premium paid on bonds,471
+4719,Other deferred charges,471
+472,Prepaid charges,47
+473,Unearned revenue,47
+475,Exchange difference-liabilities,47
+4751,Increase in debtors,475
+4752,Decrease in creditors,475
+4758,Differences compensated by exchange results,475
+476,Exchange difference - Assets,47
+4761,Decrease in debtors,476
+4762,Increase in creditors,476
+4768,Differences compensated by exchange results,476
+48,SUSPENSE ACCOUNTS,4
+481,Prepaid charges (subscriptions),48
+482,Unearned income (subscriptions),48
+49,PROVISIONS FOR DIMINUTION IN VALUE OF ACCOUNTS RECEIVABLE & PAYABLE,4
+491,Provisions for diminution in value of customers accounts receivable,49
+495,Provisions for diminution in value of partners' accounts,49
+496,Provisions for diminution in value of sundry accounts receivable,49
+4968,Sundry operating debtors,496
+4969,Sundry non-operating debtors,496
+5,MONETARY ACCOUNTS,
+50,INVESTMENT SECURITIES,5
+501,Purchase of own issued shares,50
+502,Propiertory shares,50
+505,Debentures issued by the company,50
+506,Title deeds to right of recourse to debts,50
+51,FINANCIAL ESTABLISHMENTS,5
+511,Checks and orders to receive,51
+512,Banks,51
+519,Financing institutions,51
+53,CASH,5
+58,INTERNAL TRANSFER,5
+59,PROVISION FOR DIMINUTION IN VALUE OF INVESTMENTS,5
+6,EXPENDITURE,
+60,PURCHASE OF GOODS,6
+601,Purchase of goods,60
+6011,Goods,601
+6012,Packing material,601
+6018,Ancillary expenses on purchase of goods and packing material,601
+60181,Transport,6018
+60182,Commission,6018
+60183,Transport insurance,6018
+60184,Clearing agents' fees,6018
+60185,Custom duties,6018
+6019,Discount receivable,601
+605,Changes in goods on hand,60
+6051,Opening stock,605
+6052,Closing stock,605
+61,PURCHASE OF RAW MATERIALS AND CONSUMABLES,6
+611,Purchase of raw materials and consumables,61
+6111,Purchase of raw materials,611
+61111,Raw materials "A",6111
+61112,Raw materials "B",6111
+6112,Consumables,611
+61121,Fuel,6112
+61122,Maintenance materials,6112
+61123,Factory tools,6112
+61124,Warehouse consumables,6112
+61125,Stationery and office supplies,611
+6113,Purchase of packing material,611
+61131,Non-returnable packing material,6113
+61132,Returnable and usable packing material,6113
+61133,Packing material for sundry use,6113
+6118,Ancillary exp. on purchase of raw materials and consumables,611
+61181,Transport,6118
+61182,Commission,6118
+61183,Transport insurance,6118
+61184,Clearing agents' fees,6118
+61185,Custom duties,6118
+6119,Discounts receivable,611
+615,Change in raw materials and consumables,61
+6151,Opening stock,615
+6152,Closing stock,615
+62,OTHER EXTERNAL EXPENSES,6
+621,Purchase from sub-contractors,62
+6211,Sub-contract "A",621
+6212,Sub-contract "B",621
+6219,Discount receivable,621
+625,Hire purchase etc..,62
+6251,Nominal rent-movable properties,625
+6252,Nominal rent-immovable properties,625
+6253,Copy rights,625
+6254,Brevets,625
+6255,License,625
+6256,Trade mark,625
+6257,Characters rights,625
+6258,Other similar rights,625
+626,External services,62
+6261,Transport and communication,626
+62611,Property transport,6261
+62612,Personnel collective transport,6261
+62615,Postage and telecommunications,6261
+6262,Repairs and maintenance,626
+6263,Rent (buildings),626
+62631,Rent,6263
+62632,Other rental charges,6263
+6264,Hotel and restaurant expenses,626
+62641,"Receptions, invitations",6264
+62642,Transport,6264
+62643,Personnel catering,6264
+6265,Personnel services,626
+62651,Casual labourers,6265
+62652,Intermediary remunerations,6265
+62653,Fees,6265
+6266,Training and education,626
+62661,"Preparation, planning expenses",6266
+62662,Documentation expenses,6266
+6267,Studies and research,626
+6268,Insurance premiums,626
+6269,Other external services,626
+63,PERSONNEL EXPENDITURE,6
+631,Personnel salaries and wages,63
+6311,Salaries,631
+6312,Wages,631
+6314,Fixed commission,631
+6316,Major shareholders' remunerations,631
+6317,Board of directors' remunerations,631
+635,Social security charges,63
+64,"TAXES, FEES AND OTHER SIMILAR CHARGES",6
+641,"On salaries, wages and fees",64
+642,Municipality taxes,64
+643,Taxes on non-returnable sales,64
+644,Registration fees,64
+645,Others,64
+65,"OPERATING DEPRECIATo, AMORTISATo AND PROVISo",6
+651,Depreciation and amortization,65
+6511,Intangible fixed assets,651
+6512,Tangible fixed assets,651
+6515,Deferred charges,651
+655,Provisions,65
+6551,Provision for diminution in value of intangible fixed assets,655
+6552,Provision for diminution in value of tangible fixed assets,655
+6553,Provision for diminution in value of stock & work-in-progress,655
+6554,Provision for diminution in value of accounts receivable,655
+6555,Provision for operating contingencies and charges,655
+66,OTHER ORDINARY ADMINISTRATIVE CHARGES,6
+661,Other administrative expenses,66
+6611,Attendance fees,661
+6612,Operating bad debts,661
+665,Shares of loss joint venture,66
+67,FINANCIAL CHARGES,6
+673,Interest and similar charges,67
+6731,Interest on accounts payable and loans,673
+6732,Interest on current accounts and deposits payable,673
+6733,Interest on guarantees,673
+6734,Interest on other creditors,673
+6735,Discount allowable,673
+6736,Bank interest and interest of financing operations,673
+675,Loss on exchange,67
+6751,On ordinary business,675
+6752,On capital operations,675
+676,Net loss on disposal of investment securities,67
+679,Amortization and provisions,67
+6791,Amortization of share premiums,679
+6792,Provision for diminution in value of financial fixed assets,679
+6794,Provision for diminution in value of investments,679
+6795,Provision for contingencies and financial charges,679
+68,NON-OPERATING CHARGES,6
+681,Net book amount of fixed assets disposed of,68
+6811,Intangible fixed assets,681
+6812,Tangible fixed assets,681
+6815,financial fixed assets,681
+685,Other non-operating charges,68
+6851,Administrative expenses ...,685
+68511,Donations,6851
+68512,Aids,6851
+68513,Penal and tax penalties,6851
+68514,Contractual penalties,6851
+68515,Irrecoverable debts (bad debts),6851
+68516,Other,6851
+6855,Expenditure on capital operations,685
+68551,Charges resulting from index clause,6855
+68552,Prize settlement,6855
+68553,Charges on share and bonds redemption,6855
+689,"Non-operating depreciation, amortization and provision",68
+6891,Exceptional depreciation of fixed assets,689
+6892,Exceptional provision for diminution in value,689
+6895,Provision for contingencies and charges,689
+69,TAXES ON PROFIT,6
+7,REVENUE ACCOUNTS,
+70,SALES OF GOODS,7
+701,Billings,70
+709,Discounts allowed,70
+71,SALES OF PRODUCTS,7
+711,Billings,71
+7111,Sales of goods produced,711
+7112,Sales of intermediary goods,711
+7113,Sales of factory residuals,711
+712,Work,71
+713,Services,71
+717,Revenue of ancillary activities,71
+719,Discounts allowed,71
+7191,Sales of productions,719
+7192,Sales of work,719
+7193,Sales of services,719
+7197,Sales of ancillary activities,719
+72,PRODUCTION ON HAND,7
+721,Goods and work on progress,72
+7211,Production in progress,721
+7212,Work in progress,721
+722,Services in progress,72
+7225,Studies in progress,722
+7226,Services in progress,722
+725,Goods produced,72
+7251,Intermediary products,725
+7255,Finished goods produced,725
+7258,Factory residuals,725
+73,PRODUCTION OF FIXED ASSETS,7
+731,Intangible fixed assets,73
+732,Tangible fixed assets,73
+74,OPERATING AIDS,7
+741,For goods,74
+742,For production,74
+75,RELEASE OF OPERATING PROVISION,7
+752,Release of provision for diminution in value of fixed assets,75
+753,Release of provision for diminution in value of current assets,75
+76,OTHER OPERATING INCOME,7
+761,Other ordinary operating income,76
+7611,Royalties etc...,761
+7612,Rental income from non-operating estates,761
+7613,Presence fees and directors and managers' fees,761
+7619,Reallocation of operating charges,761
+765,Share of profits on joint venture,76
+7651,Share of expenses,765
+7655,Share of net revenue,765
+77,FINANCE INCOME,7
+771,Revenue from participation investments,77
+7711,Revenue from participation investments,771
+7716,Revenue from other participations,771
+7717,Revenue from participation accounts receivable,771
+772,Revenue from other investments,77
+7721,Revenue from investment securities,772
+7723,Revenue from fixed securities,772
+7725,Revenue from fixed accounts receivable,772
+7726,Revenue from trading accounts receivable,772
+7727,Revenue from sundry accounts receivable,772
+773,Interest and similar income,77
+7731,Revenue from loans granted,773
+7733,Discounts received,773
+775,Profit on exchange,77
+7751,On current accounts,775
+7755,On capital transactions,775
+778,Other financial revenue,77
+7781,Net income on sale of investment securities,778
+7789,Reallocation of financial charges,778
+779,Release of financial provisions,77
+7793,Release of provision for diminution in value,779
+7795,Release of provision for contingencies and charges,779
+78,NON-OPERATING INCOME,7
+781,Income from disposal of fixed assets,78
+7811,Intangible fixed assets,781
+7812,Tangible fixed assets,781
+7815,Financial fixed assets,781
+782,Investment aids transferred to current operations,78
+788,Other non-operating income,78
+7881,Exceptional income on normal transactions,788
+7888,Other income on exceptional transactions of capital nature,788
+7889,Re-allocation of exceptional charges,788
+789,Release of non-operating provisions,78
+7891,Release of provision for diminution in value,789
+7895,Release of provision for contingencies and charges,789
+8,SPECIAL ACCOUNTS,
+9,ANALYTICAL ACCOUNTS (COST ACCOUNTING),
+90,CONTROL ACCOUNT,9
+903,Inventory,90
+904,Purchases,90
+905,Burden,90
+906,Depreciation and provisions,90
+907,Operating revenue,90
+908,Results,90
+91,PREDETERMINED ACCOUNTS - OPERATING CHARGES,9
+910,Variable trading charges,91
+911,Variable production charges,91
+912,Non reallocated charges,91
+913,�����,91
+914,�����,91
+915,�����,91
+916,�����,91
+917,�����,91
+918,�����,91
+919,Operating revenue,91
+92,COST CENTERS,9
+920,Administration,92
+921,Finance,92
+922,Personnel,92
+923,Materials,92
+924,Joint services,92
+925,Other materials and consumables,92
+926,Technical and research studies,92
+927,Production,92
+928,Distribution,92
+929,Other expenses to be reallocated,92
+93,COST OF PRODUCTION ON HAND,9
+930,Investment in progress,93
+931,Services in progress,93
+932,Goods produced,93
+933,Work,93
+934,Services,93
+94,INVENTORY,9
+940,Goods,94
+941,Raw materials,94
+942,Other materials and consumables,94
+943,Investment in progress,94
+944,Services in progress,94
+945,Production (Semi-finished and finished),94
+946,���,94
+947,���,94
+948,��,94
+949,Provision for diminution in value of goods and work in progress,94
+95,COST OF GOODS SOLD,9
+951,Finished products,95
+952,Work,95
+953,Services,95
+954,���,95
+955,���,95
+956,���,95
+957,���,95
+958,���,95
+959,���,95
+96,VARIANCES ON PREDETERMINED COST,9
+97,UNDER OR OVER ABSORBED ACCOUNTS,9
+970,Reallocation differences-Materials,97
+971,Reallocation differences-Deprecations and provision,97
+973,Reallocation differences-Other burden,97
+977,Reallocation differences-Revenue,97
+974,Reallocation differences-Physical inventory,97
+975,Reallocation differences-Internal reallocation (rate variance),97
+976,Reallocation differences-Activity (volume variance),97
+98,COST ACCOUNTING OPERATING RESULTS,9
+99,INTERNAL LIAISON ACCOUNTS,9
+991,Within the same organization,99
+996,From other organization,99
+997,To other organization,99
+
