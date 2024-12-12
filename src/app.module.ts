@@ -12,6 +12,7 @@ import { CategoriesModule } from './categories/categories.module';
 import { BranchModule } from './branch/branch.module';
 import { AccountsModule } from './accounts/accounts.module';
 import { SupplierModule } from './suppliers/suppliers.module';
+import { InvoiceModule } from './invoice/invoice.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { SupplierModule } from './suppliers/suppliers.module';
     BranchModule,
     AccountsModule,
     SupplierModule,
+    InvoiceModule,
   ],
 })
 export class AppModule {}
