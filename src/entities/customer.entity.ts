@@ -4,9 +4,11 @@ import {
   PrimaryGeneratedColumn,
   ManyToOne,
   JoinColumn,
+  OneToMany,
 } from 'typeorm';
 import { Currency } from './currency.entity';
 import { Account } from './account.entity';
+import { Invoice } from './invoice.entity';
 
 @Entity('customers')
 export class Customer {
@@ -52,4 +54,6 @@ export class Customer {
   })
   @JoinColumn({ name: 'accountId' })
   account: Account;
+  @OneToMany(() => Invoice, (invoice) => invoice.customer)
+  invoices: Invoice[];
 }

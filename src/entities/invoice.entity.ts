@@ -2,7 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany } from 'ty
 import { Customer } from './customer.entity';
 import { Branch } from './branch.entity';
 import { Currency } from './currency.entity';
-import { InvoiceItem } from './invoice-item.entity';
+import { InvoiceItem } from './invoiceItem.entity';
 
 @Entity('invoices')
 export class Invoice {
