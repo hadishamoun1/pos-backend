@@ -5,6 +5,7 @@ import { Invoice } from '../entities/invoice.entity';
 import { Customer } from '../entities/customer.entity';
 import { Branch } from '../entities/branch.entity';
 import { Currency } from '../entities/currency.entity';
+import { InvoiceItem } from '../entities/invoiceItem.entity';
 
 @Injectable()
 export class InvoiceService {
@@ -17,6 +18,8 @@ export class InvoiceService {
     private readonly branchRepository: Repository<Branch>,
     @InjectRepository(Currency)
     private readonly currencyRepository: Repository<Currency>,
+    @InjectRepository(InvoiceItem)
+    private readonly invoiceItemRepository: Repository<InvoiceItem>,
   ) {}
 
   async createInvoice(invoiceData: Partial<Invoice>): Promise<Invoice> {
@@ -26,6 +29,7 @@ export class InvoiceService {
       currencyId,
       invoiceType,
       date,
+      items, // Extract items from the payload
       ...otherFields
     } = invoiceData;
 
@@ -79,8 +83,25 @@ export class InvoiceService {
       date,
       ...otherFields,
     });
+    const savedInvoice = await this.invoiceRepository.save(invoice);
 
-    return this.invoiceRepository.save(invoice);
+    // Handle items
+    if (items && Array.isArray(items)) {
+      const invoiceItems = items.map((item) =>
+        this.invoiceItemRepository.create({
+          ...item,
+          invoice: savedInvoice, // Link to the created invoice
+        }),
+      );
+
+      await this.invoiceItemRepository.save(invoiceItems); // Save all items
+    }
+
+    // Fetch the invoice with items to return
+    return this.invoiceRepository.findOne({
+      where: { id: savedInvoice.id },
+      relations: ['customer', 'branch', 'currency', 'items'], // Include related entities
+    });
   }
 
   async getAllInvoices(): Promise<Invoice[]> {
