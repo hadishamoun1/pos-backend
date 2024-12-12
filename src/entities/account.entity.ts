@@ -6,6 +6,7 @@ import {
   OneToMany,
   JoinColumn,
 } from 'typeorm';
+import { Currency } from './currency.entity';
 
 @Entity('accounts')
 export class Account {
@@ -30,4 +31,13 @@ export class Account {
 
   @OneToMany(() => Account, (account) => account.parent)
   children: Account[];
+
+  // Foreign key to Currency table
+  @ManyToOne(() => Currency, (currency) => currency.id, { nullable: true })
+  @JoinColumn({ name: 'currencyId' })
+  currency: Currency;
+
+  // Accessible column
+  @Column({ type: 'boolean', default: true })
+  accessible: boolean;
 }

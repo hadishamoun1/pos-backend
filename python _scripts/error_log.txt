@@ -1,0 +1,117 @@
+Successfully inserted row: {'Account Number': '76', 'Account Name': 'OTHER OPERATING INCOME', 'Parent Account Number': '7'}
+Successfully inserted row: {'Account Number': '761', 'Account Name': 'Other ordinary operating income', 'Parent Account Number': '76'}
+Successfully inserted row: {'Account Number': '7611', 'Account Name': 'Royalties etc...', 'Parent Account Number': '761'}
+Successfully inserted row: {'Account Number': '7612', 'Account Name': 'Rental income from non-operating estates', 'Parent Account Number': '761'}
+Successfully inserted row: {'Account Number': '7613', 'Account Name': "Presence fees and directors and managers' fees", 'Parent Account Number': '761'}
+Successfully inserted row: {'Account Number': '7619', 'Account Name': 'Reallocation of operating charges', 'Parent Account Number': '761'}
+Successfully inserted row: {'Account Number': '765', 'Account Name': 'Share of profits on joint venture', 'Parent Account Number': '76'}
+Successfully inserted row: {'Account Number': '7651', 'Account Name': 'Share of expenses', 'Parent Account Number': '765'}
+Successfully inserted row: {'Account Number': '7655', 'Account Name': 'Share of net revenue', 'Parent Account Number': '765'}
+Successfully inserted row: {'Account Number': '77', 'Account Name': 'FINANCE INCOME', 'Parent Account Number': '7'}
+Successfully inserted row: {'Account Number': '771', 'Account Name': 'Revenue from participation investments', 'Parent Account Number': '77'}
+Successfully inserted row: {'Account Number': '7711', 'Account Name': 'Revenue from participation investments', 'Parent Account Number': '771'}
+Successfully inserted row: {'Account Number': '7716', 'Account Name': 'Revenue from other participations', 'Parent Account Number': '771'}
+Successfully inserted row: {'Account Number': '7717', 'Account Name': 'Revenue from participation accounts receivable', 'Parent Account Number': '771'}
+Successfully inserted row: {'Account Number': '772', 'Account Name': 'Revenue from other investments', 'Parent Account Number': '77'}
+Successfully inserted row: {'Account Number': '7721', 'Account Name': 'Revenue from investment securities', 'Parent Account Number': '772'}
+Successfully inserted row: {'Account Number': '7723', 'Account Name': 'Revenue from fixed securities', 'Parent Account Number': '772'}
+Successfully inserted row: {'Account Number': '7725', 'Account Name': 'Revenue from fixed accounts receivable', 'Parent Account Number': '772'}
+Successfully inserted row: {'Account Number': '7726', 'Account Name': 'Revenue from trading accounts receivable', 'Parent Account Number': '772'}
+Successfully inserted row: {'Account Number': '7727', 'Account Name': 'Revenue from sundry accounts receivable', 'Parent Account Number': '772'}
+Successfully inserted row: {'Account Number': '773', 'Account Name': 'Interest and similar income', 'Parent Account Number': '77'}
+Successfully inserted row: {'Account Number': '7731', 'Account Name': 'Revenue from loans granted', 'Parent Account Number': '773'}
+Successfully inserted row: {'Account Number': '7733', 'Account Name': 'Discounts received', 'Parent Account Number': '773'}
+Successfully inserted row: {'Account Number': '775', 'Account Name': 'Profit on exchange', 'Parent Account Number': '77'}
+Successfully inserted row: {'Account Number': '7751', 'Account Name': 'On current accounts', 'Parent Account Number': '775'}
+Successfully inserted row: {'Account Number': '7755', 'Account Name': 'On capital transactions', 'Parent Account Number': '775'}
+Successfully inserted row: {'Account Number': '778', 'Account Name': 'Other financial revenue', 'Parent Account Number': '77'}
+Successfully inserted row: {'Account Number': '7781', 'Account Name': 'Net income on sale of investment securities', 'Parent Account Number': '778'}
+Successfully inserted row: {'Account Number': '7789', 'Account Name': 'Reallocation of financial charges', 'Parent Account Number': '778'}
+Successfully inserted row: {'Account Number': '779', 'Account Name': 'Release of financial provisions', 'Parent Account Number': '77'}
+Successfully inserted row: {'Account Number': '7793', 'Account Name': 'Release of provision for diminution in value', 'Parent Account Number': '779'}
+Successfully inserted row: {'Account Number': '7795', 'Account Name': 'Release of provision for contingencies and charges', 'Parent Account Number': '779'}
+Successfully inserted row: {'Account Number': '78', 'Account Name': 'NON-OPERATING INCOME', 'Parent Account Number': '7'}
+Successfully inserted row: {'Account Number': '781', 'Account Name': 'Income from disposal of fixed assets', 'Parent Account Number': '78'}
+Successfully inserted row: {'Account Number': '7811', 'Account Name': 'Intangible fixed assets', 'Parent Account Number': '781'}
+Successfully inserted row: {'Account Number': '7812', 'Account Name': 'Tangible fixed assets', 'Parent Account Number': '781'}
+Successfully inserted row: {'Account Number': '7815', 'Account Name': 'Financial fixed assets', 'Parent Account Number': '781'}
+Successfully inserted row: {'Account Number': '782', 'Account Name': 'Investment aids transferred to current operations', 'Parent Account Number': '78'}
+Successfully inserted row: {'Account Number': '788', 'Account Name': 'Other non-operating income', 'Parent Account Number': '78'}
+Successfully inserted row: {'Account Number': '7881', 'Account Name': 'Exceptional income on normal transactions', 'Parent Account Number': '788'}
+Successfully inserted row: {'Account Number': '7888', 'Account Name': 'Other income on exceptional transactions of capital nature', 'Parent Account Number': '788'}
+Successfully inserted row: {'Account Number': '7889', 'Account Name': 'Re-allocation of exceptional charges', 'Parent Account Number': '788'}
+Successfully inserted row: {'Account Number': '789', 'Account Name': 'Release of non-operating provisions', 'Parent Account Number': '78'}
+Successfully inserted row: {'Account Number': '7891', 'Account Name': 'Release of provision for diminution in value', 'Parent Account Number': '789'}
+Successfully inserted row: {'Account Number': '7895', 'Account Name': 'Release of provision for contingencies and charges', 'Parent Account Number': '789'}
+Successfully inserted row: {'Account Number': '8', 'Account Name': 'SPECIAL ACCOUNTS', 'Parent Account Number': None}
+Successfully inserted row: {'Account Number': '9', 'Account Name': 'ANALYTICAL ACCOUNTS (COST ACCOUNTING)', 'Parent Account Number': None}
+Successfully inserted row: {'Account Number': '90', 'Account Name': 'CONTROL ACCOUNT', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '903', 'Account Name': 'Inventory', 'Parent Account Number': '90'}
+Successfully inserted row: {'Account Number': '904', 'Account Name': 'Purchases', 'Parent Account Number': '90'}
+Successfully inserted row: {'Account Number': '905', 'Account Name': 'Burden', 'Parent Account Number': '90'}
+Successfully inserted row: {'Account Number': '906', 'Account Name': 'Depreciation and provisions', 'Parent Account Number': '90'}
+Successfully inserted row: {'Account Number': '907', 'Account Name': 'Operating revenue', 'Parent Account Number': '90'}
+Successfully inserted row: {'Account Number': '908', 'Account Name': 'Results', 'Parent Account Number': '90'}
+Successfully inserted row: {'Account Number': '91', 'Account Name': 'PREDETERMINED ACCOUNTS - OPERATING CHARGES', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '910', 'Account Name': 'Variable trading charges', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '911', 'Account Name': 'Variable production charges', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '912', 'Account Name': 'Non reallocated charges', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '913', 'Account Name': '�����', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '914', 'Account Name': '�����', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '915', 'Account Name': '�����', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '916', 'Account Name': '�����', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '917', 'Account Name': '�����', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '918', 'Account Name': '�����', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '919', 'Account Name': 'Operating revenue', 'Parent Account Number': '91'}
+Successfully inserted row: {'Account Number': '92', 'Account Name': 'COST CENTERS', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '920', 'Account Name': 'Administration', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '921', 'Account Name': 'Finance', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '922', 'Account Name': 'Personnel', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '923', 'Account Name': 'Materials', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '924', 'Account Name': 'Joint services', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '925', 'Account Name': 'Other materials and consumables', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '926', 'Account Name': 'Technical and research studies', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '927', 'Account Name': 'Production', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '928', 'Account Name': 'Distribution', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '929', 'Account Name': 'Other expenses to be reallocated', 'Parent Account Number': '92'}
+Successfully inserted row: {'Account Number': '93', 'Account Name': 'COST OF PRODUCTION ON HAND', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '930', 'Account Name': 'Investment in progress', 'Parent Account Number': '93'}
+Successfully inserted row: {'Account Number': '931', 'Account Name': 'Services in progress', 'Parent Account Number': '93'}
+Successfully inserted row: {'Account Number': '932', 'Account Name': 'Goods produced', 'Parent Account Number': '93'}
+Successfully inserted row: {'Account Number': '933', 'Account Name': 'Work', 'Parent Account Number': '93'}
+Successfully inserted row: {'Account Number': '934', 'Account Name': 'Services', 'Parent Account Number': '93'}
+Successfully inserted row: {'Account Number': '94', 'Account Name': 'INVENTORY', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '940', 'Account Name': 'Goods', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '941', 'Account Name': 'Raw materials', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '942', 'Account Name': 'Other materials and consumables', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '943', 'Account Name': 'Investment in progress', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '944', 'Account Name': 'Services in progress', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '945', 'Account Name': 'Production (Semi-finished and finished)', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '946', 'Account Name': '���', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '947', 'Account Name': '���', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '948', 'Account Name': '��', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '949', 'Account Name': 'Provision for diminution in value of goods and work in progress', 'Parent Account Number': '94'}
+Successfully inserted row: {'Account Number': '95', 'Account Name': 'COST OF GOODS SOLD', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '951', 'Account Name': 'Finished products', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '952', 'Account Name': 'Work', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '953', 'Account Name': 'Services', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '954', 'Account Name': '���', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '955', 'Account Name': '���', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '956', 'Account Name': '���', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '957', 'Account Name': '���', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '958', 'Account Name': '���', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '959', 'Account Name': '���', 'Parent Account Number': '95'}
+Successfully inserted row: {'Account Number': '96', 'Account Name': 'VARIANCES ON PREDETERMINED COST', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '97', 'Account Name': 'UNDER OR OVER ABSORBED ACCOUNTS', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '970', 'Account Name': 'Reallocation differences-Materials', 'Parent Account Number': '97'}
+Successfully inserted row: {'Account Number': '971', 'Account Name': 'Reallocation differences-Deprecations and provision', 'Parent Account Number': '97'}
+Successfully inserted row: {'Account Number': '973', 'Account Name': 'Reallocation differences-Other burden', 'Parent Account Number': '97'}
+Successfully inserted row: {'Account Number': '977', 'Account Name': 'Reallocation differences-Revenue', 'Parent Account Number': '97'}
+Successfully inserted row: {'Account Number': '974', 'Account Name': 'Reallocation differences-Physical inventory', 'Parent Account Number': '97'}
+Successfully inserted row: {'Account Number': '975', 'Account Name': 'Reallocation differences-Internal reallocation (rate variance)', 'Parent Account Number': '97'}
+Successfully inserted row: {'Account Number': '976', 'Account Name': 'Reallocation differences-Activity (volume variance)', 'Parent Account Number': '97'}
+Successfully inserted row: {'Account Number': '98', 'Account Name': 'COST ACCOUNTING OPERATING RESULTS', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '99', 'Account Name': 'INTERNAL LIAISON ACCOUNTS', 'Parent Account Number': '9'}
+Successfully inserted row: {'Account Number': '991', 'Account Name': 'Within the same organization', 'Parent Account Number': '99'}
+Successfully inserted row: {'Account Number': '996', 'Account Name': 'From other organization', 'Parent Account Number': '99'}
+Successfully inserted row: {'Account Number': '997', 'Account Name': 'To other organization', 'Parent Account Number': '99'}
