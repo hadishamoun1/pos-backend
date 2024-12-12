@@ -7,29 +7,35 @@ import { Classification } from '../entities/classification.entity';
 export class ClassificationService {
   constructor(
     @InjectRepository(Classification)
-    private readonly classificationRepository: Repository<Classification>,
+    private classificationRepository: Repository<Classification>,
   ) {}
 
-  findAll() {
+  async findAll(): Promise<Classification[]> {
     return this.classificationRepository.find();
   }
 
-  findOne(classificationCode: string) {
+  async findOneById(id: number): Promise<Classification | undefined> {
+    return this.classificationRepository.findOneBy({ id });
+  }
+
+  async findOneByCode(
+    classificationCode: string,
+  ): Promise<Classification | undefined> {
     return this.classificationRepository.findOneBy({ classificationCode });
   }
 
-  create(classification: Classification) {
+  async create(classification: Classification): Promise<Classification> {
     return this.classificationRepository.save(classification);
   }
 
-  update(classificationCode: string, classification: Partial<Classification>) {
-    return this.classificationRepository.update(
-      classificationCode,
-      classification,
-    );
+  async update(
+    id: number,
+    classification: Partial<Classification>,
+  ): Promise<void> {
+    await this.classificationRepository.update(id, classification);
   }
 
-  delete(classificationCode: string) {
-    return this.classificationRepository.delete(classificationCode);
+  async delete(id: number): Promise<void> {
+    await this.classificationRepository.delete(id);
   }
 }

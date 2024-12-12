@@ -15,33 +15,41 @@ export class ClassificationController {
   constructor(private readonly classificationService: ClassificationService) {}
 
   @Get()
-  findAll() {
+  async findAll(): Promise<Classification[]> {
     return this.classificationService.findAll();
   }
 
-  @Get(':classificationCode')
-  findOne(@Param('classificationCode') classificationCode: string) {
-    return this.classificationService.findOne(classificationCode);
+  @Get(':id')
+  async findOneById(
+    @Param('id') id: number,
+  ): Promise<Classification | undefined> {
+    return this.classificationService.findOneById(id);
+  }
+
+  @Get('code/:code')
+  async findOneByCode(
+    @Param('code') code: string,
+  ): Promise<Classification | undefined> {
+    return this.classificationService.findOneByCode(code);
   }
 
   @Post()
-  create(@Body() classification: Classification) {
+  async create(
+    @Body() classification: Classification,
+  ): Promise<Classification> {
     return this.classificationService.create(classification);
   }
 
-  @Put(':classificationCode')
-  update(
-    @Param('classificationCode') classificationCode: string,
+  @Put(':id')
+  async update(
+    @Param('id') id: number,
     @Body() classification: Partial<Classification>,
-  ) {
-    return this.classificationService.update(
-      classificationCode,
-      classification,
-    );
+  ): Promise<void> {
+    await this.classificationService.update(id, classification);
   }
 
-  @Delete(':classificationCode')
-  delete(@Param('classificationCode') classificationCode: string) {
-    return this.classificationService.delete(classificationCode);
+  @Delete(':id')
+  async delete(@Param('id') id: number): Promise<void> {
+    await this.classificationService.delete(id);
   }
 }
