@@ -11,6 +11,7 @@ import { ClassificationModule } from './classification/classification.module';
 import { CategoriesModule } from './categories/categories.module';
 import { BranchModule } from './branch/branch.module';
 import { AccountsModule } from './accounts/accounts.module';
+import { SuppliersModule } from './suppliers/suppliers.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { AccountsModule } from './accounts/accounts.module';
     CategoriesModule,
     BranchModule,
     AccountsModule,
+    SuppliersModule,
   ],
   
 })
