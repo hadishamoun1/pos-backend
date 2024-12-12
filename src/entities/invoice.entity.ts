@@ -1,4 +1,11 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+} from 'typeorm';
 import { Customer } from './customer.entity';
 import { Branch } from './branch.entity';
 import { Currency } from './currency.entity';
@@ -10,7 +17,11 @@ export class Invoice {
   id: number;
 
   @ManyToOne(() => Customer, (customer) => customer.invoices)
+  @JoinColumn({ name: 'customerId' }) // Links the `customerId` foreign key
   customer: Customer;
+
+  @Column()
+  customerId: number; // Foreign key for Customer
 
   @Column({ type: 'date' })
   date: Date;
@@ -25,10 +36,18 @@ export class Invoice {
   documentNumber: string;
 
   @ManyToOne(() => Branch, (branch) => branch.invoices)
+  @JoinColumn({ name: 'branchId' })
   branch: Branch;
 
+  @Column()
+  branchId: number; 
+
   @ManyToOne(() => Currency, (currency) => currency.invoices)
+  @JoinColumn({ name: 'currencyId' }) 
   currency: Currency;
+
+  @Column()
+  currencyId: number; 
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalWithoutVAT: number;
