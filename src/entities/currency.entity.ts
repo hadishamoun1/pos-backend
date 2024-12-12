@@ -1,5 +1,6 @@
 import { Entity, Column, PrimaryGeneratedColumn, OneToMany } from 'typeorm';
 import { CurrencyRate } from './currencyRate.entity';
+import { Invoice } from './invoice.entity';
 
 @Entity()
 export class Currency {
@@ -13,4 +14,6 @@ export class Currency {
 
   @OneToMany(() => CurrencyRate, (rate) => rate.currency)
   exchangeRates: CurrencyRate[];
+  @OneToMany(() => Invoice, (invoice) => invoice.currency)
+  invoices: Invoice[];
 }
