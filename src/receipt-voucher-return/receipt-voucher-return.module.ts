@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ReceiptVoucherReturn } from '../entities/Vouchers/receiptVoucherReturn.entity';
-import { ReceiptVoucherReturnDetail } from '../entities/Vouchers/receiptVoucherReturnDetails.entity';
-import { ReceiptVoucherReturnService } from '../services/receiptVoucherReturn.service';
-import { ReceiptVoucherReturnController } from '../controllers/receiptVoucherReturn.controller';
+import { ReceiptVoucherReturn } from '../entities/returnVouchers/receiptVoucherReturn.entity';
+import { ReceiptVoucherReturnDetail } from '../entities/returnVouchers/receiptVoucherReturnDetails.entity';
+import { ReceiptVoucherReturnService } from './receipt-voucher-return.service';
+import { ReceiptVoucherReturnController } from './receipt-voucher-return.controller';
 import { Account } from '../entities/account.entity';
 import { CurrencyRate } from '../entities/currencyRate.entity';
 
