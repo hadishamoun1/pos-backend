@@ -9,7 +9,7 @@ import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { DebitNoteDetail } from './debitNoteDetails.entity';
 
-@Entity('journal_vouchers')
+@Entity('debit_note')
 export class DebitNote {
   @PrimaryGeneratedColumn()
   id: number;

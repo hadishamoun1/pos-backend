@@ -9,7 +9,7 @@ import {
   import { CurrencyRate } from '../currencyRate.entity';
   import { PaymentVoucherDetail } from './paymentVoucherDetails.entity';
   
-  @Entity('journal_vouchers')
+  @Entity('payment_vouchers')
   export class PaymentVoucher {
     @PrimaryGeneratedColumn()
     id: number;

@@ -8,7 +8,7 @@ import {
   import { CurrencyRate } from '../currencyRate.entity';
   import { DebitNote } from './debitNote.entity';
   
-  @Entity('journal_voucher_details')
+  @Entity('debit_note_details')
   export class DebitNoteDetail {
     @PrimaryGeneratedColumn()
     id: number;
