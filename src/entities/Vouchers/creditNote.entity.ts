@@ -21,7 +21,7 @@ export class CreditNote {
   account: Account;
 
   @Column({ type: 'varchar', length: 50, unique: true })
-  jvNumber: string;
+  cnNumber: string;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalDr: number;

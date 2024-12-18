@@ -21,7 +21,7 @@ import {
     account: Account;
   
     @Column({ type: 'varchar', length: 50, unique: true })
-    jvNumber: string;
+    pmNumber: string;
   
     @Column({ type: 'decimal', precision: 10, scale: 2 })
     totalDr: number;
