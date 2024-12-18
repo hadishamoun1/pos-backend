@@ -14,6 +14,7 @@ import { AccountsModule } from './accounts/accounts.module';
 import { SupplierModule } from './suppliers/suppliers.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { ReceiptVoucherModule } from './receipt-voucher/receipt-voucher.module';
+import { PaymentVoucherModule } from './payment-voucher/payment-voucher.module';
 
 @Module({
   imports: [
@@ -27,7 +28,6 @@ import { ReceiptVoucherModule } from './receipt-voucher/receipt-voucher.module';
       autoLoadEntities: true,
       synchronize: true,
     }),
-    //TypeOrmModule.forFeature([User]),
     UserModule,
     CustomerModule,
     SettingsModule,
@@ -41,6 +41,7 @@ import { ReceiptVoucherModule } from './receipt-voucher/receipt-voucher.module';
     SupplierModule,
     InvoiceModule,
     ReceiptVoucherModule,
+    PaymentVoucherModule,
   ],
 })
 export class AppModule {}
