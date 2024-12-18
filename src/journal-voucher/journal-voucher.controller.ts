@@ -1,4 +1,71 @@
-import { Controller } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
+import { JournalVoucherService } from './journal-voucher.service';
+import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 
-@Controller('journal-voucher')
-export class JournalVoucherController {}
+@Controller('journal-vouchers')
+export class JournalVoucherController {
+  constructor(private readonly journalVoucherService: JournalVoucherService) {}
+
+  // Create a new Journal Voucher
+  @Post()
+  async createJournalVoucher(@Body() data: Partial<JournalVoucher>) {
+    try {
+      return await this.journalVoucherService.createJournalVoucher(data);
+    } catch (error) {
+      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  // Get all Journal Vouchers
+  @Get()
+  async getAllJournalVouchers() {
+    try {
+      return await this.journalVoucherService.getAllJournalVouchers();
+    } catch (error) {
+      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  // Get a single Journal Voucher by ID
+  @Get(':id')
+  async getJournalVoucherById(@Param('id') id: number) {
+    try {
+      return await this.journalVoucherService.getJournalVoucherById(id);
+    } catch (error) {
+      throw new HttpException(error.message, HttpStatus.NOT_FOUND);
+    }
+  }
+
+  // Update a Journal Voucher by ID
+  @Put(':id')
+  async updateJournalVoucher(
+    @Param('id') id: number,
+    @Body() data: Partial<JournalVoucher>,
+  ) {
+    try {
+      return await this.journalVoucherService.updateJournalVoucher(id, data);
+    } catch (error) {
+      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  // Delete a Journal Voucher by ID
+  @Delete(':id')
+  async deleteJournalVoucher(@Param('id') id: number) {
+    try {
+      return await this.journalVoucherService.deleteJournalVoucher(id);
+    } catch (error) {
+      throw new HttpException(error.message, HttpStatus.NOT_FOUND);
+    }
+  }
+}
