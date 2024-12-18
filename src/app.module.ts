@@ -18,6 +18,7 @@ import { PaymentVoucherModule } from './payment-voucher/payment-voucher.module';
 import { JournalVoucherModule } from './journal-voucher/journal-voucher.module';
 import { SalesVoucherModule } from './sales-voucher/sales-voucher.module';
 import { PurchaseVoucherModule } from './purchase-voucher/purchase-voucher.module';
+import { CreditNoteModule } from './credit-note/credit-note.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { PurchaseVoucherModule } from './purchase-voucher/purchase-voucher.modul
     JournalVoucherModule,
     SalesVoucherModule,
     PurchaseVoucherModule,
+    CreditNoteModule,
   ],
 })
 export class AppModule {}
