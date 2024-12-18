@@ -20,6 +20,7 @@ import { SalesVoucherModule } from './sales-voucher/sales-voucher.module';
 import { PurchaseVoucherModule } from './purchase-voucher/purchase-voucher.module';
 import { CreditNoteModule } from './credit-note/credit-note.module';
 import { DebitNoteModule } from './debit-note/debit-note.module';
+import { ReceiptVoucherReturnModule } from './receipt-voucher-return/receipt-voucher-return.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { DebitNoteModule } from './debit-note/debit-note.module';
     PurchaseVoucherModule,
     CreditNoteModule,
     DebitNoteModule,
+    ReceiptVoucherReturnModule,
   ],
 })
 export class AppModule {}
