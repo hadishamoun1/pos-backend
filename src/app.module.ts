@@ -13,6 +13,7 @@ import { BranchModule } from './branch/branch.module';
 import { AccountsModule } from './accounts/accounts.module';
 import { SupplierModule } from './suppliers/suppliers.module';
 import { InvoiceModule } from './invoice/invoice.module';
+import { ReceiptVoucherModule } from './receipt-voucher/receipt-voucher.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { InvoiceModule } from './invoice/invoice.module';
     AccountsModule,
     SupplierModule,
     InvoiceModule,
+    ReceiptVoucherModule,
   ],
 })
 export class AppModule {}
