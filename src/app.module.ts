@@ -24,6 +24,7 @@ import { ReceiptVoucherReturnModule } from './receipt-voucher-return/receipt-vou
 import { PaymentVoucherReturnModule } from './payment-voucher-return/payment-voucher-return.module';
 import { SalesReturnVoucherModule } from './sales-return-voucher/sales-return-voucher.module';
 import { PurchaseReturnVoucherModule } from './purchase-return-voucher/purchase-return-voucher.module';
+import { DebitNoteReturnsModule } from './debit-note-returns/debit-note-returns.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { PurchaseReturnVoucherModule } from './purchase-return-voucher/purchase-
     PaymentVoucherReturnModule,
     SalesReturnVoucherModule,
     PurchaseReturnVoucherModule,
+    DebitNoteReturnsModule,
   ],
 })
 export class AppModule {}
