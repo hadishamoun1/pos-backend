@@ -16,6 +16,7 @@ import { InvoiceModule } from './invoice/invoice.module';
 import { ReceiptVoucherModule } from './receipt-voucher/receipt-voucher.module';
 import { PaymentVoucherModule } from './payment-voucher/payment-voucher.module';
 import { JournalVoucherModule } from './journal-voucher/journal-voucher.module';
+import { SalesVoucherModule } from './sales-voucher/sales-voucher.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { JournalVoucherModule } from './journal-voucher/journal-voucher.module';
     ReceiptVoucherModule,
     PaymentVoucherModule,
     JournalVoucherModule,
+    SalesVoucherModule,
   ],
 })
 export class AppModule {}
