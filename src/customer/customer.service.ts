@@ -80,4 +80,16 @@ export class CustomerService {
     }
     return customer;
   }
+  async getCustomersPaginated(
+    page: number,
+    limit: number,
+  ): Promise<{ customers: Customer[]; total: number }> {
+    const [customers, total] = await this.customerRepository.findAndCount({
+      relations: ['currency', 'account'], // Include relations if needed
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+  
+    return { customers, total };
+  }
 }
