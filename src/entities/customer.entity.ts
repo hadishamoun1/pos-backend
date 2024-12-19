@@ -42,6 +42,7 @@ export class Customer {
   @Column({ type: 'decimal', nullable: true })
   vat?: number;
 
+  // Explicitly define the foreign key for currency
   @Column({ type: 'int' })
   currencyId: number;
 
@@ -54,6 +55,7 @@ export class Customer {
   })
   @JoinColumn({ name: 'accountId' })
   account: Account;
+
   @OneToMany(() => Invoice, (invoice) => invoice.customer)
   invoices: Invoice[];
 }

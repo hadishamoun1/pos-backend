@@ -83,13 +83,35 @@ export class CustomerService {
   async getCustomersPaginated(
     page: number,
     limit: number,
-  ): Promise<{ customers: Customer[]; total: number }> {
+  ): Promise<{ customers: Partial<Customer>[]; total: number }> {
     const [customers, total] = await this.customerRepository.findAndCount({
-      relations: ['currency', 'account'], // Include relations if needed
+      select: [
+        'id',
+        'customerAccountNumber',
+        'customerName',
+        'address',
+        'location',
+        'phoneNumber',
+        'invoiceType',
+        'vat',
+      ],
+      relations: ['currency', 'account'],
       skip: (page - 1) * limit,
       take: limit,
     });
-  
-    return { customers, total };
+
+    const filteredCustomers = customers.map((customer) => ({
+      id: customer.id,
+      customerAccountNumber: customer.customerAccountNumber,
+      customerName: customer.customerName,
+      address: customer.address,
+      location: customer.location,
+      phoneNumber: customer.phoneNumber,
+      invoiceType: customer.invoiceType,
+      vat: customer.vat,
+      currencyCode: customer.currency.currencyCode,
+    }));
+
+    return { customers: filteredCustomers, total };
   }
 }
