@@ -63,4 +63,9 @@ export class CurrencyService {
   async getAllCurrencyRates(): Promise<CurrencyRate[]> {
     return this.currencyRateRepository.find({ relations: ['currency'] });
   }
+  // Get all currency codes for dropdown
+  async getCurrencyCodesForDropdown(): Promise<string[]> {
+    const currencies = await this.currencyRepository.find();
+    return currencies.map((currency) => currency.currencyCode);
+  }
 }

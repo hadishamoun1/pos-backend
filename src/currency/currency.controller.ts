@@ -61,4 +61,11 @@ export class CurrencyController {
   getAllCurrencyRates(): Promise<CurrencyRate[]> {
     return this.currencyService.getAllCurrencyRates();
   }
+
+  // Get all currency codes for dropdown
+  @Get('dropdown')
+  getCurrencyCodesForDropdown(): Promise<string[]> {
+    return this.currencyService.getCurrencyCodesForDropdown();
+  }
 }
+

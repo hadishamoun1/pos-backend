@@ -3,7 +3,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserModule } from './user/user.module';
 import { CustomerModule } from './customer/customer.module';
 import { SettingsModule } from './settings/settings.module';
-
 import { ItemsModule } from './items/items.module';
 import { CurrencyModule } from './currency/currency.module';
 import { GroupModule } from './group/group.module';
@@ -24,8 +23,8 @@ import { ReceiptVoucherReturnModule } from './receipt-voucher-return/receipt-vou
 import { PaymentVoucherReturnModule } from './payment-voucher-return/payment-voucher-return.module';
 import { SalesReturnVoucherModule } from './sales-return-voucher/sales-return-voucher.module';
 import { PurchaseReturnVoucherModule } from './purchase-return-voucher/purchase-return-voucher.module';
-import { DebitNoteReturnsModule } from './debit-note-returns/debit-note-returns.module';
-import { CreditNoteReturnsModule } from './credit-note-returns/credit-note-returns.module';
+import { DebitNoteReturnModule } from './debit-note-returns/debit-note-returns.module'
+import { CreditNoteReturnModule } from './credit-note-returns/credit-note-returns.module';
 
 @Module({
   imports: [
@@ -62,8 +61,8 @@ import { CreditNoteReturnsModule } from './credit-note-returns/credit-note-retur
     PaymentVoucherReturnModule,
     SalesReturnVoucherModule,
     PurchaseReturnVoucherModule,
-    DebitNoteReturnsModule,
-    CreditNoteReturnsModule,
+    DebitNoteReturnModule,
+    CreditNoteReturnModule,
   ],
 })
 export class AppModule {}
