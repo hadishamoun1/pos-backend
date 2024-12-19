@@ -16,7 +16,9 @@ export class SupplierService {
     private currencyRepository: Repository<Currency>,
   ) {}
 
-  async createSupplier(supplierData: Partial<Supplier>): Promise<Supplier> {
+  async createSupplier(
+    supplierData: Partial<Supplier> & { currencyId: number },
+  ): Promise<Supplier> {
     const { supplierName, currencyId, ...otherFields } = supplierData;
 
     // Validate currency
@@ -60,7 +62,7 @@ export class SupplierService {
     const supplier = this.supplierRepository.create({
       supplierAccountNumber,
       supplierName,
-      currencyId,
+      currency,
       account,
       ...otherFields,
     });
@@ -69,17 +71,55 @@ export class SupplierService {
   }
 
   async getAllSuppliers(): Promise<Supplier[]> {
-    return this.supplierRepository.find();
+    return this.supplierRepository.find({ relations: ['currency', 'account'] });
   }
 
   async getSupplierById(id: number): Promise<Supplier> {
     const supplier = await this.supplierRepository.findOne({
       where: { id },
+      relations: ['currency', 'account'],
     });
     if (!supplier) {
       throw new NotFoundException(`Supplier with ID ${id} not found.`);
     }
     return supplier;
+  }
+
+  async getSuppliersPaginated(
+    page: number,
+    limit: number,
+  ): Promise<{ suppliers: Partial<Supplier>[]; total: number }> {
+    const [suppliers, total] = await this.supplierRepository.findAndCount({
+      select: [
+        'id',
+        'supplierAccountNumber',
+        'supplierName',
+        'address',
+        'location',
+        'phoneNumber',
+        'invoiceType',
+        'vat',
+        'financialNumber',
+      ],
+      relations: ['currency', 'account'],
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    const filteredSuppliers = suppliers.map((supplier) => ({
+      id: supplier.id,
+      supplierAccountNumber: supplier.supplierAccountNumber,
+      supplierName: supplier.supplierName,
+      address: supplier.address,
+      location: supplier.location,
+      phoneNumber: supplier.phoneNumber,
+      invoiceType: supplier.invoiceType,
+      vat: supplier.vat,
+      currencyCode: supplier.currency.currencyCode,
+      financialNumber: supplier.financialNumber,
+    }));
+
+    return { suppliers: filteredSuppliers, total };
   }
 
   async deleteSupplier(id: number): Promise<void> {

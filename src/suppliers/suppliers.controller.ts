@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Delete, Param, Body } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Param,
+  Body,
+  Query,
+} from '@nestjs/common';
 import { SupplierService } from './suppliers.service';
 import { Supplier } from '../entities/supplier.entity';
 
@@ -6,23 +14,41 @@ import { Supplier } from '../entities/supplier.entity';
 export class SupplierController {
   constructor(private readonly supplierService: SupplierService) {}
 
+  // Create a supplier
   @Post()
-  createSupplier(@Body() supplierData: Partial<Supplier>): Promise<Supplier> {
+  createSupplier(
+    @Body() supplierData: Partial<Supplier> & { currencyId: number },
+  ): Promise<Supplier> {
     return this.supplierService.createSupplier(supplierData);
   }
 
+  // Get all suppliers
   @Get()
   getAllSuppliers(): Promise<Supplier[]> {
     return this.supplierService.getAllSuppliers();
   }
 
+  // Get a specific supplier by ID
   @Get(':id')
   getSupplierById(@Param('id') id: number): Promise<Supplier> {
     return this.supplierService.getSupplierById(id);
   }
 
+  // Delete a supplier by ID
   @Delete(':id')
   deleteSupplier(@Param('id') id: number): Promise<void> {
     return this.supplierService.deleteSupplier(id);
+  }
+
+  // Get paginated suppliers
+  @Get('v1/paginated')
+  getSuppliersPaginated(
+    @Query('page') page = 1,
+    @Query('limit') limit = 10,
+  ): Promise<{ suppliers: Partial<Supplier>[]; total: number }> {
+    return this.supplierService.getSuppliersPaginated(
+      Number(page),
+      Number(limit),
+    );
   }
 }
