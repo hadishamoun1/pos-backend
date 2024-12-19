@@ -25,7 +25,7 @@ export class CustomerController {
     return this.customerService.getCustomerById(id);
   }
 
-  @Get('paginated')
+  @Get('v1/paginated')
   async getCustomersPaginated(
     @Query('page') page: string, // Use `string` because query parameters are strings
     @Query('limit') limit: string, // Use `string` because query parameters are strings
