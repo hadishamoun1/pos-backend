@@ -17,6 +17,11 @@ export class CurrencyService {
   async getAllCurrencies(): Promise<Currency[]> {
     return this.currencyRepository.find();
   }
+    // Get all currency codes for dropdown
+    async getCurrencyCodesForDropdown(): Promise<string[]> {
+      const currencies = await this.currencyRepository.find();
+      return currencies.map((currency) => currency.currencyCode);
+    }
 
   // Get a currency by code
   async getCurrencyByCode(code: string): Promise<Currency> {
@@ -63,9 +68,5 @@ export class CurrencyService {
   async getAllCurrencyRates(): Promise<CurrencyRate[]> {
     return this.currencyRateRepository.find({ relations: ['currency'] });
   }
-  // Get all currency codes for dropdown
-  async getCurrencyCodesForDropdown(): Promise<string[]> {
-    const currencies = await this.currencyRepository.find();
-    return currencies.map((currency) => currency.currencyCode);
-  }
+
 }
