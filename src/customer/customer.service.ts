@@ -94,6 +94,7 @@ export class CustomerService {
         'phoneNumber',
         'invoiceType',
         'vat',
+        'financialNumber',
       ],
       relations: ['currency', 'account'],
       skip: (page - 1) * limit,
@@ -110,6 +111,7 @@ export class CustomerService {
       invoiceType: customer.invoiceType,
       vat: customer.vat,
       currencyCode: customer.currency.currencyCode,
+      financialNumber: customer.financialNumber,
     }));
 
     return { customers: filteredCustomers, total };
