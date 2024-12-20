@@ -63,4 +63,9 @@ export class ItemsController {
   async deleteItemVariant(@Param('id') id: number): Promise<void> {
     return this.itemsService.deleteItemVariant(id);
   }
+  @Post('v1/full')
+async createFullItem(@Body() createFullItemDto: any): Promise<Item> {
+  return this.itemsService.createFullItem(createFullItemDto);
+}
+
 }

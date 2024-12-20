@@ -38,7 +38,9 @@ export class ItemsService {
   }
 
   // CRUD for Thickness
-  async createThickness(createThicknessDto: Partial<Thickness>): Promise<Thickness> {
+  async createThickness(
+    createThicknessDto: Partial<Thickness>,
+  ): Promise<Thickness> {
     const thickness = this.thicknessRepository.create(createThicknessDto);
     return await this.thicknessRepository.save(thickness);
   }
@@ -48,12 +50,43 @@ export class ItemsService {
   }
 
   // CRUD for ItemVariants
-  async createItemVariant(createItemVariantDto: Partial<ItemVariant>): Promise<ItemVariant> {
+  async createItemVariant(
+    createItemVariantDto: Partial<ItemVariant>,
+  ): Promise<ItemVariant> {
     const variant = this.itemVariantRepository.create(createItemVariantDto);
     return await this.itemVariantRepository.save(variant);
   }
 
   async deleteItemVariant(id: number): Promise<void> {
     await this.itemVariantRepository.delete(id);
+  }
+
+  async createFullItem(data: any): Promise<Item> {
+    const { itemName, type, thicknesses } = data;
+
+    // Create the Item
+    const newItem = this.itemRepository.create({ itemName, type });
+
+    // Create Thicknesses and Variants
+    if (thicknesses && thicknesses.length > 0) {
+      newItem.thicknesses = thicknesses.map((thicknessData: any) => {
+        const { thickness, variants } = thicknessData;
+
+        // Create Thickness
+        const newThickness = this.thicknessRepository.create({ thickness });
+
+        // Create Variants
+        if (variants && variants.length > 0) {
+          newThickness.variants = variants.map((variantData: any) =>
+            this.itemVariantRepository.create(variantData),
+          );
+        }
+
+        return newThickness;
+      });
+    }
+
+    // Save the Item with Thicknesses and Variants
+    return await this.itemRepository.save(newItem);
   }
 }
