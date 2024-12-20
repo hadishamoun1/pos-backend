@@ -89,4 +89,11 @@ export class ItemsService {
     // Save the Item with Thicknesses and Variants
     return await this.itemRepository.save(newItem);
   }
+
+  async getAllItemsWithDetails(): Promise<Item[]> {
+    return await this.itemRepository.find({
+      relations: ['thicknesses', 'thicknesses.variants'],
+    });
+  }
+  
 }

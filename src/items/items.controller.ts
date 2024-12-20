@@ -14,12 +14,6 @@ export class ItemsController {
     return this.itemsService.createItem(createItemDto);
   }
 
-  // Get all items
-  @Get()
-  async getAllItems(): Promise<Item[]> {
-    return this.itemsService.getAllItems();
-  }
-
   // Get an item by ID
   @Get(':id')
   async getItemById(@Param('id') id: number): Promise<Item> {
@@ -64,8 +58,11 @@ export class ItemsController {
     return this.itemsService.deleteItemVariant(id);
   }
   @Post('v1/full')
-async createFullItem(@Body() createFullItemDto: any): Promise<Item> {
-  return this.itemsService.createFullItem(createFullItemDto);
-}
-
+  async createFullItem(@Body() createFullItemDto: any): Promise<Item> {
+    return this.itemsService.createFullItem(createFullItemDto);
+  }
+  @Get('v1/all')
+  async getAllItems(): Promise<Item[]> {
+    return this.itemsService.getAllItemsWithDetails();
+  }
 }
