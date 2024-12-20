@@ -61,35 +61,6 @@ export class ItemsService {
     await this.itemVariantRepository.delete(id);
   }
 
-  async createFullItem(data: any): Promise<Item> {
-    const { itemName, type, thicknesses } = data;
-
-    // Create the Item
-    const newItem = this.itemRepository.create({ itemName, type });
-
-    // Create Thicknesses and Variants
-    if (thicknesses && thicknesses.length > 0) {
-      newItem.thicknesses = thicknesses.map((thicknessData: any) => {
-        const { thickness, variants } = thicknessData;
-
-        // Create Thickness
-        const newThickness = this.thicknessRepository.create({ thickness });
-
-        // Create Variants
-        if (variants && variants.length > 0) {
-          newThickness.variants = variants.map((variantData: any) =>
-            this.itemVariantRepository.create(variantData),
-          );
-        }
-
-        return newThickness;
-      });
-    }
-
-    // Save the Item with Thicknesses and Variants
-    return await this.itemRepository.save(newItem);
-  }
-
   async getAllItemsWithDetails(): Promise<Item[]> {
     return await this.itemRepository.find({
       relations: ['thicknesses', 'thicknesses.variants'],
@@ -113,6 +84,60 @@ export class ItemsService {
       ])
       .getMany();
   }
-  
-  
+  async createFullItem(data: {
+    itemName: string;
+    type: string;
+    thicknesses: {
+      thickness: number;
+      variants: {
+        length: number;
+        width: number;
+        sheetsPerBox: number;
+        origin: string;
+        fixBox?: boolean;
+        fixLength?: boolean;
+        fixWidth?: boolean;
+      }[];
+    }[];
+  }): Promise<Item> {
+    const { itemName, type, thicknesses } = data;
+
+    // Validate the main item data
+    if (!itemName || !type) {
+      throw new Error('Item name and type are required.');
+    }
+
+    // Create the Item
+    const newItem = this.itemRepository.create({ itemName, type });
+
+    // Validate and create Thicknesses and Variants
+    if (thicknesses && thicknesses.length > 0) {
+      newItem.thicknesses = thicknesses.map((thicknessData) => {
+        const { thickness, variants } = thicknessData;
+
+        if (!thickness) {
+          throw new Error('Thickness value is required.');
+        }
+
+        const newThickness = this.thicknessRepository.create({ thickness });
+
+        if (variants && variants.length > 0) {
+          newThickness.variants = variants.map((variantData) => {
+            const { length, width, sheetsPerBox, origin } = variantData;
+
+            if (!length || !width || !sheetsPerBox || !origin) {
+              throw new Error('Variant details are incomplete.');
+            }
+
+            return this.itemVariantRepository.create(variantData);
+          });
+        }
+
+        return newThickness;
+      });
+    }
+
+    // Save the Item with related data in a single transaction
+    return await this.itemRepository.save(newItem);
+  }
 }

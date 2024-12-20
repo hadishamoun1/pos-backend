@@ -69,4 +69,9 @@ export class ItemsController {
   async getSelectedColumns(): Promise<any[]> {
     return this.itemsService.getSelectedItemDetails();
   }
+
+  @Post('v1/create-complete-item')
+  async createCompleteItem(@Body() createFullItemDto: any): Promise<Item> {
+    return this.itemsService.createFullItem(createFullItemDto);
+  }
 }
