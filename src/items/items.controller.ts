@@ -65,4 +65,8 @@ export class ItemsController {
   async getAllItems(): Promise<Item[]> {
     return this.itemsService.getAllItemsWithDetails();
   }
+  @Get('v1/filtered-items')
+  async getSelectedColumns(): Promise<any[]> {
+    return this.itemsService.getSelectedItemDetails();
+  }
 }

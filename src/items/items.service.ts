@@ -95,5 +95,24 @@ export class ItemsService {
       relations: ['thicknesses', 'thicknesses.variants'],
     });
   }
+
+  async getSelectedItemDetails(): Promise<any[]> {
+    return await this.itemRepository
+      .createQueryBuilder('item')
+      .leftJoinAndSelect('item.thicknesses', 'thickness')
+      .leftJoinAndSelect('thickness.variants', 'variant')
+      .select([
+        'item.id', // Item fields
+        'item.itemName',
+        'item.type',
+        'thickness.thickness', // Thickness field
+        'variant.length', // ItemVariant fields
+        'variant.width',
+        'variant.sheetsPerBox',
+        'variant.origin',
+      ])
+      .getMany();
+  }
+  
   
 }
