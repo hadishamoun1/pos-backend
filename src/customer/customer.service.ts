@@ -116,4 +116,10 @@ export class CustomerService {
 
     return { customers: filteredCustomers, total };
   }
+  async getCustomerBasicDetails(): Promise<Partial<Customer>[]> {
+    const customers = await this.customerRepository.find({
+      select: ['id', 'customerName', 'customerAccountNumber'],
+    });
+    return customers;
+  }
 }

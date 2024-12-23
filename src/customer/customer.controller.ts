@@ -33,4 +33,9 @@ export class CustomerController {
     const pageSize = parseInt(limit, 10) || 10;
     return this.customerService.getCustomersPaginated(pageNumber, pageSize);
   }
+  @Get('v1/basic-details')
+async getCustomerBasicDetails(): Promise<Partial<Customer>[]> {
+  return this.customerService.getCustomerBasicDetails();
+}
+
 }
