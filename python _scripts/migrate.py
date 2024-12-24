@@ -18,24 +18,30 @@ with open(csv_file_path, mode='r', encoding='utf-8-sig') as csvfile:
     reader = csv.DictReader(csvfile)
     for row in reader:
         try:
-            # Strip keys to remove hidden BOM and handle nulls
+            # Clean up the row keys and values
             row = {key.strip(): value.strip() if value else None for key, value in row.items()}
 
             account_number = row.get('Account Number')
-            account_name = row.get('Account Name')
+            account_name = row.get('Account name')
             parent_account_number = row.get('Parent Account Number')
+            arabic_account_name = row.get('Arabic Account Name')
 
-            # Skip rows with missing account numbers
-            if not account_number:
-                print(f"Skipped invalid row: {row}")
+            # Validate that accountName is not null
+            if not account_name:
+                print(f"Skipped row due to missing account name: {row}")
                 continue
+
+            # Log the row being inserted
+            print(f"Processing row: {row}")
 
             # Insert into database
             insert_query = """
-            INSERT INTO accounts (accountNumber, accountName, parentNumber)
-            VALUES (%s, %s, %s)
+            INSERT INTO accounts (accountNumber, accountName, parentNumber, arabicAccountName)
+            VALUES (%s, %s, %s, %s)
             """
-            cursor.execute(insert_query, (account_number, account_name, parent_account_number))
+            print(f"Executing query: {insert_query} with values ({account_number}, {account_name}, {parent_account_number}, {arabic_account_name})")
+
+            cursor.execute(insert_query, (account_number, account_name, parent_account_number, arabic_account_name))
             db_connection.commit()
             print(f"Successfully inserted row: {row}")
 

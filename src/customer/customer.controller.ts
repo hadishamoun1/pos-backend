@@ -34,8 +34,7 @@ export class CustomerController {
     return this.customerService.getCustomersPaginated(pageNumber, pageSize);
   }
   @Get('v1/basic-details')
-async getCustomerBasicDetails(): Promise<Partial<Customer>[]> {
-  return this.customerService.getCustomerBasicDetails();
-}
-
+  async getCustomerBasicDetails(): Promise<Partial<Customer>[]> {
+    return this.customerService.getCustomerBasicDetails();
+  }
 }

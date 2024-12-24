@@ -41,4 +41,8 @@ export class AccountsController {
   async deleteAccount(@Param('id') id: number): Promise<void> {
     return this.accountsService.deleteAccount(id);
   }
+  @Get('v1/combined')
+  async getCombinedAccounts(): Promise<any[]> {
+    return this.accountsService.getCombinedAccounts();
+  }
 }

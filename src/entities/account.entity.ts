@@ -22,6 +22,9 @@ export class Account {
   @Column({ type: 'varchar', length: 50, nullable: true })
   parentNumber: string;
 
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  arabicAccountName: string;
+
   @ManyToOne(() => Account, (account) => account.children, {
     onDelete: 'CASCADE',
     nullable: true,
