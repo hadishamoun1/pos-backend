@@ -38,7 +38,6 @@ export class ReceiptVoucherController {
     }
   }
 
-
   // Get all Receipt Vouchers
   @Get()
   async getAllReceiptVouchers(): Promise<ReceiptVoucher[]> {
@@ -85,24 +84,27 @@ export class ReceiptVoucherController {
     }
   }
 
-
   @Post('v1/bulk')
-async createMultipleReceiptVouchers(
-  @Body() transactions: {
-    customerAccountId: number;
-    date: Date;
-    details: {
-      cashNumber: string;
-      currency: string;
-      exchangeRate?: string;
-    }[];
-  }[],
-): Promise<ReceiptVoucher[]> {
-  try {
-    return await this.receiptVoucherService.createMultipleReceiptVouchers(transactions);
-  } catch (error) {
-    throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+  async createMultipleReceiptVouchers(
+    @Body()
+    transactions: {
+      customerAccountId: number;
+      date: Date;
+      invoiceId: string;
+      details: {
+        cashNumber: string;
+        currency: string; // "USD" or "LL"
+        exchangeRate?: string; // Only required for "LL"
+        comments?: string; // Optional comments
+      }[];
+    }[],
+  ): Promise<ReceiptVoucher[]> {
+    try {
+      return await this.receiptVoucherService.createMultipleReceiptVouchers(
+        transactions,
+      );
+    } catch (error) {
+      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+    }
   }
-}
-
 }

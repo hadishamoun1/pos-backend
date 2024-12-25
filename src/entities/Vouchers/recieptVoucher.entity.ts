@@ -19,11 +19,14 @@ export class ReceiptVoucher {
   date: Date;
 
   @ManyToOne(() => Customer, { nullable: false })
-  @JoinColumn({ name: 'customerAccountId' }) // Foreign key for Customer
+  @JoinColumn({ name: 'customerAccountId' })
   customer: Customer;
 
   @Column({ type: 'varchar', length: 50, unique: true })
-  rvNumber: string; // Incremental RV number
+  rvNumber: string;
+
+  @Column({ type: 'varchar', length: 50 })
+  invoiceId: string; // New field for invoice ID
 
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   totalDr: number;
@@ -43,11 +46,7 @@ export class ReceiptVoucher {
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   totalCrLL: number;
 
-  @ManyToOne(() => CurrencyRate, { nullable: true })
-  exchangeRateAcc: CurrencyRate;
 
-  @ManyToOne(() => CurrencyRate, { nullable: true })
-  exchangeRateUSD: CurrencyRate;
 
   @OneToMany(() => ReceiptVoucherDetail, (detail) => detail.receiptVoucher, {
     cascade: true,

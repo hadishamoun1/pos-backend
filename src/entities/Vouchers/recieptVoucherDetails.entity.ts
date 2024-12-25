@@ -20,7 +20,7 @@ export class ReceiptVoucherDetail {
   receiptVoucher: ReceiptVoucher;
 
   @ManyToOne(() => Account, { nullable: false })
-  @JoinColumn({ name: 'accountId' }) // Foreign key for Account
+  @JoinColumn({ name: 'accountId' })
   account: Account;
 
   @Column({ type: 'varchar', length: 50, nullable: true })
@@ -33,7 +33,7 @@ export class ReceiptVoucherDetail {
   bankName: string;
 
   @Column({ type: 'text', nullable: true })
-  description: string;
+  comments: string;
 
   @Column({
     type: 'decimal',
@@ -88,10 +88,12 @@ export class ReceiptVoucherDetail {
     nullable: true,
   })
   crLL: number;
-
-  @ManyToOne(() => CurrencyRate, { nullable: true })
-  exchangeRateAcc: CurrencyRate;
-
-  @ManyToOne(() => CurrencyRate, { nullable: true })
-  exchangeRateUSD: CurrencyRate;
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
+  exchangeRate: number;
 }
