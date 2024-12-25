@@ -20,42 +20,78 @@ export class ReceiptVoucherDetail {
   receiptVoucher: ReceiptVoucher;
 
   @ManyToOne(() => Account, { nullable: false })
-  @JoinColumn({ name: 'accountId' })
+  @JoinColumn({ name: 'accountId' }) // Foreign key for Account
   account: Account;
 
-  @Column({ type: 'varchar', length: 50 })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   check: string;
 
   @Column({ type: 'date', nullable: true })
   checkDate: Date;
 
-  @Column({ type: 'varchar', length: 100 })
+  @Column({ type: 'varchar', length: 100, nullable: true })
   bankName: string;
 
   @Column({ type: 'text', nullable: true })
   description: string;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   dr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   drUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   drLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   cr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   crUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   crLL: number;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
-  exchangeRateAcc: CurrencyRate; // Exchange rate for the account's currency
+  @ManyToOne(() => CurrencyRate, { nullable: true })
+  exchangeRateAcc: CurrencyRate;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
-  exchangeRateUSD: CurrencyRate; // Exchange rate for USD
+  @ManyToOne(() => CurrencyRate, { nullable: true })
+  exchangeRateUSD: CurrencyRate;
 }

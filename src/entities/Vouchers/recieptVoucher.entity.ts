@@ -4,8 +4,9 @@ import {
   Column,
   ManyToOne,
   OneToMany,
+  JoinColumn,
 } from 'typeorm';
-import { Account } from '../account.entity';
+import { Customer } from '../customer.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { ReceiptVoucherDetail } from './recieptVoucherDetails.entity';
 
@@ -17,35 +18,36 @@ export class ReceiptVoucher {
   @Column({ type: 'date' })
   date: Date;
 
-  @ManyToOne(() => Account, { nullable: false })
-  account: Account;
+  @ManyToOne(() => Customer, { nullable: false })
+  @JoinColumn({ name: 'customerAccountId' }) // Foreign key for Customer
+  customer: Customer;
 
   @Column({ type: 'varchar', length: 50, unique: true })
   rvNumber: string; // Incremental RV number
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   totalDr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   totalDrUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   totalDrLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   totalCr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   totalCrUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   totalCrLL: number;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
-  exchangeRateAcc: CurrencyRate; // Exchange rate for the account's currency
+  @ManyToOne(() => CurrencyRate, { nullable: true })
+  exchangeRateAcc: CurrencyRate;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
-  exchangeRateUSD: CurrencyRate; // Exchange rate for USD
+  @ManyToOne(() => CurrencyRate, { nullable: true })
+  exchangeRateUSD: CurrencyRate;
 
   @OneToMany(() => ReceiptVoucherDetail, (detail) => detail.receiptVoucher, {
     cascade: true,
