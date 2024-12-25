@@ -120,11 +120,10 @@ export class ReceiptVoucherService {
 
     return this.receiptVoucherRepository.save(receiptVoucher);
   }
-
   // Get all Receipt Vouchers
   async getAllReceiptVouchers(): Promise<ReceiptVoucher[]> {
     return this.receiptVoucherRepository.find({
-      relations: ['customer', 'exchangeRateAcc', 'exchangeRateUSD', 'details'],
+      relations: ['customer', 'details', 'details.account'], // Include only required relations
     });
   }
 
@@ -132,7 +131,7 @@ export class ReceiptVoucherService {
   async getReceiptVoucherById(id: number): Promise<ReceiptVoucher> {
     const receiptVoucher = await this.receiptVoucherRepository.findOne({
       where: { id },
-      relations: ['customer', 'exchangeRateAcc', 'exchangeRateUSD', 'details'],
+      relations: ['customer', 'details', 'details.account'], // Include only required relations
     });
     if (!receiptVoucher) {
       throw new NotFoundException(`Receipt Voucher with ID ${id} not found.`);
