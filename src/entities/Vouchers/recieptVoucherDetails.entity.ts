@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   JoinColumn,
+  OneToMany,
 } from 'typeorm';
 import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
@@ -19,7 +20,7 @@ export class ReceiptVoucherDetail {
   })
   receiptVoucher: ReceiptVoucher;
 
-  @ManyToOne(() => Account, { nullable: false })
+  @ManyToOne(() => Account, { nullable: true })
   @JoinColumn({ name: 'accountId' })
   account: Account;
 
@@ -96,4 +97,8 @@ export class ReceiptVoucherDetail {
     nullable: true,
   })
   exchangeRate: number;
+  @OneToMany(() => ReceiptVoucherDetail, (detail) => detail.receiptVoucher, {
+    cascade: true,
+  })
+  details: ReceiptVoucherDetail[];
 }

@@ -165,7 +165,17 @@ export class ReceiptVoucherService {
 
   // Delete a Receipt Voucher
   async deleteReceiptVoucher(id: number): Promise<void> {
-    const receiptVoucher = await this.getReceiptVoucherById(id);
+    // Find the receipt voucher by ID with its details to ensure cascading deletion
+    const receiptVoucher = await this.receiptVoucherRepository.findOne({
+      where: { id },
+      relations: ['customer', 'details', 'details.account'], // Include necessary relations
+    });
+
+    if (!receiptVoucher) {
+      throw new NotFoundException(`Receipt Voucher with ID ${id} not found.`);
+    }
+
+    // Remove the receipt voucher and cascade the delete to details
     await this.receiptVoucherRepository.remove(receiptVoucher);
   }
 
@@ -173,84 +183,82 @@ export class ReceiptVoucherService {
     transactions: {
       customerAccountId: number;
       date: Date;
-      invoiceId: string; // New field for invoice ID
+      invoiceId: string;
       details: {
         cashNumber: string;
         currency: string; // "USD" or "LL"
-        exchangeRate?: string; // Only required if currency is "LL"
+        exchangeRate?: string; // Only required for "LL"
         comments?: string; // Optional comments
       }[];
     }[],
   ): Promise<ReceiptVoucher[]> {
     const receiptVouchers: ReceiptVoucher[] = [];
 
+    let lastVoucher = await this.receiptVoucherRepository.find({
+      where: { rvNumber: Like('RV - %') },
+      order: { rvNumber: 'DESC' },
+      take: 1,
+    });
+
+    let nextNumber =
+      lastVoucher.length > 0
+        ? parseInt(lastVoucher[0].rvNumber.split(' - ')[1], 10) + 1
+        : 1;
+
     for (const transaction of transactions) {
       const { customerAccountId, date, invoiceId, details } = transaction;
 
-      // Validate the customer account
       const customer = await this.customerRepository.findOne({
         where: { id: customerAccountId },
       });
-      if (!customer) {
+      if (!customer)
         throw new NotFoundException(
           `Customer with ID ${customerAccountId} not found.`,
         );
-      }
 
-      // Fetch account details for 5301 (USD) and 5302 (LL)
       const usdAccount = await this.accountRepository.findOne({
         where: { accountNumber: '5301' },
       });
-      if (!usdAccount) {
+      if (!usdAccount)
         throw new NotFoundException(`Account with number 5301 not found.`);
-      }
 
       const llAccount = await this.accountRepository.findOne({
         where: { accountNumber: '5302' },
       });
-      if (!llAccount) {
+      if (!llAccount)
         throw new NotFoundException(`Account with number 5302 not found.`);
-      }
 
-      // Generate the RV number
-      const lastVoucher = await this.receiptVoucherRepository.find({
-        where: { rvNumber: Like('RV - %') },
-        order: { rvNumber: 'DESC' },
-        take: 1,
-      });
-      const nextNumber =
-        lastVoucher.length > 0
-          ? parseInt(lastVoucher[0].rvNumber.split(' - ')[1], 10) + 1
-          : 1;
-      const rvNumber = `RV - ${String(nextNumber).padStart(3, '0')}`;
+      const rvNumber = `RV - ${String(nextNumber++).padStart(3, '0')}`;
 
-      // Generate Receipt Voucher Details
+      let totalDr = 0;
+      let totalDrUSD = 0;
+      let totalDrLL = 0;
+      let totalCr = 0;
+      let totalCrUSD = 0;
+      let totalCrLL = 0;
+
       const voucherDetails = details.flatMap((detail) => {
         const isUSD = detail.currency === 'USD';
         const cashNumber = parseFloat(detail.cashNumber);
         const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
 
-        const dr = isUSD ? cashNumber : cashNumber / exchangeRate;
+        const dr = cashNumber / exchangeRate;
         const drUSD = isUSD ? cashNumber : cashNumber / exchangeRate;
-        const drLL = isUSD ? null : cashNumber;
+        const drLL = isUSD ? 0 : cashNumber;
 
-        const cr = dr;
-        const crUSD = drUSD;
-        const crLL = drLL;
+        const cr = cashNumber / exchangeRate;
+        const crUSD = isUSD ? cashNumber : cashNumber / exchangeRate;
+        const crLL = isUSD ? 0 : cashNumber;
 
-        const account = isUSD ? usdAccount : llAccount;
+        // Update totals
+        totalDr += dr;
+        totalDrUSD += drUSD;
+        totalDrLL += drLL;
+        totalCr += cr;
+        totalCrUSD += crUSD;
+        totalCrLL += crLL;
 
-        const debitDetail = this.receiptVoucherDetailRepository.create({
-          dr,
-          drUSD,
-          drLL,
-          cr: 0,
-          crUSD: 0,
-          crLL: 0,
-          account,
-          comments: detail.comments || null,
-        });
-
+        // User input (credit) transaction
         const creditDetail = this.receiptVoucherDetailRepository.create({
           dr: 0,
           drUSD: 0,
@@ -258,19 +266,39 @@ export class ReceiptVoucherService {
           cr,
           crUSD,
           crLL,
-          account,
-          comments: detail.comments || null,
+          account: null, // User input has no account ID
+          exchangeRate,
+          comments: detail.comments || null, // Set comments from user input
         });
 
-        return [debitDetail, creditDetail];
+        // Auto-generated (debit) transaction
+        const debitDetail = this.receiptVoucherDetailRepository.create({
+          dr,
+          drUSD,
+          drLL,
+          cr: 0,
+          crUSD: 0,
+          crLL: 0,
+          account: isUSD ? usdAccount : llAccount,
+          exchangeRate,
+          comments: detail.comments || null, // Copy comments from user input
+        });
+
+        return [creditDetail, debitDetail];
       });
 
       const receiptVoucher = this.receiptVoucherRepository.create({
         customer,
         date,
         rvNumber,
-        invoiceId, // Set invoice ID
+        invoiceId,
         details: voucherDetails,
+        totalDr,
+        totalDrUSD,
+        totalDrLL,
+        totalCr,
+        totalCrUSD,
+        totalCrLL,
       });
 
       receiptVouchers.push(

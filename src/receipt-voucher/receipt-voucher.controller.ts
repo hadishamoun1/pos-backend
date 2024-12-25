@@ -83,7 +83,6 @@ export class ReceiptVoucherController {
       throw new HttpException(error.message, HttpStatus.NOT_FOUND);
     }
   }
-
   @Post('v1/bulk')
   async createMultipleReceiptVouchers(
     @Body()
@@ -98,13 +97,22 @@ export class ReceiptVoucherController {
         comments?: string; // Optional comments
       }[];
     }[],
-  ): Promise<ReceiptVoucher[]> {
+  ): Promise<{ message: string; vouchers: ReceiptVoucher[] }> {
     try {
-      return await this.receiptVoucherService.createMultipleReceiptVouchers(
-        transactions,
-      );
+      const vouchers =
+        await this.receiptVoucherService.createMultipleReceiptVouchers(
+          transactions,
+        );
+
+      return {
+        message: 'Receipt vouchers created successfully.',
+        vouchers,
+      };
     } catch (error) {
-      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+      throw new HttpException(
+        { message: 'Failed to create receipt vouchers.', error: error.message },
+        HttpStatus.BAD_REQUEST,
+      );
     }
   }
 }
