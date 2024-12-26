@@ -61,16 +61,35 @@ export class ReceiptVoucherController {
   }
 
   // Update a Receipt Voucher
-  @Put(':id')
-  async updateReceiptVoucher(
-    @Param('id') id: number,
+  @Put('v1/bulk')
+  async updateMultipleReceiptVouchers(
     @Body()
-    data: Partial<ReceiptVoucher> & { customerAccountId?: number },
-  ): Promise<ReceiptVoucher> {
+    transactions: {
+      receiptVoucherId: number;
+      customerAccountId: number;
+      date: Date;
+      invoiceId: string;
+      details: {
+        cashNumber: string;
+        currency: string;
+        exchangeRate?: string;
+        amountExchanged?: string;
+        comments?: string;
+      }[];
+    }[],
+  ): Promise<ReceiptVoucher[]> {
     try {
-      return await this.receiptVoucherService.updateReceiptVoucher(id, data);
+      return await this.receiptVoucherService.updateMultipleReceiptVouchers(
+        transactions,
+      );
     } catch (error) {
-      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+      throw new HttpException(
+        {
+          message: 'Failed to update receipt vouchers.',
+          error: error.message,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
     }
   }
 

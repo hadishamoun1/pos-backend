@@ -28,7 +28,6 @@ export class ReceiptVoucherGateway
 
   // Broadcast receipt vouchers to all connected clients
   broadcastReceiptVouchers(data: any) {
-    console.log('Emitting event: receipt-vouchers with data:', data);
     this.server.emit('receipt-vouchers', data);
   }
 }
