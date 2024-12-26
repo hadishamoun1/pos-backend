@@ -115,4 +115,8 @@ export class ReceiptVoucherController {
       );
     }
   }
+  @Get('v1/specific-fields')
+  async getSpecificFields() {
+    return this.receiptVoucherService.getSpecificFields();
+  }
 }

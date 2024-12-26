@@ -310,4 +310,29 @@ export class ReceiptVoucherService {
 
     return receiptVouchers;
   }
+  async getSpecificFields() {
+    const vouchers = await this.receiptVoucherRepository.find({
+      relations: ['customer', 'details'],
+    });
+
+    // Filter and map the required fields
+    return vouchers.map((voucher) => {
+      const { date, rvNumber, invoiceId, totalCr, totalCrLL, customer, details } = voucher;
+
+      return {
+        date,
+        rvNumber,
+        invoiceId,
+        totalCr,
+        totalCrLL,
+        customer: {
+          id: customer.id,
+          name: customer.customerName,
+        },
+        comments: details.map((detail) => detail.comments).filter((comment) => comment), // Only non-null comments
+        exchangeRate: details.map((detail) => detail.exchangeRate).filter((rate) => rate),
+      };
+    });
+  }
+}
 }
