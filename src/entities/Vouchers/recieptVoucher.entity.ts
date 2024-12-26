@@ -28,22 +28,22 @@ export class ReceiptVoucher {
   @Column({ type: 'varchar', length: 50 })
   invoiceId: string; // New field for invoice ID
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
   totalDr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
   totalDrUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
   totalDrLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
   totalCr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
   totalCrUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
   totalCrLL: number;
 
 

@@ -187,6 +187,7 @@ export class ReceiptVoucherService {
         cashNumber: string;
         currency: string; // "USD" or "LL"
         exchangeRate?: string; // Only required for "LL"
+        amountExchanged?: string; // Added explicitly for LL
         comments?: string; // Optional comments
       }[];
     }[],
@@ -240,13 +241,15 @@ export class ReceiptVoucherService {
         const isUSD = detail.currency === 'USD';
         const cashNumber = parseFloat(detail.cashNumber);
         const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
+        const amountExchanged = parseFloat(detail.amountExchanged || '0');
 
-        const dr = cashNumber / exchangeRate;
-        const drUSD = isUSD ? cashNumber : cashNumber / exchangeRate;
+        // Adjusted Logic
+        const dr = isUSD ? cashNumber : amountExchanged;
+        const drUSD = isUSD ? cashNumber : amountExchanged;
         const drLL = isUSD ? 0 : cashNumber;
 
-        const cr = cashNumber / exchangeRate;
-        const crUSD = isUSD ? cashNumber : cashNumber / exchangeRate;
+        const cr = isUSD ? cashNumber : amountExchanged;
+        const crUSD = isUSD ? cashNumber : amountExchanged;
         const crLL = isUSD ? 0 : cashNumber;
 
         // Update totals
