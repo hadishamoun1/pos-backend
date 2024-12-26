@@ -7,10 +7,19 @@ import { ReceiptVoucherController } from './receipt-voucher.controller';
 import { Account } from '../entities/account.entity';
 import { CurrencyRate } from '../entities/currencyRate.entity';
 import { Customer } from 'src/entities/customer.entity';
+import { ReceiptVoucherGateway } from './receipt-voucher-gateway.broadcast';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Customer,ReceiptVoucher, ReceiptVoucherDetail, Account, CurrencyRate])],
-  providers: [ReceiptVoucherService],
+  imports: [
+    TypeOrmModule.forFeature([
+      Customer,
+      ReceiptVoucher,
+      ReceiptVoucherDetail,
+      Account,
+      CurrencyRate,
+    ]),
+  ],
+  providers: [ReceiptVoucherService, ReceiptVoucherGateway],
   controllers: [ReceiptVoucherController],
 })
 export class ReceiptVoucherModule {}

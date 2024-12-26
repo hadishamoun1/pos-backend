@@ -6,7 +6,7 @@ import { ReceiptVoucherDetail } from '../entities/Vouchers/recieptVoucherDetails
 import { Customer } from '../entities/customer.entity';
 import { CurrencyRate } from '../entities/currencyRate.entity';
 import { Account } from 'src/entities/account.entity';
-
+import { ReceiptVoucherGateway } from './receipt-voucher-gateway.broadcast';
 @Injectable()
 export class ReceiptVoucherService {
   constructor(
@@ -20,6 +20,7 @@ export class ReceiptVoucherService {
     private readonly currencyRateRepository: Repository<CurrencyRate>,
     @InjectRepository(Account)
     private readonly accountRepository: Repository<Account>,
+    private readonly gateway: ReceiptVoucherGateway,
   ) {}
   async createReceiptVoucher(data: {
     customerAccountId: number;
@@ -118,6 +119,10 @@ export class ReceiptVoucherService {
       details: voucherDetails,
     });
 
+    // Fetch updated data and broadcast to WebSocket clients
+    const updatedData = await this.getSpecificFields();
+    this.gateway.broadcastReceiptVouchers(updatedData);
+
     return this.receiptVoucherRepository.save(receiptVoucher);
   }
   // Get all Receipt Vouchers
@@ -158,6 +163,10 @@ export class ReceiptVoucherService {
       receiptVoucher.customer = customer;
     }
 
+    // Fetch updated data and broadcast to WebSocket clients
+    const updatedData = await this.getSpecificFields();
+    this.gateway.broadcastReceiptVouchers(updatedData);
+
     Object.assign(receiptVoucher, data);
     return this.receiptVoucherRepository.save(receiptVoucher);
   }
@@ -176,6 +185,10 @@ export class ReceiptVoucherService {
 
     // Remove the receipt voucher and cascade the delete to details
     await this.receiptVoucherRepository.remove(receiptVoucher);
+
+    // Fetch updated data and broadcast to WebSocket clients
+    const updatedData = await this.getSpecificFields();
+    this.gateway.broadcastReceiptVouchers(updatedData);
   }
 
   async createMultipleReceiptVouchers(
@@ -306,6 +319,11 @@ export class ReceiptVoucherService {
       receiptVouchers.push(
         await this.receiptVoucherRepository.save(receiptVoucher),
       );
+
+      // Fetch updated data and broadcast to WebSocket clients
+      const updatedData = await this.getSpecificFields();
+      console.log('Broadcasting updated data:', updatedData);
+      this.gateway.broadcastReceiptVouchers(updatedData);
     }
 
     return receiptVouchers;

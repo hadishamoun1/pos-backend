@@ -17,7 +17,7 @@ export class ReceiptVoucherController {
   constructor(private readonly receiptVoucherService: ReceiptVoucherService) {}
 
   // Create a new Receipt Voucher
-  // Create a new Receipt Voucher
+
   @Post()
   async createReceiptVoucher(
     @Body()
