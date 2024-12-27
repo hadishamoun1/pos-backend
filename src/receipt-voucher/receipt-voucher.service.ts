@@ -454,6 +454,7 @@ export class ReceiptVoucherService {
 
     return vouchers.map((voucher) => {
       const {
+        id,
         date,
         rvNumber,
         invoiceId,
@@ -469,6 +470,7 @@ export class ReceiptVoucherService {
       );
 
       return {
+        id,
         date,
         rvNumber,
         invoiceId,
