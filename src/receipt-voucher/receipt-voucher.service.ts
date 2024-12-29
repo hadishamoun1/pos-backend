@@ -455,6 +455,7 @@ export class ReceiptVoucherService {
     return vouchers.map((voucher) => {
       const {
         id,
+
         date,
         rvNumber,
         invoiceId,
@@ -471,6 +472,7 @@ export class ReceiptVoucherService {
 
       return {
         id,
+
         date,
         rvNumber,
         invoiceId,
@@ -486,6 +488,7 @@ export class ReceiptVoucherService {
         exchangeRate: creditDetails
           .map((detail) => detail.exchangeRate)
           .filter((rate) => rate), // Only valid exchange rates
+        receiptVoucherId: voucher.id,
       };
     });
   }
