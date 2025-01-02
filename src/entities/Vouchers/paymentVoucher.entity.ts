@@ -1,55 +1,50 @@
 import {
-    Entity,
-    PrimaryGeneratedColumn,
-    Column,
-    ManyToOne,
-    OneToMany,
-  } from 'typeorm';
-  import { Account } from '../account.entity';
-  import { CurrencyRate } from '../currencyRate.entity';
-  import { PaymentVoucherDetail } from './paymentVoucherDetails.entity';
-  
-  @Entity('payment_vouchers')
-  export class PaymentVoucher {
-    @PrimaryGeneratedColumn()
-    id: number;
-  
-    @Column({ type: 'date' })
-    date: Date;
-  
-    @ManyToOne(() => Account, { nullable: false })
-    account: Account;
-  
-    @Column({ type: 'varchar', length: 50, unique: true })
-    pmNumber: string;
-  
-    @Column({ type: 'decimal', precision: 10, scale: 2 })
-    totalDr: number;
-  
-    @Column({ type: 'decimal', precision: 10, scale: 2 })
-    totalDrUSD: number;
-  
-    @Column({ type: 'decimal', precision: 10, scale: 2 })
-    totalDrLL: number;
-  
-    @Column({ type: 'decimal', precision: 10, scale: 2 })
-    totalCr: number;
-  
-    @Column({ type: 'decimal', precision: 10, scale: 2 })
-    totalCrUSD: number;
-  
-    @Column({ type: 'decimal', precision: 10, scale: 2 })
-    totalCrLL: number;
-  
-    @ManyToOne(() => CurrencyRate, { nullable: false })
-    exchangeRateAcc: CurrencyRate;
-  
-    @ManyToOne(() => CurrencyRate, { nullable: false })
-    exchangeRateUSD: CurrencyRate;
-  
-    @OneToMany(() => PaymentVoucherDetail, (detail) => detail.paymentVoucher, {
-      cascade: true,
-    })
-    details: PaymentVoucherDetail[];
-  }
-  
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+} from 'typeorm';
+import { Customer } from '../customer.entity';
+import { CurrencyRate } from '../currencyRate.entity';
+import { PaymentVoucherDetail } from './paymentVoucherDetails.entity';
+
+@Entity('payment_vouchers')
+export class PaymentVoucher {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column({ type: 'date' })
+  date: Date;
+
+  @ManyToOne(() => Customer, { nullable: false })
+  @JoinColumn({ name: 'customerId' }) // Link customer to payment voucher
+  customer: Customer;
+
+  @Column({ type: 'varchar', length: 50, unique: true })
+  pmNumber: string;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
+  totalDr: number;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
+  totalDrUSD: number;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
+  totalDrLL: number;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
+  totalCr: number;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
+  totalCrUSD: number;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
+  totalCrLL: number;
+
+  @OneToMany(() => PaymentVoucherDetail, (detail) => detail.paymentVoucher, {
+    cascade: true,
+  })
+  details: PaymentVoucherDetail[];
+}

@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   HttpCode,
   HttpStatus,
+  HttpException
 } from '@nestjs/common';
 import { PaymentVoucherService } from './payment-voucher.service';
 import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
@@ -16,14 +17,34 @@ import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
 @Controller('payment-vouchers')
 export class PaymentVoucherController {
   constructor(private readonly paymentVoucherService: PaymentVoucherService) {}
+  // Create multiple Payment Vouchers
 
-  // Create a new Payment Voucher
-  @Post()
-  @HttpCode(HttpStatus.CREATED)
-  async createPaymentVoucher(
-    @Body() data: Partial<PaymentVoucher>,
-  ): Promise<PaymentVoucher> {
-    return this.paymentVoucherService.createPaymentVoucher(data);
+  @Post('v1/bulk')
+  async createMultiplePaymentVouchers(
+    @Body()
+    transactions: {
+      accountId: number; // Main account for the voucher
+      date: Date;
+      pmNumber: string; // Payment voucher number
+      details: {
+        cashNumber: string;
+        currency: string; // "USD" or "LL"
+        exchangeRate?: string; // Only required for "LL"
+        amountExchanged?: string; // Explicitly for LL
+        description?: string; // Optional description
+      }[];
+    }[],
+  ): Promise<PaymentVoucher[]> {
+    try {
+      return await this.paymentVoucherService.createMultiplePaymentVouchers(
+        transactions,
+      );
+    } catch (error) {
+      throw new HttpException(
+        { message: 'Failed to create payment vouchers.', error: error.message },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
   }
 
   // Get all Payment Vouchers

@@ -19,85 +19,149 @@ export class PaymentVoucherService {
     private readonly currencyRateRepository: Repository<CurrencyRate>,
   ) {}
 
-  // Create a new Payment Voucher
-  async createPaymentVoucher(
-    data: Partial<PaymentVoucher>,
-  ): Promise<PaymentVoucher> {
-    const { account, details, ...otherData } = data;
-
-    // Validate the main account
-    const accountEntity = await this.accountRepository.findOne({
-      where: { id: account.id },
-    });
-    if (!accountEntity) {
-      throw new NotFoundException(
-        `Account with ID ${account.id} not found.`,
-      );
-    }
-
-    // Fetch exchange rates
-    const exchangeRateAcc = await this.currencyRateRepository.findOne({
-      where: { currency: accountEntity.currency },
-    });
-    if (!exchangeRateAcc) {
-      throw new NotFoundException(
-        `Exchange rate not found for currency of account ID ${accountEntity.id}`,
-      );
-    }
-
-    const exchangeRateUSD = await this.currencyRateRepository.findOne({
-      where: { currency: { currencyCode: 'USD' } },
-    });
-    if (!exchangeRateUSD) {
-      throw new NotFoundException(`Exchange rate for USD not found.`);
-    }
-
-    // Generate the PM number
-    const lastVoucher = await this.paymentVoucherRepository.find({
+  async createMultiplePaymentVouchers(
+    transactions: {
+      accountId: number; // Main account for the voucher
+      date: Date;
+      pmNumber: string; // Payment voucher number
+      details: {
+        cashNumber: string;
+        currency: string; // "USD" or "LL"
+        exchangeRate?: string; // Only required for "LL"
+        amountExchanged?: string; // Explicitly for LL
+        description?: string; // Optional description
+      }[];
+    }[],
+  ): Promise<PaymentVoucher[]> {
+    const paymentVouchers: PaymentVoucher[] = [];
+  
+    let lastVoucher = await this.paymentVoucherRepository.find({
       where: { pmNumber: Like('PM - %') },
       order: { pmNumber: 'DESC' },
       take: 1,
     });
-    const nextNumber =
+  
+    let nextNumber =
       lastVoucher.length > 0
         ? parseInt(lastVoucher[0].pmNumber.split(' - ')[1], 10) + 1
         : 1;
-    const pmNumber = `PM - ${nextNumber}`;
-
-    // Validate and create Payment Voucher details
-    const voucherDetails = await Promise.all(
-      details.map(async (detail) => {
-        const detailAccount = await this.accountRepository.findOne({
-          where: { id: detail.account.id },
-        });
-        if (!detailAccount) {
-          throw new NotFoundException(
-            `Account with ID ${detail.account.id} not found for a detail entry.`,
-          );
-        }
-
-        return this.paymentVoucherDetailRepository.create({
-          ...detail,
-          account: detailAccount,
+  
+    for (const transaction of transactions) {
+      const { accountId, date, details } = transaction;
+  
+      // Validate main account
+      const mainAccount = await this.accountRepository.findOne({
+        where: { id: accountId },
+      });
+      if (!mainAccount) {
+        throw new NotFoundException(`Account with ID ${accountId} not found.`);
+      }
+  
+      // Fetch exchange rates
+      const exchangeRateAcc = await this.currencyRateRepository.findOne({
+        where: { currency: mainAccount.currency },
+      });
+      if (!exchangeRateAcc) {
+        throw new NotFoundException(
+          `Exchange rate not found for currency of account ID ${accountId}`,
+        );
+      }
+  
+      const exchangeRateUSD = await this.currencyRateRepository.findOne({
+        where: { currency: { currencyCode: 'USD' } },
+      });
+      if (!exchangeRateUSD) {
+        throw new NotFoundException(`Exchange rate for USD not found.`);
+      }
+  
+      const pmNumber = `PM - ${String(nextNumber++).padStart(3, '0')}`;
+  
+      let totalDr = 0;
+      let totalDrUSD = 0;
+      let totalDrLL = 0;
+      let totalCr = 0;
+      let totalCrUSD = 0;
+      let totalCrLL = 0;
+  
+      const voucherDetails = details.flatMap((detail) => {
+        const isUSD = detail.currency === 'USD';
+        const cashNumber = parseFloat(detail.cashNumber);
+        const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
+        const amountExchanged = parseFloat(detail.amountExchanged || '0');
+  
+        // Adjusted logic
+        const dr = isUSD ? cashNumber : amountExchanged;
+        const drUSD = isUSD ? cashNumber : amountExchanged;
+        const drLL = isUSD ? 0 : cashNumber;
+  
+        const cr = isUSD ? cashNumber : amountExchanged;
+        const crUSD = isUSD ? cashNumber : amountExchanged;
+        const crLL = isUSD ? 0 : cashNumber;
+  
+        // Update totals
+        totalDr += dr;
+        totalDrUSD += drUSD;
+        totalDrLL += drLL;
+        totalCr += cr;
+        totalCrUSD += crUSD;
+        totalCrLL += crLL;
+  
+        // User input (debit) transaction
+        const debitDetail = this.paymentVoucherDetailRepository.create({
+          dr,
+          drUSD,
+          drLL,
+          cr: 0,
+          crUSD: 0,
+          crLL: 0,
+          account: null, // User input has no account ID
           exchangeRateAcc,
           exchangeRateUSD,
+          description: detail.description || null, // Set description from user input
         });
-      }),
-    );
-
-    // Create and save the Payment Voucher
-    const paymentVoucher = this.paymentVoucherRepository.create({
-      ...otherData,
-      pmNumber,
-      account: accountEntity,
-      exchangeRateAcc,
-      exchangeRateUSD,
-      details: voucherDetails,
-    });
-
-    return this.paymentVoucherRepository.save(paymentVoucher);
+  
+        // Auto-generated (credit) transaction
+        const creditDetail = this.paymentVoucherDetailRepository.create({
+          dr: 0,
+          drUSD: 0,
+          drLL: 0,
+          cr,
+          crUSD,
+          crLL,
+          account: mainAccount, // Auto-generated credit transaction linked to main account
+          exchangeRateAcc,
+          exchangeRateUSD,
+          description: detail.description || null, // Copy description from user input
+        });
+  
+        return [debitDetail, creditDetail];
+      });
+  
+      const paymentVoucher = this.paymentVoucherRepository.create({
+        account: mainAccount,
+        date,
+        pmNumber,
+        details: voucherDetails,
+        totalDr,
+        totalDrUSD,
+        totalDrLL,
+        totalCr,
+        totalCrUSD,
+        totalCrLL,
+        exchangeRateAcc,
+        exchangeRateUSD,
+      });
+  
+      paymentVouchers.push(
+        await this.paymentVoucherRepository.save(paymentVoucher),
+      );
+    }
+  
+    return paymentVouchers;
   }
+  
 
+   
   // Get all Payment Vouchers
   async getAllPaymentVouchers(): Promise<PaymentVoucher[]> {
     return this.paymentVoucherRepository.find({
