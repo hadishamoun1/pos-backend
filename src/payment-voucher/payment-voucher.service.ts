@@ -23,11 +23,12 @@ export class PaymentVoucherService {
     transactions: {
       customerId: number;
       date: Date;
+      invoiceId: string;
       details: {
         cashNumber: string;
         currency: string; // "USD" or "LL"
-        exchangeRate?: string; // Required for "LL"
-        description?: string;
+        exchangeRate?: string; // Only required for "LL"
+        description?: string; // Optional description
       }[];
     }[],
   ): Promise<PaymentVoucher[]> {
@@ -45,7 +46,7 @@ export class PaymentVoucherService {
         : 1;
 
     for (const transaction of transactions) {
-      const { customerId, date, details } = transaction;
+      const { customerId, date, invoiceId, details } = transaction;
 
       // Validate customer
       const customer = await this.customerRepository.findOne({
@@ -57,7 +58,7 @@ export class PaymentVoucherService {
         );
       }
 
-      // Fetch accounts for currency handling
+      // Fetch accounts for USD and LL
       const usdAccount = await this.accountRepository.findOne({
         where: { accountNumber: '5301' },
       });
@@ -131,6 +132,7 @@ export class PaymentVoucherService {
         customer,
         date,
         pmNumber,
+        invoiceId,
         details: voucherDetails,
         totalDr,
         totalDrUSD,

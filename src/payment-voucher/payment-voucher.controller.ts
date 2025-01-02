@@ -14,17 +14,17 @@ import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
 export class PaymentVoucherController {
   constructor(private readonly paymentVoucherService: PaymentVoucherService) {}
 
-  // Create multiple Payment Vouchers
-  @Post('v1/bulk')
+  @Post('bulk')
   async createMultiplePaymentVouchers(
     @Body()
     transactions: {
       customerId: number;
       date: Date;
+      invoiceId: string;
       details: {
         cashNumber: string;
-        currency: string; // "USD" or "LL"
-        exchangeRate?: string; // Only required for "LL"
+        currency: string;
+        exchangeRate?: string;
         description?: string;
       }[];
     }[],
@@ -40,6 +40,4 @@ export class PaymentVoucherController {
       );
     }
   }
-
-  
 }
