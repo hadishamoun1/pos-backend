@@ -14,7 +14,7 @@ import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
 export class PaymentVoucherController {
   constructor(private readonly paymentVoucherService: PaymentVoucherService) {}
 
-  @Post('bulk')
+  @Post('v1/bulk')
   async createMultiplePaymentVouchers(
     @Body()
     transactions: {

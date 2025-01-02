@@ -109,6 +109,7 @@ export class PaymentVoucherService {
           cr: 0,
           crUSD: 0,
           crLL: 0,
+          exchangeRate,
           account: null, // User input has no account ID
           description: detail.description || null,
         });
@@ -121,6 +122,7 @@ export class PaymentVoucherService {
           cr,
           crUSD,
           crLL,
+          exchangeRate,
           account: isUSD ? usdAccount : llAccount,
           description: detail.description || null,
         });
