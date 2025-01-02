@@ -6,6 +6,7 @@ import { Account } from '../entities/account.entity';
 import { CurrencyRate } from '../entities/currencyRate.entity';
 import { PaymentVoucherService } from './payment-voucher.service';
 import { PaymentVoucherController } from './payment-voucher.controller';
+import { Customer } from '../entities/customer.entity';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { PaymentVoucherController } from './payment-voucher.controller';
       PaymentVoucherDetail,
       Account,
       CurrencyRate,
+      Customer,
     ]),
   ],
   providers: [PaymentVoucherService],
