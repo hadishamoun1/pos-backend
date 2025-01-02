@@ -35,21 +35,66 @@ export class PaymentVoucherDetail {
   @Column({ type: 'text', nullable: true })
   description: string;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0, nullable: true })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   dr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0, nullable: true })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   drUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0, nullable: true })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   drLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0, nullable: true })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   cr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0, nullable: true })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   crUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0, nullable: true })
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
   crLL: number;
+
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    nullable: true,
+  })
+  exchangeRate: number;
 }

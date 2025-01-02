@@ -42,6 +42,9 @@ export class PaymentVoucher {
 
   @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
   totalCrLL: number;
+  
+  @Column({ type: 'varchar', length: 50 })
+  invoiceId: string;
 
   @OneToMany(() => PaymentVoucherDetail, (detail) => detail.paymentVoucher, {
     cascade: true,
