@@ -23,9 +23,6 @@ export class PaymentVoucherDetail {
   @JoinColumn({ name: 'accountId' }) // Link to specific account
   account: Account;
 
-  @Column({ type: 'varchar', nullable: true })
-  check: string;
-
   @Column({ type: 'date', nullable: true })
   checkDate: Date;
 
@@ -34,6 +31,9 @@ export class PaymentVoucherDetail {
 
   @Column({ type: 'varchar', nullable: true })
   checkNumber: string;
+  
+  @Column({ type: 'date', nullable: true })
+  checkDueDate: Date;
 
   @Column({ type: 'text', nullable: true })
   description: string;
