@@ -137,6 +137,10 @@ export class PaymentVoucherService {
           crLL,
           exchangeRate,
           account: isUSD ? usdAccount : llAccount,
+          checkNumber: detail.checkNumber || null, // Copy from user input
+          bankName: detail.bankName || null, // Copy from user input
+          checkDate: detail.checkDate || null, // Copy from user input
+          description: detail.description || null, // Copy from user input
         });
 
         return [debitDetail, creditDetail];
