@@ -33,6 +33,7 @@ export class PaymentVoucherService {
         exchangeRate?: string;
         checkNumber?: string;
         checkDate?: Date;
+        checkDueDate?: Date;
         bankName?: string;
         description?: string;
       }[];
@@ -123,6 +124,7 @@ export class PaymentVoucherService {
           exchangeRate,
           checkNumber: detail.checkNumber || null,
           checkDate: detail.checkDate || null,
+          checkDueDate: detail.checkDueDate || null,
           bankName: detail.bankName || null,
           description: detail.description || null,
           account: null,
@@ -138,6 +140,7 @@ export class PaymentVoucherService {
           exchangeRate,
           account: isUSD ? usdAccount : llAccount,
           checkNumber: detail.checkNumber || null, // Copy from user input
+          checkDueDate: detail.checkDueDate || null,
           bankName: detail.bankName || null, // Copy from user input
           checkDate: detail.checkDate || null, // Copy from user input
           description: detail.description || null, // Copy from user input
