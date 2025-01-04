@@ -42,7 +42,22 @@ export class PaymentVoucher {
 
   @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
   totalCrLL: number;
-  
+
+  @Column({ type: 'varchar', nullable: true })
+  paymentType: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  type: string;
+
+  @Column({ type: 'date', nullable: true })
+  dateCreated: Date;
+
+  @Column({ type: 'date', nullable: true })
+  dateModified: Date;
+
+  @Column({ type: 'varchar', nullable: true })
+  doneBy: string;
+
   @Column({ type: 'varchar', length: 50 })
   invoiceId: string;
 

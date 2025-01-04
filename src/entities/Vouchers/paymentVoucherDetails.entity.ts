@@ -32,6 +32,9 @@ export class PaymentVoucherDetail {
   @Column({ type: 'varchar', nullable: true })
   bankName: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  checkNumber: string;
+
   @Column({ type: 'text', nullable: true })
   description: string;
 
