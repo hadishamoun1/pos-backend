@@ -7,10 +7,12 @@ import { CurrencyRate } from '../entities/currencyRate.entity';
 import { PaymentVoucherService } from './payment-voucher.service';
 import { PaymentVoucherController } from './payment-voucher.controller';
 import { Customer } from '../entities/customer.entity';
+import { Supplier } from 'src/entities/supplier.entity';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      Supplier,
       PaymentVoucher,
       PaymentVoucherDetail,
       Account,

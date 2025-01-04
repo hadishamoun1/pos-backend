@@ -4,9 +4,11 @@ import {
   PrimaryGeneratedColumn,
   ManyToOne,
   JoinColumn,
+  OneToMany,
 } from 'typeorm';
 import { Account } from './account.entity';
 import { Currency } from './currency.entity';
+import { PaymentVoucher } from './Vouchers/paymentVoucher.entity';
 
 @Entity('suppliers')
 export class Supplier {
@@ -47,4 +49,13 @@ export class Supplier {
   @ManyToOne(() => Account, { nullable: false })
   @JoinColumn({ name: 'accountId' })
   account: Account;
+
+  @OneToMany(
+    () => PaymentVoucher,
+    (paymentVoucher) => paymentVoucher.supplier,
+    {
+      cascade: true,
+    },
+  )
+  paymentVouchers: PaymentVoucher[];
 }

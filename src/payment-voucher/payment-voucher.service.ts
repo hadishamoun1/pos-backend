@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like } from 'typeorm';
 import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
 import { PaymentVoucherDetail } from '../entities/Vouchers/paymentVoucherDetails.entity';
-import { Customer } from '../entities/customer.entity';
+import { Supplier } from '../entities/supplier.entity';
 import { Account } from '../entities/account.entity';
 
 @Injectable()
@@ -13,22 +13,26 @@ export class PaymentVoucherService {
     private readonly paymentVoucherRepository: Repository<PaymentVoucher>,
     @InjectRepository(PaymentVoucherDetail)
     private readonly paymentVoucherDetailRepository: Repository<PaymentVoucherDetail>,
-    @InjectRepository(Customer)
-    private readonly customerRepository: Repository<Customer>,
+    @InjectRepository(Supplier)
+    private readonly supplierRepository: Repository<Supplier>,
     @InjectRepository(Account)
     private readonly accountRepository: Repository<Account>,
   ) {}
 
   async createMultiplePaymentVouchers(
     transactions: {
-      customerId: number;
+      supplierId: number; // Changed from customerId to supplierId
       date: Date;
       invoiceId: string;
       details: {
-        cashNumber: string;
+        amount: number;
         currency: string; // "USD" or "LL"
         exchangeRate?: string; // Only required for "LL"
+        checkNumber?: string;
+        bankName?: string;
         description?: string; // Optional description
+        paymentNumber: string;
+        type: string; // Type (e.g., "S" or "G")
       }[];
     }[],
   ): Promise<PaymentVoucher[]> {
@@ -46,15 +50,15 @@ export class PaymentVoucherService {
         : 1;
 
     for (const transaction of transactions) {
-      const { customerId, date, invoiceId, details } = transaction;
+      const { supplierId, date, invoiceId, details } = transaction;
 
-      // Validate customer
-      const customer = await this.customerRepository.findOne({
-        where: { id: customerId },
+      // Validate supplier
+      const supplier = await this.supplierRepository.findOne({
+        where: { id: supplierId },
       });
-      if (!customer) {
+      if (!supplier) {
         throw new NotFoundException(
-          `Customer with ID ${customerId} not found.`,
+          `Supplier with ID ${supplierId} not found.`,
         );
       }
 
@@ -83,14 +87,15 @@ export class PaymentVoucherService {
 
       const voucherDetails = details.flatMap((detail) => {
         const isUSD = detail.currency === 'USD';
-        const cashNumber = parseFloat(detail.cashNumber);
+        const amount = parseFloat(detail.amount.toString());
         const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
+        const amountExchanged = isUSD ? amount : amount / exchangeRate;
 
-        const dr = isUSD ? cashNumber : cashNumber / exchangeRate;
+        const dr = isUSD ? amount : amount / exchangeRate;
+        const drUSD = isUSD ? amount : amount / exchangeRate;
+        const drLL = isUSD ? 0 : amount;
+
         const cr = dr;
-        const drUSD = isUSD ? cashNumber : cashNumber / exchangeRate;
-        const drLL = isUSD ? 0 : cashNumber;
-
         const crUSD = drUSD;
         const crLL = drLL;
 
@@ -110,8 +115,10 @@ export class PaymentVoucherService {
           crUSD: 0,
           crLL: 0,
           exchangeRate,
-          account: null, // User input has no account ID
+          checkNumber: detail.checkNumber || null,
+          bankName: detail.bankName || null,
           description: detail.description || null,
+          account: null, // User input has no account ID
         });
 
         // Credit transaction (auto-generated)
@@ -123,15 +130,14 @@ export class PaymentVoucherService {
           crUSD,
           crLL,
           exchangeRate,
-          account: isUSD ? usdAccount : llAccount,
-          description: detail.description || null,
+          account: isUSD ? usdAccount : llAccount, // Auto-linked account
         });
 
         return [debitDetail, creditDetail];
       });
 
       const paymentVoucher = this.paymentVoucherRepository.create({
-        customer,
+        supplier,
         date,
         pmNumber,
         invoiceId,
@@ -142,6 +148,8 @@ export class PaymentVoucherService {
         totalCr,
         totalCrUSD,
         totalCrLL,
+        paymentType: details[0].type || null, // Use the type from the first detail
+        type: details[0].type || null,
       });
 
       paymentVouchers.push(

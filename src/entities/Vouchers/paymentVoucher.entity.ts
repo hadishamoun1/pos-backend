@@ -11,6 +11,7 @@ import {
 import { Customer } from '../customer.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { PaymentVoucherDetail } from './paymentVoucherDetails.entity';
+import { Supplier } from '../supplier.entity';
 
 @Entity('payment_vouchers')
 export class PaymentVoucher {
@@ -20,9 +21,9 @@ export class PaymentVoucher {
   @Column({ type: 'date' })
   date: Date;
 
-  @ManyToOne(() => Customer, { nullable: false })
-  @JoinColumn({ name: 'customerId' }) // Link customer to payment voucher
-  customer: Customer;
+  @ManyToOne(() => Supplier, { nullable: false })
+  @JoinColumn({ name: 'supplierId' }) // Link supplierId to Supplier
+  supplier: Supplier;
 
   @Column({ type: 'varchar', length: 50, unique: true })
   pmNumber: string;
