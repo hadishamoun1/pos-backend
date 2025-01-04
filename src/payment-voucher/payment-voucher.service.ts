@@ -21,23 +21,24 @@ export class PaymentVoucherService {
 
   async createMultiplePaymentVouchers(
     transactions: {
-      supplierId: number; // Changed from customerId to supplierId
+      supplierId: number;
       date: Date;
       invoiceId: string;
+      paymentType: string;
+      type: string; // "S" or "G"
+      doneBy: string;
       details: {
         amount: number;
-        currency: string; // "USD" or "LL"
-        exchangeRate?: string; // Only required for "LL"
+        currency: string;
+        exchangeRate?: string;
         checkNumber?: string;
+        checkDate?: Date;
         bankName?: string;
-        description?: string; // Optional description
-        paymentNumber: string;
-        type: string; // Type (e.g., "S" or "G")
+        description?: string;
       }[];
     }[],
   ): Promise<PaymentVoucher[]> {
     const paymentVouchers: PaymentVoucher[] = [];
-
     let lastVoucher = await this.paymentVoucherRepository.find({
       where: { pmNumber: Like('PM - %') },
       order: { pmNumber: 'DESC' },
@@ -50,9 +51,16 @@ export class PaymentVoucherService {
         : 1;
 
     for (const transaction of transactions) {
-      const { supplierId, date, invoiceId, details } = transaction;
+      const {
+        supplierId,
+        date,
+        invoiceId,
+        paymentType,
+        type,
+        doneBy,
+        details,
+      } = transaction;
 
-      // Validate supplier
       const supplier = await this.supplierRepository.findOne({
         where: { id: supplierId },
       });
@@ -62,7 +70,6 @@ export class PaymentVoucherService {
         );
       }
 
-      // Fetch accounts for USD and LL
       const usdAccount = await this.accountRepository.findOne({
         where: { accountNumber: '5301' },
       });
@@ -78,20 +85,20 @@ export class PaymentVoucherService {
       }
 
       const pmNumber = `PM - ${String(nextNumber++).padStart(3, '0')}`;
-      let totalDr = 0;
-      let totalCr = 0;
-      let totalDrUSD = 0;
-      let totalDrLL = 0;
-      let totalCrUSD = 0;
-      let totalCrLL = 0;
+      let totalDr = 0,
+        totalCr = 0,
+        totalDrUSD = 0,
+        totalDrLL = 0,
+        totalCrUSD = 0,
+        totalCrLL = 0;
 
       const voucherDetails = details.flatMap((detail) => {
         const isUSD = detail.currency === 'USD';
-        const amount = parseFloat(detail.amount.toString());
+        const amount = detail.amount;
         const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
         const amountExchanged = isUSD ? amount : amount / exchangeRate;
 
-        const dr = isUSD ? amount : amount / exchangeRate;
+        const dr = amountExchanged;
         const drUSD = isUSD ? amount : amount / exchangeRate;
         const drLL = isUSD ? 0 : amount;
 
@@ -106,7 +113,6 @@ export class PaymentVoucherService {
         totalCrUSD += crUSD;
         totalCrLL += crLL;
 
-        // Debit transaction (user input)
         const debitDetail = this.paymentVoucherDetailRepository.create({
           dr,
           drUSD,
@@ -116,12 +122,12 @@ export class PaymentVoucherService {
           crLL: 0,
           exchangeRate,
           checkNumber: detail.checkNumber || null,
+          checkDate: detail.checkDate || null,
           bankName: detail.bankName || null,
           description: detail.description || null,
-          account: null, // User input has no account ID
+          account: null,
         });
 
-        // Credit transaction (auto-generated)
         const creditDetail = this.paymentVoucherDetailRepository.create({
           dr: 0,
           drUSD: 0,
@@ -130,7 +136,7 @@ export class PaymentVoucherService {
           crUSD,
           crLL,
           exchangeRate,
-          account: isUSD ? usdAccount : llAccount, // Auto-linked account
+          account: isUSD ? usdAccount : llAccount,
         });
 
         return [debitDetail, creditDetail];
@@ -141,6 +147,9 @@ export class PaymentVoucherService {
         date,
         pmNumber,
         invoiceId,
+        paymentType,
+        type,
+        doneBy,
         details: voucherDetails,
         totalDr,
         totalDrUSD,
@@ -148,8 +157,6 @@ export class PaymentVoucherService {
         totalCr,
         totalCrUSD,
         totalCrLL,
-        paymentType: details[0].type || null, // Use the type from the first detail
-        type: details[0].type || null,
       });
 
       paymentVouchers.push(

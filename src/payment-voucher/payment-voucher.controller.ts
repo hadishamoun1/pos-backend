@@ -1,9 +1,9 @@
 import {
   Controller,
   Post,
+  Body,
   HttpException,
   HttpStatus,
-  Body,
 } from '@nestjs/common';
 import { PaymentVoucherService } from './payment-voucher.service';
 import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
@@ -16,18 +16,20 @@ export class PaymentVoucherController {
   async createMultiplePaymentVouchers(
     @Body()
     transactions: {
-      supplierId: number; // Changed from customerId to supplierId
+      supplierId: number;
       date: Date;
       invoiceId: string;
+      paymentType: string;
+      type: string;
+      doneBy: string;
       details: {
         amount: number;
-        currency: string; // "USD" or "LL"
-        exchangeRate?: string; // Only required for "LL"
+        currency: string;
+        exchangeRate?: string;
         checkNumber?: string;
+        checkDate?: Date;
         bankName?: string;
         description?: string;
-        paymentNumber: string;
-        type: string; // "S" or "G"
       }[];
     }[],
   ): Promise<PaymentVoucher[]> {
