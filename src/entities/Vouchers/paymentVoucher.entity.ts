@@ -5,6 +5,8 @@ import {
   ManyToOne,
   OneToMany,
   JoinColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import { Customer } from '../customer.entity';
 import { CurrencyRate } from '../currencyRate.entity';
@@ -49,10 +51,10 @@ export class PaymentVoucher {
   @Column({ type: 'varchar', nullable: true })
   type: string;
 
-  @Column({ type: 'date', nullable: true })
+  @CreateDateColumn({ type: 'timestamp' })
   dateCreated: Date;
 
-  @Column({ type: 'date', nullable: true })
+  @UpdateDateColumn({ type: 'timestamp' })
   dateModified: Date;
 
   @Column({ type: 'varchar', nullable: true })
