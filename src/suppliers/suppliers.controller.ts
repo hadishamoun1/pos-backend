@@ -51,4 +51,10 @@ export class SupplierController {
       Number(limit),
     );
   }
+
+  // Get filtered suppliers
+  @Get('v1/filtered')
+  getFilteredSuppliers(): Promise<Partial<Supplier>[]> {
+    return this.supplierService.getFilteredSuppliers();
+  }
 }

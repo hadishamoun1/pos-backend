@@ -126,4 +126,11 @@ export class SupplierService {
     const supplier = await this.getSupplierById(id);
     await this.supplierRepository.remove(supplier);
   }
+  async getFilteredSuppliers(): Promise<Partial<Supplier>[]> {
+    const suppliers = await this.supplierRepository.find({
+      select: ['id', 'supplierName'],
+    });
+
+    return suppliers;
+  }
 }
