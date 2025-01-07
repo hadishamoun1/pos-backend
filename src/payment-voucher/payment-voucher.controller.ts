@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Param,
+  Patch,
 } from '@nestjs/common';
 import { PaymentVoucherService } from './payment-voucher.service';
 import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
@@ -34,7 +35,7 @@ export class PaymentVoucherController {
         exchangeRate?: string;
         checkNumber?: string;
         checkDate?: Date;
-        checkDueDate?: Date; 
+        checkDueDate?: Date;
         bankName?: string;
         description?: string;
       }[];
@@ -54,4 +55,31 @@ export class PaymentVoucherController {
       );
     }
   }
+ 
+  @Patch(':id')
+  editPaymentVoucher(
+    @Param('id') id: number,
+    @Body()
+    updateData: {
+      supplierId?: number;
+      date?: Date;
+      invoiceId?: string;
+      paymentType?: string;
+      type?: string;
+      doneBy?: string;
+      details?: {
+        amount: number;
+        currency: string;
+        exchangeRate?: string;
+        checkNumber?: string;
+        checkDate?: Date;
+        checkDueDate?: Date;
+        bankName?: string;
+        description?: string;
+      }[];
+    },
+  ): Promise<PaymentVoucher> {
+    return this.paymentVoucherService.editPaymentVoucher(id, updateData);
+  }
+
 }

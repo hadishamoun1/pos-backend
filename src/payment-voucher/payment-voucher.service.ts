@@ -173,4 +173,145 @@ export class PaymentVoucherService {
 
     return paymentVouchers;
   }
+  async editPaymentVoucher(
+    id: number,
+    updateData: {
+      supplierId?: number;
+      date?: Date;
+      invoiceId?: string;
+      paymentType?: string;
+      type?: string;
+      doneBy?: string;
+      details?: {
+        amount: number;
+        currency: string;
+        exchangeRate?: string;
+        checkNumber?: string;
+        checkDate?: Date;
+        checkDueDate?: Date;
+        bankName?: string;
+        description?: string;
+      }[];
+    },
+  ): Promise<PaymentVoucher> {
+    // Find the existing payment voucher
+    const paymentVoucher = await this.paymentVoucherRepository.findOne({
+      where: { id },
+      relations: ['details', 'supplier'],
+    });
+
+    if (!paymentVoucher) {
+      throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
+    }
+
+    // Update supplier if provided
+    if (updateData.supplierId) {
+      const supplier = await this.supplierRepository.findOne({
+        where: { id: updateData.supplierId },
+      });
+
+      if (!supplier) {
+        throw new NotFoundException(
+          `Supplier with ID ${updateData.supplierId} not found.`,
+        );
+      }
+
+      paymentVoucher.supplier = supplier;
+    }
+
+    // Update other basic fields
+    if (updateData.date) paymentVoucher.date = updateData.date;
+    if (updateData.invoiceId) paymentVoucher.invoiceId = updateData.invoiceId;
+    if (updateData.paymentType)
+      paymentVoucher.paymentType = updateData.paymentType;
+    if (updateData.type) paymentVoucher.type = updateData.type;
+    if (updateData.doneBy) paymentVoucher.doneBy = updateData.doneBy;
+
+    // Update details if provided
+    if (updateData.details) {
+      const usdAccount = await this.accountRepository.findOne({
+        where: { accountNumber: '5301' },
+      });
+      const llAccount = await this.accountRepository.findOne({
+        where: { accountNumber: '5302' },
+      });
+
+      if (!usdAccount || !llAccount) {
+        throw new NotFoundException('USD or LL account not found.');
+      }
+
+      const updatedDetails = updateData.details.flatMap((detail) => {
+        const isUSD = detail.currency === 'USD';
+        const amount = detail.amount;
+        const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
+        const amountExchanged = isUSD ? amount : amount / exchangeRate;
+
+        const debitDetail = this.paymentVoucherDetailRepository.create({
+          dr: amountExchanged,
+          drUSD: isUSD ? amount : amount / exchangeRate,
+          drLL: isUSD ? 0 : amount,
+          cr: 0,
+          crUSD: 0,
+          crLL: 0,
+          exchangeRate,
+          checkNumber: detail.checkNumber || null,
+          checkDate: detail.checkDate || null,
+          checkDueDate: detail.checkDueDate || null,
+          bankName: detail.bankName || null,
+          description: detail.description || null,
+          account: null,
+        });
+
+        const creditDetail = this.paymentVoucherDetailRepository.create({
+          dr: 0,
+          drUSD: 0,
+          drLL: 0,
+          cr: amountExchanged,
+          crUSD: isUSD ? amount : amount / exchangeRate,
+          crLL: isUSD ? 0 : amount,
+          exchangeRate,
+          account: isUSD ? usdAccount : llAccount,
+          checkNumber: detail.checkNumber || null,
+          checkDueDate: detail.checkDueDate || null,
+          bankName: detail.bankName || null,
+          checkDate: detail.checkDate || null,
+          description: detail.description || null,
+        });
+
+        return [debitDetail, creditDetail];
+      });
+
+      // Replace old details
+      await this.paymentVoucherDetailRepository.remove(paymentVoucher.details);
+      paymentVoucher.details = updatedDetails;
+
+      // Recalculate totals
+      paymentVoucher.totalDr = updatedDetails.reduce(
+        (sum, detail) => sum + detail.dr,
+        0,
+      );
+      paymentVoucher.totalDrUSD = updatedDetails.reduce(
+        (sum, detail) => sum + detail.drUSD,
+        0,
+      );
+      paymentVoucher.totalDrLL = updatedDetails.reduce(
+        (sum, detail) => sum + detail.drLL,
+        0,
+      );
+      paymentVoucher.totalCr = updatedDetails.reduce(
+        (sum, detail) => sum + detail.cr,
+        0,
+      );
+      paymentVoucher.totalCrUSD = updatedDetails.reduce(
+        (sum, detail) => sum + detail.crUSD,
+        0,
+      );
+      paymentVoucher.totalCrLL = updatedDetails.reduce(
+        (sum, detail) => sum + detail.crLL,
+        0,
+      );
+    }
+
+    return this.paymentVoucherRepository.save(paymentVoucher);
+  }
 }
