@@ -40,15 +40,28 @@ export class PaymentVoucherService {
     }[],
   ): Promise<PaymentVoucher[]> {
     const paymentVouchers: PaymentVoucher[] = [];
-    let lastVoucher = await this.paymentVoucherRepository.find({
-      where: { pmNumber: Like('PM - %') },
+
+    // Fetch the latest voucher numbers for each type
+    const latestSVoucher = await this.paymentVoucherRepository.find({
+      where: { pmNumber: Like('PM - %'), type: 'S' },
       order: { pmNumber: 'DESC' },
       take: 1,
     });
 
-    let nextNumber =
-      lastVoucher.length > 0
-        ? parseInt(lastVoucher[0].pmNumber.split(' - ')[1], 10) + 1
+    const latestGVoucher = await this.paymentVoucherRepository.find({
+      where: { pmNumber: Like('PMG - %'), type: 'G' },
+      order: { pmNumber: 'DESC' },
+      take: 1,
+    });
+
+    let nextSNumber =
+      latestSVoucher.length > 0
+        ? parseInt(latestSVoucher[0].pmNumber.split(' - ')[1], 10) + 1
+        : 1;
+
+    let nextGNumber =
+      latestGVoucher.length > 0
+        ? parseInt(latestGVoucher[0].pmNumber.split(' - ')[1], 10) + 1
         : 1;
 
     for (const transaction of transactions) {
@@ -85,7 +98,12 @@ export class PaymentVoucherService {
         throw new NotFoundException(`Account with number 5302 not found.`);
       }
 
-      const pmNumber = `PM - ${String(nextNumber++).padStart(3, '0')}`;
+      // Determine the payment number based on the type
+      const pmNumber =
+        type === 'S'
+          ? `PM - ${String(nextSNumber++).padStart(4, '0')}`
+          : `PMG - ${String(nextGNumber++).padStart(4, '0')}`;
+
       let totalDr = 0,
         totalCr = 0,
         totalDrUSD = 0,
@@ -173,6 +191,7 @@ export class PaymentVoucherService {
 
     return paymentVouchers;
   }
+
   async editPaymentVoucher(
     id: number,
     updateData: {
