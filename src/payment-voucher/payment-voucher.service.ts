@@ -335,7 +335,7 @@ export class PaymentVoucherService {
   }
   async getFilteredPaymentVouchers(): Promise<any[]> {
     const paymentVouchers = await this.paymentVoucherRepository.find({
-      relations: ['details', 'supplier'],
+      relations: ['details', 'supplier'], // Fetch supplier relationship
     });
 
     return paymentVouchers.map((voucher) => {
@@ -370,6 +370,7 @@ export class PaymentVoucherService {
       return {
         id: voucher.id,
         supplierId: voucher.supplier.id,
+        supplierName: voucher.supplier.supplierName, // Include supplier's name directly
         date: voucher.date,
         invoiceId: voucher.invoiceId,
         paymentType: voucher.paymentType,
