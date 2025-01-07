@@ -84,6 +84,6 @@ export class PaymentVoucherController {
 
   @Get('v1/formatted')
   async getFormattedPaymentVouchers(): Promise<any[]> {
-    return this.paymentVoucherService.getFormattedPaymentVouchers();
+    return this.paymentVoucherService.getFilteredPaymentVouchers();
   }
 }
