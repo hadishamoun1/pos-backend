@@ -55,7 +55,7 @@ export class PaymentVoucherController {
       );
     }
   }
- 
+
   @Patch(':id')
   editPaymentVoucher(
     @Param('id') id: number,
@@ -82,4 +82,8 @@ export class PaymentVoucherController {
     return this.paymentVoucherService.editPaymentVoucher(id, updateData);
   }
 
+  @Get('v1/formatted')
+  async getFormattedPaymentVouchers(): Promise<any[]> {
+    return this.paymentVoucherService.getFormattedPaymentVouchers();
+  }
 }

@@ -333,4 +333,31 @@ export class PaymentVoucherService {
 
     return this.paymentVoucherRepository.save(paymentVoucher);
   }
+  async getFormattedPaymentVouchers(): Promise<any[]> {
+    // Fetch payment vouchers with details and relations
+    const paymentVouchers = await this.paymentVoucherRepository.find({
+      relations: ['supplier', 'details', 'details.account'],
+    });
+  
+    // Format the data as required
+    return paymentVouchers.map((voucher) => ({
+      supplierId: voucher.supplier.id,
+      date: voucher.date,
+      invoiceId: voucher.invoiceId,
+      paymentType: voucher.paymentType,
+      type: voucher.type,
+      doneBy: voucher.doneBy,
+      details: voucher.details.map((detail) => ({
+        amount: detail.dr || detail.cr,
+        currency: detail.account.accountNumber === '5301' ? 'USD' : 'LL',
+        exchangeRate: detail.exchangeRate,
+        checkNumber: detail.checkNumber,
+        checkDate: detail.checkDate,
+        checkDueDate: detail.checkDueDate,
+        bankName: detail.bankName,
+        description: detail.description,
+      })),
+    }));
+  }
+  
 }
