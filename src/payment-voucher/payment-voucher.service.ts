@@ -385,4 +385,31 @@ export class PaymentVoucherService {
       };
     });
   }
+  async deletePaymentVoucher(id: number): Promise<void> {
+    // Find the payment voucher with its details
+    const paymentVoucher = await this.paymentVoucherRepository.findOne({
+      where: { id },
+      relations: ['details'],
+    });
+
+    if (!paymentVoucher) {
+      throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
+    }
+
+    try {
+      // Delete the associated details
+      if (paymentVoucher.details && paymentVoucher.details.length > 0) {
+        await this.paymentVoucherDetailRepository.remove(paymentVoucher.details);
+      }
+
+      // Delete the payment voucher
+      await this.paymentVoucherRepository.delete(id);
+    } catch (error) {
+      console.error('Error deleting payment voucher:', error);
+      throw new error(
+        'Failed to delete payment voucher.',
+      );
+    }
+  }
+
 }

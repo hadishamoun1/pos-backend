@@ -7,6 +7,9 @@ import {
   HttpStatus,
   Param,
   Patch,
+  Delete,
+  HttpCode,
+  ParseIntPipe 
 } from '@nestjs/common';
 import { PaymentVoucherService } from './payment-voucher.service';
 import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
@@ -85,5 +88,10 @@ export class PaymentVoucherController {
   @Get('v1/formatted')
   async getFormattedPaymentVouchers(): Promise<any[]> {
     return this.paymentVoucherService.getFilteredPaymentVouchers();
+  }
+  @Delete(':id')
+  @HttpCode(204) // No content
+  async deletePaymentVoucher(@Param('id', ParseIntPipe) id: number): Promise<void> {
+    await this.paymentVoucherService.deletePaymentVoucher(id);
   }
 }
