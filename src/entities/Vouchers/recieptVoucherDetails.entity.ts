@@ -38,7 +38,7 @@ export class ReceiptVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -47,7 +47,7 @@ export class ReceiptVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -56,7 +56,7 @@ export class ReceiptVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -65,7 +65,7 @@ export class ReceiptVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -74,7 +74,7 @@ export class ReceiptVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -83,7 +83,7 @@ export class ReceiptVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -91,7 +91,7 @@ export class ReceiptVoucherDetail {
   crLL: number;
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,

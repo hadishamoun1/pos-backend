@@ -203,7 +203,6 @@ export class PaymentVoucherService {
       doneBy?: string;
       details?: {
         amount: number;
-        currency: string;
         exchangeRate?: string;
         checkNumber?: string;
         checkDate?: Date;
@@ -246,6 +245,11 @@ export class PaymentVoucherService {
     if (updateData.type) paymentVoucher.type = updateData.type;
     if (updateData.doneBy) paymentVoucher.doneBy = updateData.doneBy;
 
+    // Determine the currency based on paymentType
+    const paymentType = updateData.paymentType || paymentVoucher.paymentType;
+    const isUSD = paymentType.includes('USD');
+    const currency = isUSD ? 'USD' : 'LL';
+
     // Update details if provided
     if (updateData.details) {
       const usdAccount = await this.accountRepository.findOne({
@@ -260,7 +264,6 @@ export class PaymentVoucherService {
       }
 
       const updatedDetails = updateData.details.flatMap((detail) => {
-        const isUSD = detail.currency === 'USD';
         const amount = detail.amount;
         const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
         const amountExchanged = isUSD ? amount : amount / exchangeRate;
@@ -333,6 +336,7 @@ export class PaymentVoucherService {
 
     return this.paymentVoucherRepository.save(paymentVoucher);
   }
+
   async getFilteredPaymentVouchers(): Promise<any[]> {
     const paymentVouchers = await this.paymentVoucherRepository.find({
       relations: ['details', 'supplier'], // Fetch supplier relationship

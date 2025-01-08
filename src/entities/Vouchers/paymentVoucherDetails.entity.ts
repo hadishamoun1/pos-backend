@@ -40,7 +40,7 @@ export class PaymentVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -49,7 +49,7 @@ export class PaymentVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -58,7 +58,7 @@ export class PaymentVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -67,7 +67,7 @@ export class PaymentVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -76,7 +76,7 @@ export class PaymentVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -85,7 +85,7 @@ export class PaymentVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
@@ -94,7 +94,7 @@ export class PaymentVoucherDetail {
 
   @Column({
     type: 'decimal',
-    precision: 10,
+    precision: 20,
     scale: 2,
     default: 0,
     nullable: true,
