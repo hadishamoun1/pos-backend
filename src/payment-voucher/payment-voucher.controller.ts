@@ -9,7 +9,8 @@ import {
   Patch,
   Delete,
   HttpCode,
-  ParseIntPipe 
+  ParseIntPipe,
+  Query,
 } from '@nestjs/common';
 import { PaymentVoucherService } from './payment-voucher.service';
 import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
@@ -91,7 +92,38 @@ export class PaymentVoucherController {
   }
   @Delete(':id')
   @HttpCode(204) // No content
-  async deletePaymentVoucher(@Param('id', ParseIntPipe) id: number): Promise<void> {
+  async deletePaymentVoucher(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
     await this.paymentVoucherService.deletePaymentVoucher(id);
+  }
+
+  @Get('v1/filter')
+  async filterPaymentVouchers(
+    @Query('supplierId') supplierId?: number,
+    @Query('date') date?: string,
+    @Query('paymentType') paymentType?: string,
+    @Query('pmNumber') pmNumber?: string,
+    @Query('exchangeRate') exchangeRate?: number,
+    @Query('amount') amount?: number,
+    @Query('type') type?: string,
+    @Query('page') page: number = 1, // Default to page 1
+    @Query('limit') limit: number = 10, // Default to 10 items per page
+  ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
+    const filters = {
+      supplierId,
+      date,
+      paymentType,
+      pmNumber,
+      exchangeRate,
+      amount,
+      type,
+    };
+
+    return this.paymentVoucherService.filterPaymentVouchers(
+      filters,
+      page,
+      limit,
+    );
   }
 }

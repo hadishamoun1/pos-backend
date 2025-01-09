@@ -399,17 +399,129 @@ export class PaymentVoucherService {
     try {
       // Delete the associated details
       if (paymentVoucher.details && paymentVoucher.details.length > 0) {
-        await this.paymentVoucherDetailRepository.remove(paymentVoucher.details);
+        await this.paymentVoucherDetailRepository.remove(
+          paymentVoucher.details,
+        );
       }
 
       // Delete the payment voucher
       await this.paymentVoucherRepository.delete(id);
     } catch (error) {
       console.error('Error deleting payment voucher:', error);
-      throw new error(
-        'Failed to delete payment voucher.',
-      );
+      throw new error('Failed to delete payment voucher.');
     }
   }
 
+  async filterPaymentVouchers(
+    filters: {
+      supplierId?: number;
+      date?: string;
+      paymentType?: string;
+      pmNumber?: string;
+      exchangeRate?: number;
+      amount?: number;
+      type?: string;
+    },
+    page: number = 1,
+    limit: number = 10,
+  ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
+    const queryBuilder = this.paymentVoucherRepository
+      .createQueryBuilder('voucher')
+      .leftJoinAndSelect('voucher.details', 'detail')
+      .leftJoinAndSelect('voucher.supplier', 'supplier');
+
+    // Apply filters
+    if (filters.supplierId) {
+      queryBuilder.andWhere('voucher.supplierId = :supplierId', {
+        supplierId: filters.supplierId,
+      });
+    }
+
+    if (filters.date) {
+      queryBuilder.andWhere('DATE(voucher.date) = :date', {
+        date: filters.date,
+      });
+    }
+
+    if (filters.paymentType) {
+      queryBuilder.andWhere('voucher.paymentType = :paymentType', {
+        paymentType: filters.paymentType,
+      });
+    }
+
+    if (filters.pmNumber) {
+      queryBuilder.andWhere('voucher.pmNumber LIKE :pmNumber', {
+        pmNumber: `%${filters.pmNumber}%`,
+      });
+    }
+
+    if (filters.exchangeRate) {
+      queryBuilder.andWhere('detail.exchangeRate = :exchangeRate', {
+        exchangeRate: filters.exchangeRate,
+      });
+    }
+
+    if (filters.amount) {
+      queryBuilder.andWhere(
+        `
+        CASE
+          WHEN voucher.paymentType LIKE '%USD%' THEN detail.drUSD
+          WHEN voucher.paymentType LIKE '%LL%' THEN detail.drLL
+          ELSE 0
+        END = :amount
+      `,
+        { amount: filters.amount },
+      );
+    }
+
+    if (filters.type) {
+      queryBuilder.andWhere('voucher.type = :type', { type: filters.type });
+    }
+
+    // Pagination logic
+    const total = await queryBuilder.getCount();
+    const data = await queryBuilder
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getMany();
+
+    // Format the response
+    const formattedData = data.map((voucher) => {
+      const isUSD = voucher.paymentType.includes('USD');
+      const formattedDetails = voucher.details.map((detail) => {
+        const amount = isUSD ? detail.drUSD : detail.drLL;
+        const exchangeRate = Number(detail.exchangeRate || 1);
+        const amountExchanged = isUSD
+          ? Number(detail.drUSD || 0)
+          : Number(detail.drLL || 0) / exchangeRate;
+
+        return {
+          amount: amount,
+          currency: isUSD ? 'USD' : 'LL',
+          exchangeRate: exchangeRate.toFixed(2),
+          checkDueDate: detail.checkDueDate || null,
+          checkNumber: detail.checkNumber || null,
+          checkDate: detail.checkDate || null,
+          bankName: detail.bankName || null,
+          description: detail.description || null,
+          amountExchanged: amountExchanged.toFixed(2),
+        };
+      });
+
+      return {
+        id: voucher.id,
+        supplierId: voucher.supplier.id,
+        supplierName: voucher.supplier.supplierName,
+        date: voucher.date,
+        invoiceId: voucher.invoiceId,
+        paymentType: voucher.paymentType,
+        type: voucher.type,
+        doneBy: voucher.doneBy,
+        paymentNumber: voucher.pmNumber,
+        details: formattedDetails,
+      };
+    });
+
+    return { data: formattedData, total, page, limit };
+  }
 }
