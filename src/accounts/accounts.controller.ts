@@ -45,4 +45,8 @@ export class AccountsController {
   async getCombinedAccounts(): Promise<any[]> {
     return this.accountsService.getCombinedAccounts();
   }
+  @Get('v1/acc-arranged')
+  async getAccounts() {
+    return this.accountsService.getCombinedAccounts();
+  }
 }
