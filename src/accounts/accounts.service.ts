@@ -102,64 +102,75 @@ export class AccountsService {
     const accounts = await this.accountRepository.find({
       relations: ['parent', 'children'],
     });
-  
+
     // Fetch customer accounts
     const customers = await this.customerRepository.find({
       select: ['id', 'customerAccountNumber', 'customerName'],
     });
-  
+
     // Fetch supplier accounts
     const suppliers = await this.supplierRepository.find({
       select: ['id', 'supplierAccountNumber', 'supplierName'],
     });
-  
-    // Combine data
-    const combinedData = accounts.map((account) => {
-      const data: any = {
-        id: account.id,
-        accountNumber: account.accountNumber,
-        accountName: account.accountName,
-        arabicAccountName: account.arabicAccountName || null,
-        children: account.children
-          ? account.children.map((child) => ({
-              id: child.id,
-              accountNumber: child.accountNumber,
-              accountName: child.accountName,
-              arabicAccountName: child.arabicAccountName || null,
-            }))
-          : [],
-      };
-  
-      // Add customers under the parent account '4111'
-      if (account.accountNumber === '4111') {
-        data.children.push(
-          ...customers.map((customer) => ({
-            id: customer.id,
-            accountNumber: customer.customerAccountNumber,
-            accountName: customer.customerName,
-            arabicAccountName: null,
-            isCustomer: true, // Add a flag to distinguish customers
-          })),
-        );
-      }
-  
-      // Add suppliers under the parent account '4011'
-      if (account.accountNumber === '4011') {
-        data.children.push(
-          ...suppliers.map((supplier) => ({
-            id: supplier.id,
-            accountNumber: supplier.supplierAccountNumber,
-            accountName: supplier.supplierName,
-            arabicAccountName: null,
-            isSupplier: true, // Add a flag to distinguish suppliers
-          })),
-        );
-      }
-  
-      return data;
-    });
-  
-    return combinedData;
+
+    // Function to recursively transform and sort accounts
+    const transformAccounts = (
+      accounts: any[],
+      parentNumber: string | null = null,
+    ): any[] => {
+      return accounts
+        .filter((account) => account.parent?.accountNumber === parentNumber)
+        .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber))
+        .map((account) => {
+          const transformedAccount: any = {
+            id: account.id,
+            accountNumber: account.accountNumber,
+            accountName: account.accountName,
+            arabicAccountName: account.arabicAccountName || null,
+            children: [],
+          };
+
+          // Add customers under '4111'
+          if (account.accountNumber === '4111') {
+            transformedAccount.children.push(
+              ...customers.map((customer) => ({
+                id: customer.id,
+                accountNumber: customer.customerAccountNumber,
+                accountName: customer.customerName,
+                arabicAccountName: null,
+                isCustomer: true,
+              })),
+            );
+          }
+
+          // Add suppliers under '4011'
+          if (account.accountNumber === '4011') {
+            transformedAccount.children.push(
+              ...suppliers.map((supplier) => ({
+                id: supplier.id,
+                accountNumber: supplier.supplierAccountNumber,
+                accountName: supplier.supplierName,
+                arabicAccountName: null,
+                isSupplier: true,
+              })),
+            );
+          }
+
+          // Recursively transform children
+          transformedAccount.children.push(
+            ...transformAccounts(accounts, account.accountNumber),
+          );
+
+          // Sort children by accountNumber
+          transformedAccount.children.sort((a, b) =>
+            a.accountNumber.localeCompare(b.accountNumber),
+          );
+
+          return transformedAccount;
+        });
+    };
+
+    // Start transformation from root accounts (those without a parent)
+    return transformAccounts(accounts);
   }
-  
 }
