@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException,BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like } from 'typeorm';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
@@ -19,9 +23,9 @@ export class JournalVoucherService {
     private readonly currencyRateRepository: Repository<CurrencyRate>,
   ) {}
 
-  async createJournalVoucher(data: { 
-    date: Date; 
-    jvType: string; 
+  async createJournalVoucher(data: {
+    date: Date;
+    jvType: string;
     details: {
       accountNumber: string;
       check?: string | null;
@@ -41,17 +45,17 @@ export class JournalVoucherService {
     }[];
   }): Promise<JournalVoucher> {
     const { date, jvType, details } = data;
-  
+
     // Step 1: Validate `jvType`
     if (!jvType || !['S', 'G'].includes(jvType)) {
       throw new BadRequestException('Invalid JV type. Must be "S" or "G".');
     }
-  
+
     // Step 2: Validate `details`
     if (!details || details.length === 0) {
       throw new BadRequestException('Voucher must have at least one detail.');
     }
-  
+
     // Step 3: Generate `jvNumber` based on `jvType`
     const prefix = jvType === 'S' ? 'JV' : 'JVG';
     const lastVoucher = await this.journalVoucherRepository.find({
@@ -59,17 +63,17 @@ export class JournalVoucherService {
       order: { jvNumber: 'DESC' },
       take: 1,
     });
-  
+
     const nextNumber =
       lastVoucher.length > 0
         ? parseInt(lastVoucher[0].jvNumber.split(' - ')[1], 10) + 1
         : 1;
     const jvNumber = `${prefix} - ${String(nextNumber).padStart(5, '0')}`;
-  
-    // Step 4: Map details to database entities
+
+    // Step 4: Resolve account IDs and prepare details
     const resolvedDetails = await Promise.all(
       details.map(async (detail) => {
-        // Resolve account by account number
+        // Resolve the account using accountNumber
         const account = await this.accountRepository.findOne({
           where: { accountNumber: detail.accountNumber },
         });
@@ -78,10 +82,10 @@ export class JournalVoucherService {
             `Account with number ${detail.accountNumber} not found.`,
           );
         }
-  
-        // Map the fields to JournalVoucherDetail
+
+        // Map the detail data to the entity
         return this.journalVoucherDetailRepository.create({
-          account,
+          account, // Associate the Account entity
           check: detail.check || null,
           checkDate: detail.checkDate || null,
           bankName: detail.bankName || null,
@@ -96,12 +100,12 @@ export class JournalVoucherService {
           exRateEUROToUSD: parseFloat(detail.exchangeRateEURtoUSD),
           exRateUSD: parseFloat(detail.exchangeRate),
           docNbr: detail.docNbr || null,
-          exchangeRateAcc: null, // Populate based on additional logic if required
-          exchangeRateUSD: null, // Populate based on additional logic if required
+          exchangeRateAcc: null, // Populate based on additional logic if needed
+          exchangeRateUSD: null, // Populate based on additional logic if needed
         });
       }),
     );
-  
+
     // Step 5: Calculate totals
     const totalDr = resolvedDetails.reduce((sum, d) => sum + d.dr, 0);
     const totalDrUSD = resolvedDetails.reduce((sum, d) => sum + d.drUSD, 0);
@@ -109,7 +113,7 @@ export class JournalVoucherService {
     const totalCr = resolvedDetails.reduce((sum, d) => sum + d.cr, 0);
     const totalCrUSD = resolvedDetails.reduce((sum, d) => sum + d.crUSD, 0);
     const totalCrLL = resolvedDetails.reduce((sum, d) => sum + d.crLL, 0);
-  
+
     // Step 6: Create and save the JournalVoucher entity
     const journalVoucher = this.journalVoucherRepository.create({
       date,
@@ -123,10 +127,10 @@ export class JournalVoucherService {
       totalCrLL,
       details: resolvedDetails,
     });
-  
+
     return this.journalVoucherRepository.save(journalVoucher);
   }
-  
+
   async getAllJournalVouchers(): Promise<JournalVoucher[]> {
     return this.journalVoucherRepository.find({
       relations: ['account', 'exchangeRateAcc', 'exchangeRateUSD', 'details'],

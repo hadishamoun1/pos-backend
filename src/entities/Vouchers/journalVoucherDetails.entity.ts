@@ -1,4 +1,10 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
 import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { JournalVoucher } from './journalVoucher.entity';
@@ -9,6 +15,7 @@ export class JournalVoucherDetail {
   id: number;
 
   @ManyToOne(() => Account, { nullable: false })
+  @JoinColumn({ name: 'accountId' })
   account: Account;
 
   @Column({ type: 'varchar', nullable: true })
@@ -53,10 +60,10 @@ export class JournalVoucherDetail {
   @Column({ type: 'varchar', nullable: true })
   docNbr: string;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateAcc: CurrencyRate;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
   @ManyToOne(() => JournalVoucher, (journalVoucher) => journalVoucher.details)
