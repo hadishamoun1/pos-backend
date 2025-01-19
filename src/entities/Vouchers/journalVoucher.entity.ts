@@ -41,10 +41,10 @@ import {
     @Column({ type: 'decimal', precision: 10, scale: 2 })
     totalCrLL: number;
   
-    @ManyToOne(() => CurrencyRate, { nullable: false })
+    @ManyToOne(() => CurrencyRate, { nullable: true })
     exchangeRateAcc: CurrencyRate;
   
-    @ManyToOne(() => CurrencyRate, { nullable: false })
+    @ManyToOne(() => CurrencyRate, { nullable: true })
     exchangeRateUSD: CurrencyRate;
   
     @OneToMany(() => JournalVoucherDetail, (detail) => detail.journalVoucher, {
