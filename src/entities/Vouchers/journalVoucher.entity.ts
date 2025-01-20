@@ -17,8 +17,6 @@ export class JournalVoucher {
   @Column({ type: 'date' })
   date: Date;
 
-  @ManyToOne(() => Account, { nullable: false })
-  account: Account;
 
   @Column({ type: 'varchar', length: 50, unique: true })
   jvNumber: string;

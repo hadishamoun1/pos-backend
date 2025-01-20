@@ -26,8 +26,8 @@ export class JournalVoucherService {
   async createJournalVoucher(data: {
     date: Date;
     jvType: string;
-    accountId: number; // Top-level accountId
     details: {
+      accountId: number; // Each entry specifies its own accountId
       description?: string | null;
       debit: string;
       debitUSD: string;
@@ -41,7 +41,7 @@ export class JournalVoucherService {
       docNbr?: string | null;
     }[];
   }): Promise<JournalVoucher> {
-    const { date, jvType, accountId, details } = data;
+    const { date, jvType, details } = data;
 
     // Validate jvType
     if (!jvType || !['S', 'G'].includes(jvType)) {
@@ -70,7 +70,7 @@ export class JournalVoucherService {
     // Prepare details
     const resolvedDetails = details.map((detail) => {
       return this.journalVoucherDetailRepository.create({
-        accountId, // Use the top-level accountId
+        accountId: detail.accountId, // Use entry-specific accountId
         description: detail.description || null,
         dr: parseFloat(detail.debit),
         drUSD: parseFloat(detail.debitUSD),
@@ -104,8 +104,7 @@ export class JournalVoucherService {
       totalCr,
       totalCrUSD,
       totalCrLL,
-      account: { id: accountId }, // Assign the top-level accountId
-      details: resolvedDetails,
+      details: resolvedDetails, // Use entry-specific details
     });
 
     // Save the journal voucher
