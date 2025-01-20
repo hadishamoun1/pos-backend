@@ -17,15 +17,16 @@ import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 export class JournalVoucherController {
   constructor(private readonly journalVoucherService: JournalVoucherService) {}
 
-  // Create a new Journal Voucher
+  // Create a Journal Voucher
   @Post()
   async createJournalVoucher(
     @Body()
-    data: {
+    body: {
       date: Date;
       jvType: string;
+      accountId: number; // Explicit accountId
       details: {
-        accountNumber: string;
+        accountId: number;
         check?: string | null;
         checkDate?: Date | null;
         bankName?: string | null;
@@ -44,26 +45,19 @@ export class JournalVoucherController {
     },
   ): Promise<JournalVoucher> {
     try {
-      // Validate required fields
-      if (!data.date) {
-        throw new BadRequestException('Date is required.');
-      }
-
-      if (!data.jvType || !['S', 'G'].includes(data.jvType)) {
-        throw new BadRequestException('Invalid JV type. Must be "S" or "G".');
-      }
-
-      if (!data.details || data.details.length === 0) {
-        throw new BadRequestException('At least one detail must be provided.');
-      }
-
-      // Call the service to create the journal voucher
-      return await this.journalVoucherService.createJournalVoucher(data);
+      console.log('Received Payload:', body);
+      return await this.journalVoucherService.createJournalVoucher(body);
     } catch (error) {
-      throw new BadRequestException(error.message);
+      console.error('Error creating Journal Voucher:', error);
+      throw new HttpException(
+        {
+          message: error.message || 'Failed to create journal voucher',
+          error: error.name || 'UnknownError',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
     }
   }
-
   // Get all Journal Vouchers
   @Get()
   async getAllJournalVouchers() {

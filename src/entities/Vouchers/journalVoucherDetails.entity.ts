@@ -14,11 +14,14 @@ export class JournalVoucherDetail {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column({ name: 'accountId', type: 'int' })
+  accountId: number;
+
   @ManyToOne(() => Account, { nullable: false })
   @JoinColumn({ name: 'accountId' })
   account: Account;
-
-  @Column({ type: 'varchar', nullable: true })
+  
+  @Column({ type: 'varchar', nullable: true, name: 'check' })
   check: string;
 
   @Column({ type: 'date', nullable: true })
