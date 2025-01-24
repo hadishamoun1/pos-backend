@@ -100,4 +100,9 @@ export class JournalVoucherController {
       throw new HttpException(error.message, HttpStatus.NOT_FOUND);
     }
   }
+
+  @Get('v1/list')
+  async getVoucherSummary() {
+    return this.journalVoucherService.getVoucherSummary();
+  }
 }

@@ -104,7 +104,7 @@ export class JournalVoucherService {
       totalCr,
       totalCrUSD,
       totalCrLL,
-      details: resolvedDetails, 
+      details: resolvedDetails,
     });
 
     // Save the journal voucher
@@ -140,5 +140,25 @@ export class JournalVoucherService {
   async deleteJournalVoucher(id: number): Promise<void> {
     const journalVoucher = await this.getJournalVoucherById(id);
     await this.journalVoucherRepository.remove(journalVoucher);
+  }
+
+  async getVoucherSummary(): Promise<
+    { date: Date; jvNumber: string; jvType: string; description: string }[]
+  > {
+    const vouchers = await this.journalVoucherRepository.find({
+      relations: ['details'],
+    });
+
+    return vouchers.map((voucher) => {
+      const debitDetail = voucher.details.find(
+        (detail) => detail.dr > 0,
+      );
+      return {
+        date: voucher.date,
+        jvNumber: voucher.jvNumber,
+        jvType: voucher.jvType,
+        description: debitDetail ? debitDetail.description : 'No Description',
+      };
+    });
   }
 }
