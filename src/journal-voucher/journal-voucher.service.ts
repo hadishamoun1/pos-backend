@@ -104,7 +104,7 @@ export class JournalVoucherService {
       totalCr,
       totalCrUSD,
       totalCrLL,
-      details: resolvedDetails, // Use entry-specific details
+      details: resolvedDetails, 
     });
 
     // Save the journal voucher

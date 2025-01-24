@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   OneToMany,
+  JoinColumn,
 } from 'typeorm';
 import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
@@ -16,7 +17,6 @@ export class JournalVoucher {
 
   @Column({ type: 'date' })
   date: Date;
-
 
   @Column({ type: 'varchar', length: 50, unique: true })
   jvNumber: string;
@@ -39,7 +39,7 @@ export class JournalVoucher {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalCrLL: number;
 
-  @Column({ type: 'varchar', length: 1})
+  @Column({ type: 'varchar', length: 1 })
   jvType: string;
 
   @ManyToOne(() => CurrencyRate, { nullable: true })
@@ -47,6 +47,10 @@ export class JournalVoucher {
 
   @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
+
+  @ManyToOne(() => Account, { nullable: true }) 
+  @JoinColumn({ name: 'accountId' })
+  account: Account;
 
   @OneToMany(() => JournalVoucherDetail, (detail) => detail.journalVoucher, {
     cascade: true,
