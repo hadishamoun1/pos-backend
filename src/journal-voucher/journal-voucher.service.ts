@@ -120,11 +120,23 @@ export class JournalVoucherService {
   async getJournalVoucherById(id: number): Promise<JournalVoucher> {
     const journalVoucher = await this.journalVoucherRepository.findOne({
       where: { id },
-      relations: ['account', 'exchangeRateAcc', 'exchangeRateUSD', 'details'],
+      relations: [
+        'details', // Include details
+        'details.account', // Include the related account for each detail
+      ],
     });
+
     if (!journalVoucher) {
       throw new NotFoundException(`Journal Voucher with ID ${id} not found.`);
     }
+
+    // Map through the details to add accountNumber and accountName
+    journalVoucher.details = journalVoucher.details.map((detail) => ({
+      ...detail,
+      accountNumber: detail.account?.accountNumber || null, // Add accountNumber
+      accountName: detail.account?.accountName || null, // Add accountName
+    }));
+
     return journalVoucher;
   }
 
@@ -150,9 +162,7 @@ export class JournalVoucherService {
     });
 
     return vouchers.map((voucher) => {
-      const debitDetail = voucher.details.find(
-        (detail) => detail.dr > 0,
-      );
+      const debitDetail = voucher.details.find((detail) => detail.dr > 0);
       return {
         id: voucher.id,
         date: voucher.date,
