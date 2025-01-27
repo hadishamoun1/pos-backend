@@ -154,6 +154,7 @@ export class JournalVoucherService {
         (detail) => detail.dr > 0,
       );
       return {
+        id: voucher.id,
         date: voucher.date,
         jvNumber: voucher.jvNumber,
         jvType: voucher.jvType,
