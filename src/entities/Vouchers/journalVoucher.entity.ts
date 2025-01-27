@@ -21,22 +21,22 @@ export class JournalVoucher {
   @Column({ type: 'varchar', length: 50, unique: true })
   jvNumber: string;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalDr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalDrUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalDrLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalCr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalCrUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalCrLL: number;
 
   @Column({ type: 'varchar', length: 1 })
