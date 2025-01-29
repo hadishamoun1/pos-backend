@@ -79,7 +79,7 @@ export class JournalVoucherService {
         crUSD: parseFloat(detail.creditUSD),
         crLL: parseFloat(detail.creditLL),
         currency: detail.currency,
-        exRateEUROToUSD: parseFloat(detail.exchangeRateEURtoUSD),
+        exRateEUROToUSD: parseFloat(detail.exchangeRateEURtoUSD) || 0,
         exRateUSD: parseFloat(detail.exchangeRate),
         docNbr: detail.docNbr || null,
       });
