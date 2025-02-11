@@ -20,10 +20,10 @@ import {
     @Column()
     origin: string;
   
-    @Column({ type: "decimal", precision: 10, scale: 2 })
+    @Column({ type: "decimal", precision: 10, scale: 2 ,nullable: true})
     length: number;
   
-    @Column({ type: "decimal", precision: 10, scale: 2 })
+    @Column({ type: "decimal", precision: 10, scale: 2,nullable: true })
     width: number;
   
     @Column({ type: "enum", enum: ["box", "sheet"] })
@@ -38,13 +38,13 @@ import {
     @Column({ type: "int", nullable: true }) // Only applicable for sheets
     sheet: number;
   
-    @Column({ type: "decimal", precision: 10, scale: 2 })
+    @Column({ type: "decimal", precision: 10, scale: 2 ,nullable: true})
     sqm: number;
   
-    @Column({ type: "decimal", precision: 10, scale: 2 })
+    @Column({ type: "decimal", precision: 10, scale: 2,nullable: true })
     price: number;
   
-    @Column({ type: "decimal", precision: 10, scale: 2 })
+    @Column({ type: "decimal", precision: 10, scale: 2 ,nullable: true})
     total: number;
   }
   

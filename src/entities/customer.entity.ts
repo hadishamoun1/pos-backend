@@ -58,4 +58,6 @@ export class Customer {
 
   @OneToMany(() => Invoice, (invoice) => invoice.customer)
   invoices: Invoice[];
+  @OneToMany(() => Request, (request) => request.customer)
+  requests: Request[];
 }

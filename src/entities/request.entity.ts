@@ -7,7 +7,7 @@ import {
     ManyToOne,
     JoinColumn,
   } from "typeorm";
-  import { RequestDetail } from "./requestDetail.entity";
+  import { RequestDetail } from "./requestDetails.entity";
   import { Customer } from "./customer.entity"; // Import Customer entity
   
   @Entity("requests")
