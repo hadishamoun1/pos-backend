@@ -25,6 +25,8 @@ import { SalesReturnVoucherModule } from './sales-return-voucher/sales-return-vo
 import { PurchaseReturnVoucherModule } from './purchase-return-voucher/purchase-return-voucher.module';
 import { DebitNoteReturnModule } from './debit-note-returns/debit-note-returns.module'
 import { CreditNoteReturnModule } from './credit-note-returns/credit-note-returns.module';
+import { RequestsService } from './requests/requests.service';
+import { RequestsModule } from './requests/requests.module';
 
 @Module({
   imports: [
@@ -63,6 +65,8 @@ import { CreditNoteReturnModule } from './credit-note-returns/credit-note-return
     PurchaseReturnVoucherModule,
     DebitNoteReturnModule,
     CreditNoteReturnModule,
+    RequestsModule,
   ],
+  providers: [RequestsService],
 })
 export class AppModule {}
