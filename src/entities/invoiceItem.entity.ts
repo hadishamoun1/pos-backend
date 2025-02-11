@@ -30,9 +30,6 @@ export class InvoiceItem {
   @Column({ type: 'int', nullable: true })
   sheets: number;
 
-  @Column({ type: 'int' })
-  quantity: number;
-
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   sqm: number;
 
