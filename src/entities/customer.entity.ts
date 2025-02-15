@@ -9,6 +9,7 @@ import {
 import { Currency } from './currency.entity';
 import { Account } from './account.entity';
 import { Invoice } from './invoice.entity';
+import { Request } from './request.entity'; 
 
 @Entity('customers')
 export class Customer {

@@ -23,10 +23,9 @@ import { ReceiptVoucherReturnModule } from './receipt-voucher-return/receipt-vou
 import { PaymentVoucherReturnModule } from './payment-voucher-return/payment-voucher-return.module';
 import { SalesReturnVoucherModule } from './sales-return-voucher/sales-return-voucher.module';
 import { PurchaseReturnVoucherModule } from './purchase-return-voucher/purchase-return-voucher.module';
-import { DebitNoteReturnModule } from './debit-note-returns/debit-note-returns.module'
+import { DebitNoteReturnModule } from './debit-note-returns/debit-note-returns.module';
 import { CreditNoteReturnModule } from './credit-note-returns/credit-note-returns.module';
-import { RequestsService } from './requests/requests.service';
-import { RequestsModule } from './requests/requests.module';
+import { RequestModule } from './requests/requests.module';
 
 @Module({
   imports: [
@@ -65,8 +64,8 @@ import { RequestsModule } from './requests/requests.module';
     PurchaseReturnVoucherModule,
     DebitNoteReturnModule,
     CreditNoteReturnModule,
-    RequestsModule,
+    RequestModule,
   ],
-  providers: [RequestsService],
+ 
 })
 export class AppModule {}
