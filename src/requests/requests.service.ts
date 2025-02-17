@@ -53,4 +53,32 @@ export class RequestService {
       relations: ['customer', 'details'],
     });
   }
+
+  async getFilteredRequests() {
+    const requests = await this.requestRepo.find({
+      relations: ['customer', 'details'],
+    });
+
+    return requests.map((request) => ({
+      id: request.id,
+      requestDate: request.requestDate,
+      totalAmount: request.totalAmount,
+      vatAmount: request.vatAmount,
+      grandTotal: request.grandTotal,
+      customerName: request.customer.customerName, 
+      details: request.details.map((detail) => ({
+        itemName: detail.itemName,
+        origin: detail.origin,
+        length: detail.length,
+        width: detail.width,
+        type: detail.type,
+        box: detail.box,
+        sheetPerBox: detail.sheetPerBox,
+        sheet: detail.sheet,
+        sqm: detail.sqm,
+        price: detail.price,
+        total: detail.total,
+      })),
+    }));
+  }
 }

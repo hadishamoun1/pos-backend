@@ -20,4 +20,9 @@ export class RequestController {
   async getRequestById(@Param("id") id: number): Promise<Request> {
     return this.requestService.getRequestById(id);
   }
+
+  @Get('v1/filtered')
+  async getFilteredRequests() {
+    return this.requestService.getFilteredRequests();
+  }
 }
