@@ -1,10 +1,4 @@
-import {
-  Entity,
-  Column,
-  PrimaryGeneratedColumn,
-  ManyToOne,
-  JoinColumn,
-} from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { ItemVariant } from './itemVariant.entity';
 import { InvoiceItem } from '../invoiceItem.entity';
 
@@ -20,13 +14,14 @@ export class InventoryTransaction {
   @Column({ type: 'enum', enum: ['purchase', 'sale'] })
   transactionType: string; // 'purchase' or 'sale'
 
-  @Column({ type: 'int', nullable: false })
-  quantity: number; // Quantity added or removed
+  // ✅ Track inventory in square meters (sqm)
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: false })
+  sqm: number; // How much glass is added or removed in m²
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   transactionDate: Date;
 
-  // 🔽 New Foreign Key to Link to InvoiceItem
+  // ✅ Link to InvoiceItem for sales transactions
   @ManyToOne(() => InvoiceItem, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'invoiceItemId' })
   invoiceItem: InvoiceItem;
