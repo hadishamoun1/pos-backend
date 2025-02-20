@@ -1,5 +1,12 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
 import { Invoice } from './invoice.entity';
+import { ItemVariant } from '../entities/inventory/itemVariant.entity';// Import the ItemVariant entity
 
 @Entity('invoice_items')
 export class InvoiceItem {
@@ -7,29 +14,18 @@ export class InvoiceItem {
   id: number;
 
   @ManyToOne(() => Invoice, (invoice) => invoice.items, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'invoiceId' })
   invoice: Invoice;
 
-  @Column({ type: 'varchar', length: 50 })
-  itemCode: string;
+  // 🔽 New Foreign Key to Link Item Variants
+  @ManyToOne(() => ItemVariant)
+  @JoinColumn({ name: 'itemVariantId' })
+  itemVariant: ItemVariant;
 
-  @Column({ type: 'varchar', length: 255 })
-  itemName: string;
+  @Column()
+  itemVariantId: number; // Foreign key for ItemVariant
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
-  length: number;
-
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
-  width: number;
-
-  @Column({ type: 'boolean' })
-  box: boolean;
-
-  @Column({ type: 'int', nullable: true })
-  sheetsPerBox: number;
-
-  @Column({ type: 'int', nullable: true })
-  sheets: number;
-
+  // Keep only necessary fields (remove duplicate item info)
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   sqm: number;
 
