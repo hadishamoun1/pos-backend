@@ -5,7 +5,7 @@ import { Customer } from '../entities/customer.entity';
 import { Branch } from '../entities/branch.entity';
 import { Currency } from '../entities/currency.entity';
 import { InvoiceItem } from '../entities/invoiceItem.entity';
-import { InvoiceService } from './invoice.service';
+import { InvoiceService  } from './invoice.service';
 import { InvoiceController } from './invoice.controller';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity'; 
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
@@ -21,7 +21,8 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
       ItemVariant
     ]),
   ],
-  providers: [InvoiceService],
+  providers: [InvoiceService, InventoryTransaction],  // ✅ Ensure InvoiceService is here
   controllers: [InvoiceController],
+  exports: [InvoiceService], 
 })
 export class InvoiceModule {}
