@@ -8,6 +8,7 @@ import { InvoiceItem } from '../entities/invoiceItem.entity';
 import { InvoiceService } from './invoice.service';
 import { InvoiceController } from './invoice.controller';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity'; 
+import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -17,6 +18,7 @@ import { InventoryTransaction } from '../entities/inventory/inventoryTransaction
       Currency,
       InvoiceItem,
       InventoryTransaction,
+      ItemVariant
     ]),
   ],
   providers: [InvoiceService],

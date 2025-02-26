@@ -32,22 +32,22 @@ export class Invoice {
   @Column({ type: 'varchar', length: 50 })
   invoiceNumber: string;
 
-  @Column({ type: 'varchar', length: 50 })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   documentNumber: string;
 
   @ManyToOne(() => Branch, (branch) => branch.invoices)
   @JoinColumn({ name: 'branchId' })
   branch: Branch;
 
-  @Column()
-  branchId: number; 
+  @Column({ nullable: true })
+  branchId: number;
 
   @ManyToOne(() => Currency, (currency) => currency.invoices)
-  @JoinColumn({ name: 'currencyId' }) 
+  @JoinColumn({ name: 'currencyId' })
   currency: Currency;
 
-  @Column()
-  currencyId: number; 
+  @Column({ nullable: true })
+  currencyId: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalWithoutVAT: number;

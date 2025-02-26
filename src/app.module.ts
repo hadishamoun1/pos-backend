@@ -26,6 +26,8 @@ import { PurchaseReturnVoucherModule } from './purchase-return-voucher/purchase-
 import { DebitNoteReturnModule } from './debit-note-returns/debit-note-returns.module';
 import { CreditNoteReturnModule } from './credit-note-returns/credit-note-returns.module';
 import { RequestModule } from './requests/requests.module';
+import { InventoryTransactionModule } from './inventroy-transactions/inventroy-transactions.module';
+
 
 @Module({
   imports: [
@@ -65,7 +67,9 @@ import { RequestModule } from './requests/requests.module';
     DebitNoteReturnModule,
     CreditNoteReturnModule,
     RequestModule,
+    InventoryTransactionModule,
   ],
+
  
 })
 export class AppModule {}
