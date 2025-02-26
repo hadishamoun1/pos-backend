@@ -21,11 +21,7 @@ export class InvoiceService {
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
 
-    @InjectRepository(InvoiceItem)
-    private readonly invoiceItemRepository: Repository<InvoiceItem>,
-
-    @InjectRepository(Customer)
-    private readonly customerRepository: Repository<Customer>,
+ 
   ) {}
 
   /**
