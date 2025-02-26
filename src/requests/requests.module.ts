@@ -3,13 +3,20 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Request } from '../entities/request.entity';
 import { RequestDetail } from '../entities/requestDetails.entity';
 import { Customer } from '../entities/customer.entity';
-import { ItemVariant } from '../entities/inventory/itemVariant.entity'; 
+import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { RequestService } from './requests.service';
 import { RequestController } from './requests.controller';
+import { Settings } from '../entities/settings.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Request, RequestDetail, Customer, ItemVariant]), 
+    TypeOrmModule.forFeature([
+      Request,
+      RequestDetail,
+      Customer,
+      ItemVariant,
+      Settings,
+    ]),
   ],
   providers: [RequestService],
   controllers: [RequestController],

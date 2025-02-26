@@ -21,6 +21,9 @@ export class Request {
   @Column({ type: 'date' })
   requestDate: Date;
 
+  @Column({ type: 'varchar', length: 50, unique: true })
+  requestNumber: string; // ✅ Auto-generated request number
+
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalAmount: number;
 
