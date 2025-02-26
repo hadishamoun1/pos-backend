@@ -7,7 +7,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { RequestDetail } from './requestDetails.entity';
-import { Customer } from '../customer.entity';
+import { Customer } from './customer.entity';
 
 @Entity()
 export class Request {
