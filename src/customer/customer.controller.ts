@@ -37,4 +37,13 @@ export class CustomerController {
   async getCustomerBasicDetails(): Promise<Partial<Customer>[]> {
     return this.customerService.getCustomerBasicDetails();
   }
+
+  /**
+   * ✅ Endpoint: Search Customers by Name
+   * Example: GET /customers/search?query=John
+   */
+  @Get('v1/search')
+  async searchCustomers(@Query('query') query: string) {
+    return this.customerService.searchCustomers(query);
+  }
 }

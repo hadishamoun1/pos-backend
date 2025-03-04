@@ -122,4 +122,21 @@ export class CustomerService {
     });
     return customers;
   }
+
+  /**
+   * ✅ Search customers by name and return only id & customerName
+   */
+  async searchCustomers(
+    query: string,
+  ): Promise<{ id: number; customerName: string }[]> {
+    if (!query) {
+      return [];
+    }
+
+    return this.customerRepository.find({
+      where: { customerName: Like(`%${query}%`) },
+      select: ['id', 'customerName'],
+      take: 10, // Limit results to 10 for efficiency
+    });
+  }
 }
