@@ -77,6 +77,7 @@ export class ItemsService {
         'item.itemName',
         'item.type',
         'thickness.thickness', // Thickness field
+        'variant.id',
         'variant.length', // ItemVariant fields
         'variant.width',
         'variant.sheetsPerBox',
