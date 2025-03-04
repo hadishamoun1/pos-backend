@@ -13,7 +13,7 @@ import { Account } from '../entities/account.entity';
 @Injectable()
 export class InvoiceService {
   constructor(
-    private readonly dataSource: DataSource, // ✅ Inject DataSource for transactions
+    private readonly dataSource: DataSource,
 
     @InjectRepository(InventoryTransaction)
     private readonly inventoryTransactionRepository: Repository<InventoryTransaction>,
@@ -188,6 +188,36 @@ export class InvoiceService {
           exchangeRate: currencyRate,
         }),
       ]);
+
+      // ✅ Insert Inventory Transactions
+      for (const item of invoiceItems) {
+        const inventoryTransaction = queryRunner.manager.create(
+          InventoryTransaction,
+          {
+            itemVariant: item.itemVariant,
+            transactionType: 'sale',
+            sqm: item.sqm,
+            transactionDate: new Date(),
+            invoiceItem: item,
+          },
+        );
+
+        await queryRunner.manager.save(inventoryTransaction);
+
+        // ✅ Update stock in ItemVariant
+        await queryRunner.manager.increment(
+          ItemVariant,
+          { id: item.itemVariant.id },
+          'out',
+          item.sqm,
+        );
+        await queryRunner.manager.decrement(
+          ItemVariant,
+          { id: item.itemVariant.id },
+          'balance',
+          item.sqm,
+        );
+      }
 
       await queryRunner.commitTransaction();
 
