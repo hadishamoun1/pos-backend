@@ -15,7 +15,7 @@ export class SalesVoucherDetail {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @ManyToOne(() => Account, { nullable: false })
+  @ManyToOne(() => Account, { nullable: true })
   account: Account;
 
   @Column({ type: 'varchar', nullable: true })
@@ -48,10 +48,10 @@ export class SalesVoucherDetail {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   crLL: number;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateAcc: CurrencyRate;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
   @ManyToOne(() => Customer, { nullable: true })

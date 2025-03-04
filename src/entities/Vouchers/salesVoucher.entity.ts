@@ -19,8 +19,6 @@ export class SalesVoucher {
   @Column({ type: 'date' })
   date: Date;
 
-  @ManyToOne(() => Account, { nullable: false })
-  account: Account;
 
   @Column({ type: 'varchar', length: 50, unique: true })
   svNumber: string; // Sales Voucher Number (e.g., SV - 1)
@@ -43,10 +41,10 @@ export class SalesVoucher {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalCrLL: number;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateAcc: CurrencyRate;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
   @OneToMany(() => SalesVoucherDetail, (detail) => detail.salesVoucher, {
