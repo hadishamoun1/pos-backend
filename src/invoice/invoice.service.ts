@@ -15,12 +15,6 @@ export class InvoiceService {
   constructor(
     private readonly dataSource: DataSource,
 
-    @InjectRepository(InventoryTransaction)
-    private readonly inventoryTransactionRepository: Repository<InventoryTransaction>,
-
-    @InjectRepository(ItemVariant)
-    private readonly itemVariantRepository: Repository<ItemVariant>,
-
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
   ) {}
