@@ -58,13 +58,19 @@ export class InvoiceService {
         ...otherFields
       } = invoiceData;
 
+      if (!customerId || !invoiceType || !date || !currencyRate) {
+        throw new Error(
+          `Missing required fields: customerId=${customerId}, invoiceType=${invoiceType}, date=${date}, currencyRate=${currencyRate}`,
+        );
+      }
+
+      console.log('🔍 Processing Invoice Creation...');
+
       const customer = await queryRunner.manager.findOne(Customer, {
         where: { id: customerId },
       });
       if (!customer)
-        throw new NotFoundException(
-          `Customer with ID ${customerId} not found.`,
-        );
+        throw new NotFoundException(`Customer ID ${customerId} not found.`);
 
       const invoiceNumber = await this.generateInvoiceNumber(
         invoiceType,
@@ -75,33 +81,59 @@ export class InvoiceService {
       let grandTotal = 0;
       let invoiceItems: InvoiceItem[] = [];
 
-      if (items && Array.isArray(items)) {
-        for (const item of items) {
-          const { itemVariantId, sqm, unitPrice, vat } = item;
-          const totalAmount = sqm * unitPrice;
-          totalVAT += vat;
-          grandTotal += totalAmount + vat;
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new Error('No items provided for the invoice.');
+      }
 
-          const itemVariant = await queryRunner.manager.findOne(ItemVariant, {
-            where: { id: itemVariantId },
-          });
-          if (!itemVariant) {
-            throw new NotFoundException(
-              `ItemVariant with ID ${itemVariantId} not found.`,
-            );
-          }
-
-          const invoiceItem = queryRunner.manager.create(InvoiceItem, {
-            invoice: null,
-            itemVariant,
-            sqm,
-            unitPrice,
-            totalAmount,
-            vat,
-          });
-
-          invoiceItems.push(invoiceItem);
+      for (const item of items) {
+        if (
+          !item.itemVariantId ||
+          item.sqm === undefined ||
+          item.unitPrice === undefined ||
+          item.vat === undefined
+        ) {
+          throw new Error(`Invalid item data: ${JSON.stringify(item)}`);
         }
+
+        const itemVariant = await queryRunner.manager.findOne(ItemVariant, {
+          where: { id: item.itemVariantId },
+        });
+
+        if (!itemVariant) {
+          throw new NotFoundException(
+            `ItemVariant ID ${item.itemVariantId} not found.`,
+          );
+        }
+
+        const sqm =
+          typeof item.sqm === 'string' ? parseFloat(item.sqm) : item.sqm;
+        const unitPrice =
+          typeof item.unitPrice === 'string'
+            ? parseFloat(item.unitPrice)
+            : item.unitPrice;
+        const vat =
+          typeof item.vat === 'string' ? parseFloat(item.vat) : item.vat;
+
+        if (isNaN(sqm) || isNaN(unitPrice) || isNaN(vat)) {
+          throw new Error(
+            `Invalid number values for itemVariantId ${item.itemVariantId}: sqm=${sqm}, unitPrice=${unitPrice}, vat=${vat}`,
+          );
+        }
+
+        const totalAmount = sqm * unitPrice;
+        totalVAT += vat;
+        grandTotal += totalAmount + vat;
+
+        const invoiceItem = queryRunner.manager.create(InvoiceItem, {
+          invoice: null,
+          itemVariant,
+          sqm,
+          unitPrice,
+          totalAmount,
+          vat,
+        });
+
+        invoiceItems.push(invoiceItem);
       }
 
       const totalWithoutVAT = grandTotal - totalVAT;
@@ -116,14 +148,15 @@ export class InvoiceService {
         currencyRate,
         ...otherFields,
       });
+
       const savedInvoice = await queryRunner.manager.save(invoice);
+      console.log('✅ Invoice Created:', savedInvoice);
 
       for (const item of invoiceItems) {
         item.invoice = savedInvoice;
         await queryRunner.manager.save(item);
       }
 
-      // ✅ Generate Sales Voucher
       const svNumber = await this.generateInvoiceNumber(
         invoiceType,
         queryRunner,
@@ -142,7 +175,6 @@ export class InvoiceService {
       });
       const savedVoucher = await queryRunner.manager.save(salesVoucher);
 
-      // ✅ Insert Sales Voucher Details
       await queryRunner.manager.save([
         queryRunner.manager.create(SalesVoucherDetail, {
           salesVoucher: savedVoucher,
@@ -183,7 +215,6 @@ export class InvoiceService {
         }),
       ]);
 
-      // ✅ Insert Inventory Transactions
       for (const item of invoiceItems) {
         const inventoryTransaction = queryRunner.manager.create(
           InventoryTransaction,
@@ -197,8 +228,6 @@ export class InvoiceService {
         );
 
         await queryRunner.manager.save(inventoryTransaction);
-
-        // ✅ Update stock in ItemVariant
         await queryRunner.manager.increment(
           ItemVariant,
           { id: item.itemVariant.id },
@@ -214,6 +243,7 @@ export class InvoiceService {
       }
 
       await queryRunner.commitTransaction();
+      console.log('✅ Invoice successfully committed.');
 
       const finalInvoice = await queryRunner.manager.findOne(Invoice, {
         where: { id: savedInvoice.id },
@@ -223,7 +253,8 @@ export class InvoiceService {
       return finalInvoice;
     } catch (error) {
       await queryRunner.rollbackTransaction();
-      throw error;
+      console.error('❌ Error creating invoice:', error.message, error.stack);
+      throw new Error(`Invoice creation failed: ${error.message}`);
     } finally {
       await queryRunner.release();
     }

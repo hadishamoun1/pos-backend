@@ -19,26 +19,25 @@ export class SalesVoucher {
   @Column({ type: 'date' })
   date: Date;
 
-
   @Column({ type: 'varchar', length: 50, unique: true })
   svNumber: string; // Sales Voucher Number (e.g., SV - 1)
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDrUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDrLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCr: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCrUSD: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCrLL: number;
 
   @ManyToOne(() => CurrencyRate, { nullable: true })
