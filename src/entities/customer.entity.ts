@@ -9,7 +9,7 @@ import {
 import { Currency } from './currency.entity';
 import { Account } from './account.entity';
 import { Invoice } from './invoice.entity';
-import { Request } from './request.entity'; 
+import { Request } from './request.entity';
 
 @Entity('customers')
 export class Customer {
@@ -37,8 +37,8 @@ export class Customer {
   @Column({ type: 'varchar', length: 50, nullable: true })
   financialNumber?: string;
 
-  @Column({ type: 'enum', enum: ['S', 'G'], nullable: true })
-  invoiceType?: 'S' | 'G';
+  @Column({ type: 'enum', enum: ['S', 'G', 'Both'], nullable: true })
+  invoiceType?: 'S' | 'G' | 'Both';
 
   @Column({ type: 'decimal', nullable: true })
   vat?: number;

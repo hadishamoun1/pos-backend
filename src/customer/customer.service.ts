@@ -135,7 +135,7 @@ export class CustomerService {
 
     return this.customerRepository.find({
       where: { customerName: Like(`%${query}%`) },
-      select: ['id', 'customerName'],
+      select: ['id', 'customerName','invoiceType'],
       take: 10, // Limit results to 10 for efficiency
     });
   }
