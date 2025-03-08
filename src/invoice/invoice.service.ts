@@ -54,6 +54,7 @@ export class InvoiceService {
         invoiceType,
         date,
         currencyRate,
+        vatPercentage,
         items,
         ...otherFields
       } = invoiceData;
@@ -90,7 +91,8 @@ export class InvoiceService {
           !item.itemVariantId ||
           item.sqm === undefined ||
           item.unitPrice === undefined ||
-          item.vat === undefined
+          item.vat === undefined ||
+          item.quantity === undefined
         ) {
           throw new Error(`Invalid item data: ${JSON.stringify(item)}`);
         }
@@ -114,9 +116,14 @@ export class InvoiceService {
         const vat =
           typeof item.vat === 'string' ? parseFloat(item.vat) : item.vat;
 
-        if (isNaN(sqm) || isNaN(unitPrice) || isNaN(vat)) {
+        const quantity =
+          typeof item.quantity === 'string'
+            ? parseInt(item.quantity, 10)
+            : item.quantity;
+
+        if (isNaN(sqm) || isNaN(unitPrice) || isNaN(vat) || isNaN(quantity)) {
           throw new Error(
-            `Invalid number values for itemVariantId ${item.itemVariantId}: sqm=${sqm}, unitPrice=${unitPrice}, vat=${vat}`,
+            `Invalid number values for itemVariantId ${item.itemVariantId}: sqm=${sqm}, unitPrice=${unitPrice}, vat=${vat}, quantity=${quantity}`,
           );
         }
 
@@ -131,6 +138,7 @@ export class InvoiceService {
           unitPrice,
           totalAmount,
           vat,
+          quantity,
         });
 
         invoiceItems.push(invoiceItem);
@@ -146,6 +154,7 @@ export class InvoiceService {
         totalVAT,
         grandTotal,
         currencyRate,
+        vatPercentage,
         ...otherFields,
       });
 
@@ -269,11 +278,11 @@ export class InvoiceService {
     const invoice = await this.invoiceRepository.findOne({
       where: { id: invoiceId },
       relations: [
-        'customer', // ✅ Fetch customer details
-        'items', // ✅ Fetch invoice items
-        'items.itemVariant', // ✅ Fetch item variant details
-        'items.itemVariant.thickness', // ✅ Fetch thickness details
-        'items.itemVariant.thickness.item', // ✅ Fetch item details
+        'customer',
+        'items',
+        'items.itemVariant',
+        'items.itemVariant.thickness',
+        'items.itemVariant.thickness.item',
       ],
     });
 
