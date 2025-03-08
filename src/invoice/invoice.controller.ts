@@ -16,7 +16,7 @@ export class InvoiceController {
     return this.invoiceService.getAllInvoices();
   }
 
-  @Get(':id')
+  @Get('v1/:id')
   async getInvoiceById(@Param('id') id: number): Promise<Invoice> {
     return this.invoiceService.getInvoiceById(id);
   }

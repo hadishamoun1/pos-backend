@@ -265,15 +265,77 @@ export class InvoiceService {
       relations: ['customer', 'items'],
     });
   }
-
-  async getInvoiceById(id: number): Promise<Invoice> {
+  async getInvoiceById(invoiceId: number): Promise<any> {
     const invoice = await this.invoiceRepository.findOne({
-      where: { id },
-      relations: ['customer', 'items'],
+      where: { id: invoiceId },
+      relations: [
+        'customer', // ✅ Fetch customer details
+        'items', // ✅ Fetch invoice items
+        'items.itemVariant', // ✅ Fetch item variant details
+        'items.itemVariant.thickness', // ✅ Fetch thickness details
+        'items.itemVariant.thickness.item', // ✅ Fetch item details
+      ],
     });
+
     if (!invoice) {
-      throw new NotFoundException(`Invoice with ID ${id} not found.`);
+      throw new Error('Invoice not found');
     }
-    return invoice;
+
+    // ✅ Format the response to be more user-friendly
+    return {
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      date: invoice.date,
+      invoiceType: invoice.invoiceType,
+      documentNumber: invoice.documentNumber || null,
+      totalWithoutVAT: invoice.totalWithoutVAT,
+      totalVAT: invoice.totalVAT,
+      grandTotal: invoice.grandTotal,
+      currencyRate: invoice.currencyRate,
+      vatPercentage: invoice.vatPercentage,
+
+      // ✅ Flattened customer info
+      customerId: invoice.customer?.id,
+      customerName: invoice.customer?.customerName,
+      customerInvoiceType: invoice.customer?.invoiceType,
+
+      // ✅ Reformatted items list for easier frontend use
+      items: invoice.items.map((item) => {
+        const variant = item.itemVariant;
+        const thickness = variant?.thickness;
+        const itemData = thickness?.item;
+
+        return {
+          invoiceItemId: item.id,
+          sqm: item.sqm,
+          unitPrice: item.unitPrice,
+          totalAmount: item.totalAmount,
+          vat: item.vat,
+          quantity: item.quantity, // ✅ Overall quantity (box/sheet)
+
+          // ✅ Item Details
+          itemVariantId: variant?.id,
+          itemName: itemData?.itemName,
+          itemType: itemData?.type, // 'box' or 'sheet'
+          thickness: thickness?.thickness, // e.g., "10mm"
+          length: variant?.length,
+          width: variant?.width,
+          origin: variant?.origin,
+          sheetsPerBox: variant?.sheetsPerBox, // ✅ Sheets per box
+          totalSheets: item.quantity * (variant?.sheetsPerBox || 1), // ✅ Total sheets calculated
+
+          // ✅ Inventory Tracking
+          inventoryStart: variant?.start,
+          inventoryIn: variant?.in,
+          inventoryOut: variant?.out,
+          inventoryBalance: variant?.balance,
+
+          // ✅ Box/Sheet Specific Flags
+          fixBox: variant?.fixBox,
+          fixLength: variant?.fixLength,
+          fixWidth: variant?.fixWidth,
+        };
+      }),
+    };
   }
 }
