@@ -6,7 +6,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { Invoice } from './invoice.entity';
-import { ItemVariant } from '../entities/inventory/itemVariant.entity';// Import the ItemVariant entity
+import { ItemVariant } from '../entities/inventory/itemVariant.entity'; // Import the ItemVariant entity
 
 @Entity('invoice_items')
 export class InvoiceItem {
@@ -37,4 +37,6 @@ export class InvoiceItem {
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   vat: number;
+  @Column({ type: 'int', default: 1 })
+  quantity: number;
 }
