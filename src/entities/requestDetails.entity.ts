@@ -19,6 +19,9 @@ export class RequestDetail {
   @JoinColumn({ name: 'requestId' })
   request: Request;
 
+  @Column({ type: 'int', default: 1 }) 
+  quantity: number;
+
   @ManyToOne(() => ItemVariant, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'itemVariantId' })
   itemVariant: ItemVariant;

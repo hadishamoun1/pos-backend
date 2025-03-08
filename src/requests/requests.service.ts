@@ -64,7 +64,7 @@ export class RequestService {
     // ✅ Validate and Link Item Variants
     const requestDetails = await Promise.all(
       details.map(async (detail) => {
-        const { itemVariantId, sqm, price, total } = detail;
+        const { itemVariantId,quantity, sqm, price, total } = detail;
 
         const itemVariant = await this.itemVariantRepo.findOne({
           where: { id: itemVariantId },
@@ -78,6 +78,7 @@ export class RequestService {
 
         return this.detailRepo.create({
           itemVariant,
+          quantity,
           sqm,
           price,
           total,
@@ -123,23 +124,35 @@ export class RequestService {
       ],
     });
   }
-
   async getFilteredRequests() {
-    const requests = await this.getAllRequests();
+    const requests = await this.requestRepo.find({
+      relations: [
+        'customer',
+        'details',
+        'details.itemVariant',
+        'details.itemVariant.thickness',
+        'details.itemVariant.thickness.item',
+      ],
+    });
+
     return requests.map((request) => ({
       id: request.id,
-      requestNumber: request.requestNumber, // ✅ Include Request Number in Response
+      requestNumber: request.requestNumber,
       requestDate: request.requestDate,
       totalAmount: request.totalAmount,
       vatAmount: request.vatAmount,
       grandTotal: request.grandTotal,
       customerName: request.customer.customerName,
       details: request.details.map((detail) => ({
+        itemVariantId: detail.itemVariant.id, 
         itemName: detail.itemVariant.thickness.item.itemName,
         thickness: detail.itemVariant.thickness.thickness,
         length: detail.itemVariant.length,
         width: detail.itemVariant.width,
         origin: detail.itemVariant.origin,
+        sheetsPerBox: detail.itemVariant.sheetsPerBox,
+        itemType: detail.itemVariant.thickness.item.type,
+        quantity: detail.quantity,
         sqm: detail.sqm,
         price: detail.price,
         total: detail.total,
