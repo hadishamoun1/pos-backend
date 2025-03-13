@@ -143,6 +143,7 @@ export class RequestService {
       vatAmount: request.vatAmount,
       grandTotal: request.grandTotal,
       customerName: request.customer.customerName,
+      invoiceType: request.customer.invoiceType,
       details: request.details.map((detail) => ({
         itemVariantId: detail.itemVariant.id, 
         itemName: detail.itemVariant.thickness.item.itemName,
