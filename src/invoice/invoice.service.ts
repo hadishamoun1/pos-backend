@@ -348,22 +348,29 @@ export class InvoiceService {
     };
   }
 
-  async getFilteredInvoices(): Promise<any[]> {
-    const invoices = await this.invoiceRepository.find({
+  async getFilteredInvoices(page: number, limit: number): Promise<{ data: any[]; total: number; totalPages: number }> {
+    const [invoices, total] = await this.invoiceRepository.findAndCount({
       relations: ['customer'],
       order: { id: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
     });
-
-    return invoices.map((invoice) => ({
-      id: invoice.id,
-      invoiceNumber: invoice.invoiceNumber,
-      date: invoice.date,
-      totalWithoutVAT: invoice.totalWithoutVAT,
-      totalVAT: invoice.totalVAT,
-      grandTotal: invoice.grandTotal,
-      customerId: invoice.customer?.id,
-      customerName: invoice.customer?.customerName,
-      invoiceType: invoice.invoiceType,
-    }));
+  
+    return {
+      data: invoices.map((invoice) => ({
+        id: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        date: invoice.date,
+        totalWithoutVAT: invoice.totalWithoutVAT,
+        totalVAT: invoice.totalVAT,
+        grandTotal: invoice.grandTotal,
+        customerId: invoice.customer?.id,
+        customerName: invoice.customer?.customerName,
+        invoiceType: invoice.invoiceType,
+      })),
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
   }
+  
 }
