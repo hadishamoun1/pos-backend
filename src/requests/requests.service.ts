@@ -130,13 +130,16 @@ export class RequestService {
   }
   async getFilteredRequests() {
     const requests = await this.requestRepo.find({
-      relations: [
-        'customer',
-        'details',
-        'details.itemVariant',
-        'details.itemVariant.thickness',
-        'details.itemVariant.thickness.item',
+      select: [
+        'id',
+        'requestNumber',
+        'requestDate',
+        'totalAmount',
+        'vatAmount',
+        'grandTotal',
       ],
+      relations: ['customer'],
+      order: { requestDate: 'DESC' },  
     });
 
     return requests.map((request) => ({
@@ -146,22 +149,9 @@ export class RequestService {
       totalAmount: request.totalAmount,
       vatAmount: request.vatAmount,
       grandTotal: request.grandTotal,
-      customerName: request.customer.customerName,
-      invoiceType: request.customer.invoiceType,
-      details: request.details.map((detail) => ({
-        itemVariantId: detail.itemVariant.id,
-        itemName: detail.itemVariant.thickness.item.itemName,
-        thickness: detail.itemVariant.thickness.thickness,
-        length: detail.itemVariant.length,
-        width: detail.itemVariant.width,
-        origin: detail.itemVariant.origin,
-        sheetsPerBox: detail.itemVariant.sheetsPerBox,
-        itemType: detail.itemVariant.thickness.item.type,
-        quantity: detail.quantity,
-        sqm: detail.sqm,
-        price: detail.price,
-        total: detail.total,
-      })),
+      customerName: request.customer?.customerName || 'Unknown', 
+      customerId:request.customer?.id,
+      invoiceType: request.customer?.invoiceType || 'Both', 
     }));
   }
 }
