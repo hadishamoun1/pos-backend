@@ -47,29 +47,33 @@ export class RequestService {
     const year = activeYear.year.slice(-2); // Extract last 2 digits (e.g., '2025' → '25')
     const prefix = `REQ${year}`;
 
-    // ✅ Find the last request for the active year
-    const lastRequest = await this.requestRepo.find({
-      where: { requestNumber: Like(`${prefix}%`) },
-      order: { requestNumber: 'DESC' },
-      take: 1,
-    });
+    // ✅ Find the last request number **correctly**
+    const lastRequest = await this.requestRepo
+      .createQueryBuilder('request')
+      .select(
+        "CAST(SUBSTRING_INDEX(request.requestNumber, ' - ', -1) AS UNSIGNED) AS maxNumber",
+      )
+      .where('request.requestNumber LIKE :prefix', { prefix: `${prefix} - %` })
+      .orderBy('maxNumber', 'DESC')
+      .limit(1)
+      .getRawOne();
 
-    // ✅ Generate New Request Number
-    const newRequestNumber =
-      lastRequest.length > 0
-        ? parseInt(lastRequest[0].requestNumber.split(' - ')[1]) + 1
-        : 1;
+    // ✅ Ensure correct numbering
+    const newRequestNumber = lastRequest?.maxNumber
+      ? parseInt(lastRequest.maxNumber) + 1
+      : 1;
     const requestNumber = `${prefix} - ${newRequestNumber}`;
 
     // ✅ Validate and Link Item Variants
     const requestDetails = await Promise.all(
       details.map(async (detail) => {
-        const { itemVariantId,quantity, sqm, price, total } = detail;
+        const { itemVariantId, quantity, sqm, price, total } = detail;
 
         const itemVariant = await this.itemVariantRepo.findOne({
           where: { id: itemVariantId },
           relations: ['thickness', 'thickness.item'],
         });
+
         if (!itemVariant) {
           throw new NotFoundException(
             `ItemVariant with ID ${itemVariantId} not found.`,
@@ -86,7 +90,7 @@ export class RequestService {
       }),
     );
 
-    // ✅ Create Request with Generated Request Number
+    // ✅ Create and Save Request
     const request = this.requestRepo.create({
       requestNumber, // ✅ Set Auto-Generated Request Number
       requestDate,
@@ -145,7 +149,7 @@ export class RequestService {
       customerName: request.customer.customerName,
       invoiceType: request.customer.invoiceType,
       details: request.details.map((detail) => ({
-        itemVariantId: detail.itemVariant.id, 
+        itemVariantId: detail.itemVariant.id,
         itemName: detail.itemVariant.thickness.item.itemName,
         thickness: detail.itemVariant.thickness.thickness,
         length: detail.itemVariant.length,
