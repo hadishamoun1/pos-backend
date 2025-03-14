@@ -24,7 +24,7 @@ export class InvoiceController {
   @Get('filtered')
 async getFilteredInvoices(
   @Query('page') page: number = 1,
-  @Query('limit') limit: number = 10,
+  @Query('limit') limit: number = 100,
 ) {
   return this.invoiceService.getFilteredInvoices(Number(page), Number(limit));
 }
