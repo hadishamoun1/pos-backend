@@ -21,10 +21,10 @@ export class RequestController {
     return this.requestService.getRequestById(id);
   }
 
-  @Get('/filtered')
+  @Get('v1/filtered')
   async getFilteredRequests(
     @Query('page') page: number = 1,
-    @Query('limit') limit: number = 10,
+    @Query('limit') limit: number = 100,
   ) {
     return this.requestService.getFilteredRequests(Number(page), Number(limit));
   }
