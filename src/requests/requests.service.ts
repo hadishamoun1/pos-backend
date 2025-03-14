@@ -127,11 +127,11 @@ export class RequestService {
         'details.itemVariant.thickness.item',
       ],
     });
-  
+
     if (!request) {
       throw new NotFoundException(`Request with ID ${id} not found.`);
     }
-  
+
     return {
       id: request.id,
       requestNumber: request.requestNumber,
@@ -158,31 +158,35 @@ export class RequestService {
       })),
     };
   }
-  
-  async getFilteredRequests() {
-    const requests = await this.requestRepo.find({
-      select: [
-        'id',
-        'requestNumber',
-        'requestDate',
-        'totalAmount',
-        'vatAmount',
-        'grandTotal',
+
+  async getFilteredRequests(page: number = 1, limit: number = 10) {
+    const [requests, total] = await this.requestRepo.findAndCount({
+      relations: [
+        'customer',
+        'details',
+        'details.itemVariant',
+        'details.itemVariant.thickness',
+        'details.itemVariant.thickness.item',
       ],
-      relations: ['customer'],
-      order: { requestDate: 'DESC' },  
+      order: { id: 'DESC' }, 
+      skip: (page - 1) * limit, 
+      take: limit, 
     });
 
-    return requests.map((request) => ({
-      id: request.id,
-      requestNumber: request.requestNumber,
-      requestDate: request.requestDate,
-      totalAmount: request.totalAmount,
-      vatAmount: request.vatAmount,
-      grandTotal: request.grandTotal,
-      customerName: request.customer?.customerName || 'Unknown', 
-      customerId:request.customer?.id,
-      invoiceType: request.customer?.invoiceType || 'Both', 
-    }));
+    return {
+      data: requests.map((request) => ({
+        id: request.id,
+        requestNumber: request.requestNumber,
+        requestDate: request.requestDate,
+        totalAmount: request.totalAmount,
+        vatAmount: request.vatAmount,
+        grandTotal: request.grandTotal,
+        customerName: request.customer.customerName,
+        invoiceType: request.customer.invoiceType,
+      })),
+      total, 
+      page,
+      totalPages: Math.ceil(total / limit), 
+    };
   }
 }

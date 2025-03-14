@@ -1,8 +1,8 @@
-import { Controller, Get, Post, Param, Body } from "@nestjs/common";
-import { RequestService } from "./requests.service";
-import { Request } from "../entities/request.entity";
+import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
+import { RequestService } from './requests.service';
+import { Request } from '../entities/request.entity';
 
-@Controller("requests")
+@Controller('requests')
 export class RequestController {
   constructor(private readonly requestService: RequestService) {}
 
@@ -16,13 +16,16 @@ export class RequestController {
     return this.requestService.getAllRequests();
   }
 
-  @Get(":id")
-  async getRequestById(@Param("id") id: number): Promise<Request> {
+  @Get(':id')
+  async getRequestById(@Param('id') id: number): Promise<Request> {
     return this.requestService.getRequestById(id);
   }
 
-  @Get('v1/filtered')
-  async getFilteredRequests() {
-    return this.requestService.getFilteredRequests();
+  @Get('/filtered')
+  async getFilteredRequests(
+    @Query('page') page: number = 1,
+    @Query('limit') limit: number = 10,
+  ) {
+    return this.requestService.getFilteredRequests(Number(page), Number(limit));
   }
 }
