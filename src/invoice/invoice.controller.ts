@@ -20,4 +20,9 @@ export class InvoiceController {
   async getInvoiceById(@Param('id') id: number): Promise<Invoice> {
     return this.invoiceService.getInvoiceById(id);
   }
+
+  @Get('filtered')
+  async getFilteredInvoices() {
+    return this.invoiceService.getFilteredInvoices();
+  }
 }

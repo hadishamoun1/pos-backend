@@ -347,4 +347,23 @@ export class InvoiceService {
       }),
     };
   }
+
+  async getFilteredInvoices(): Promise<any[]> {
+    const invoices = await this.invoiceRepository.find({
+      relations: ['customer'],
+      order: { id: 'DESC' },
+    });
+
+    return invoices.map((invoice) => ({
+      id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      date: invoice.date,
+      totalWithoutVAT: invoice.totalWithoutVAT,
+      totalVAT: invoice.totalVAT,
+      grandTotal: invoice.grandTotal,
+      customerId: invoice.customer?.id,
+      customerName: invoice.customer?.customerName,
+      invoiceType: invoice.invoiceType,
+    }));
+  }
 }
