@@ -116,8 +116,8 @@ export class RequestService {
     });
   }
 
-  async getRequestById(id: number): Promise<Request> {
-    return this.requestRepo.findOne({
+  async getRequestById(id: number): Promise<any> {
+    const request = await this.requestRepo.findOne({
       where: { id },
       relations: [
         'customer',
@@ -127,7 +127,38 @@ export class RequestService {
         'details.itemVariant.thickness.item',
       ],
     });
+  
+    if (!request) {
+      throw new NotFoundException(`Request with ID ${id} not found.`);
+    }
+  
+    return {
+      id: request.id,
+      requestNumber: request.requestNumber,
+      requestDate: request.requestDate,
+      totalAmount: request.totalAmount,
+      vatAmount: request.vatAmount,
+      grandTotal: request.grandTotal,
+      customerId: request.customer?.id || null, // ✅ Prevent null errors
+      customerName: request.customer?.customerName || 'Unknown', // ✅ Fallback for missing name
+      invoiceType: request.customer?.invoiceType || 'Both', // ✅ Default to 'Both' if missing
+      details: request.details.map((detail) => ({
+        itemVariantId: detail.itemVariant?.id || null,
+        itemName: detail.itemVariant?.thickness?.item?.itemName || 'Unknown',
+        thickness: detail.itemVariant?.thickness?.thickness || 'Unknown',
+        length: detail.itemVariant?.length || 0,
+        width: detail.itemVariant?.width || 0,
+        origin: detail.itemVariant?.origin || 'Unknown',
+        sheetsPerBox: detail.itemVariant?.sheetsPerBox || 0,
+        itemType: detail.itemVariant?.thickness?.item?.type || 'Unknown',
+        quantity: detail.quantity || 0,
+        sqm: detail.sqm || 0,
+        price: detail.price || 0,
+        total: detail.total || 0,
+      })),
+    };
   }
+  
   async getFilteredRequests() {
     const requests = await this.requestRepo.find({
       select: [
