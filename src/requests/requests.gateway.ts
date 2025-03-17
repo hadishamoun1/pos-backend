@@ -25,6 +25,11 @@ export class RequestGateway
     console.log(`🔴 Client disconnected: ${client.id}`);
   }
 
+  // ✅ Send new request to all clients
+  notifyNewRequest(newRequest: any) {
+    this.server.emit('newRequest', newRequest);
+  }
+
   /**
    * ✅ Emit updated request list in real-time
    */

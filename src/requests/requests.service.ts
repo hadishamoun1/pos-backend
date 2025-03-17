@@ -102,7 +102,21 @@ export class RequestService {
       details: requestDetails,
     });
 
-    return await this.requestRepo.save(request);
+    const savedRequest = await this.requestRepo.save(request);
+
+    // ✅ Emit the new request to all connected clients
+    this.requestGateway.notifyNewRequest({
+      id: savedRequest.id,
+      requestNumber: savedRequest.requestNumber,
+      requestDate: savedRequest.requestDate,
+      totalAmount: savedRequest.totalAmount,
+      vatAmount: savedRequest.vatAmount,
+      grandTotal: savedRequest.grandTotal,
+      customerName: customer.customerName,
+      invoiceType: customer.invoiceType,
+    });
+
+    return savedRequest;
   }
 
   async getAllRequests(): Promise<Request[]> {
