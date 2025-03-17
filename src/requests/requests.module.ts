@@ -7,6 +7,7 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { RequestService } from './requests.service';
 import { RequestController } from './requests.controller';
 import { Settings } from '../entities/settings.entity';
+import { RequestGateway } from './requests.gateway'; //
 
 @Module({
   imports: [
@@ -18,7 +19,7 @@ import { Settings } from '../entities/settings.entity';
       Settings,
     ]),
   ],
-  providers: [RequestService],
+  providers: [RequestService, RequestGateway],
   controllers: [RequestController],
 })
 export class RequestModule {}

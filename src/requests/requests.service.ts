@@ -6,7 +6,7 @@ import { RequestDetail } from '../entities/requestDetails.entity';
 import { Customer } from '../entities/customer.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { Settings } from '../entities/settings.entity';
-
+import { RequestGateway } from './requests.gateway';
 @Injectable()
 export class RequestService {
   constructor(
@@ -17,6 +17,7 @@ export class RequestService {
     @InjectRepository(ItemVariant)
     private itemVariantRepo: Repository<ItemVariant>,
     @InjectRepository(Settings) private settingsRepo: Repository<Settings>,
+    private requestGateway: RequestGateway,
   ) {}
 
   async createRequest(data: any): Promise<Request> {
@@ -168,12 +169,12 @@ export class RequestService {
         'details.itemVariant.thickness',
         'details.itemVariant.thickness.item',
       ],
-      order: { id: 'DESC' }, 
-      skip: (page - 1) * limit, 
-      take: limit, 
+      order: { id: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
     });
 
-    return {
+    const response = {
       data: requests.map((request) => ({
         id: request.id,
         requestNumber: request.requestNumber,
@@ -184,9 +185,13 @@ export class RequestService {
         customerName: request.customer.customerName,
         invoiceType: request.customer.invoiceType,
       })),
-      total, 
+      total,
       page,
-      totalPages: Math.ceil(total / limit), 
+      totalPages: Math.ceil(total / limit),
     };
+    // ✅ Emit real-time updates
+    this.requestGateway.sendFilteredRequests(response);
+
+    return response;
   }
 }
