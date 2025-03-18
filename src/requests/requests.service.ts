@@ -208,4 +208,61 @@ export class RequestService {
 
     return response;
   }
+
+
+  async updateRequest(id: number, data: any): Promise<Request> {
+    const { requestDate, totalAmount, vatAmount, grandTotal, customerId, details } = data;
+
+    // Check if request exists
+    const request = await this.requestRepo.findOne({
+      where: { id },
+      relations: ['details'],
+    });
+    if (!request) {
+      throw new NotFoundException(`Request with ID ${id} not found.`);
+    }
+
+    // Validate customer
+    const customer = await this.customerRepo.findOne({ where: { id: customerId } });
+    if (!customer) {
+      throw new NotFoundException('Customer not found');
+    }
+
+    // Update the request details
+    request.requestDate = requestDate;
+    request.totalAmount = totalAmount;
+    request.vatAmount = vatAmount;
+    request.grandTotal = grandTotal;
+    request.customer = customer;
+
+    // Clear existing details and add new ones
+    request.details = await Promise.all(
+      details.map(async (detail) => {
+        const { itemVariantId, quantity, sqm, price, total } = detail;
+
+        const itemVariant = await this.itemVariantRepo.findOne({
+          where: { id: itemVariantId },
+        });
+
+        if (!itemVariant) {
+          throw new NotFoundException(`ItemVariant with ID ${itemVariantId} not found.`);
+        }
+
+        return this.detailRepo.create({
+          itemVariant,
+          quantity,
+          sqm,
+          price,
+          total,
+        });
+      }),
+    );
+
+    // Save the updated request
+    const updatedRequest = await this.requestRepo.save(request);
+
+    // Return the updated request
+    return updatedRequest;
+  }
+
 }

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
+import { Controller, Put,Get, Post, Param, Body, Query } from '@nestjs/common';
 import { RequestService } from './requests.service';
 import { Request } from '../entities/request.entity';
 
@@ -27,5 +27,14 @@ export class RequestController {
     @Query('limit') limit: number = 100,
   ) {
     return this.requestService.getFilteredRequests(Number(page), Number(limit));
+  }
+
+
+  @Put(':id')
+  async updateRequest(
+    @Param('id') id: number,
+    @Body() data: any,
+  ): Promise<Request> {
+    return this.requestService.updateRequest(id, data);
   }
 }
