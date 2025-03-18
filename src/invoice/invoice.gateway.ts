@@ -9,7 +9,11 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 
-@WebSocketGateway()
+@WebSocketGateway({
+  cors: {
+    origin: '*', // Adjust as per security requirements
+  },
+})
 export class InvoiceGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
 {
