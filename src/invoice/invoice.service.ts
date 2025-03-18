@@ -386,4 +386,107 @@ export class InvoiceService {
       totalPages: Math.ceil(total / limit),
     };
   }
+
+
+  async editInvoice(invoiceId: number, invoiceData: Partial<Invoice>): Promise<Invoice> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // Step 1: Fetch the existing invoice
+      const existingInvoice = await queryRunner.manager.findOne(Invoice, {
+        where: { id: invoiceId },
+        relations: ['items', 'customer'],
+      });
+
+      if (!existingInvoice) {
+        throw new NotFoundException(`Invoice ID ${invoiceId} not found`);
+      }
+
+      // Step 2: Reverse the old inventory transactions (to undo the previous sale)
+      for (const item of existingInvoice.items) {
+        // Reverse the previous inventory transaction
+        const inventoryTransaction = await queryRunner.manager.findOne(InventoryTransaction, {
+          where: { invoiceItem: item },
+        });
+        if (inventoryTransaction) {
+          // Decrease the `out` field and increase `balance` for each ItemVariant
+          await queryRunner.manager.update(ItemVariant, { id: item.itemVariant.id }, {
+            out: () => `out - ${inventoryTransaction.sqm}`,
+            balance: () => `balance + ${inventoryTransaction.sqm}`,
+          });
+
+          await queryRunner.manager.remove(inventoryTransaction); // Remove the old inventory transaction
+        }
+      }
+
+      // Step 3: Update the invoice details with the new data
+      existingInvoice.items = [];
+      existingInvoice.totalWithoutVAT = 0;
+      existingInvoice.totalVAT = 0;
+      existingInvoice.grandTotal = 0;
+
+      for (const itemData of invoiceData.items) {
+        const itemVariant = await queryRunner.manager.findOne(ItemVariant, {
+          where: { id: itemData.itemVariantId },
+        });
+        if (!itemVariant) {
+          throw new NotFoundException(`Item Variant ID ${itemData.itemVariantId} not found.`);
+        }
+
+        const invoiceItem = queryRunner.manager.create(InvoiceItem, {
+          invoice: existingInvoice,
+          itemVariant,
+          sqm: itemData.sqm,
+          unitPrice: itemData.unitPrice,
+          totalAmount: itemData.sqm * itemData.unitPrice,
+          vat: itemData.vat,
+          quantity: itemData.quantity,
+        });
+
+        existingInvoice.items.push(invoiceItem);
+        existingInvoice.totalWithoutVAT += invoiceItem.totalAmount;
+        existingInvoice.totalVAT += itemData.vat;
+        existingInvoice.grandTotal += itemData.sqm * itemData.unitPrice + itemData.vat;
+
+        await queryRunner.manager.save(invoiceItem);
+      }
+
+      // Step 4: Commit the invoice update
+      await queryRunner.manager.save(existingInvoice);
+
+      // Step 5: Create new inventory transactions for the updated invoice
+      for (const item of existingInvoice.items) {
+        const inventoryTransaction = queryRunner.manager.create(InventoryTransaction, {
+          itemVariant: item.itemVariant,
+          sqm: item.sqm,
+          transactionType: 'sale',
+          invoiceItem: item,
+        });
+
+        await queryRunner.manager.save(inventoryTransaction);
+
+        // Adjust the `out` and `balance` fields for each ItemVariant
+        await queryRunner.manager.update(ItemVariant, { id: item.itemVariant.id }, {
+          out: () => `out + ${item.sqm}`,
+          balance: () => `balance - ${item.sqm}`,
+        });
+      }
+
+      // Step 6: Commit the transaction
+      await queryRunner.commitTransaction();
+      console.log('✅ Invoice updated successfully!');
+
+      // Return the updated invoice
+      return existingInvoice;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      console.error('❌ Error updating invoice:', error.message, error.stack);
+      throw new Error(`Invoice update failed: ${error.message}`);
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
 }

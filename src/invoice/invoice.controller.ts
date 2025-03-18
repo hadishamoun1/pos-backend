@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param ,Query} from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, Put } from '@nestjs/common';
 import { InvoiceService } from './invoice.service';
 import { Invoice } from '../entities/invoice.entity';
 
@@ -22,11 +22,18 @@ export class InvoiceController {
   }
 
   @Get('filtered')
-async getFilteredInvoices(
-  @Query('page') page: number = 1,
-  @Query('limit') limit: number = 100,
-) {
-  return this.invoiceService.getFilteredInvoices(Number(page), Number(limit));
-}
+  async getFilteredInvoices(
+    @Query('page') page: number = 1,
+    @Query('limit') limit: number = 100,
+  ) {
+    return this.invoiceService.getFilteredInvoices(Number(page), Number(limit));
+  }
 
+  @Put(':id')
+  async editInvoice(
+    @Param('id') invoiceId: number,
+    @Body() invoiceData: Partial<Invoice>,
+  ) {
+    return this.invoiceService.editInvoice(invoiceId, invoiceData);
+  }
 }
