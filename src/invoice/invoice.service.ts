@@ -261,9 +261,15 @@ export class InvoiceService {
         relations: ['customer', 'items', 'items.itemVariant'],
       });
 
+      const { customerName } = finalInvoice.customer || {}; // Extract customerName
+      const invoiceToEmit = {
+        ...finalInvoice,
+        customerName, // Add customerName directly to the emitted invoice
+      };
+      
       // Emit the new invoice to all connected clients via WebSocket
-      this.invoiceGateway.emitNewInvoice(finalInvoice);
-
+      this.invoiceGateway.emitNewInvoice(invoiceToEmit);
+      console.log(`invoice: ${JSON.stringify(invoiceToEmit)}`);
       return finalInvoice;
     } catch (error) {
       await queryRunner.rollbackTransaction();
