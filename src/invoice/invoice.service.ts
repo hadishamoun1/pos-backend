@@ -9,6 +9,7 @@ import { Customer } from '../entities/customer.entity';
 import { SalesVoucher } from '../entities/Vouchers/salesVoucher.entity';
 import { SalesVoucherDetail } from '../entities/Vouchers/salesVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
+import { InvoiceGateway } from './invoice.gateway';
 
 @Injectable()
 export class InvoiceService {
@@ -17,6 +18,7 @@ export class InvoiceService {
 
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
+    private readonly invoiceGateway: InvoiceGateway,
   ) {}
 
   /**
@@ -259,6 +261,9 @@ export class InvoiceService {
         relations: ['customer', 'items', 'items.itemVariant'],
       });
 
+      // Emit the new invoice to all connected clients via WebSocket
+      this.invoiceGateway.emitNewInvoice(finalInvoice);
+
       return finalInvoice;
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -348,14 +353,17 @@ export class InvoiceService {
     };
   }
 
-  async getFilteredInvoices(page: number, limit: number): Promise<{ data: any[]; total: number; totalPages: number }> {
+  async getFilteredInvoices(
+    page: number,
+    limit: number,
+  ): Promise<{ data: any[]; total: number; totalPages: number }> {
     const [invoices, total] = await this.invoiceRepository.findAndCount({
       relations: ['customer'],
       order: { id: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
     });
-  
+
     return {
       data: invoices.map((invoice) => ({
         id: invoice.id,
@@ -372,5 +380,4 @@ export class InvoiceService {
       totalPages: Math.ceil(total / limit),
     };
   }
-  
 }
