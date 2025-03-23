@@ -49,10 +49,10 @@ export class SalesVoucher {
   @OneToMany(() => SalesVoucherDetail, (detail) => detail.salesVoucher, {
     cascade: true,
   })
+  details: SalesVoucherDetail[];
   @ManyToOne(() => Invoice, (invoice) => invoice.salesVouchers, {
     nullable: true,
   })
   @JoinColumn({ name: 'invoiceId' })
   invoice: Invoice;
-  details: SalesVoucherDetail[];
 }

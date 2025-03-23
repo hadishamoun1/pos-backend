@@ -10,17 +10,21 @@ import { SalesVoucher } from '../entities/Vouchers/salesVoucher.entity';
 import { SalesVoucherDetail } from '../entities/Vouchers/salesVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
 import { InvoiceGateway } from './invoice.gateway';
-
+interface InvoiceWithDetails extends Partial<Invoice> {
+  details?: SalesVoucherDetail[]; // Define the 'details' property explicitly
+}
 @Injectable()
 export class InvoiceService {
   constructor(
     private readonly dataSource: DataSource,
-
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
+    @InjectRepository(SalesVoucher)
+    private readonly salesVoucherRepository: Repository<SalesVoucher>,
+    @InjectRepository(SalesVoucherDetail)
+    private readonly salesVoucherDetailRepository: Repository<SalesVoucherDetail>,
     private readonly invoiceGateway: InvoiceGateway,
   ) {}
-
   /**
    * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
    */
@@ -266,7 +270,7 @@ export class InvoiceService {
         ...finalInvoice,
         customerName, // Add customerName directly to the emitted invoice
       };
-      
+
       // Emit the new invoice to all connected clients via WebSocket
       this.invoiceGateway.emitNewInvoice(invoiceToEmit);
       console.log(`invoice: ${JSON.stringify(invoiceToEmit)}`);
@@ -387,106 +391,480 @@ export class InvoiceService {
     };
   }
 
-
-  async editInvoice(invoiceId: number, invoiceData: Partial<Invoice>): Promise<Invoice> {
+  async editInvoice(
+    invoiceId: number,
+    invoiceData: Partial<Invoice>,
+  ): Promise<Invoice> {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // Step 1: Fetch the existing invoice
+      console.log('Editing invoice with ID:', invoiceId);
+
+      // Step 1: Fetch the existing invoice and the sales voucher with its details
       const existingInvoice = await queryRunner.manager.findOne(Invoice, {
         where: { id: invoiceId },
-        relations: ['items', 'customer'],
+        relations: [
+          'items',
+          'customer',
+          'items.itemVariant',
+          'salesVouchers',
+          'salesVouchers.details',
+          'salesVouchers.details.account',
+        ],
       });
 
       if (!existingInvoice) {
         throw new NotFoundException(`Invoice ID ${invoiceId} not found`);
       }
 
-      // Step 2: Reverse the old inventory transactions (to undo the previous sale)
-      for (const item of existingInvoice.items) {
-        // Reverse the previous inventory transaction
-        const inventoryTransaction = await queryRunner.manager.findOne(InventoryTransaction, {
-          where: { invoiceItem: item },
-        });
-        if (inventoryTransaction) {
-          // Decrease the `out` field and increase `balance` for each ItemVariant
-          await queryRunner.manager.update(ItemVariant, { id: item.itemVariant.id }, {
-            out: () => `out - ${inventoryTransaction.sqm}`,
-            balance: () => `balance + ${inventoryTransaction.sqm}`,
-          });
+      console.log('Existing invoice fetched:', existingInvoice);
 
-          await queryRunner.manager.remove(inventoryTransaction); // Remove the old inventory transaction
+      const existingItemVariantIds = existingInvoice.items.map(
+        (item) => item.itemVariant.id,
+      );
+      const newItemVariantIds = invoiceData.items.map((i) => i.itemVariantId);
+
+      // Phase 2: Handle deleted items
+      for (const item of existingInvoice.items) {
+        if (!newItemVariantIds.includes(item.itemVariant.id)) {
+          const inventoryTransaction = await queryRunner.manager.findOne(
+            InventoryTransaction,
+            {
+              where: { invoiceItem: item },
+            },
+          );
+
+          if (inventoryTransaction) {
+            await queryRunner.manager.update(
+              ItemVariant,
+              { id: item.itemVariant.id },
+              {
+                out: () => `out - ${inventoryTransaction.sqm}`,
+                balance: () => `balance + ${inventoryTransaction.sqm}`,
+              },
+            );
+            await queryRunner.manager.remove(inventoryTransaction);
+          }
+
+          await queryRunner.manager.remove(item);
         }
       }
 
-      // Step 3: Update the invoice details with the new data
-      existingInvoice.items = [];
+      // Phase 3 & 4: Update existing or add new items
+      for (const itemData of invoiceData.items) {
+        if (!itemData.itemVariantId) {
+          throw new NotFoundException(
+            `Item Variant ID ${itemData.itemVariantId} not found.`,
+          );
+        }
+
+        const itemVariant = await queryRunner.manager.findOne(ItemVariant, {
+          where: { id: itemData.itemVariantId },
+        });
+
+        if (!itemVariant) {
+          throw new NotFoundException(
+            `Item Variant ID ${itemData.itemVariantId} not found.`,
+          );
+        }
+
+        const existingItem = existingInvoice.items.find(
+          (item) =>
+            Number(item.itemVariant.id) === Number(itemData.itemVariantId),
+        );
+
+        const totalAmount = itemData.unitPrice * itemData.sqm;
+        const vatPercentage = Number(invoiceData.vatPercentage);
+        const vat = totalAmount * (vatPercentage / 100);
+
+        if (existingItem) {
+          // ✅ Update Invoice Item
+          existingItem.sqm = itemData.sqm;
+          existingItem.unitPrice = itemData.unitPrice;
+          existingItem.quantity = itemData.quantity;
+          existingItem.totalAmount = totalAmount;
+          existingItem.vat = vat;
+
+          await queryRunner.manager.save(existingItem);
+
+          // ✅ Find Inventory Transaction
+          const inventoryTransaction = await queryRunner.manager.findOne(
+            InventoryTransaction,
+            {
+              where: { invoiceItem: { id: existingItem.id } },
+            },
+          );
+
+          if (inventoryTransaction) {
+            const oldSqm = Number(inventoryTransaction.sqm);
+            const newSqm = Number(itemData.sqm);
+            const sqmDifference = newSqm - oldSqm;
+
+            if (sqmDifference !== 0) {
+              // ✅ Update ItemVariant by difference
+              await queryRunner.manager.update(
+                ItemVariant,
+                { id: existingItem.itemVariant.id },
+                {
+                  out: () => `out + ${sqmDifference}`,
+                  balance: () => `balance - ${sqmDifference}`,
+                },
+              );
+              console.log(
+                `✅ ItemVariant ${existingItem.itemVariant.id} updated by sqmDifference: ${sqmDifference}`,
+              );
+            }
+
+            // ✅ Update Inventory Transaction
+            inventoryTransaction.sqm = newSqm;
+            inventoryTransaction.transactionDate = new Date();
+            inventoryTransaction.transactionType = 'sale'; // 🔁 Always set as sale
+            await queryRunner.manager.save(inventoryTransaction);
+          } else {
+            console.warn(
+              `⚠️ No InventoryTransaction found for invoice item ${existingItem.id}`,
+            );
+          }
+        } else {
+          // ✅ Create New Invoice Item
+          const newItem = queryRunner.manager.create(InvoiceItem, {
+            invoice: existingInvoice,
+            itemVariant,
+            sqm: itemData.sqm,
+            unitPrice: itemData.unitPrice,
+            totalAmount,
+            vat,
+            quantity: itemData.quantity,
+          });
+
+          await queryRunner.manager.save(newItem);
+          existingInvoice.items.push(newItem);
+
+          // ✅ Update ItemVariant
+          await queryRunner.manager.update(
+            ItemVariant,
+            { id: itemData.itemVariantId },
+            {
+              out: () => `out + ${itemData.sqm}`,
+              balance: () => `balance - ${itemData.sqm}`,
+            },
+          );
+          console.log(
+            `✅ New ItemVariant ${itemData.itemVariantId} updated: out +${itemData.sqm}, balance -${itemData.sqm}`,
+          );
+
+          // ✅ Create Inventory Transaction
+          const newTransaction = queryRunner.manager.create(
+            InventoryTransaction,
+            {
+              itemVariant,
+              sqm: itemData.sqm,
+              transactionType: 'sale',
+              invoiceItem: newItem,
+              transactionDate: new Date(),
+            },
+          );
+          await queryRunner.manager.save(newTransaction);
+        }
+      }
+
+      // Phase 5: Update Invoice Totals
+      existingInvoice.currencyRate =
+        invoiceData.currencyRate || existingInvoice.currencyRate;
+      existingInvoice.vatPercentage =
+        invoiceData.vatPercentage || existingInvoice.vatPercentage;
+
+      // ✅ Refresh items from DB to ensure accurate calculation
+      existingInvoice.items = await queryRunner.manager.find(InvoiceItem, {
+        where: { invoice: { id: existingInvoice.id } },
+      });
+
+      // 🧮 Reset totals
       existingInvoice.totalWithoutVAT = 0;
       existingInvoice.totalVAT = 0;
       existingInvoice.grandTotal = 0;
 
-      for (const itemData of invoiceData.items) {
-        const itemVariant = await queryRunner.manager.findOne(ItemVariant, {
-          where: { id: itemData.itemVariantId },
-        });
-        if (!itemVariant) {
-          throw new NotFoundException(`Item Variant ID ${itemData.itemVariantId} not found.`);
-        }
-
-        const invoiceItem = queryRunner.manager.create(InvoiceItem, {
-          invoice: existingInvoice,
-          itemVariant,
-          sqm: itemData.sqm,
-          unitPrice: itemData.unitPrice,
-          totalAmount: itemData.sqm * itemData.unitPrice,
-          vat: itemData.vat,
-          quantity: itemData.quantity,
-        });
-
-        existingInvoice.items.push(invoiceItem);
-        existingInvoice.totalWithoutVAT += invoiceItem.totalAmount;
-        existingInvoice.totalVAT += itemData.vat;
-        existingInvoice.grandTotal += itemData.sqm * itemData.unitPrice + itemData.vat;
-
-        await queryRunner.manager.save(invoiceItem);
+      // 🔁 Recalculate based on refreshed items
+      for (const item of existingInvoice.items) {
+        existingInvoice.totalWithoutVAT += Number(item.totalAmount);
+        existingInvoice.totalVAT += Number(item.vat);
+        existingInvoice.grandTotal +=
+          Number(item.totalAmount) + Number(item.vat);
       }
 
-      // Step 4: Commit the invoice update
       await queryRunner.manager.save(existingInvoice);
 
-      // Step 5: Create new inventory transactions for the updated invoice
-      for (const item of existingInvoice.items) {
-        const inventoryTransaction = queryRunner.manager.create(InventoryTransaction, {
-          itemVariant: item.itemVariant,
-          sqm: item.sqm,
-          transactionType: 'sale',
-          invoiceItem: item,
-        });
+      // Phase 6: Update SalesVoucher
+      const salesVoucher = existingInvoice.salesVouchers[0];
+      salesVoucher.totalDr = existingInvoice.grandTotal;
+      salesVoucher.totalCr = existingInvoice.grandTotal;
+      salesVoucher.totalDrUSD = existingInvoice.grandTotal;
+      salesVoucher.totalCrUSD = existingInvoice.grandTotal;
+      salesVoucher.totalDrLL =
+        existingInvoice.grandTotal * existingInvoice.currencyRate;
+      salesVoucher.totalCrLL =
+        existingInvoice.grandTotal * existingInvoice.currencyRate;
 
-        await queryRunner.manager.save(inventoryTransaction);
+      for (const detail of salesVoucher.details) {
+        if (detail.account) {
+          const account = detail.account;
+          if (account.accountNumber === '7011') {
+            detail.cr = existingInvoice.totalWithoutVAT;
+            detail.crUSD = existingInvoice.totalWithoutVAT;
+            detail.crLL =
+              existingInvoice.totalWithoutVAT * existingInvoice.currencyRate;
+            detail.dr = 0;
+            detail.drUSD = 0;
+            detail.drLL = 0;
+          } else if (account.accountNumber === '4431') {
+            detail.cr = existingInvoice.totalVAT;
+            detail.crUSD = existingInvoice.totalVAT;
+            detail.crLL =
+              existingInvoice.totalVAT * existingInvoice.currencyRate;
+            detail.dr = 0;
+            detail.drUSD = 0;
+            detail.drLL = 0;
+          }
+        } else {
+          detail.dr = existingInvoice.grandTotal;
+          detail.drUSD = existingInvoice.grandTotal;
+          detail.drLL =
+            existingInvoice.grandTotal * existingInvoice.currencyRate;
+          detail.cr = 0;
+          detail.crUSD = 0;
+          detail.crLL = 0;
+        }
 
-        // Adjust the `out` and `balance` fields for each ItemVariant
-        await queryRunner.manager.update(ItemVariant, { id: item.itemVariant.id }, {
-          out: () => `out + ${item.sqm}`,
-          balance: () => `balance - ${item.sqm}`,
-        });
+        await queryRunner.manager.save(detail);
       }
 
-      // Step 6: Commit the transaction
-      await queryRunner.commitTransaction();
-      console.log('✅ Invoice updated successfully!');
+      await queryRunner.manager.save(salesVoucher);
 
-      // Return the updated invoice
+      await queryRunner.commitTransaction();
+      console.log('✅ Invoice and SalesVoucher updated successfully!');
+
       return existingInvoice;
     } catch (error) {
       await queryRunner.rollbackTransaction();
-      console.error('❌ Error updating invoice:', error.message, error.stack);
-      throw new Error(`Invoice update failed: ${error.message}`);
+      console.error(
+        '❌ Error updating invoice and sales voucher:',
+        error.message,
+        error.stack,
+      );
+      throw new Error(
+        `Invoice and SalesVoucher update failed: ${error.message}`,
+      );
     } finally {
       await queryRunner.release();
     }
   }
-
 }
+// async editInvoice(
+//   invoiceId: number,
+//   invoiceData: Partial<Invoice>,
+// ): Promise<Invoice> {
+//   const queryRunner = this.dataSource.createQueryRunner();
+//   await queryRunner.connect();
+//   await queryRunner.startTransaction();
+
+//   try {
+//     console.log('Editing invoice with ID:', invoiceId);
+
+//     // Step 1: Fetch the existing invoice and the sales voucher with its details
+//     const existingInvoice = await queryRunner.manager.findOne(Invoice, {
+//       where: { id: invoiceId },
+//       relations: [
+//         'items',
+//         'customer',
+//         'items.itemVariant',
+//         'salesVouchers',
+//         'salesVouchers.details',
+//         'salesVouchers.details.account',
+//       ],
+//     });
+
+//     if (!existingInvoice) {
+//       throw new NotFoundException(`Invoice ID ${invoiceId} not found`);
+//     }
+
+//     console.log('Existing invoice fetched:', existingInvoice);
+
+//     // Step 2: Reverse the old inventory transactions (to undo the previous sale)
+//     for (const item of existingInvoice.items) {
+//       if (item.itemVariant) {
+//         // Reverse the previous inventory transaction
+//         const inventoryTransaction = await queryRunner.manager.findOne(
+//           InventoryTransaction,
+//           {
+//             where: { invoiceItem: item },
+//           },
+//         );
+
+//         if (inventoryTransaction) {
+//           await queryRunner.manager.update(
+//             ItemVariant,
+//             { id: item.itemVariant.id },
+//             {
+//               out: () => `out - ${inventoryTransaction.sqm}`,
+//               balance: () => `balance + ${inventoryTransaction.sqm}`,
+//             },
+//           );
+
+//           await queryRunner.manager.remove(inventoryTransaction); // Remove the old inventory transaction
+//         } else {
+//           console.warn('No inventory transaction found for item:', item);
+//         }
+//       } else {
+//         console.error('Item Variant is missing for item:', item);
+//       }
+//     }
+
+//     // Step 3: Update the invoice core fields (currencyRate, vatPercentage)
+//     existingInvoice.currencyRate =
+//       invoiceData.currencyRate || existingInvoice.currencyRate;
+//     existingInvoice.vatPercentage =
+//       invoiceData.vatPercentage || existingInvoice.vatPercentage;
+
+//     // Step 4: Update the invoice details with the new data
+//     existingInvoice.items = [];
+//     existingInvoice.totalWithoutVAT = 0;
+//     existingInvoice.totalVAT = 0;
+//     existingInvoice.grandTotal = 0;
+
+//     for (const itemData of invoiceData.items) {
+//       console.log('Item data:', itemData);
+
+//       if (!itemData.itemVariantId) {
+//         throw new NotFoundException(
+//           `Item Variant ID ${itemData.itemVariantId} not found.`,
+//         );
+//       }
+
+//       const itemVariant = await queryRunner.manager.findOne(ItemVariant, {
+//         where: { id: itemData.itemVariantId },
+//       });
+
+//       if (!itemVariant) {
+//         throw new NotFoundException(
+//           `Item Variant ID ${itemData.itemVariantId} not found.`,
+//         );
+//       }
+
+//       // Calculate the totalAmount, vat, and grandTotal
+//       const totalAmount = itemData.sqm * itemData.unitPrice;
+//       const vat = totalAmount * (existingInvoice.vatPercentage / 100);
+//       const grandTotal = totalAmount + vat;
+
+//       const invoiceItem = queryRunner.manager.create(InvoiceItem, {
+//         invoice: existingInvoice,
+//         itemVariant,
+//         sqm: itemData.sqm,
+//         unitPrice: itemData.unitPrice,
+//         totalAmount: totalAmount,
+//         vat: vat,
+//         quantity: itemData.quantity,
+//       });
+
+//       existingInvoice.items.push(invoiceItem);
+//       existingInvoice.totalWithoutVAT += totalAmount;
+//       existingInvoice.totalVAT += vat;
+//       existingInvoice.grandTotal += grandTotal;
+
+//       await queryRunner.manager.save(invoiceItem);
+//     }
+
+//     // Step 5: Update the corresponding SalesVoucher and SalesVoucherDetail for the invoice
+//     const salesVoucher = existingInvoice.salesVouchers[0]; // Assuming only one salesVoucher for each invoice
+
+//     if (!salesVoucher) {
+//       throw new NotFoundException('SalesVoucher not found for this invoice.');
+//     }
+
+//     // Debugging: Check the values before updating the SalesVoucher
+//     console.log('Total Without VAT:', existingInvoice.totalWithoutVAT);
+//     console.log('Total VAT:', existingInvoice.totalVAT);
+//     console.log('Currency Rate:', existingInvoice.currencyRate);
+//     console.log('Vat Percentage', existingInvoice.vatPercentage);
+
+//     // Update SalesVoucher
+//     salesVoucher.totalDr = existingInvoice.grandTotal;
+//     salesVoucher.totalCr = existingInvoice.grandTotal;
+//     salesVoucher.totalDrUSD = existingInvoice.grandTotal;
+//     salesVoucher.totalCrUSD = existingInvoice.grandTotal;
+//     salesVoucher.totalDrLL =
+//       existingInvoice.grandTotal * existingInvoice.currencyRate;
+//     salesVoucher.totalCrLL =
+//       existingInvoice.grandTotal * existingInvoice.currencyRate;
+
+//     // Loop through SalesVoucherDetails and update them
+//     for (const detail of salesVoucher.details) {
+//       if (detail.account) {
+//         const account = detail.account; // Account object
+//         console.log(
+//           `Updating SalesVoucherDetail (ID: ${detail.id}) for account: ${account.accountNumber}`,
+//         );
+
+//         if (account.accountNumber === '7011') {
+//           // For account 7011 (Sales): Set credit to total without VAT, set debit to 0
+//           console.log('Setting values for account 7011 (Sales)');
+//           detail.cr = existingInvoice.totalWithoutVAT;
+//           detail.crUSD = existingInvoice.totalWithoutVAT;
+//           detail.crLL =
+//             existingInvoice.totalWithoutVAT * existingInvoice.currencyRate;
+//           detail.dr = 0;
+//           detail.drUSD = 0;
+//           detail.drLL = 0;
+//         } else if (account.accountNumber === '4431') {
+//           // For account 4431 (VAT): Set credit to total VAT, set debit to 0
+//           console.log('Setting values for account 4431 (VAT)');
+//           detail.cr = existingInvoice.totalVAT;
+//           detail.crUSD = existingInvoice.totalVAT;
+//           detail.crLL =
+//             existingInvoice.totalVAT * existingInvoice.currencyRate;
+//           detail.dr = 0;
+//           detail.drUSD = 0;
+//           detail.drLL = 0;
+//         }
+//       } else {
+//         // If account is null (Customer transaction)
+//         console.log('Setting values for customer transaction');
+//         detail.dr = existingInvoice.grandTotal;
+//         detail.drUSD = existingInvoice.grandTotal;
+//         detail.drLL =
+//           existingInvoice.grandTotal * existingInvoice.currencyRate;
+//         detail.cr = 0;
+//         detail.crUSD = 0;
+//         detail.crLL = 0;
+//       }
+
+//       // Print the updated details to check
+//       console.log('Updated SalesVoucherDetail:', detail);
+
+//       // Save the updated SalesVoucherDetail
+//       await queryRunner.manager.save(detail);
+//     }
+
+//     // Save the updated SalesVoucher
+//     await queryRunner.manager.save(salesVoucher);
+
+//     // Step 6: Commit the transaction
+//     await queryRunner.commitTransaction();
+//     console.log('✅ Invoice and SalesVoucher updated successfully!');
+
+//     return existingInvoice;
+//   } catch (error) {
+//     await queryRunner.rollbackTransaction();
+//     console.error(
+//       '❌ Error updating invoice and sales voucher:',
+//       error.message,
+//       error.stack,
+//     );
+//     throw new Error(
+//       `Invoice and SalesVoucher update failed: ${error.message}`,
+//     );
+//   } finally {
+//     await queryRunner.release();
+//   }
+// }

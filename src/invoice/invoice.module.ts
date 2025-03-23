@@ -10,6 +10,8 @@ import { InvoiceController } from './invoice.controller';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InvoiceGateway } from './invoice.gateway';
+import { SalesVoucher } from '../entities/Vouchers/salesVoucher.entity'; // Import SalesVoucher entity
+import { SalesVoucherDetail } from '../entities/Vouchers/salesVoucherDetails.entity'; // Import SalesVoucherDetail entity
 
 @Module({
   imports: [
@@ -21,9 +23,11 @@ import { InvoiceGateway } from './invoice.gateway';
       InvoiceItem,
       InventoryTransaction,
       ItemVariant,
+      SalesVoucher, // Add SalesVoucher entity
+      SalesVoucherDetail, // Add SalesVoucherDetail entity
     ]),
   ],
-  providers: [InvoiceService, InventoryTransaction, InvoiceGateway], 
+  providers: [InvoiceService, InventoryTransaction, InvoiceGateway],
   controllers: [InvoiceController],
   exports: [InvoiceService],
 })
