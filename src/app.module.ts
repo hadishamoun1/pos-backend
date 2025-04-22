@@ -27,6 +27,7 @@ import { DebitNoteReturnModule } from './debit-note-returns/debit-note-returns.m
 import { CreditNoteReturnModule } from './credit-note-returns/credit-note-returns.module';
 import { RequestModule } from './requests/requests.module';
 import { InventoryTransactionModule } from './inventroy-transactions/inventroy-transactions.module';
+import { PurchaseInvoiceSettingModule } from './Purchase-invoice-settings/purchase-invoice-settings.module';
 
 
 @Module({
@@ -68,6 +69,7 @@ import { InventoryTransactionModule } from './inventroy-transactions/inventroy-t
     CreditNoteReturnModule,
     RequestModule,
     InventoryTransactionModule,
+    PurchaseInvoiceSettingModule,
   ],
 
  
