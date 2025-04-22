@@ -49,4 +49,8 @@ export class AccountsController {
   async getAccounts() {
     return this.accountsService.getCombinedAccounts();
   }
+  @Get('v1/acc-flat-arranged')
+  async getFlatSimplifiedAccounts(): Promise<any[]> {
+    return this.accountsService.getFlatSimplifiedAccounts();
+  }
 }

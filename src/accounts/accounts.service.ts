@@ -173,4 +173,67 @@ export class AccountsService {
     // Start transformation from root accounts (those without a parent)
     return transformAccounts(accounts);
   }
+  // ✅ Add this method to your AccountsService
+  async getFlatSimplifiedAccounts(): Promise<any[]> {
+    const accounts = await this.accountRepository.find({
+      relations: ['parent', 'children'],
+    });
+
+    const customers = await this.customerRepository.find({
+      select: ['id', 'customerAccountNumber', 'customerName'],
+    });
+
+    const suppliers = await this.supplierRepository.find({
+      select: ['id', 'supplierAccountNumber', 'supplierName'],
+    });
+
+    // Recursive transformer
+    const buildHierarchy = (parentNumber: string | null = null): any[] => {
+      return accounts
+        .filter((acc) => (acc.parent?.accountNumber || null) === parentNumber)
+        .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber))
+        .map((acc) => {
+          const node: any = {
+            id: acc.id,
+            accountNumber: acc.accountNumber,
+            accountName: acc.accountName,
+            parentNumber: acc.parentNumber || null,
+            children: [],
+          };
+
+          // Add customer accounts under 4111
+          if (acc.accountNumber === '4111') {
+            node.children.push(
+              ...customers.map((cust) => ({
+                id: cust.id,
+                accountNumber: cust.customerAccountNumber,
+                accountName: cust.customerName,
+                parentNumber: '4111',
+                children: [],
+              })),
+            );
+          }
+
+          // Add supplier accounts under 4011
+          if (acc.accountNumber === '4011') {
+            node.children.push(
+              ...suppliers.map((supp) => ({
+                id: supp.id,
+                accountNumber: supp.supplierAccountNumber,
+                accountName: supp.supplierName,
+                parentNumber: '4011',
+                children: [],
+              })),
+            );
+          }
+
+          // Recursively build children
+          node.children.push(...buildHierarchy(acc.accountNumber));
+          return node;
+        });
+    };
+
+    // Start from top-level accounts (no parent)
+    return buildHierarchy(null);
+  }
 }
