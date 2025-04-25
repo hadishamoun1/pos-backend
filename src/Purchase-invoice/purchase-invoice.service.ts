@@ -27,4 +27,10 @@ export class PurchaseInvoiceService {
       relations: ['supplier', 'items', 'items.itemVariant', 'unitPriceRows'],
     });
   }
+  async findMinimalInvoices() {
+    return this.invoiceRepo.find({
+      select: ['invoiceNumber', 'date', 'grandAmount'],
+      order: { id: 'DESC' }, 
+    });
+  }
 }

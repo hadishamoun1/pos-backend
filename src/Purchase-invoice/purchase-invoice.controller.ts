@@ -1,4 +1,3 @@
-
 import { Controller, Post, Body, Get } from '@nestjs/common';
 import { PurchaseInvoiceService } from './purchase-invoice.service';
 
@@ -14,5 +13,10 @@ export class PurchaseInvoiceController {
   @Get()
   getAll() {
     return this.service.findAll();
+  }
+
+  @Get('v1/minimal')
+  getMinimalInvoices() {
+    return this.service.findMinimalInvoices();
   }
 }
