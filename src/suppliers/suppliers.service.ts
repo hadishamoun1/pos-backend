@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like } from 'typeorm';
 import { Supplier } from '../entities/supplier.entity';
@@ -133,4 +133,14 @@ export class SupplierService {
 
     return suppliers;
   }
+
+
+
+async searchSuppliers(query: string): Promise<Partial<Supplier>[]> {
+  return this.supplierRepository.find({
+    where: { supplierName: Like(`%${query}%`) },
+    select: ['id', 'supplierName'],
+  });
+}
+
 }

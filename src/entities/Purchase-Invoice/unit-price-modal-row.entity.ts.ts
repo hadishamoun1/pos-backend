@@ -6,6 +6,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { PurchaseInvoice } from './purchase-invoice.entity';
+import { Supplier } from '../supplier.entity';
 
 @Entity('unit_price_modal_rows')
 export class UnitPriceModalRow {
@@ -46,11 +47,12 @@ export class UnitPriceModalRow {
   @Column({ type: 'varchar', nullable: true })
   invoiceNbTax: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  supplierOfTax: string;
+  @ManyToOne(() => Supplier, { nullable: true })
+  @JoinColumn({ name: 'supplierId' })
+  supplier: Supplier;
 
-  @Column({ type: 'varchar', nullable: true })
-  accNbOfSupplier: string;
+  @Column({ nullable: true })
+  supplierId: number;
 
   @Column({ type: 'boolean', default: true })
   shipping: boolean;

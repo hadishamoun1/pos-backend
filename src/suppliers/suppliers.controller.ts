@@ -57,4 +57,10 @@ export class SupplierController {
   getFilteredSuppliers(): Promise<Partial<Supplier>[]> {
     return this.supplierService.getFilteredSuppliers();
   }
+// search for suggestions
+  @Get('v1/search')
+async searchSuppliers(@Query('query') query: string) {
+  return this.supplierService.searchSuppliers(query);
+}
+
 }
