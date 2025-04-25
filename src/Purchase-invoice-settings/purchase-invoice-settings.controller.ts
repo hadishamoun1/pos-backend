@@ -25,8 +25,15 @@ export class PurchaseInvoiceSettingController {
   }
 
   @Post()
-  create(@Body() body: Partial<PurchaseInvoiceSetting>) {
-    return this.settingService.create(body);
+  create(
+    @Body()
+    body: Partial<PurchaseInvoiceSetting> | Partial<PurchaseInvoiceSetting>[],
+  ) {
+    if (Array.isArray(body)) {
+      return this.settingService.createMany(body);
+    } else {
+      return this.settingService.create(body);
+    }
   }
 
   @Put(':id')

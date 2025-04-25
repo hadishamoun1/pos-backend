@@ -28,7 +28,7 @@ import { CreditNoteReturnModule } from './credit-note-returns/credit-note-return
 import { RequestModule } from './requests/requests.module';
 import { InventoryTransactionModule } from './inventroy-transactions/inventroy-transactions.module';
 import { PurchaseInvoiceSettingModule } from './Purchase-invoice-settings/purchase-invoice-settings.module';
-
+import { PurchaseInvoiceModule } from './purchase-invoice/purchase-invoice.module';
 
 @Module({
   imports: [
@@ -70,8 +70,8 @@ import { PurchaseInvoiceSettingModule } from './Purchase-invoice-settings/purcha
     RequestModule,
     InventoryTransactionModule,
     PurchaseInvoiceSettingModule,
-  ],
-
+    PurchaseInvoiceModule,
  
+  ],
 })
 export class AppModule {}
