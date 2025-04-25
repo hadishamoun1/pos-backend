@@ -28,9 +28,17 @@ export class PurchaseInvoiceService {
     });
   }
   async findMinimalInvoices() {
-    return this.invoiceRepo.find({
-      select: ['invoiceNumber', 'date', 'grandAmount'],
-      order: { id: 'DESC' }, 
-    });
+    return this.invoiceRepo
+      .createQueryBuilder('invoice')
+      .leftJoinAndSelect('invoice.supplier', 'supplier')
+      .select([
+        'invoice.id',
+        'invoice.invoiceNumber',
+        'invoice.date',
+        'invoice.grandAmount',
+        'supplier.supplierName', 
+      ])
+      .orderBy('invoice.id', 'DESC')
+      .getMany();
   }
 }
