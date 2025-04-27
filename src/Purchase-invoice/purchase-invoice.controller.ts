@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param } from '@nestjs/common';
 import { PurchaseInvoiceService } from './purchase-invoice.service';
 
 @Controller('purchase-invoices')
@@ -18,5 +18,9 @@ export class PurchaseInvoiceController {
   @Get('v1/minimal')
   getMinimalInvoices() {
     return this.service.findMinimalInvoices();
+  }
+  @Get(':id')
+  getOne(@Param('id') id: string) {
+    return this.service.findOne(+id);
   }
 }

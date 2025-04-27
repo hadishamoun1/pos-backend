@@ -24,9 +24,17 @@ export class PurchaseInvoiceService {
   async findOne(id: number) {
     return this.invoiceRepo.findOne({
       where: { id },
-      relations: ['supplier', 'items', 'items.itemVariant', 'unitPriceRows'],
+      relations: [
+        'supplier',
+        'items',
+        'items.itemVariant',
+        'items.itemVariant.thickness',
+        'items.itemVariant.thickness.item',
+        'unitPriceRows',
+      ],
     });
   }
+
   async findMinimalInvoices() {
     return this.invoiceRepo
       .createQueryBuilder('invoice')
@@ -36,7 +44,7 @@ export class PurchaseInvoiceService {
         'invoice.invoiceNumber',
         'invoice.date',
         'invoice.grandAmount',
-        'supplier.supplierName', 
+        'supplier.supplierName',
       ])
       .orderBy('invoice.id', 'DESC')
       .getMany();
