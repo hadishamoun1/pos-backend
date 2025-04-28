@@ -31,6 +31,8 @@ export class PurchaseInvoiceService {
         'items.itemVariant.thickness',
         'items.itemVariant.thickness.item',
         'unitPriceRows',
+        'unitPriceRows.supplier',
+        'unitPriceRows.supplier.account',
       ],
     });
   }
