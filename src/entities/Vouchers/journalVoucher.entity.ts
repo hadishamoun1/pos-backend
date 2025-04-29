@@ -30,6 +30,15 @@ export class JournalVoucher {
   @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalDrLL: number;
 
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalDrOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalDrUSDOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalDrLLOFR: number;
+
   @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalCr: number;
 
@@ -38,6 +47,15 @@ export class JournalVoucher {
 
   @Column({ type: 'decimal', precision: 20, scale: 2 })
   totalCrLL: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalCrOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalCrUSDOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalCrLLOFR: number;
 
   @Column({ type: 'varchar', length: 1 })
   jvType: string;
@@ -48,7 +66,13 @@ export class JournalVoucher {
   @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
-  @ManyToOne(() => Account, { nullable: true }) 
+  @Column({ type: 'boolean', default: true })
+  ofr: boolean;
+
+  @Column({ type: 'boolean', default: true })
+  rvr: boolean;
+
+  @ManyToOne(() => Account, { nullable: true })
   @JoinColumn({ name: 'accountId' })
   account: Account;
 

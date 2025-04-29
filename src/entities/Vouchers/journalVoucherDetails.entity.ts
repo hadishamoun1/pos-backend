@@ -20,7 +20,7 @@ export class JournalVoucherDetail {
   @ManyToOne(() => Account, { nullable: false })
   @JoinColumn({ name: 'accountId' })
   account: Account;
-  
+
   @Column({ type: 'varchar', nullable: true, name: 'check' })
   check: string;
 
@@ -42,6 +42,28 @@ export class JournalVoucherDetail {
   @Column({ type: 'decimal', precision: 20, scale: 2 })
   drLL: number;
 
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  drOFR: number;
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  drUSDOFR: number;
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  drLLOFR: number;
+
   @Column({ type: 'decimal', precision: 20, scale: 2 })
   cr: number;
 
@@ -50,6 +72,28 @@ export class JournalVoucherDetail {
 
   @Column({ type: 'decimal', precision: 20, scale: 2 })
   crLL: number;
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  crOFR: number;
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  crUSDOFR: number;
+
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  crLLOFR: number;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   currency: string;

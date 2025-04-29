@@ -1,3 +1,4 @@
+// src/entities/UnitPriceModalRow.entity.ts
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -6,6 +7,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { PurchaseInvoice } from './purchase-invoice.entity';
+import { PurchaseInvoiceSetting } from '../purchaseInvoiceSettings';
 import { Supplier } from '../supplier.entity';
 
 @Entity('unit_price_modal_rows')
@@ -20,8 +22,16 @@ export class UnitPriceModalRow {
   @Column()
   invoiceId: number;
 
-  @Column({ type: 'varchar' })
-  chargeName: string;
+  @ManyToOne(() => PurchaseInvoiceSetting, { nullable: true })
+  @JoinColumn({ name: 'purchaseInvoiceSettingId' })
+  purchaseInvoiceSetting: PurchaseInvoiceSetting;
+
+  @Column()
+  purchaseInvoiceSettingId: number;
+
+  // optional snapshot of the name
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  chargeName?: string;
 
   @Column({ type: 'enum', enum: ['amount', 'percent'], default: 'amount' })
   chargeType: 'amount' | 'percent';
@@ -32,7 +42,7 @@ export class UnitPriceModalRow {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   valueOFR: number;
 
-  @Column({ type: 'varchar' })
+  @Column({ type: 'varchar', length: 3 })
   currency: string;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
@@ -44,7 +54,7 @@ export class UnitPriceModalRow {
   @Column({ type: 'boolean', default: true })
   addToItemCost: boolean;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar', length: 255, nullable: true })
   invoiceNbTax: string;
 
   @ManyToOne(() => Supplier, { nullable: true })

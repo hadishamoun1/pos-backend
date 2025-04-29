@@ -17,7 +17,13 @@ export class PurchaseInvoiceService {
 
   async findAll() {
     return this.invoiceRepo.find({
-      relations: ['supplier', 'items', 'items.itemVariant', 'unitPriceRows'],
+      relations: [
+        'supplier',
+        'items',
+        'items.itemVariant',
+        'unitPriceRows',
+        'unitPriceRows.purchaseInvoiceSetting',
+      ],
     });
   }
 
@@ -33,6 +39,7 @@ export class PurchaseInvoiceService {
         'unitPriceRows',
         'unitPriceRows.supplier',
         'unitPriceRows.supplier.account',
+        'unitPriceRows.purchaseInvoiceSetting',
       ],
     });
   }

@@ -31,6 +31,15 @@ export class SalesVoucher {
   @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDrLL: number;
 
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalDrOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalDrUSDOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalDrLLOFR: number;
+
   @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCr: number;
 
@@ -39,6 +48,15 @@ export class SalesVoucher {
 
   @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCrLL: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalCrOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalCrUSDOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  totalCrLLOFR: number;
 
   @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateAcc: CurrencyRate;

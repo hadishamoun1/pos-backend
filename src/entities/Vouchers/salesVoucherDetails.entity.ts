@@ -39,6 +39,22 @@ export class SalesVoucherDetail {
   @Column({ type: 'decimal', precision: 30, scale: 2 })
   drLL: number;
 
+  drOFR: number;
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  drUSDOFR: number;
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  drLLOFR: number;
+
   @Column({ type: 'decimal', precision: 30, scale: 2 })
   cr: number;
 
@@ -47,6 +63,23 @@ export class SalesVoucherDetail {
 
   @Column({ type: 'decimal', precision: 30, scale: 2 })
   crLL: number;
+
+  crOFR: number;
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  crUSDOFR: number;
+
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 2,
+    default: 0,
+  })
+  crLLOFR: number;
 
   @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateAcc: CurrencyRate;
