@@ -1,14 +1,21 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
 import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { PurchaseVoucher } from './purchaseVoucher.entity';
+import { Supplier } from '../supplier.entity';
 
 @Entity('purchase_voucher_details')
 export class PurchaseVoucherDetail {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @ManyToOne(() => Account, { nullable: false })
+  @ManyToOne(() => Account, { nullable: true })
   account: Account;
 
   @Column({ type: 'varchar', nullable: true })
@@ -84,15 +91,22 @@ export class PurchaseVoucherDetail {
   })
   crLLOFR: number;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateAcc: CurrencyRate;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
   @ManyToOne(
     () => PurchaseVoucher,
     (purchaseVoucher) => purchaseVoucher.details,
   )
+  @ManyToOne(() => Supplier, { nullable: true })
+  @JoinColumn({ name: 'supplierId' })
+  supplier: Supplier;
+
+  @Column({ type: 'int', nullable: true })
+  supplierId: number;
+  
   purchaseVoucher: PurchaseVoucher;
 }

@@ -4,20 +4,28 @@ import {
   Column,
   ManyToOne,
   OneToMany,
+  JoinColumn,
 } from 'typeorm';
 import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { PurchaseVoucherDetail } from './purchaseVoucherDetails.entity';
+import { Supplier } from '../supplier.entity';
 
 @Entity('purchase_vouchers')
 export class PurchaseVoucher {
   @PrimaryGeneratedColumn()
   id: number;
+  @ManyToOne(() => Supplier, { nullable: true })
+  @JoinColumn({ name: 'supplierId' })
+  supplier: Supplier;
+
+  @Column({ type: 'int', nullable: true })
+  supplierId: number;
 
   @Column({ type: 'date' })
   date: Date;
 
-  @ManyToOne(() => Account, { nullable: false })
+  @ManyToOne(() => Account, { nullable: true })
   account: Account;
 
   @Column({ type: 'varchar', length: 50, unique: true })
@@ -31,7 +39,7 @@ export class PurchaseVoucher {
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalDrLL: number;
-  
+
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalDrOFR: number;
 
@@ -59,10 +67,10 @@ export class PurchaseVoucher {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalCrLLOFR: number;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateAcc: CurrencyRate;
 
-  @ManyToOne(() => CurrencyRate, { nullable: false })
+  @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
   @OneToMany(() => PurchaseVoucherDetail, (detail) => detail.purchaseVoucher, {
