@@ -26,8 +26,12 @@ export class PurchaseInvoice {
   @Column({ type: 'date', nullable: true })
   expectedArrivalDate: Date;
 
-  @Column({ type: 'enum', enum: ['S', 'G'] })
-  type: 'S' | 'G';
+  @Column({
+    type: 'enum',
+    enum: ['S', 'G', 'SR'],
+    default: 'S',
+  })
+  type: 'S' | 'G' | 'SR';
 
   @ManyToOne(() => Supplier)
   @JoinColumn({ name: 'supplierId' })
