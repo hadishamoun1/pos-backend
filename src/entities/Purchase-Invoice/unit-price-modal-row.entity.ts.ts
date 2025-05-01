@@ -15,7 +15,9 @@ export class UnitPriceModalRow {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @ManyToOne(() => PurchaseInvoice, (invoice) => invoice.unitPriceRows)
+  @ManyToOne(() => PurchaseInvoice, (invoice) => invoice.unitPriceRows, {
+    nullable: true,
+  })
   @JoinColumn({ name: 'invoiceId' })
   invoice: PurchaseInvoice;
 

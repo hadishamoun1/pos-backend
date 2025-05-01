@@ -28,6 +28,8 @@ export class PurchaseInvoiceItem {
   itemVariantId: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
+  quantity: number;
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
   sqm: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })

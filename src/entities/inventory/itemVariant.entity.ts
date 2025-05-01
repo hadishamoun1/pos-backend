@@ -52,6 +52,9 @@ export class ItemVariant {
   @Column({ type: 'int', default: 0 })
   balance: number; // Calculated as (start + in - out)
 
+  
+  @Column({ type: 'int', default: 0 })
+  startOFR: number; // Initial balance
   @Column({ type: 'int', default: 0 })
   inOFR: number; // Total purchases
 

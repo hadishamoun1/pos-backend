@@ -11,6 +11,7 @@ import {
 import { Supplier } from '../supplier.entity';
 import { PurchaseInvoiceItem } from './purchase-invoice-item.entity';
 import { UnitPriceModalRow } from './unit-price-modal-row.entity.ts';
+import { PurchaseVoucher } from '../Vouchers/purchaseVoucher.entity';
 
 @Entity('purchase_invoices')
 export class PurchaseInvoice {
@@ -90,4 +91,7 @@ export class PurchaseInvoice {
 
   @UpdateDateColumn()
   updatedAt: Date;
+
+  @OneToMany(() => PurchaseVoucher, (v) => v.purchaseInvoice)
+  vouchers: PurchaseVoucher[];
 }
