@@ -8,6 +8,8 @@ import { PurchaseInvoiceController } from './purchase-invoice.controller';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
 import { Account } from '../entities/account.entity';
+import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -17,6 +19,7 @@ import { Account } from '../entities/account.entity';
       InventoryTransaction,
       PurchaseVoucher,
       Account,
+      ItemVariant, 
     ]),
   ],
   controllers: [PurchaseInvoiceController],

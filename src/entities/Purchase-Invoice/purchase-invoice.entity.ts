@@ -41,10 +41,10 @@ export class PurchaseInvoice {
   @Column()
   supplierId: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   vatAmount: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   grandAmount: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
