@@ -28,7 +28,7 @@ export class UnitPriceModalRow {
   @JoinColumn({ name: 'purchaseInvoiceSettingId' })
   purchaseInvoiceSetting: PurchaseInvoiceSetting;
 
-  @Column()
+  @Column({ nullable: true })
   purchaseInvoiceSettingId: number;
 
   // optional snapshot of the name
