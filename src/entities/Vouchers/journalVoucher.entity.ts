@@ -66,15 +66,7 @@ export class JournalVoucher {
   @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
-  @Column({ type: 'boolean', default: true })
-  ofr: boolean;
 
-  @Column({ type: 'boolean', default: true })
-  rvr: boolean;
-
-  @ManyToOne(() => Account, { nullable: true })
-  @JoinColumn({ name: 'accountId' })
-  account: Account;
 
   @OneToMany(() => JournalVoucherDetail, (detail) => detail.journalVoucher, {
     cascade: true,

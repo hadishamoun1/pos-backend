@@ -9,6 +9,7 @@ import {
 import { PurchaseInvoice } from './purchase-invoice.entity';
 import { PurchaseInvoiceSetting } from '../purchaseInvoiceSettings';
 import { Supplier } from '../supplier.entity';
+import { Account } from '../account.entity'; // ← import your Account entity
 
 @Entity('unit_price_modal_rows')
 export class UnitPriceModalRow {
@@ -34,6 +35,15 @@ export class UnitPriceModalRow {
   // optional snapshot of the name
   @Column({ type: 'varchar', length: 255, nullable: true })
   chargeName?: string;
+
+  // ——— NEW: relation to your Chart of Accounts ———
+  @ManyToOne(() => Account, { nullable: true })
+  @JoinColumn({ name: 'accountId' })
+  account: Account;
+
+  @Column({ nullable: true })
+  accountId: number;
+  // ——————————————————————————————————————————————
 
   @Column({ type: 'enum', enum: ['amount', 'percent'], default: 'amount' })
   chargeType: 'amount' | 'percent';

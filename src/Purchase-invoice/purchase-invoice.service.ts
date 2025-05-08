@@ -277,6 +277,39 @@ export class PurchaseInvoiceService {
 
       await this.voucherRepo.save(voucher);
     }
+    // ─── 4) Save unit-price rows (including the newly selected accountId) ───
+    if (data.unitPriceRows?.length) {
+      const rowsToSave = data.unitPriceRows.map((row) =>
+        this.rowRepo.create({
+          invoice: { id: savedInvoice.id },
+          invoiceId: savedInvoice.id,
+
+          // if this came from a default setting it might have a settingId, otherwise null
+          purchaseInvoiceSettingId: row.purchaseInvoiceSettingId ?? null,
+
+          // snapshot fields
+          chargeName: row.chargeName,
+          chargeType: row.chargeType,
+          value: row.value,
+          valueOFR: row.valueOFR,
+          currency: row.currency,
+          valueExch: row.valueExch,
+          valueExchOFR: row.valueExchOFR,
+          addToItemCost: row.addToItemCost,
+          invoiceNbTax: row.invoiceNbTax,
+
+          // supplier relation if chosen
+          supplierId: row.supplierId ?? null,
+
+          // ← NEW: charge account relation
+          accountId: row.accountId ?? null,
+
+          shipping: row.shipping,
+        }),
+      );
+
+      await this.rowRepo.save(rowsToSave);
+    }
 
     return savedInvoice;
   }
@@ -524,13 +557,23 @@ export class PurchaseInvoiceService {
       // Upsert remaining rows
       const toSaveRows: UnitPriceModalRow[] = [];
       for (const dto of updatedData.unitPriceRows) {
+        if (dto.value && (!dto.valueOFR || dto.valueOFR === 0)) {
+          dto.valueOFR = dto.value;
+        }
+        // same for the exchange rates
+        if (dto.valueExch && (!dto.valueExchOFR || dto.valueExchOFR === 0)) {
+          dto.valueExchOFR = dto.valueExch;
+        }
         let entity: UnitPriceModalRow;
+
         if (dto.id) {
-          entity = await this.rowRepo.findOneBy({ id: dto.id! });
+          // existing row by PK
+          entity = await this.rowRepo.findOneBy({ id: dto.id });
           if (!entity) throw new NotFoundException(`Row ${dto.id} not found`);
           Object.assign(entity, dto);
           entity.invoiceId = id;
-        } else {
+        } else if (dto.purchaseInvoiceSettingId != null) {
+          // existing “template” row, match by setting Id
           entity = await this.rowRepo.findOne({
             where: {
               invoiceId: id,
@@ -541,11 +584,23 @@ export class PurchaseInvoiceService {
             Object.assign(entity, dto);
             entity.invoiceId = id;
           } else {
-            entity = this.rowRepo.create({ ...dto, invoiceId: id });
+            entity = this.rowRepo.create({
+              ...dto,
+              invoiceId: id,
+            });
           }
+        } else {
+          // brand-new ad-hoc row (no setting), force purchaseInvoiceSettingId = null
+          entity = this.rowRepo.create({
+            ...dto,
+            invoiceId: id,
+            purchaseInvoiceSettingId: null,
+          });
         }
+
         toSaveRows.push(entity);
       }
+
       invoice.unitPriceRows = await this.rowRepo.save(toSaveRows);
     }
 

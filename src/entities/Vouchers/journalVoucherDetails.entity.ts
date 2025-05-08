@@ -8,6 +8,8 @@ import {
 import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { JournalVoucher } from './journalVoucher.entity';
+import { Supplier } from '../supplier.entity';
+import { Customer } from '../customer.entity';
 
 @Entity('journal_voucher_details')
 export class JournalVoucherDetail {
@@ -20,6 +22,20 @@ export class JournalVoucherDetail {
   @ManyToOne(() => Account, { nullable: false })
   @JoinColumn({ name: 'accountId' })
   account: Account;
+
+  @Column({ name: 'supplierId', type: 'int', nullable: true })
+  supplierId: number;
+
+  @ManyToOne(() => Supplier, { nullable: true })
+  @JoinColumn({ name: 'supplierId' })
+  supplier: Supplier;
+
+  @Column({ name: 'customerId', type: 'int', nullable: true })
+  customerId: number;
+
+  @ManyToOne(() => Customer, { nullable: true })
+  @JoinColumn({ name: 'customerId' })
+  customer: Customer;
 
   @Column({ type: 'varchar', nullable: true, name: 'check' })
   check: string;
