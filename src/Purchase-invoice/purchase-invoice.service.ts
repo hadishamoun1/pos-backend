@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, Like } from 'typeorm';
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
@@ -9,6 +9,8 @@ import { UnitPriceModalRow } from '../entities/Purchase-Invoice/unit-price-modal
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
 import { PurchaseVoucherDetail } from '../entities/Vouchers/purchaseVoucherDetails.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
+import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
 
 @Injectable()
 export class PurchaseInvoiceService {
@@ -35,6 +37,12 @@ export class PurchaseInvoiceService {
 
     @InjectRepository(InventoryTransaction)
     private invTransRepo: Repository<InventoryTransaction>,
+
+    @InjectRepository(JournalVoucher)
+    private readonly journalVoucherRepo: Repository<JournalVoucher>,
+
+    @InjectRepository(JournalVoucherDetail)
+    private readonly journalVoucherDetailRepo: Repository<JournalVoucherDetail>,
   ) {}
   private async getNextPvNumber(prefix: string): Promise<string> {
     // Find the last voucher whose pvNumber starts with e.g. "PVG-"
@@ -279,7 +287,23 @@ export class PurchaseInvoiceService {
     }
     // ─── 4) Save unit-price rows (including the newly selected accountId) ───
     if (data.unitPriceRows?.length) {
-      const rowsToSave = data.unitPriceRows.map((row) =>
+      // first normalize any rows where valueOFR is zero but value is non-zero
+      const normalized = data.unitPriceRows.map((r) => {
+        const v = Number(r.value);
+        const o = Number(r.valueOFR);
+        const ex = Number(r.valueExch);
+        const eo = Number(r.valueExchOFR);
+
+        return {
+          ...r,
+          // if we have a normal charge but no OFR, copy it across
+          valueOFR: v > 0 && o === 0 ? v : o,
+          // same for exchange-OFR
+          valueExchOFR: ex > 0 && eo === 0 ? ex : eo,
+        };
+      });
+
+      const rowsToSave = normalized.map((row) =>
         this.rowRepo.create({
           invoice: { id: savedInvoice.id },
           invoiceId: savedInvoice.id,
@@ -309,6 +333,196 @@ export class PurchaseInvoiceService {
       );
 
       await this.rowRepo.save(rowsToSave);
+    }
+
+    // ─── 5) If Received → create JV header + details for each unit-price row ───
+    if (savedInvoice.status === 'Recieved' && data.unitPriceRows?.length) {
+      const rate = Number(savedInvoice.exchangeRate);
+
+      // 5a) Build next JV number
+      const prefix = savedInvoice.type === 'G' ? 'JVG' : 'JV';
+      const last = await this.journalVoucherRepo
+        .find({
+          where: { jvNumber: Like(`${prefix} - %`) },
+          order: { jvNumber: 'DESC' },
+          take: 1,
+        })
+        .then((arr) => arr[0]);
+      const seq = last ? parseInt(last.jvNumber.split(' - ')[1], 10) + 1 : 1;
+      const jvNumber = `${prefix} - ${String(seq).padStart(5, '0')}`;
+
+      // 5b) Prepare accumulators for header totals
+      let hdrDr = 0,
+        hdrDrUSD = 0,
+        hdrDrLL = 0;
+      let hdrDrOFR = 0,
+        hdrDrUSDOFR = 0,
+        hdrDrLLOFR = 0;
+      let hdrCr = 0,
+        hdrCrUSD = 0,
+        hdrCrLL = 0;
+      let hdrCrOFR = 0,
+        hdrCrUSDOFR = 0,
+        hdrCrLLOFR = 0;
+
+      // 5c) Build detail lines & accumulate
+      const details: JournalVoucherDetail[] = [];
+      const makeDetail = (opts: Partial<JournalVoucherDetail>) =>
+        this.journalVoucherDetailRepo.create({
+          ...opts,
+        });
+
+      for (const row of data.unitPriceRows) {
+        // 1) raw values
+        let v = Number(row.value);
+        let ofr = Number(row.valueOFR);
+        let ex = Number(row.valueExch);
+        let exO = Number(row.valueExchOFR);
+
+        // 2) normalize OFR / ExchOFR
+        if (v > 0 && ofr === 0) ofr = v;
+        if (ex > 0 && exO === 0) exO = ex;
+
+        // 3) filter by invoice.type
+        if (savedInvoice.type === 'G') {
+          v = 0; // only OFR matters
+        } else if (savedInvoice.type === 'S') {
+          ofr = v;
+          exO = ex; // only normal values
+        }
+      
+        // SR leaves both as-is
+
+        // 4) decide DR/CR order
+        if (v >= 0) {
+          // — Debit the charge account —
+          const d = makeDetail({
+            accountId: row.accountId!,
+            supplierId: null,
+            dr: v,
+            drUSD: v,
+            drLL: v * rate,
+            drOFR: ofr,
+            drUSDOFR: ofr,
+            drLLOFR: ofr * rate,
+            cr: 0,
+            crUSD: 0,
+            crLL: 0,
+            crOFR: 0,
+            crUSDOFR: 0,
+            crLLOFR: 0,
+          });
+          details.push(d);
+          hdrDr += d.dr;
+          hdrDrUSD += d.drUSD;
+          hdrDrLL += d.drLL;
+          hdrDrOFR += d.drOFR;
+          hdrDrUSDOFR += d.drUSDOFR;
+          hdrDrLLOFR += d.drLLOFR;
+
+          // — Credit the supplier —
+          const c = makeDetail({
+            accountId: null,
+            supplierId: row.supplierId!,
+            dr: 0,
+            drUSD: 0,
+            drLL: 0,
+            drOFR: 0,
+            drUSDOFR: 0,
+            drLLOFR: 0,
+            cr: v,
+            crUSD: v,
+            crLL: v * rate,
+            crOFR: ofr,
+            crUSDOFR: ofr,
+            crLLOFR: ofr * rate,
+          });
+          details.push(c);
+          hdrCr += c.cr;
+          hdrCrUSD += c.crUSD;
+          hdrCrLL += c.crLL;
+          hdrCrOFR += c.crOFR;
+          hdrCrUSDOFR += c.crUSDOFR;
+          hdrCrLLOFR += c.crLLOFR;
+        } else {
+          // negative: flip roles
+          const aV = Math.abs(v);
+          const aOfr = Math.abs(ofr);
+
+          // — Credit the charge account —
+          const c1 = makeDetail({
+            accountId: row.accountId!,
+            supplierId: null,
+            dr: 0,
+            drUSD: 0,
+            drLL: 0,
+            drOFR: 0,
+            drUSDOFR: 0,
+            drLLOFR: 0,
+            cr: aV,
+            crUSD: aV,
+            crLL: aV * rate,
+            crOFR: aOfr,
+            crUSDOFR: aOfr,
+            crLLOFR: aOfr * rate,
+          });
+          details.push(c1);
+          hdrCr += c1.cr;
+          hdrCrUSD += c1.crUSD;
+          hdrCrLL += c1.crLL;
+          hdrCrOFR += c1.crOFR;
+          hdrCrUSDOFR += c1.crUSDOFR;
+          hdrCrLLOFR += c1.crLLOFR;
+
+          // — Debit the supplier —
+          const d1 = makeDetail({
+            accountId: null,
+            supplierId: row.supplierId!,
+            dr: aV,
+            drUSD: aV,
+            drLL: aV * rate,
+            drOFR: aOfr,
+            drUSDOFR: aOfr,
+            drLLOFR: aOfr * rate,
+            cr: 0,
+            crUSD: 0,
+            crLL: 0,
+            crOFR: 0,
+            crUSDOFR: 0,
+            crLLOFR: 0,
+          });
+          details.push(d1);
+          hdrDr += d1.dr;
+          hdrDrUSD += d1.drUSD;
+          hdrDrLL += d1.drLL;
+          hdrDrOFR += d1.drOFR;
+          hdrDrUSDOFR += d1.drUSDOFR;
+          hdrDrLLOFR += d1.drLLOFR;
+        }
+      }
+
+      // 5d) Create the JV header with the exact sums
+      const jv = this.journalVoucherRepo.create({
+        jvNumber,
+        date: savedInvoice.date,
+        jvType: savedInvoice.type,
+        totalDr: hdrDr,
+        totalDrUSD: hdrDrUSD,
+        totalDrLL: hdrDrLL,
+        totalDrOFR: hdrDrOFR,
+        totalDrUSDOFR: hdrDrUSDOFR,
+        totalDrLLOFR: hdrDrLLOFR,
+        totalCr: hdrCr,
+        totalCrUSD: hdrCrUSD,
+        totalCrLL: hdrCrLL,
+        totalCrOFR: hdrCrOFR,
+        totalCrUSDOFR: hdrCrUSDOFR,
+        totalCrLLOFR: hdrCrLLOFR,
+        exchangeRateAcc: null,
+        exchangeRateUSD: null,
+        details, // Cascade will persist all lines
+      });
+      await this.journalVoucherRepo.save(jv);
     }
 
     return savedInvoice;

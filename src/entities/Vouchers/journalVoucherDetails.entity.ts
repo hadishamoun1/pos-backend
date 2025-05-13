@@ -16,10 +16,10 @@ export class JournalVoucherDetail {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ name: 'accountId', type: 'int' })
+  @Column({ name: 'accountId', type: 'int', nullable: true })
   accountId: number;
 
-  @ManyToOne(() => Account, { nullable: false })
+  @ManyToOne(() => Account, { nullable: true })
   @JoinColumn({ name: 'accountId' })
   account: Account;
 
@@ -114,10 +114,10 @@ export class JournalVoucherDetail {
   @Column({ type: 'varchar', length: 255, nullable: true })
   currency: string;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
   exRateEUROToUSD: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
   exRateUSD: number;
 
   @Column({ type: 'varchar', nullable: true })

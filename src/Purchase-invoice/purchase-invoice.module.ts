@@ -9,6 +9,8 @@ import { InventoryTransaction } from '../entities/inventory/inventoryTransaction
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
 import { Account } from '../entities/account.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
+import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
 
 @Module({
   imports: [
@@ -20,6 +22,8 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
       PurchaseVoucher,
       Account,
       ItemVariant, 
+      JournalVoucher,
+      JournalVoucherDetail
     ]),
   ],
   controllers: [PurchaseInvoiceController],

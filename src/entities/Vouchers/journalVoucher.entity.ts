@@ -57,7 +57,7 @@ export class JournalVoucher {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalCrLLOFR: number;
 
-  @Column({ type: 'varchar', length: 1 })
+  @Column({ type: 'varchar', length: 2 })
   jvType: string;
 
   @ManyToOne(() => CurrencyRate, { nullable: true })
