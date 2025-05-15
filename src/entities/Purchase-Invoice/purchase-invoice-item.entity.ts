@@ -51,4 +51,24 @@ export class PurchaseInvoiceItem {
 
   @Column({ type: 'int', nullable: true })
   numberOfContainers: number;
+
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  cfr: number;
+
+  /** Final cost (CFR × potentialCostRatio) */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  finalCost: number;
+
+  /** CFR calculated off the OFR price */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  cfrOFR: number;
+
+  /** Final OFR cost (CFR-OFR × potentialCostRatio) */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  finalOFR: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  costpercentage: number;
+
 }

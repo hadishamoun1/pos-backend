@@ -83,7 +83,7 @@ export class PurchaseInvoice {
   })
   items: PurchaseInvoiceItem[];
 
-  @OneToMany(() => UnitPriceModalRow, (row) => row.invoice, { cascade: true })
+  @OneToMany(() => UnitPriceModalRow, (row) => row.invoice, )
   unitPriceRows: UnitPriceModalRow[];
 
   @CreateDateColumn()
