@@ -152,7 +152,7 @@ export class InventoryTransactionService {
         itemName: i.itemName,
         length: Number(v.length),
         width: Number(v.width),
-        sheetsperbox : v.sheetsPerBox,
+        sheetsPerBox: Number(v.sheetsPerBox) || 0,       
         origin: v.origin,
         itemType: i.type,
         invoiceDate,
