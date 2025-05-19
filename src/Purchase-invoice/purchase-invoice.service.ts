@@ -77,6 +77,7 @@ export class PurchaseInvoiceService {
           itemVariantId: item.itemVariantId,
           transactionType: 'purchase',
           sqm: item.sqm,
+          quantity: item.quantity,
           purchaseInvoiceItemId: item.id,
           invoiceItemId: null,
         }),
@@ -105,7 +106,9 @@ export class PurchaseInvoiceService {
       // SR: bump in only
       else {
         variant.in += sqm;
+        variant.inOFR += sqm;
       }
+      
 
       // recompute running balances
       variant.balance = variant.start + variant.in - variant.out;
@@ -390,7 +393,7 @@ export class PurchaseInvoiceService {
           ofr = v;
           exO = ex; // only normal values
         }
-      
+
         // SR leaves both as-is
 
         // 4) decide DR/CR order
