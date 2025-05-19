@@ -20,15 +20,15 @@ export class InventoryTransaction {
   @Column()
   itemVariantId: number;
 
-  @Column({ type: 'enum', enum: ['purchase', 'sale'] })
-  transactionType: string; // 'purchase' or 'sale'
+  @Column({ type: 'varchar', length: 20 })
+  transactionType: string;
 
   // ✅ Track inventory in square meters (sqm)
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: false })
   sqm: number; // How much glass is added or removed in m²
 
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
-  quantity: number; 
+  quantity: number;
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   transactionDate: Date;
@@ -41,7 +41,6 @@ export class InventoryTransaction {
   @Column({ nullable: true })
   invoiceItemId: number; // Optional foreign key reference
 
-  
   // ↳ purchase‐invoice link (new)
   @ManyToOne(() => PurchaseInvoiceItem, {
     nullable: true,
