@@ -72,16 +72,49 @@ export class PurchaseInvoiceService {
 
     // 2) record inventory transactions
     if (savedInvoice.status === 'Recieved') {
-      const invTxs = savedInvoice.items.map((item) =>
-        this.inventoryTxRepo.create({
+      const invTxs = savedInvoice.items.map((item) => {
+        // grab raw values
+        let qty = Number(item.quantity);
+        let sqm = Number(item.sqm);
+        let qtyOfr = 0;
+        let sqmOfr = 0;
+
+        switch (savedInvoice.type) {
+          case 'S':
+          case 'SR':
+            qtyOfr = qty;
+            sqmOfr = sqm;
+            break;
+          case 'G':
+            qtyOfr = qty;
+            sqmOfr = sqm;
+            // then zero out the “normal” fields
+            qty = 0;
+            sqm = 0;
+            break;
+          case 'RVR':
+            // qty, sqm stay as-is
+            qtyOfr = 0;
+            sqmOfr = 0;
+            break;
+          default:
+            // fallback: treat like SR
+            qtyOfr = qty;
+            sqmOfr = sqm;
+        }
+
+        return this.inventoryTxRepo.create({
           itemVariantId: item.itemVariantId,
           transactionType: 'purchase',
-          sqm: item.sqm,
-          quantity: item.quantity,
+          quantity: qty,
+          sqm: sqm,
+          quantityofr: qtyOfr,
+          sqmofr: sqmOfr,
           purchaseInvoiceItemId: item.id,
           invoiceItemId: null,
-        }),
-      );
+        });
+      });
+
       await this.inventoryTxRepo.save(invTxs);
     }
 

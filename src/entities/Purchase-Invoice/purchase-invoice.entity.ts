@@ -29,10 +29,10 @@ export class PurchaseInvoice {
 
   @Column({
     type: 'enum',
-    enum: ['S', 'G', 'SR'],
+    enum: ['S', 'G', 'SR','RVR'],
     default: 'S',
   })
-  type: 'S' | 'G' | 'SR';
+  type: 'S' | 'G' | 'SR' | 'RVR';
 
   @ManyToOne(() => Supplier)
   @JoinColumn({ name: 'supplierId' })
