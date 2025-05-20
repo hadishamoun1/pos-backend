@@ -36,9 +36,14 @@ export class InventoryTransaction {
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   quantityofr: number;
 
-
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   transactionDate: Date;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  finalcost: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  finalcostofr: number;
 
   // ✅ Link to InvoiceItem for sales transactions
   @ManyToOne(() => InvoiceItem, { nullable: true, onDelete: 'SET NULL' })
