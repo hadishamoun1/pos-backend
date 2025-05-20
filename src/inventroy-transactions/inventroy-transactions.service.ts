@@ -106,6 +106,7 @@ export class InventoryTransactionService {
 
   async getActivity(): Promise<
     Array<{
+      id: number;
       transactionType: string;
       sqm: number;
       quantity: number | null;
@@ -113,9 +114,11 @@ export class InventoryTransactionService {
       itemName: string;
       length: number;
       width: number;
+      sheetsPerBox: number;
       origin: string;
       itemType: string;
       invoiceDate: Date;
+      invoiceNumber: string;
     }>
   > {
     const txs = await this.inventoryTransactionRepository.find({
@@ -132,30 +135,44 @@ export class InventoryTransactionService {
     });
 
     return txs.map((tx) => {
-      // choose purchase vs. sales invoice date
-      const raw =
-        tx.transactionType === 'purchase'
-          ? tx.purchaseInvoiceItem?.invoice?.date
-          : tx.invoiceItem?.invoice?.date;
-      const invoiceDate = raw ? new Date(raw) : tx.transactionDate;
+      // 1️⃣ Use the DB column directly
+      const transactionType = tx.transactionType;
 
+      // 2️⃣ Pick the correct invoice relation
+      const invoice =
+        transactionType === 'purchase'
+          ? tx.purchaseInvoiceItem?.invoice
+          : transactionType === 'sale'
+            ? tx.invoiceItem?.invoice
+            : undefined;
+
+      // 3️⃣ Build invoiceDate (fallback to transactionDate)
+      const invoiceDate = invoice?.date
+        ? new Date(invoice.date)
+        : tx.transactionDate;
+
+      // 4️⃣ Grab invoiceNumber
+      const invoiceNumber = invoice?.invoiceNumber ?? '—';
+
+      // 5️⃣ Unpack variant → thickness → item
       const v = tx.itemVariant!;
       const t = v.thickness!;
       const i = t.item!;
 
       return {
         id: tx.id,
-        transactionType: tx.transactionType,
+        transactionType,
         sqm: Number(tx.sqm),
         quantity: tx.quantity != null ? Number(tx.quantity) : null,
         thickness: t.thickness.toString(),
         itemName: i.itemName,
         length: Number(v.length),
         width: Number(v.width),
-        sheetsPerBox: Number(v.sheetsPerBox) || 0,       
+        sheetsPerBox: Number(v.sheetsPerBox),
         origin: v.origin,
         itemType: i.type,
         invoiceDate,
+        invoiceNumber,
       };
     });
   }

@@ -27,8 +27,15 @@ export class InventoryTransaction {
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: false })
   sqm: number; // How much glass is added or removed in m²
 
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: false })
+  sqmofr: number; // How much glass is added or removed in m²
+
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   quantity: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  quantityofr: number;
+
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   transactionDate: Date;

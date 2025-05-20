@@ -108,7 +108,6 @@ export class PurchaseInvoiceService {
         variant.in += sqm;
         variant.inOFR += sqm;
       }
-      
 
       // recompute running balances
       variant.balance = variant.start + variant.in - variant.out;
@@ -1041,6 +1040,7 @@ export class PurchaseInvoiceService {
               itemVariantId: it.itemVariantId,
               transactionType: 'purchase',
               sqm: newSqm,
+              quantity: Number(it.quantity),
               purchaseInvoiceItemId: it.id,
             });
             await this.invTransRepo.save(tx);
