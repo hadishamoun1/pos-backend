@@ -110,6 +110,8 @@ export class PurchaseInvoiceService {
           sqm: sqm,
           quantityofr: qtyOfr,
           sqmofr: sqmOfr,
+          finalcost: Number((item as any).finalCost ?? 0),
+          finalcostofr: Number((item as any).finalOFR ?? 0),
           purchaseInvoiceItemId: item.id,
           invoiceItemId: null,
         });

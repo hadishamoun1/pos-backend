@@ -166,6 +166,8 @@ export class InventoryTransactionService {
         sqmofr: Number(tx.sqmofr),
         quantity: tx.quantity != null ? Number(tx.quantity) : null,
         quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : null,
+        finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
+        finalcostofr: tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
         thickness: t.thickness.toString(),
         itemName: i.itemName,
         length: Number(v.length),
