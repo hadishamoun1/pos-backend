@@ -4,8 +4,10 @@ import {
   PrimaryGeneratedColumn,
   ManyToOne,
   JoinColumn,
+  OneToMany,
 } from 'typeorm';
 import { Thickness } from './thickness.entity';
+import { InventoryCount } from './count.entity';
 
 @Entity()
 export class ItemVariant {
@@ -52,7 +54,6 @@ export class ItemVariant {
   @Column({ type: 'int', default: 0 })
   balance: number; // Calculated as (start + in - out)
 
-  
   @Column({ type: 'int', default: 0 })
   startOFR: number; // Initial balance
   @Column({ type: 'int', default: 0 })
@@ -63,4 +64,7 @@ export class ItemVariant {
 
   @Column({ type: 'int', default: 0 })
   balanceOFR: number;
+
+  @OneToMany(() => InventoryCount, (cnt) => cnt.itemVariant)
+  inventoryCounts: InventoryCount[];
 }
