@@ -36,7 +36,7 @@ export class InventoryCountService {
 
   /** internal helper: save the count AND its inventory transaction */
   private async createSingle(data: any): Promise<InventoryCount> {
-    const { itemVariantId, date, count, type, unit,countOFR  } = data;
+    const { itemVariantId, date, count, type, unit,countOFR ,finalCost,finalCostOfr } = data;
 
     // fetch variant
     const variant = await this.itemVariantRepo.findOne({
@@ -81,6 +81,8 @@ export class InventoryCountService {
       count,
       type,
       sqm,
+      finalCost,
+      finalCostOfr,
     });
     const savedCount = await this.inventoryCountRepo.save(inventoryCount);
 
@@ -121,6 +123,8 @@ export class InventoryCountService {
       quantity: qty,
       quantityofr: qtyOFR,
       inventoryCountId: savedCount.id,
+      finalcost:finalCost,
+      finalcostofr:finalCostOfr
       // other fields (finalcost, invoiceItemId, etc.) left as null/default
     });
     await this.inventoryTxnRepo.save(txn);
