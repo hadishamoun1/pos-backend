@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { InventoryCount } from '../entities/inventory/count.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 
 @Injectable()
 export class InventoryCountService {
@@ -14,9 +15,12 @@ export class InventoryCountService {
 
     @InjectRepository(ItemVariant)
     private readonly itemVariantRepo: Repository<ItemVariant>,
+
+    @InjectRepository(InventoryTransaction)
+    private readonly inventoryTxnRepo: Repository<InventoryTransaction>,
   ) {}
 
-  /** internal helper to save one row, now converting cm→m and computing sqm */
+  /** Accepts single or array of count-rows */
   async create(
     createData: any | any[],
   ): Promise<InventoryCount | InventoryCount[]> {
@@ -26,16 +30,15 @@ export class InventoryCountService {
         results.push(await this.createSingle(row));
       }
       return results;
-    } else {
-      return this.createSingle(createData);
     }
+    return this.createSingle(createData);
   }
 
-  /** internal helper to save one row, converting cm→m and computing sqm */
+  /** internal helper: save the count AND its inventory transaction */
   private async createSingle(data: any): Promise<InventoryCount> {
-    const { itemVariantId, date, count, type, unit } = data;
+    const { itemVariantId, date, count, type, unit,countOFR  } = data;
 
-    // 1) fetch the variant
+    // fetch variant
     const variant = await this.itemVariantRepo.findOne({
       where: { id: itemVariantId },
     });
@@ -43,35 +46,86 @@ export class InventoryCountService {
       throw new NotFoundException(`ItemVariant #${itemVariantId} not found`);
     }
 
-    // 2) compute sqm (convert cm²→m² by dividing by 10000)
+    // compute one sheet area (cm→m²)
     const lengthCm = Number(variant.length);
     const widthCm = Number(variant.width);
     const oneSheetM2 = (lengthCm * widthCm) / 10000;
 
-    let sqm: number;
+    // compute total sqm of this count
+    let rawSqm: number;
+    let rawSqmofr: number;
     switch (unit) {
       case 'box':
-        sqm = oneSheetM2 * variant.sheetsPerBox * count;
+        rawSqm = oneSheetM2 * variant.sheetsPerBox * count;
+        rawSqmofr = oneSheetM2 * variant.sheetsPerBox * countOFR;
         break;
       case 'sheet':
-        sqm = oneSheetM2 * count;
+        rawSqm = oneSheetM2 * count;
+        rawSqmofr = oneSheetM2 * countOFR;
         break;
       case 'sqm':
-        sqm = count;
+        rawSqm = count;
+        rawSqmofr = countOFR;
         break;
       default:
-        sqm = 0;
+        rawSqm = 0;
     }
+    // round to 2 decimals
+    const sqm = Number(rawSqm.toFixed(2));
+    const sqmofr = Number(rawSqmofr.toFixed(2));
 
-    // 3) build and save
-    const record = this.inventoryCountRepo.create({
+    // save the InventoryCount
+    const inventoryCount = this.inventoryCountRepo.create({
       itemVariant: variant,
-      date, // now guaranteed to exist on each row
+      date,
       count,
       type,
       sqm,
     });
-    return this.inventoryCountRepo.save(record);
+    const savedCount = await this.inventoryCountRepo.save(inventoryCount);
+
+    // now compute transaction fields
+    let txnSqm = 0;
+    let txnSqmOFR = 0;
+    let qty = 0;
+    let qtyOFR = 0;
+
+    if (type === 'S') {
+      txnSqm = sqm;
+      txnSqmOFR = sqm;
+      qty = count;
+      qtyOFR = count;
+    } else if (type === 'SR'){
+        txnSqm = sqm;
+        txnSqmOFR = sqmofr;
+        qty = count;
+        qtyOFR = countOFR;
+    }else if (type === 'G') {
+      txnSqm = 0;
+      txnSqmOFR = sqm;
+      qty = 0;
+      qtyOFR = count;
+    } else if (type === 'RVR') {
+      txnSqm = sqm;
+      txnSqmOFR = 0;
+      qty = count;
+      qtyOFR = 0;
+    }
+
+    // create and save the InventoryTransaction
+    const txn = this.inventoryTxnRepo.create({
+      itemVariant: variant,
+      transactionType: 'Count',
+      sqm: txnSqm,
+      sqmofr: txnSqmOFR,
+      quantity: qty,
+      quantityofr: qtyOFR,
+      inventoryCountId: savedCount.id,
+      // other fields (finalcost, invoiceItemId, etc.) left as null/default
+    });
+    await this.inventoryTxnRepo.save(txn);
+
+    return savedCount;
   }
 
   findAll(): Promise<InventoryCount[]> {

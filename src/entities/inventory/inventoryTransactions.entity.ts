@@ -8,6 +8,7 @@ import {
 import { ItemVariant } from './itemVariant.entity';
 import { InvoiceItem } from '../invoiceItem.entity';
 import { PurchaseInvoiceItem } from '../Purchase-Invoice/purchase-invoice-item.entity';
+import { InventoryCount } from '../inventory/count.entity';
 
 @Entity()
 export class InventoryTransaction {
@@ -62,4 +63,11 @@ export class InventoryTransaction {
   purchaseInvoiceItem: PurchaseInvoiceItem;
   @Column({ nullable: true })
   purchaseInvoiceItemId: number;
+
+  @ManyToOne(() => InventoryCount, { nullable: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'inventoryCountId' })
+  inventoryCount!: InventoryCount;
+
+  @Column({ nullable: true })
+  inventoryCountId!: number;
 }
