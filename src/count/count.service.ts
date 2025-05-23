@@ -16,17 +16,60 @@ export class InventoryCountService {
     private readonly itemVariantRepo: Repository<ItemVariant>,
   ) {}
 
-  async create(createData: any): Promise<InventoryCount> {
-    const { itemVariantId, date, count, type } = createData;
-    const variant = await this.itemVariantRepo.findOne({ where: { id: itemVariantId } });
+  /** internal helper to save one row, now converting cm→m and computing sqm */
+  async create(
+    createData: any | any[],
+  ): Promise<InventoryCount | InventoryCount[]> {
+    if (Array.isArray(createData)) {
+      const results: InventoryCount[] = [];
+      for (const row of createData) {
+        results.push(await this.createSingle(row));
+      }
+      return results;
+    } else {
+      return this.createSingle(createData);
+    }
+  }
+
+  /** internal helper to save one row, converting cm→m and computing sqm */
+  private async createSingle(data: any): Promise<InventoryCount> {
+    const { itemVariantId, date, count, type, unit } = data;
+
+    // 1) fetch the variant
+    const variant = await this.itemVariantRepo.findOne({
+      where: { id: itemVariantId },
+    });
     if (!variant) {
       throw new NotFoundException(`ItemVariant #${itemVariantId} not found`);
     }
+
+    // 2) compute sqm (convert cm²→m² by dividing by 10000)
+    const lengthCm = Number(variant.length);
+    const widthCm = Number(variant.width);
+    const oneSheetM2 = (lengthCm * widthCm) / 10000;
+
+    let sqm: number;
+    switch (unit) {
+      case 'box':
+        sqm = oneSheetM2 * variant.sheetsPerBox * count;
+        break;
+      case 'sheet':
+        sqm = oneSheetM2 * count;
+        break;
+      case 'sqm':
+        sqm = count;
+        break;
+      default:
+        sqm = 0;
+    }
+
+    // 3) build and save
     const record = this.inventoryCountRepo.create({
       itemVariant: variant,
-      date,
+      date, // now guaranteed to exist on each row
       count,
       type,
+      sqm,
     });
     return this.inventoryCountRepo.save(record);
   }
