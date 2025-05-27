@@ -83,6 +83,24 @@ export class InventoryCountService {
     const sqm = Number(rawSqm.toFixed(2));
     const sqmofr = Number(rawSqmofr.toFixed(2));
 
+    let fc = 0;
+    let fco = 0;
+
+    if (type === 'S') {
+      fc = finalCost;
+      fco = finalCost;
+    }
+    if (type === 'G') {
+      fco = finalCostOfr;
+    }
+    if (type === 'RVR') {
+      fc = finalCost;
+    }
+    if (type === 'SR') {
+      fc = finalCost;
+      fco = finalCostOfr;
+    }
+
     // save the InventoryCount
     const inventoryCount = this.inventoryCountRepo.create({
       itemVariant: variant,
@@ -90,8 +108,8 @@ export class InventoryCountService {
       count,
       type,
       sqm,
-      finalCost,
-      finalCostOfr,
+      finalCost: fc,
+      finalCostOfr: fco,
     });
     const savedCount = await this.inventoryCountRepo.save(inventoryCount);
 
@@ -273,6 +291,11 @@ export class InventoryCountService {
     // note: InventoryCount only stores `sqm`. We keep sqmofr in the transaction.
 
     // 5) save the updated count
+
+    if (countRec.type === 'S') {
+      countRec.finalCostOfr = countRec.finalCost;
+    }
+
     const savedCount = await this.inventoryCountRepo.save(countRec);
 
     // 6) find its transaction record
