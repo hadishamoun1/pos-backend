@@ -4,8 +4,11 @@ import {
   Column,
   ManyToOne,
   JoinColumn,
+  OneToMany,
 } from 'typeorm';
 import { ItemVariant } from './itemVariant.entity';
+import { InventoryTransaction } from './inventoryTransactions.entity';
+
 
 export enum CountType {
   S = 'S',
@@ -53,4 +56,9 @@ export class InventoryCount {
   /** final cost OFR for this count */
   @Column('decimal', { precision: 10, scale: 2, nullable: true, default: 0 })
   finalCostOfr!: number;
+
+  @OneToMany(() => InventoryTransaction, (txn) => txn.inventoryCount, {
+    cascade: true,
+  })
+  inventoryTransactions!: InventoryTransaction[];
 }
