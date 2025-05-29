@@ -30,6 +30,7 @@ import { InventoryTransactionModule } from './inventroy-transactions/inventroy-t
 import { PurchaseInvoiceSettingModule } from './Purchase-invoice-settings/purchase-invoice-settings.module';
 import { PurchaseInvoiceModule } from './purchase-invoice/purchase-invoice.module';
 import { InventoryCountModule } from './count/count.module';
+import { TransfersModule } from './transfers/transfers.module';
 
 @Module({
   imports: [
@@ -73,6 +74,7 @@ import { InventoryCountModule } from './count/count.module';
     PurchaseInvoiceSettingModule,
     PurchaseInvoiceModule,
     InventoryCountModule,
+    TransfersModule,
   ],
 })
 export class AppModule {}

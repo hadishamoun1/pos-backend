@@ -23,7 +23,7 @@ export class TransferItem {
   @ManyToOne(() => ItemVariant, { eager: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'itemVariantId' })
   itemVariant: ItemVariant;
-  @Column()
+  @Column({ nullable: true })
   itemVariantId: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
