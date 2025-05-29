@@ -97,5 +97,17 @@ export class TransfersService {
     return t;
   }
 
- 
+
+  
+  async finddetails(): Promise<Transfer[]> {
+    return this.transfersRepo.find({
+      relations: [
+        'items',
+        'items.itemVariant',
+        'items.itemVariant.thickness',
+        'items.itemVariant.thickness.item',
+      ],
+      order: { id: 'DESC' },
+    });
+  }
 }
