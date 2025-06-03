@@ -87,58 +87,114 @@ export class ItemsService {
   }
   async createFullItem(data: {
     itemName: string;
-    type: string;
-    thicknesses: {
-      thickness: number;
-      variants: {
-        length: number;
-        width: number;
-        sheetsPerBox: number;
+    type: 'box' | 'sheet' | 'sqm';
+    thicknesses: Array<{
+      thickness: number | string;
+      variants: Array<{
+        length?: number | string;
+        width?: number | string;
+        sheetsPerBox?: number | string;
         origin: string;
         fixBox?: boolean;
         fixLength?: boolean;
         fixWidth?: boolean;
-      }[];
-    }[];
+      }>;
+    }>;
   }): Promise<Item> {
-    const { itemName, type, thicknesses } = data;
+    const { itemName, type, thicknesses: rawTh } = data;
 
-    // Validate the main item data
-    if (!itemName || !type) {
-      throw new Error('Item name and type are required.');
-    }
+    // Normalize incoming DTOs to real numbers/booleans
+    const incoming = rawTh.map((th) => ({
+      thickness: Number(th.thickness),
+      variants: th.variants.map((v) => ({
+        length: type === 'sqm' ? 0 : Number(v.length ?? 0),
+        width: type === 'sqm' ? 0 : Number(v.width ?? 0),
+        sheetsPerBox: type === 'sheet' ? 1 : Number(v.sheetsPerBox ?? 0),
+        origin: v.origin,
+        fixBox: v.fixBox ?? false,
+        fixLength: v.fixLength ?? false,
+        fixWidth: v.fixWidth ?? false,
+      })),
+    }));
 
-    // Create the Item
-    const newItem = this.itemRepository.create({ itemName, type });
+    // 1) Try to load any existing Item (+ its thicknesses & variants)
+    let item = await this.itemRepository.findOne({
+      where: { itemName, type },
+      relations: ['thicknesses', 'thicknesses.variants'],
+    });
 
-    // Validate and create Thicknesses and Variants
-    if (thicknesses && thicknesses.length > 0) {
-      newItem.thicknesses = thicknesses.map((thicknessData) => {
-        const { thickness, variants } = thicknessData;
-
-        if (!thickness) {
-          throw new Error('Thickness value is required.');
-        }
-
-        const newThickness = this.thicknessRepository.create({ thickness });
-
-        if (variants && variants.length > 0) {
-          newThickness.variants = variants.map((variantData) => {
-            const { length, width, sheetsPerBox, origin } = variantData;
-
-            if (!length || !width || !sheetsPerBox || !origin) {
-              throw new Error('Variant details are incomplete.');
-            }
-
-            return this.itemVariantRepository.create(variantData);
-          });
-        }
-
-        return newThickness;
+    const isNewItem = !item;
+    if (isNewItem) {
+      // build brand-new Item entity
+      item = this.itemRepository.create({ itemName, type });
+      item.thicknesses = incoming.map((thDto) => {
+        const thEnt = this.thicknessRepository.create({
+          thickness: thDto.thickness,
+        });
+        thEnt.variants = thDto.variants.map((vDto) =>
+          this.itemVariantRepository.create({
+            length: vDto.length,
+            width: vDto.width,
+            sheetsPerBox: vDto.sheetsPerBox,
+            origin: vDto.origin,
+            fixBox: vDto.fixBox,
+            fixLength: vDto.fixLength,
+            fixWidth: vDto.fixWidth,
+          }),
+        );
+        return thEnt;
       });
+
+      // cascade-save all at once
+      return this.itemRepository.save(item);
     }
 
-    // Save the Item with related data in a single transaction
-    return await this.itemRepository.save(newItem);
+    // 2) Existing Item: only insert brand-new thicknesses/variants
+    for (const thDto of incoming) {
+      // find matching thickness
+      let thEnt = item.thicknesses.find(
+        (t) => Number(t.thickness) === thDto.thickness,
+      );
+
+      if (!thEnt) {
+        // brand-new thickness
+        thEnt = this.thicknessRepository.create({
+          thickness: thDto.thickness,
+          item,
+        });
+        await this.thicknessRepository.save(thEnt);
+        item.thicknesses.push(thEnt);
+      }
+
+      // ensure we have its variants loaded
+      thEnt.variants = thEnt.variants || [];
+
+      for (const vDto of thDto.variants) {
+        const found = thEnt.variants.find(
+          (v) =>
+            Number(v.length) === vDto.length &&
+            Number(v.width) === vDto.width &&
+            v.sheetsPerBox === vDto.sheetsPerBox &&
+            v.origin === vDto.origin,
+        );
+        if (!found) {
+          const newVar = this.itemVariantRepository.create({
+            length: vDto.length,
+            width: vDto.width,
+            sheetsPerBox: vDto.sheetsPerBox,
+            origin: vDto.origin,
+            fixBox: vDto.fixBox,
+            fixLength: vDto.fixLength,
+            fixWidth: vDto.fixWidth,
+            thickness: thEnt,
+          });
+          await this.itemVariantRepository.save(newVar);
+          thEnt.variants.push(newVar);
+        }
+      }
+    }
+
+    // 3) Return the already-existing (and now extended) item.
+    return item;
   }
 }

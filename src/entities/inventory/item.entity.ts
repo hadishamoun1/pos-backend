@@ -9,7 +9,7 @@ export class Item {
   @Column({ length: 100 })
   itemName: string; // e.g., Clear or Reflective Clear
 
-  @Column({ type: 'enum', enum: ['box', 'sheet'], default: 'box' })
+  @Column({ type: 'enum', enum: ['box', 'sheet', 'sqm'], default: 'box' })
   type: string; // Enum for item type
 
   @OneToMany(() => Thickness, (thickness) => thickness.item, { cascade: true })

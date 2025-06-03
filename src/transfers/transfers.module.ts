@@ -6,9 +6,21 @@ import { TransferItem } from '../entities/inventory/transferItem.entity';
 import { TransfersService } from './transfers.service';
 import { TransfersController } from './transfers.controller';
 import { Settings } from '../entities/settings.entity';
+import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
+import { Thickness } from '../entities/inventory/thickness.entity';
+import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Transfer, TransferItem, Settings])],
+  imports: [
+    TypeOrmModule.forFeature([
+      Transfer,
+      TransferItem,
+      Settings,
+      InventoryTransaction,
+      Thickness,
+      ItemVariant,
+    ]),
+  ],
   providers: [TransfersService],
   controllers: [TransfersController],
 })
