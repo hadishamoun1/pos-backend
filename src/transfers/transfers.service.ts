@@ -481,6 +481,66 @@ export class TransfersService {
             await manager.getRepository(InventoryTransaction).save(txInDest);
           }
         }
+        // 7) BR: “Breakage” → Deduct quantity and sqm from inventory
+        //
+        if (data.location === 'Breakage') {
+          for (const ti of persisted) {
+            const variant = ti.itemVariant;
+
+            const txOut = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: variant.id,
+              transactionType: 'Breakage',
+              quantity: 0,
+              quantityofr: -ti.quantity,
+              sqm: 0,
+              sqmofr: -ti.sqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+
+            await manager.getRepository(InventoryTransaction).save(txOut);
+          }
+        }
+        // 8) Adjustment +: Add quantity and sqm to inventory
+        //
+        if (data.location === 'Adjustment +') {
+          for (const ti of persisted) {
+            const variant = ti.itemVariant;
+
+            const txIn = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: variant.id,
+              transactionType: 'Adjustment +',
+              quantity: 0,
+              quantityofr: ti.quantity,
+              sqm: 0,
+              sqmofr: ti.sqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+
+            await manager.getRepository(InventoryTransaction).save(txIn);
+          }
+        }
+        // 9) Adjustment -: Subtract quantity and sqm from inventory
+        //
+        if (data.location === 'Adjustment -') {
+          for (const ti of persisted) {
+            const variant = ti.itemVariant;
+
+            const txOut = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: variant.id,
+              transactionType: 'Adjustment -',
+              quantity: 0,
+              quantityofr: -ti.quantity,
+              sqm: 0,
+              sqmofr: -ti.sqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+
+            await manager.getRepository(InventoryTransaction).save(txOut);
+          }
+        }
 
         // If we reach here without throwing, commit the transaction:
         return savedTransfer;
