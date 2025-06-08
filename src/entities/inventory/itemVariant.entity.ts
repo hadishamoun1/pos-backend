@@ -65,6 +65,12 @@ export class ItemVariant {
   @Column({ type: 'int', default: 0 })
   balanceOFR: number;
 
+  @Column({ type: 'varchar', length: 100, nullable: true, default: null })
+  condition: string;
+
+  @Column({ type: 'date', nullable: true, default: null })
+  dateReceived: Date;
+
   @OneToMany(() => InventoryCount, (cnt) => cnt.itemVariant)
   inventoryCounts: InventoryCount[];
 }
