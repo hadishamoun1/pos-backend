@@ -9,6 +9,7 @@ import { Settings } from '../entities/settings.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+import { InventoryTransactionModule } from '../inventroy-transactions/inventroy-transactions.module'; 
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
       Thickness,
       ItemVariant,
     ]),
+    InventoryTransactionModule,
   ],
   providers: [TransfersService],
   controllers: [TransfersController],

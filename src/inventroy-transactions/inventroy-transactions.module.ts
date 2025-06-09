@@ -4,11 +4,12 @@ import { InventoryTransaction } from '../entities/inventory/inventoryTransaction
 import { InventoryTransactionService } from './inventroy-transactions.service';
 import { InventoryTransactionController } from './inventroy-transactions.controller';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+import { InventoryTransactionGateway } from './inventory-transaction.gateway';
 
 @Module({
   imports: [TypeOrmModule.forFeature([InventoryTransaction, ItemVariant])],
   controllers: [InventoryTransactionController],
-  providers: [InventoryTransactionService],
-  exports: [InventoryTransactionService], // Export so other modules can use it
+  providers: [InventoryTransactionService, InventoryTransactionGateway],
+  exports: [InventoryTransactionService, InventoryTransactionGateway], // Export so other modules can use it
 })
 export class InventoryTransactionModule {}

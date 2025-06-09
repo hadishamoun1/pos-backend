@@ -14,6 +14,9 @@ import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { Item } from 'src/entities/inventory/item.entity';
 
+import { InventoryTransactionGateway } from '../inventroy-transactions/inventory-transaction.gateway';
+import { InventoryTransactionService } from '../inventroy-transactions/inventroy-transactions.service';
+
 @Injectable()
 export class TransfersService {
   constructor(
@@ -34,10 +37,14 @@ export class TransfersService {
 
     @InjectRepository(ItemVariant)
     private readonly variantRepo: Repository<ItemVariant>,
+
+    private readonly inventoryTransactionService: InventoryTransactionService,
+    private readonly inventoryTransactionGateway: InventoryTransactionGateway,
   ) {}
 
   async create(data: any): Promise<Transfer> {
-    return await this.transfersRepo.manager.transaction(
+    let savedTransfer: Transfer;
+    await this.transfersRepo.manager.transaction(
       async (manager: EntityManager) => {
         //
         // 1) Fetch active Settings → year suffix
@@ -109,9 +116,7 @@ export class TransfersService {
             }),
           ),
         });
-        const savedTransfer = await manager
-          .getRepository(Transfer)
-          .save(transfer);
+        savedTransfer = await manager.getRepository(Transfer).save(transfer);
 
         //
         // 6) Load each saved TransferItem ↔ itemVariant → thickness → item
@@ -542,10 +547,20 @@ export class TransfersService {
           }
         }
 
+        // ✅ Emit WebSocket update with latest inventory activity
+        const updatedActivity =
+          await this.inventoryTransactionService.getActivity();
+        this.inventoryTransactionGateway.sendActivityUpdate(updatedActivity);
+
         // If we reach here without throwing, commit the transaction:
-        return savedTransfer;
       },
     );
+    setTimeout(async () => {
+      const updatedActivity =
+        await this.inventoryTransactionService.getActivity();
+      this.inventoryTransactionGateway.sendActivityUpdate(updatedActivity);
+    }, 100);
+    return savedTransfer;
   }
 
   async findAll(): Promise<Transfer[]> {

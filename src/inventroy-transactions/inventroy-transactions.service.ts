@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+import { InventoryTransactionGateway } from './inventory-transaction.gateway';
 
 @Injectable()
 export class InventoryTransactionService {
@@ -12,6 +13,7 @@ export class InventoryTransactionService {
 
     @InjectRepository(ItemVariant)
     private readonly itemVariantRepository: Repository<ItemVariant>,
+    private readonly gateway: InventoryTransactionGateway,
   ) {}
 
   /**
@@ -109,7 +111,11 @@ export class InventoryTransactionService {
       id: number;
       transactionType: string;
       sqm: number;
+      sqmofr: number;
       quantity: number | null;
+      quantityofr: number | null;
+      finalcost: number | null;
+      finalcostofr: number | null;
       thickness: string;
       itemName: string;
       length: number;
@@ -134,11 +140,9 @@ export class InventoryTransactionService {
       order: { transactionDate: 'DESC' },
     });
 
-    return txs.map((tx) => {
-      // 1️⃣ Use the DB column directly
+    const result = txs.map((tx) => {
       const transactionType = tx.transactionType;
 
-      // 2️⃣ Pick the correct invoice relation
       const invoice =
         transactionType === 'purchase'
           ? tx.purchaseInvoiceItem?.invoice
@@ -146,15 +150,12 @@ export class InventoryTransactionService {
             ? tx.invoiceItem?.invoice
             : undefined;
 
-      // 3️⃣ Build invoiceDate (fallback to transactionDate)
       const invoiceDate = invoice?.date
         ? new Date(invoice.date)
         : tx.transactionDate;
 
-      // 4️⃣ Grab invoiceNumber
       const invoiceNumber = invoice?.invoiceNumber ?? '—';
 
-      // 5️⃣ Unpack variant → thickness → item
       const v = tx.itemVariant!;
       const t = v.thickness!;
       const i = t.item!;
@@ -179,5 +180,10 @@ export class InventoryTransactionService {
         invoiceNumber,
       };
     });
+
+    // 🔴 Emit real-time update to all WebSocket clients
+    this.gateway.sendActivityUpdate(result);
+
+    return result;
   }
 }
