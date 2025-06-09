@@ -8,6 +8,7 @@ import {
 } from 'typeorm';
 import { Thickness } from './thickness.entity';
 import { InventoryCount } from './count.entity';
+import { ItemBatch } from './itemBatch.entity';
 
 @Entity()
 export class ItemVariant {
@@ -40,36 +41,32 @@ export class ItemVariant {
 
   @Column({ type: 'boolean', default: false })
   fixWidth: boolean; // Whether the width is fixed
-
   // 🔽 Inventory Tracking (TOTALS)
   @Column({ type: 'int', default: 0 })
-  start: number; // Initial balance
+  totalStart: number; // Initial balance
 
   @Column({ type: 'int', default: 0 })
-  in: number; // Total purchases
+  totalIn: number; // Total purchases
 
   @Column({ type: 'int', default: 0 })
-  out: number; // Total sales
+  totalOut: number; // Total sales
 
   @Column({ type: 'int', default: 0 })
-  balance: number; // Calculated as (start + in - out)
+  totalBalance: number; // Calculated as (start + in - out)
 
   @Column({ type: 'int', default: 0 })
-  startOFR: number; // Initial balance
+  totalStartOFR: number; // Initial balance
   @Column({ type: 'int', default: 0 })
-  inOFR: number; // Total purchases
-
-  @Column({ type: 'int', default: 0 })
-  outOFR: number; // Total sales
+  totalInOFR: number; // Total purchases
 
   @Column({ type: 'int', default: 0 })
-  balanceOFR: number;
+  totalOutOFR: number; // Total sales
 
-  @Column({ type: 'varchar', length: 100, nullable: true, default: null })
-  condition: string;
+  @Column({ type: 'int', default: 0 })
+  totalBalanceOFR: number;
 
-  @Column({ type: 'date', nullable: true, default: null })
-  dateReceived: Date;
+  @OneToMany(() => ItemBatch, (batch) => batch.itemVariant)
+  batches: ItemBatch[];
 
   @OneToMany(() => InventoryCount, (cnt) => cnt.itemVariant)
   inventoryCounts: InventoryCount[];

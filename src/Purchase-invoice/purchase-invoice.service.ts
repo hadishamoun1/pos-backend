@@ -11,6 +11,7 @@ import { PurchaseVoucherDetail } from '../entities/Vouchers/purchaseVoucherDetai
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
 import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 
 @Injectable()
 export class PurchaseInvoiceService {
@@ -43,6 +44,9 @@ export class PurchaseInvoiceService {
 
     @InjectRepository(JournalVoucherDetail)
     private readonly journalVoucherDetailRepo: Repository<JournalVoucherDetail>,
+
+    @InjectRepository(ItemBatch)
+    private readonly itemBatchRepo: Repository<ItemBatch>,
   ) {}
   private async getNextPvNumber(prefix: string): Promise<string> {
     // Find the last voucher whose pvNumber starts with e.g. "PVG-"
@@ -119,36 +123,93 @@ export class PurchaseInvoiceService {
 
       await this.inventoryTxRepo.save(invTxs);
     }
+    if (savedInvoice.status === 'Recieved') {
+      for (const item of savedInvoice.items) {
+        const condition = (item as any).condition || 'Clean';
+        const dateReceived = new Date(savedInvoice.date);
 
-    // ─── NEW: bump the variant “in” / “inOFR” and recompute balances ───
-    for (const item of savedInvoice.items) {
-      const variant = await this.variantRepo.findOneBy({
-        id: item.itemVariantId,
-      });
-      if (!variant) continue;
+        let itemBatch = await this.itemBatchRepo.findOne({
+          where: {
+            itemVariant: { id: item.itemVariantId },
+            condition,
+            dateReceived,
+          },
+          relations: ['itemVariant'],
+        });
 
-      const sqm = Number(item.sqm);
+        if (!itemBatch) {
+          itemBatch = this.itemBatchRepo.create({
+            itemVariant: { id: item.itemVariantId },
+            condition,
+            dateReceived,
+            start: 0,
+            in: 0,
+            out: 0,
+            balance: 0,
+            startOFR: 0,
+            inOFR: 0,
+            outOFR: 0,
+            balanceOFR: 0,
+          });
+        }
 
-      // Services: bump both in & inOFR
-      if (savedInvoice.type === 'S') {
-        variant.in += sqm;
-        variant.inOFR += sqm;
+        const sqm = Number(item.sqm);
+
+        if (savedInvoice.type === 'S') {
+          itemBatch.in += sqm;
+          itemBatch.inOFR += sqm;
+        } else if (savedInvoice.type === 'G') {
+          itemBatch.inOFR += sqm;
+        } else {
+          itemBatch.in += sqm;
+          itemBatch.inOFR += sqm;
+        }
+
+        itemBatch.balance = itemBatch.start + itemBatch.in - itemBatch.out;
+        itemBatch.balanceOFR =
+          itemBatch.startOFR + itemBatch.inOFR - itemBatch.outOFR;
+
+        await this.itemBatchRepo.save(itemBatch);
       }
-      // Goods: bump inOFR only
-      else if (savedInvoice.type === 'G') {
-        variant.inOFR += sqm;
-      }
-      // SR: bump in only
-      else {
-        variant.in += sqm;
-        variant.inOFR += sqm;
-      }
 
-      // recompute running balances
-      variant.balance = variant.start + variant.in - variant.out;
-      variant.balanceOFR = variant.startOFR + variant.inOFR - variant.outOFR;
+      // 🔽 🔽 🔽 Add this new section after the above loop 🔽 🔽 🔽
+      for (const item of savedInvoice.items) {
+        const variant = await this.variantRepo.findOne({
+          where: { id: item.itemVariantId },
+          relations: ['batches'],
+        });
+        if (!variant) continue;
 
-      await this.variantRepo.save(variant);
+        // Sum all the batch values
+        let totalStart = 0;
+        let totalIn = 0;
+        let totalOut = 0;
+        let totalStartOFR = 0;
+        let totalInOFR = 0;
+        let totalOutOFR = 0;
+
+        for (const batch of variant.batches) {
+          totalStart += batch.start;
+          totalIn += batch.in;
+          totalOut += batch.out;
+          totalStartOFR += batch.startOFR;
+          totalInOFR += batch.inOFR;
+          totalOutOFR += batch.outOFR;
+        }
+
+        // Update totals in ItemVariant
+        variant.totalStart = totalStart;
+        variant.totalIn = totalIn;
+        variant.totalOut = totalOut;
+        variant.totalBalance = totalStart + totalIn - totalOut;
+
+        variant.totalStartOFR = totalStartOFR;
+        variant.totalInOFR = totalInOFR;
+        variant.totalOutOFR = totalOutOFR;
+        variant.totalBalanceOFR = totalStartOFR + totalInOFR - totalOutOFR;
+
+        await this.variantRepo.save(variant);
+      }
     }
 
     // 3) if type is G, S or SR → build & save a PurchaseVoucher
@@ -652,63 +713,6 @@ export class PurchaseInvoiceService {
     await this.invoiceRepo.save(invoice);
 
     // ── if we just flipped *out of* Recieved, subtract exactly what we previously added ──
-    if (originalStatus === 'Recieved' && invoice.status !== 'Recieved') {
-      // 1) Roll back stock on each variant
-      for (const { variantId, sqm } of originalItems) {
-        const v = await this.variantRepo.findOneBy({ id: variantId });
-        if (!v) continue;
-
-        if (invoice.type === 'S') {
-          v.in -= sqm;
-          v.inOFR -= sqm;
-        } else if (invoice.type === 'G') {
-          v.inOFR -= sqm;
-        } else {
-          // SR
-          v.in -= sqm;
-        }
-
-        v.balance = v.start + v.in - v.out;
-        v.balanceOFR = v.startOFR + v.inOFR - v.outOFR;
-        await this.variantRepo.save(v);
-      }
-
-      // 2) Delete any inventory‐transactions for this invoice
-      await this.invTransRepo.delete({
-        purchaseInvoiceItemId: In(originalItems.map((o) => o.id)),
-      });
-
-      // 3) Delete its PurchaseVoucher (and details)
-      const oldVoucher = await this.voucherRepo.findOne({
-        where: { purchaseInvoiceId: id },
-      });
-      if (oldVoucher) {
-        await this.voucherRepo.delete(oldVoucher.id);
-      }
-    }
-
-    // ── if we just flipped *into* Recieved, re-apply all sqm to stock ──
-    if (originalStatus !== 'Recieved' && invoice.status === 'Recieved') {
-      for (const it of invoice.items) {
-        const sqm = Number(it.sqm);
-        const v = await this.variantRepo.findOneBy({ id: it.itemVariantId });
-        if (!v || sqm === 0) continue;
-
-        if (invoice.type === 'S') {
-          v.in += sqm;
-          v.inOFR += sqm;
-        } else if (invoice.type === 'G') {
-          v.inOFR += sqm;
-        } else {
-          // SR
-          v.in += sqm;
-        }
-
-        v.balance = v.start + v.in - v.out;
-        v.balanceOFR = v.startOFR + v.inOFR - v.outOFR;
-        await this.variantRepo.save(v);
-      }
-    }
 
     // 3) Remove truly deleted items by variantId, then upsert
     if (updatedData.items) {
@@ -726,32 +730,6 @@ export class PurchaseInvoiceService {
 
       if (toDeleteItemIds.length) {
         // **1) delete matching InventoryTransaction rows first**
-        for (const ori of originalItems.filter((o) =>
-          toDeleteItemIds.includes(o.id),
-        )) {
-          const variant = await this.variantRepo.findOneBy({
-            id: ori.variantId,
-          });
-          if (!variant) continue;
-
-          // subtract exactly what you previously added
-          if (invoice.type === 'S') {
-            variant.in -= ori.sqm;
-            variant.inOFR -= ori.sqm;
-          } else if (invoice.type === 'G') {
-            variant.inOFR -= ori.sqm;
-          } else {
-            // SR
-            variant.in -= ori.sqm;
-          }
-
-          // recompute balances
-          variant.balance = variant.start + variant.in - variant.out;
-          variant.balanceOFR =
-            variant.startOFR + variant.inOFR - variant.outOFR;
-
-          await this.variantRepo.save(variant);
-        }
 
         // now safe to delete the old InventoryTransaction rows
         await this.invTransRepo.delete({
@@ -1037,51 +1015,6 @@ export class PurchaseInvoiceService {
       await this.voucherRepo.save(voucher);
 
       // ── 6) Reconcile inventory by **delta** + update/create transactions ───
-      if (invoice.status === 'Recieved') {
-        for (const it of invoice.items) {
-          const ori = originalItems.find((o) => o.id === it.id);
-          const oldSqm = ori ? ori.sqm : 0;
-          const newSqm = Number(it.sqm);
-          const delta = newSqm - oldSqm;
-          if (delta !== 0) {
-            const variant = await this.variantRepo.findOneBy({
-              id: it.itemVariantId,
-            });
-            if (variant) {
-              if (invoice.type === 'S') {
-                variant.in += delta;
-                variant.inOFR += delta;
-              } else if (invoice.type === 'G') {
-                variant.inOFR += delta;
-              } else {
-                variant.in += delta;
-              }
-              variant.balance = variant.start + variant.in - variant.out;
-              variant.balanceOFR =
-                variant.startOFR + variant.inOFR - variant.outOFR;
-              await this.variantRepo.save(variant);
-            }
-          }
-
-          // update the existing transaction or create if missing
-          const existingTx = await this.invTransRepo.findOneBy({
-            purchaseInvoiceItemId: it.id,
-          });
-          if (existingTx) {
-            existingTx.sqm = newSqm;
-            await this.invTransRepo.save(existingTx);
-          } else if (newSqm > 0) {
-            const tx = this.invTransRepo.create({
-              itemVariantId: it.itemVariantId,
-              transactionType: 'purchase',
-              sqm: newSqm,
-              quantity: Number(it.quantity),
-              purchaseInvoiceItemId: it.id,
-            });
-            await this.invTransRepo.save(tx);
-          }
-        }
-      }
 
       // 7) Return the fresh invoice
       return this.invoiceRepo.findOne({

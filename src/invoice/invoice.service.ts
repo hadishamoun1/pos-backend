@@ -349,11 +349,7 @@ export class InvoiceService {
           totalSheets: item.quantity * (variant?.sheetsPerBox || 1), // ✅ Total sheets calculated
 
           // ✅ Inventory Tracking
-          inventoryStart: variant?.start,
-          inventoryIn: variant?.in,
-          inventoryOut: variant?.out,
-          inventoryBalance: variant?.balance,
-
+        
           // ✅ Box/Sheet Specific Flags
           fixBox: variant?.fixBox,
           fixLength: variant?.fixLength,
@@ -436,17 +432,8 @@ export class InvoiceService {
             },
           );
 
-          if (inventoryTransaction) {
-            await queryRunner.manager.update(
-              ItemVariant,
-              { id: item.itemVariant.id },
-              {
-                out: () => `out - ${inventoryTransaction.sqm}`,
-                balance: () => `balance + ${inventoryTransaction.sqm}`,
-              },
-            );
-            await queryRunner.manager.remove(inventoryTransaction);
-          }
+        
+         
 
           await queryRunner.manager.remove(item);
         }
@@ -502,20 +489,8 @@ export class InvoiceService {
             const newSqm = Number(itemData.sqm);
             const sqmDifference = newSqm - oldSqm;
 
-            if (sqmDifference !== 0) {
-              // ✅ Update ItemVariant by difference
-              await queryRunner.manager.update(
-                ItemVariant,
-                { id: existingItem.itemVariant.id },
-                {
-                  out: () => `out + ${sqmDifference}`,
-                  balance: () => `balance - ${sqmDifference}`,
-                },
-              );
-              console.log(
-                `✅ ItemVariant ${existingItem.itemVariant.id} updated by sqmDifference: ${sqmDifference}`,
-              );
-            }
+      
+            
 
             // ✅ Update Inventory Transaction
             inventoryTransaction.sqm = newSqm;
@@ -543,18 +518,7 @@ export class InvoiceService {
           existingInvoice.items.push(newItem);
 
           // ✅ Update ItemVariant
-          await queryRunner.manager.update(
-            ItemVariant,
-            { id: itemData.itemVariantId },
-            {
-              out: () => `out + ${itemData.sqm}`,
-              balance: () => `balance - ${itemData.sqm}`,
-            },
-          );
-          console.log(
-            `✅ New ItemVariant ${itemData.itemVariantId} updated: out +${itemData.sqm}, balance -${itemData.sqm}`,
-          );
-
+      
           // ✅ Create Inventory Transaction
           const newTransaction = queryRunner.manager.create(
             InventoryTransaction,
