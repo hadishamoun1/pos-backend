@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, Like } from 'typeorm';
+import { Repository, In, Like, Raw } from 'typeorm';
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
@@ -123,16 +123,20 @@ export class PurchaseInvoiceService {
 
       await this.inventoryTxRepo.save(invTxs);
     }
+
     if (savedInvoice.status === 'Recieved') {
       for (const item of savedInvoice.items) {
         const condition = (item as any).condition || 'Clean';
-        const dateReceived = new Date(savedInvoice.date);
+        const dateOnlyStr = savedInvoice.date.split('T')[0];
+        const dateReceived = new Date(dateOnlyStr);
 
         let itemBatch = await this.itemBatchRepo.findOne({
           where: {
             itemVariant: { id: item.itemVariantId },
             condition,
-            dateReceived,
+            dateReceived: Raw((alias) => `DATE(${alias}) = :date`, {
+              date: dateOnlyStr,
+            }),
           },
           relations: ['itemVariant'],
         });
@@ -156,31 +160,74 @@ export class PurchaseInvoiceService {
         const sqm = Number(item.sqm);
 
         if (savedInvoice.type === 'S') {
-          itemBatch.in += sqm;
-          itemBatch.inOFR += sqm;
+          itemBatch.in = parseFloat(
+            (Number(itemBatch.in ?? 0) + sqm).toFixed(4),
+          );
+          itemBatch.inOFR = parseFloat(
+            (Number(itemBatch.inOFR ?? 0) + sqm).toFixed(4),
+          );
         } else if (savedInvoice.type === 'G') {
-          itemBatch.inOFR += sqm;
+          itemBatch.inOFR = parseFloat(
+            (Number(itemBatch.inOFR ?? 0) + sqm).toFixed(4),
+          );
         } else {
-          itemBatch.in += sqm;
-          itemBatch.inOFR += sqm;
+          itemBatch.in = parseFloat(
+            (Number(itemBatch.in ?? 0) + sqm).toFixed(4),
+          );
+          itemBatch.inOFR = parseFloat(
+            (Number(itemBatch.inOFR ?? 0) + sqm).toFixed(4),
+          );
         }
 
-        itemBatch.balance = itemBatch.start + itemBatch.in - itemBatch.out;
-        itemBatch.balanceOFR =
-          itemBatch.startOFR + itemBatch.inOFR - itemBatch.outOFR;
+        itemBatch.balance = parseFloat(
+          (
+            Number(itemBatch.start ?? 0) +
+            Number(itemBatch.in ?? 0) -
+            Number(itemBatch.out ?? 0)
+          ).toFixed(4),
+        );
+        itemBatch.balanceOFR = parseFloat(
+          (
+            Number(itemBatch.startOFR ?? 0) +
+            Number(itemBatch.inOFR ?? 0) -
+            Number(itemBatch.outOFR ?? 0)
+          ).toFixed(4),
+        );
+
+        const batchFields = ['in', 'inOFR', 'balance', 'balanceOFR'];
+        for (const key of batchFields) {
+          if (isNaN(itemBatch[key])) {
+            console.error('❌ NaN detected in ItemBatch before save', {
+              key,
+              value: itemBatch[key],
+              entity: itemBatch,
+            });
+            throw new Error(`❌ Cannot save NaN in ItemBatch.${key}`);
+          }
+        }
 
         await this.itemBatchRepo.save(itemBatch);
       }
 
-      // 🔽 🔽 🔽 Add this new section after the above loop 🔽 🔽 🔽
       for (const item of savedInvoice.items) {
         const variant = await this.variantRepo.findOne({
           where: { id: item.itemVariantId },
           relations: ['batches'],
         });
-        if (!variant) continue;
 
-        // Sum all the batch values
+        if (!variant) {
+          console.log(`❌ ItemVariant not found for ID: ${item.itemVariantId}`);
+          continue;
+        }
+
+        if (!variant.batches || variant.batches.length === 0) {
+          console.log(`⚠️ No batches found for ItemVariant ID: ${variant.id}`);
+        } else {
+          console.log(
+            `✅ Found ${variant.batches.length} batches for ItemVariant ID: ${variant.id}`,
+          );
+        }
+
         let totalStart = 0;
         let totalIn = 0;
         let totalOut = 0;
@@ -189,24 +236,57 @@ export class PurchaseInvoiceService {
         let totalOutOFR = 0;
 
         for (const batch of variant.batches) {
-          totalStart += batch.start;
-          totalIn += batch.in;
-          totalOut += batch.out;
-          totalStartOFR += batch.startOFR;
-          totalInOFR += batch.inOFR;
-          totalOutOFR += batch.outOFR;
+          const start = Number(batch.start);
+          const inVal = Number(batch.in);
+          const out = Number(batch.out);
+          const startOFR = Number(batch.startOFR);
+          const inOFR = Number(batch.inOFR);
+          const outOFR = Number(batch.outOFR);
+
+          console.log(`🔹 Batch ID ${batch.id}:`, {
+            start,
+            inVal,
+            out,
+            startOFR,
+            inOFR,
+            outOFR,
+          });
+
+          totalStart += start;
+          totalIn += inVal;
+          totalOut += out;
+          totalStartOFR += startOFR;
+          totalInOFR += inOFR;
+          totalOutOFR += outOFR;
         }
 
-        // Update totals in ItemVariant
-        variant.totalStart = totalStart;
-        variant.totalIn = totalIn;
-        variant.totalOut = totalOut;
-        variant.totalBalance = totalStart + totalIn - totalOut;
+        const totalBalance = parseFloat(
+          (totalStart + totalIn - totalOut).toFixed(2),
+        );
+        const totalBalanceOFR = parseFloat(
+          (totalStartOFR + totalInOFR - totalOutOFR).toFixed(2),
+        );
 
-        variant.totalStartOFR = totalStartOFR;
-        variant.totalInOFR = totalInOFR;
-        variant.totalOutOFR = totalOutOFR;
-        variant.totalBalanceOFR = totalStartOFR + totalInOFR - totalOutOFR;
+        console.log(`📦 Updating ItemVariant ${variant.id} totals:`, {
+          totalStart: totalStart.toFixed(2),
+          totalIn: totalIn.toFixed(2),
+          totalOut: totalOut.toFixed(2),
+          totalBalance: totalBalance.toFixed(2),
+          totalStartOFR: totalStartOFR.toFixed(2),
+          totalInOFR: totalInOFR.toFixed(2),
+          totalOutOFR: totalOutOFR.toFixed(2),
+          totalBalanceOFR: totalBalanceOFR.toFixed(2),
+        });
+
+        variant.totalStart = parseFloat(totalStart.toFixed(2));
+        variant.totalIn = parseFloat(totalIn.toFixed(2));
+        variant.totalOut = parseFloat(totalOut.toFixed(2));
+        variant.totalBalance = totalBalance;
+
+        variant.totalStartOFR = parseFloat(totalStartOFR.toFixed(2));
+        variant.totalInOFR = parseFloat(totalInOFR.toFixed(2));
+        variant.totalOutOFR = parseFloat(totalOutOFR.toFixed(2));
+        variant.totalBalanceOFR = totalBalanceOFR;
 
         await this.variantRepo.save(variant);
       }
@@ -1015,6 +1095,346 @@ export class PurchaseInvoiceService {
       await this.voucherRepo.save(voucher);
 
       // ── 6) Reconcile inventory by **delta** + update/create transactions ───
+
+      // ───────────── HANDLE STOCK: update ItemBatch & ItemVariant by delta ─────────────
+      // ───────────── HANDLE STOCK: update ItemBatch & ItemVariant by delta ─────────────
+      // ── 6) Reconcile inventory by **delta** + update/create transactions ───
+      if (
+        invoice.status === 'Recieved' &&
+        ['G', 'S', 'SR'].includes(invoice.type)
+      ) {
+        const dateReceived = new Date(invoice.date.toString().split('T')[0]);
+
+        // 🔄 Revert deleted items stock
+        for (const originalItem of originalItems) {
+          const stillExists = invoice.items.find(
+            (item) => item.itemVariantId === originalItem.variantId,
+          );
+
+          if (!stillExists) {
+            const condition = 'Clean';
+            const sqm = Number(originalItem.sqm);
+
+            let batch = await this.itemBatchRepo.findOne({
+              where: {
+                itemVariant: { id: originalItem.variantId },
+                condition,
+                dateReceived: Raw((alias) => `DATE(${alias}) = :date`, {
+                  date: dateReceived.toISOString().split('T')[0],
+                }),
+              },
+            });
+
+            if (batch) {
+              if (invoice.type === 'S') {
+                batch.in -= sqm;
+                batch.inOFR -= sqm;
+              } else if (invoice.type === 'G') {
+                batch.inOFR -= sqm;
+              } else {
+                batch.in -= sqm;
+                batch.inOFR -= sqm;
+              }
+
+              batch.balance =
+                Number(batch.start ?? 0) +
+                Number(batch.in ?? 0) -
+                Number(batch.out ?? 0);
+              batch.balanceOFR =
+                Number(batch.startOFR ?? 0) +
+                Number(batch.inOFR ?? 0) -
+                Number(batch.outOFR ?? 0);
+              await this.itemBatchRepo.save(batch);
+            }
+
+            const variant = await this.variantRepo.findOneBy({
+              id: originalItem.variantId,
+            });
+
+            if (variant) {
+              if (invoice.type === 'S') {
+                variant.totalIn -= sqm;
+                variant.totalInOFR -= sqm;
+              } else if (invoice.type === 'G') {
+                variant.totalInOFR -= sqm;
+              } else {
+                variant.totalIn -= sqm;
+                variant.totalInOFR -= sqm;
+              }
+
+              variant.totalBalance =
+                variant.totalStart + variant.totalIn - variant.totalOut;
+              variant.totalBalanceOFR =
+                variant.totalStartOFR +
+                variant.totalInOFR -
+                variant.totalOutOFR;
+              await this.variantRepo.save(variant);
+            }
+          }
+        }
+
+        for (const item of invoice.items) {
+          const condition = (item as any).condition || 'Clean';
+          const newSQM = Number(item.sqm);
+          const original = originalItems.find(
+            (o) => o.variantId === item.itemVariantId,
+          );
+          const oldSQM = original ? Number(original.sqm) : 0;
+          const delta = newSQM - oldSQM;
+
+          console.log(
+            `🧾 ItemVariant ${item.itemVariantId} - oldSQM: ${oldSQM}, newSQM: ${newSQM}, delta: ${delta}`,
+          );
+
+          if (delta !== 0) {
+            let batch = await this.itemBatchRepo.findOne({
+              where: {
+                itemVariant: { id: item.itemVariantId },
+                condition,
+                dateReceived: Raw((alias) => `DATE(${alias}) = :date`, {
+                  date: dateReceived.toISOString().split('T')[0],
+                }),
+              },
+              relations: ['itemVariant'],
+            });
+
+            if (!batch) {
+              console.log(
+                `📦 Creating new batch for variant ${item.itemVariantId}`,
+              );
+              batch = this.itemBatchRepo.create({
+                itemVariant: { id: item.itemVariantId },
+                condition,
+                dateReceived,
+                start: 0,
+                in: 0,
+                out: 0,
+                balance: 0,
+                startOFR: 0,
+                inOFR: 0,
+                outOFR: 0,
+                balanceOFR: 0,
+              });
+            }
+
+            console.log(`📦 Before Batch Update [${item.itemVariantId}]:`, {
+              in: batch.in,
+              inOFR: batch.inOFR,
+            });
+
+            if (invoice.type === 'S') {
+              batch.in = Number(batch.in ?? 0) + delta;
+              batch.inOFR = Number(batch.inOFR ?? 0) + delta;
+            } else if (invoice.type === 'G') {
+              batch.inOFR = Number(batch.inOFR ?? 0) + delta;
+            } else {
+              batch.in = Number(batch.in ?? 0) + delta;
+              batch.inOFR = Number(batch.inOFR ?? 0) + delta;
+            }
+
+            const start = Number(batch.start ?? 0);
+            const inVal = Number(batch.in ?? 0);
+            const out = Number(batch.out ?? 0);
+            const startOFR = Number(batch.startOFR ?? 0);
+            const inOFR = Number(batch.inOFR ?? 0);
+            const outOFR = Number(batch.outOFR ?? 0);
+
+            if (
+              [start, inVal, out, startOFR, inOFR, outOFR].some((v) => isNaN(v))
+            ) {
+              console.error(`❌ NaN detected in batch before balance calc`, {
+                start,
+                inVal,
+                out,
+                startOFR,
+                inOFR,
+                outOFR,
+                variantId: item.itemVariantId,
+              });
+              throw new Error(
+                'NaN detected in batch before balance calculation',
+              );
+            }
+
+            batch.balance = parseFloat((start + inVal - out).toFixed(2));
+            batch.balanceOFR = parseFloat(
+              (startOFR + inOFR - outOFR).toFixed(2),
+            );
+
+            console.log(`📦 After Batch Update [${item.itemVariantId}]:`, {
+              balance: batch.balance,
+              balanceOFR: batch.balanceOFR,
+            });
+
+            await this.itemBatchRepo.save(batch);
+
+            const variant = await this.variantRepo.findOne({
+              where: { id: item.itemVariantId },
+              relations: ['batches'],
+            });
+
+            if (!variant) {
+              console.warn(`⚠️ Variant not found: ${item.itemVariantId}`);
+              continue;
+            }
+
+            let totalStart = 0;
+            let totalIn = 0;
+            let totalOut = 0;
+            let totalStartOFR = 0;
+            let totalInOFR = 0;
+            let totalOutOFR = 0;
+
+            for (const b of variant.batches) {
+              totalStart += Number(b.start ?? 0);
+              totalIn += Number(b.in ?? 0);
+              totalOut += Number(b.out ?? 0);
+              totalStartOFR += Number(b.startOFR ?? 0);
+              totalInOFR += Number(b.inOFR ?? 0);
+              totalOutOFR += Number(b.outOFR ?? 0);
+            }
+
+            variant.totalStart = totalStart;
+            variant.totalIn = totalIn;
+            variant.totalOut = totalOut;
+            variant.totalStartOFR = totalStartOFR;
+            variant.totalInOFR = totalInOFR;
+            variant.totalOutOFR = totalOutOFR;
+
+            console.log(`🧠 Variant Totals Before Calculating Balance`, {
+              totalStart,
+              totalIn,
+              totalOut,
+              totalStartOFR,
+              totalInOFR,
+              totalOutOFR,
+            });
+
+            const totalBalance = parseFloat(
+              (totalStart + totalIn - totalOut).toFixed(2),
+            );
+            const totalBalanceOFR = parseFloat(
+              (totalStartOFR + totalInOFR - totalOutOFR).toFixed(2),
+            );
+
+            if (isNaN(totalBalance) || isNaN(totalBalanceOFR)) {
+              console.error(`❌ NaN detected in variant before save`, {
+                totalStart,
+                totalIn,
+                totalOut,
+                totalBalance,
+                totalStartOFR,
+                totalInOFR,
+                totalOutOFR,
+                totalBalanceOFR,
+                variantId: variant.id,
+              });
+              throw new Error(
+                'NaN detected in ItemVariant totals calculation!',
+              );
+            }
+
+            variant.totalBalance = totalBalance;
+            variant.totalBalanceOFR = totalBalanceOFR;
+
+            const isNaNCheck = [
+              'totalStart',
+              'totalIn',
+              'totalOut',
+              'totalBalance',
+              'totalStartOFR',
+              'totalInOFR',
+              'totalOutOFR',
+              'totalBalanceOFR',
+            ];
+
+            for (const key of isNaNCheck) {
+              if (isNaN(variant[key])) {
+                console.error(`❌ NaN detected for ${key}`, {
+                  key,
+                  value: variant[key],
+                  variantId: variant.id,
+                });
+                throw new Error(
+                  `NaN detected in ItemVariant.${key} before saving.`,
+                );
+              }
+            }
+
+            console.log(`✅ Saving updated variant ${variant.id}`, {
+              totalStart: variant.totalStart,
+              totalIn: variant.totalIn,
+              totalOut: variant.totalOut,
+              totalBalance: variant.totalBalance,
+            });
+
+            await this.variantRepo.save(variant);
+          }
+
+          // inventory transaction create and update
+          let qty = Number(item.quantity);
+          let sqm = Number(item.sqm);
+          let qtyOfr = 0;
+          let sqmOfr = 0;
+
+          switch (invoice.type) {
+            case 'S':
+            case 'SR':
+              qtyOfr = qty;
+              sqmOfr = sqm;
+              break;
+            case 'G':
+              qtyOfr = qty;
+              sqmOfr = sqm;
+              qty = 0;
+              sqm = 0;
+              break;
+            case 'RVR':
+              qtyOfr = 0;
+              sqmOfr = 0;
+              break;
+            default:
+              qtyOfr = qty;
+              sqmOfr = sqm;
+          }
+
+          const existingTx = await this.inventoryTxRepo.findOne({
+            where: { purchaseInvoiceItemId: item.id },
+          });
+
+          if (existingTx) {
+            // 🔄 Update it
+            Object.assign(existingTx, {
+              itemVariantId: item.itemVariantId,
+              transactionType: 'purchase',
+              quantity: qty,
+              sqm: sqm,
+              quantityofr: qtyOfr,
+              sqmofr: sqmOfr,
+              finalcost: Number((item as any).finalCost ?? 0),
+              finalcostofr: Number((item as any).finalOFR ?? 0),
+            });
+
+            await this.inventoryTxRepo.save(existingTx);
+          } else {
+            // ➕ Create new
+            const newTx = this.inventoryTxRepo.create({
+              itemVariantId: item.itemVariantId,
+              transactionType: 'purchase',
+              quantity: qty,
+              sqm: sqm,
+              quantityofr: qtyOfr,
+              sqmofr: sqmOfr,
+              finalcost: Number((item as any).finalCost ?? 0),
+              finalcostofr: Number((item as any).finalOFR ?? 0),
+              purchaseInvoiceItemId: item.id,
+              invoiceItemId: null,
+            });
+
+            await this.inventoryTxRepo.save(newTx);
+          }
+        }
+      }
 
       // 7) Return the fresh invoice
       return this.invoiceRepo.findOne({

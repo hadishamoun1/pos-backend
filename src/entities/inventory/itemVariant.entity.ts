@@ -42,27 +42,27 @@ export class ItemVariant {
   @Column({ type: 'boolean', default: false })
   fixWidth: boolean; // Whether the width is fixed
   // 🔽 Inventory Tracking (TOTALS)
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   totalStart: number; // Initial balance
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   totalIn: number; // Total purchases
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   totalOut: number; // Total sales
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   totalBalance: number; // Calculated as (start + in - out)
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   totalStartOFR: number; // Initial balance
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   totalInOFR: number; // Total purchases
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   totalOutOFR: number; // Total sales
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   totalBalanceOFR: number;
 
   @OneToMany(() => ItemBatch, (batch) => batch.itemVariant)

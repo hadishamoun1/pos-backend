@@ -28,31 +28,28 @@ export class ItemBatch {
   dateReceived: Date;
 
   // 🔽 Inventory Tracking (TOTALS)
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   start: number; // Initial balance
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   in: number; // Total purchases
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   out: number; // Total sales
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   balance: number; // Calculated as (start + in - out)
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   startOFR: number; // Initial balance
-  @Column({ type: 'int', default: 0 })
+  
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   inOFR: number; // Total purchases
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   outOFR: number; // Total sales
 
-  @Column({ type: 'int', default: 0 })
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   balanceOFR: number;
-  @CreateDateColumn()
-  createdAt: Date;
 
-  @UpdateDateColumn()
-  updatedAt: Date;
 }
