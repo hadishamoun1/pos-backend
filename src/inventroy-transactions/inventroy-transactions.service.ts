@@ -4,12 +4,15 @@ import { Repository } from 'typeorm';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransactionGateway } from './inventory-transaction.gateway';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 
 @Injectable()
 export class InventoryTransactionService {
   constructor(
     @InjectRepository(InventoryTransaction)
     private readonly inventoryTransactionRepository: Repository<InventoryTransaction>,
+    @InjectRepository(ItemBatch)
+    private readonly ItemBatchRepository: Repository<ItemBatch>,
 
     @InjectRepository(ItemVariant)
     private readonly itemVariantRepository: Repository<ItemVariant>,
@@ -125,6 +128,12 @@ export class InventoryTransactionService {
       itemType: string;
       invoiceDate: Date;
       invoiceNumber: string;
+      itemBatch: {
+        id: number;
+        condition: string;
+        dateReceived: string;
+ 
+      } | null;
     }>
   > {
     const txs = await this.inventoryTransactionRepository.find({
@@ -136,52 +145,65 @@ export class InventoryTransactionService {
         'purchaseInvoiceItem.invoice',
         'invoiceItem',
         'invoiceItem.invoice',
+        'itemBatch',
       ],
       order: { transactionDate: 'DESC' },
     });
 
-    const result = txs.map((tx) => {
-      const transactionType = tx.transactionType;
+    const result = txs
+      .filter(
+        (tx) =>
+          tx.itemVariant &&
+          tx.itemVariant.thickness &&
+          tx.itemVariant.thickness.item,
+      )
+      .map((tx) => {
+        const invoice =
+          tx.transactionType === 'purchase'
+            ? tx.purchaseInvoiceItem?.invoice
+            : tx.transactionType === 'sale'
+              ? tx.invoiceItem?.invoice
+              : undefined;
 
-      const invoice =
-        transactionType === 'purchase'
-          ? tx.purchaseInvoiceItem?.invoice
-          : transactionType === 'sale'
-            ? tx.invoiceItem?.invoice
-            : undefined;
+        const invoiceDate = invoice?.date
+          ? new Date(invoice.date)
+          : tx.transactionDate;
+        const invoiceNumber = invoice?.invoiceNumber ?? '—';
 
-      const invoiceDate = invoice?.date
-        ? new Date(invoice.date)
-        : tx.transactionDate;
+        const v = tx.itemVariant!;
+        const t = v.thickness!;
+        const i = t.item!;
 
-      const invoiceNumber = invoice?.invoiceNumber ?? '—';
+        return {
+          id: tx.id,
+          transactionType: tx.transactionType,
+          sqm: Number(tx.sqm),
+          sqmofr: Number(tx.sqmofr),
+          quantity: tx.quantity != null ? Number(tx.quantity) : null,
+          quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : null,
+          finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
+          finalcostofr:
+            tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
+          thickness: t.thickness.toString(),
+          itemName: i.itemName,
+          length: Number(v.length),
+          width: Number(v.width),
+          sheetsPerBox: Number(v.sheetsPerBox),
+          origin: v.origin,
+          itemType: i.type,
+          invoiceDate,
+          invoiceNumber,
+          itemBatch: tx.itemBatch
+            ? {
+                id: tx.itemBatch.id,
+                condition: tx.itemBatch.condition,
+                dateReceived: tx.itemBatch.dateReceived,
+        
+              }
+            : null,
+        };
+      });
 
-      const v = tx.itemVariant!;
-      const t = v.thickness!;
-      const i = t.item!;
-
-      return {
-        id: tx.id,
-        transactionType,
-        sqm: Number(tx.sqm),
-        sqmofr: Number(tx.sqmofr),
-        quantity: tx.quantity != null ? Number(tx.quantity) : null,
-        quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : null,
-        finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
-        finalcostofr: tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
-        thickness: t.thickness.toString(),
-        itemName: i.itemName,
-        length: Number(v.length),
-        width: Number(v.width),
-        sheetsPerBox: Number(v.sheetsPerBox),
-        origin: v.origin,
-        itemType: i.type,
-        invoiceDate,
-        invoiceNumber,
-      };
-    });
-
-    // 🔴 Emit real-time update to all WebSocket clients
     this.gateway.sendActivityUpdate(result);
 
     return result;

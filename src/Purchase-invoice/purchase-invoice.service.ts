@@ -76,8 +76,9 @@ export class PurchaseInvoiceService {
 
     // 2) record inventory transactions
     if (savedInvoice.status === 'Recieved') {
-      const invTxs = savedInvoice.items.map((item) => {
-        // grab raw values
+      const invTxs: InventoryTransaction[] = [];
+
+      for (const item of savedInvoice.items) {
         let qty = Number(item.quantity);
         let sqm = Number(item.sqm);
         let qtyOfr = 0;
@@ -92,23 +93,53 @@ export class PurchaseInvoiceService {
           case 'G':
             qtyOfr = qty;
             sqmOfr = sqm;
-            // then zero out the “normal” fields
             qty = 0;
             sqm = 0;
             break;
           case 'RVR':
-            // qty, sqm stay as-is
             qtyOfr = 0;
             sqmOfr = 0;
             break;
           default:
-            // fallback: treat like SR
             qtyOfr = qty;
             sqmOfr = sqm;
         }
 
-        return this.inventoryTxRepo.create({
+        const condition = (item as any).condition || 'Clean';
+        const invoiceDate = new Date(savedInvoice.date);
+        const year = invoiceDate.getFullYear();
+        const month = String(invoiceDate.getMonth() + 1).padStart(2, '0'); // Add +1 because months are 0-based
+        const dateReceived = `${month}/${year}`;
+
+        let itemBatch = await this.itemBatchRepo.findOne({
+          where: {
+            itemVariant: { id: item.itemVariantId },
+            condition,
+            dateReceived,
+          },
+          relations: ['itemVariant'],
+        });
+
+        if (!itemBatch) {
+          itemBatch = this.itemBatchRepo.create({
+            itemVariant: { id: item.itemVariantId },
+            condition,
+            dateReceived,
+            start: 0,
+            in: 0,
+            out: 0,
+            balance: 0,
+            startOFR: 0,
+            inOFR: 0,
+            outOFR: 0,
+            balanceOFR: 0,
+          });
+          await this.itemBatchRepo.save(itemBatch);
+        }
+
+        const tx = this.inventoryTxRepo.create({
           itemVariantId: item.itemVariantId,
+          itemBatchId: itemBatch.id, // ✅ Link batch here
           transactionType: 'purchase',
           quantity: qty,
           sqm: sqm,
@@ -119,7 +150,9 @@ export class PurchaseInvoiceService {
           purchaseInvoiceItemId: item.id,
           invoiceItemId: null,
         });
-      });
+
+        invTxs.push(tx);
+      }
 
       await this.inventoryTxRepo.save(invTxs);
     }
@@ -127,16 +160,16 @@ export class PurchaseInvoiceService {
     if (savedInvoice.status === 'Recieved') {
       for (const item of savedInvoice.items) {
         const condition = (item as any).condition || 'Clean';
-        const dateOnlyStr = savedInvoice.date.split('T')[0];
-        const dateReceived = new Date(dateOnlyStr);
+        const invoiceDate = new Date(savedInvoice.date);
+        const year = invoiceDate.getFullYear();
+        const month = String(invoiceDate.getMonth() + 1).padStart(2, '0'); // Add +1 because months are 0-based
+        const dateReceived = `${month}/${year}`;
 
         let itemBatch = await this.itemBatchRepo.findOne({
           where: {
             itemVariant: { id: item.itemVariantId },
             condition,
-            dateReceived: Raw((alias) => `DATE(${alias}) = :date`, {
-              date: dateOnlyStr,
-            }),
+            dateReceived,
           },
           relations: ['itemVariant'],
         });
@@ -292,14 +325,13 @@ export class PurchaseInvoiceService {
       }
     }
 
-    // 3) if type is G, S or SR → build & save a PurchaseVoucher
+    // 3) if type is G, S or SR → build & save a JournalVoucher
     if (
       savedInvoice.status === 'Recieved' &&
       (savedInvoice.type === 'G' ||
         savedInvoice.type === 'S' ||
         savedInvoice.type === 'SR')
     ) {
-      // 3a) lookup expense GL 6011
       const expenseAcct = await this.accountRepo.findOne({
         where: { accountNumber: '6011' },
       });
@@ -307,23 +339,19 @@ export class PurchaseInvoiceService {
         throw new Error('GL account 6011 not found');
       }
 
-      // 3b) compute base totals
       let normalTotal = 0;
       let ofrTotal = 0;
 
       if (savedInvoice.type === 'G') {
-        // G: only OFR
         for (const row of savedInvoice.items) {
           ofrTotal += Number(row.totalOFR);
         }
       } else if (savedInvoice.type === 'S') {
-        // S: only normal
         for (const row of savedInvoice.items) {
           normalTotal += Number(row.totalAmount);
+          ofrTotal += Number(row.totalAmount);
         }
       } else {
-        // SR
-        // SR: both
         for (const row of savedInvoice.items) {
           normalTotal += Number(row.totalAmount);
           ofrTotal += Number(row.totalOFR);
@@ -334,31 +362,36 @@ export class PurchaseInvoiceService {
       const normalLL = normalTotal * rate;
       const ofrLL = ofrTotal * rate;
 
-      // 3c) build pvNumber
       let prefix = 'PV';
       if (savedInvoice.type === 'G') {
         prefix = 'PVG';
       }
-      // S and SR both use 'PV'
-      const pvNumber = await this.getNextPvNumber(prefix);
 
-      // 3d) decide header totals by type
-      let hdrDr = 0;
-      let hdrDrUSD = 0;
-      let hdrDrLL = 0;
-      let hdrDrOFR = 0;
-      let hdrDrUSDOFR = 0;
-      let hdrDrLLOFR = 0;
+      const last = await this.journalVoucherRepo
+        .find({
+          where: { jvNumber: Like(`${prefix} - %`) },
+          order: { jvNumber: 'DESC' },
+          take: 1,
+        })
+        .then((arr) => arr[0]);
 
-      let hdrCr = 0;
-      let hdrCrUSD = 0;
-      let hdrCrLL = 0;
-      let hdrCrOFR = 0;
-      let hdrCrUSDOFR = 0;
-      let hdrCrLLOFR = 0;
+      const seq = last ? parseInt(last.jvNumber.split(' - ')[1], 10) + 1 : 1;
+      const jvNumber = `${prefix} - ${String(seq).padStart(5, '0')}`;
+
+      let hdrDr = 0,
+        hdrDrUSD = 0,
+        hdrDrLL = 0;
+      let hdrDrOFR = 0,
+        hdrDrUSDOFR = 0,
+        hdrDrLLOFR = 0;
+      let hdrCr = 0,
+        hdrCrUSD = 0,
+        hdrCrLL = 0;
+      let hdrCrOFR = 0,
+        hdrCrUSDOFR = 0,
+        hdrCrLLOFR = 0;
 
       if (savedInvoice.type === 'G') {
-        // G: debit = OFR, credit = OFR→LL
         hdrDrOFR = ofrTotal;
         hdrDrUSDOFR = ofrTotal;
         hdrDrLLOFR = ofrLL;
@@ -367,7 +400,6 @@ export class PurchaseInvoiceService {
         hdrCrUSDOFR = ofrTotal;
         hdrCrLLOFR = ofrLL;
       } else if (savedInvoice.type === 'S') {
-        // S: debit & credit = normal
         hdrDr = normalTotal;
         hdrDrUSD = normalTotal;
         hdrDrLL = normalLL;
@@ -375,14 +407,13 @@ export class PurchaseInvoiceService {
         hdrDrUSDOFR = normalTotal;
         hdrDrLLOFR = normalLL;
 
-        hdrCrOFR = normalTotal;
-        hdrCrUSDOFR = normalTotal;
-        hdrCrLLOFR = normalLL;
         hdrCr = normalTotal;
         hdrCrUSD = normalTotal;
         hdrCrLL = normalLL;
+        hdrCrOFR = normalTotal;
+        hdrCrUSDOFR = normalTotal;
+        hdrCrLLOFR = normalLL;
       } else {
-        // SR: debit covers both, credit covers both
         hdrDr = normalTotal;
         hdrDrUSD = normalTotal;
         hdrDrLL = normalLL;
@@ -398,10 +429,8 @@ export class PurchaseInvoiceService {
         hdrCrLLOFR = ofrLL;
       }
 
-      // 3e) build detail rows via plain if/else
-      const debitLine: any = {
-        account: { id: expenseAcct.id },
-        supplier: null,
+      const debitLine = this.journalVoucherDetailRepo.create({
+        accountId: expenseAcct.id,
         dr: hdrDr,
         drUSD: hdrDrUSD,
         drLL: hdrDrLL,
@@ -416,11 +445,10 @@ export class PurchaseInvoiceService {
         crLLOFR: 0,
         exchangeRateAcc: null,
         exchangeRateUSD: null,
-      };
+      });
 
-      const creditLine: any = {
-        account: null,
-        supplier: { id: savedInvoice.supplierId },
+      const creditLine = this.journalVoucherDetailRepo.create({
+        supplierId: savedInvoice.supplierId,
         dr: 0,
         drUSD: 0,
         drLL: 0,
@@ -435,15 +463,13 @@ export class PurchaseInvoiceService {
         crLLOFR: hdrCrLLOFR,
         exchangeRateAcc: null,
         exchangeRateUSD: null,
-      };
+      });
 
-      // 3f) create & save voucher
-      const voucher = this.voucherRepo.create({
+      const jv = this.journalVoucherRepo.create({
+        jvNumber,
         purchaseInvoiceId: savedInvoice.id,
         date: savedInvoice.date,
-        account: { id: expenseAcct.id },
-        supplier: { id: savedInvoice.supplierId },
-        pvNumber,
+        jvType: savedInvoice.type,
         totalDr: hdrDr,
         totalDrUSD: hdrDrUSD,
         totalDrLL: hdrDrLL,
@@ -461,22 +487,18 @@ export class PurchaseInvoiceService {
         details: [debitLine, creditLine],
       });
 
-      await this.voucherRepo.save(voucher);
+      await this.journalVoucherRepo.save(jv);
     }
-    // ─── 4) Save unit-price rows (including the newly selected accountId) ───
+
     if (data.unitPriceRows?.length) {
-      // first normalize any rows where valueOFR is zero but value is non-zero
       const normalized = data.unitPriceRows.map((r) => {
         const v = Number(r.value);
         const o = Number(r.valueOFR);
         const ex = Number(r.valueExch);
         const eo = Number(r.valueExchOFR);
-
         return {
           ...r,
-          // if we have a normal charge but no OFR, copy it across
           valueOFR: v > 0 && o === 0 ? v : o,
-          // same for exchange-OFR
           valueExchOFR: ex > 0 && eo === 0 ? ex : eo,
         };
       });
@@ -485,11 +507,7 @@ export class PurchaseInvoiceService {
         this.rowRepo.create({
           invoice: { id: savedInvoice.id },
           invoiceId: savedInvoice.id,
-
-          // if this came from a default setting it might have a settingId, otherwise null
           purchaseInvoiceSettingId: row.purchaseInvoiceSettingId ?? null,
-
-          // snapshot fields
           chargeName: row.chargeName,
           chargeType: row.chargeType,
           value: row.value,
@@ -499,208 +517,13 @@ export class PurchaseInvoiceService {
           valueExchOFR: row.valueExchOFR,
           addToItemCost: row.addToItemCost,
           invoiceNbTax: row.invoiceNbTax,
-
-          // supplier relation if chosen
           supplierId: row.supplierId ?? null,
-
-          // ← NEW: charge account relation
           accountId: row.accountId ?? null,
-
           shipping: row.shipping,
         }),
       );
 
       await this.rowRepo.save(rowsToSave);
-    }
-
-    // ─── 5) If Received → create JV header + details for each unit-price row ───
-    if (savedInvoice.status === 'Recieved' && data.unitPriceRows?.length) {
-      const rate = Number(savedInvoice.exchangeRate);
-
-      // 5a) Build next JV number
-      const prefix = savedInvoice.type === 'G' ? 'JVG' : 'JV';
-      const last = await this.journalVoucherRepo
-        .find({
-          where: { jvNumber: Like(`${prefix} - %`) },
-          order: { jvNumber: 'DESC' },
-          take: 1,
-        })
-        .then((arr) => arr[0]);
-      const seq = last ? parseInt(last.jvNumber.split(' - ')[1], 10) + 1 : 1;
-      const jvNumber = `${prefix} - ${String(seq).padStart(5, '0')}`;
-
-      // 5b) Prepare accumulators for header totals
-      let hdrDr = 0,
-        hdrDrUSD = 0,
-        hdrDrLL = 0;
-      let hdrDrOFR = 0,
-        hdrDrUSDOFR = 0,
-        hdrDrLLOFR = 0;
-      let hdrCr = 0,
-        hdrCrUSD = 0,
-        hdrCrLL = 0;
-      let hdrCrOFR = 0,
-        hdrCrUSDOFR = 0,
-        hdrCrLLOFR = 0;
-
-      // 5c) Build detail lines & accumulate
-      const details: JournalVoucherDetail[] = [];
-      const makeDetail = (opts: Partial<JournalVoucherDetail>) =>
-        this.journalVoucherDetailRepo.create({
-          ...opts,
-        });
-
-      for (const row of data.unitPriceRows) {
-        // 1) raw values
-        let v = Number(row.value);
-        let ofr = Number(row.valueOFR);
-        let ex = Number(row.valueExch);
-        let exO = Number(row.valueExchOFR);
-
-        // 2) normalize OFR / ExchOFR
-        if (v > 0 && ofr === 0) ofr = v;
-        if (ex > 0 && exO === 0) exO = ex;
-
-        // 3) filter by invoice.type
-        if (savedInvoice.type === 'G') {
-          v = 0; // only OFR matters
-        } else if (savedInvoice.type === 'S') {
-          ofr = v;
-          exO = ex; // only normal values
-        }
-
-        // SR leaves both as-is
-
-        // 4) decide DR/CR order
-        if (v >= 0) {
-          // — Debit the charge account —
-          const d = makeDetail({
-            accountId: row.accountId!,
-            supplierId: null,
-            dr: v,
-            drUSD: v,
-            drLL: v * rate,
-            drOFR: ofr,
-            drUSDOFR: ofr,
-            drLLOFR: ofr * rate,
-            cr: 0,
-            crUSD: 0,
-            crLL: 0,
-            crOFR: 0,
-            crUSDOFR: 0,
-            crLLOFR: 0,
-          });
-          details.push(d);
-          hdrDr += d.dr;
-          hdrDrUSD += d.drUSD;
-          hdrDrLL += d.drLL;
-          hdrDrOFR += d.drOFR;
-          hdrDrUSDOFR += d.drUSDOFR;
-          hdrDrLLOFR += d.drLLOFR;
-
-          // — Credit the supplier —
-          const c = makeDetail({
-            accountId: null,
-            supplierId: row.supplierId!,
-            dr: 0,
-            drUSD: 0,
-            drLL: 0,
-            drOFR: 0,
-            drUSDOFR: 0,
-            drLLOFR: 0,
-            cr: v,
-            crUSD: v,
-            crLL: v * rate,
-            crOFR: ofr,
-            crUSDOFR: ofr,
-            crLLOFR: ofr * rate,
-          });
-          details.push(c);
-          hdrCr += c.cr;
-          hdrCrUSD += c.crUSD;
-          hdrCrLL += c.crLL;
-          hdrCrOFR += c.crOFR;
-          hdrCrUSDOFR += c.crUSDOFR;
-          hdrCrLLOFR += c.crLLOFR;
-        } else {
-          // negative: flip roles
-          const aV = Math.abs(v);
-          const aOfr = Math.abs(ofr);
-
-          // — Credit the charge account —
-          const c1 = makeDetail({
-            accountId: row.accountId!,
-            supplierId: null,
-            dr: 0,
-            drUSD: 0,
-            drLL: 0,
-            drOFR: 0,
-            drUSDOFR: 0,
-            drLLOFR: 0,
-            cr: aV,
-            crUSD: aV,
-            crLL: aV * rate,
-            crOFR: aOfr,
-            crUSDOFR: aOfr,
-            crLLOFR: aOfr * rate,
-          });
-          details.push(c1);
-          hdrCr += c1.cr;
-          hdrCrUSD += c1.crUSD;
-          hdrCrLL += c1.crLL;
-          hdrCrOFR += c1.crOFR;
-          hdrCrUSDOFR += c1.crUSDOFR;
-          hdrCrLLOFR += c1.crLLOFR;
-
-          // — Debit the supplier —
-          const d1 = makeDetail({
-            accountId: null,
-            supplierId: row.supplierId!,
-            dr: aV,
-            drUSD: aV,
-            drLL: aV * rate,
-            drOFR: aOfr,
-            drUSDOFR: aOfr,
-            drLLOFR: aOfr * rate,
-            cr: 0,
-            crUSD: 0,
-            crLL: 0,
-            crOFR: 0,
-            crUSDOFR: 0,
-            crLLOFR: 0,
-          });
-          details.push(d1);
-          hdrDr += d1.dr;
-          hdrDrUSD += d1.drUSD;
-          hdrDrLL += d1.drLL;
-          hdrDrOFR += d1.drOFR;
-          hdrDrUSDOFR += d1.drUSDOFR;
-          hdrDrLLOFR += d1.drLLOFR;
-        }
-      }
-
-      // 5d) Create the JV header with the exact sums
-      const jv = this.journalVoucherRepo.create({
-        jvNumber,
-        date: savedInvoice.date,
-        jvType: savedInvoice.type,
-        totalDr: hdrDr,
-        totalDrUSD: hdrDrUSD,
-        totalDrLL: hdrDrLL,
-        totalDrOFR: hdrDrOFR,
-        totalDrUSDOFR: hdrDrUSDOFR,
-        totalDrLLOFR: hdrDrLLOFR,
-        totalCr: hdrCr,
-        totalCrUSD: hdrCrUSD,
-        totalCrLL: hdrCrLL,
-        totalCrOFR: hdrCrOFR,
-        totalCrUSDOFR: hdrCrUSDOFR,
-        totalCrLLOFR: hdrCrLLOFR,
-        exchangeRateAcc: null,
-        exchangeRateUSD: null,
-        details, // Cascade will persist all lines
-      });
-      await this.journalVoucherRepo.save(jv);
     }
 
     return savedInvoice;
@@ -913,23 +736,21 @@ export class PurchaseInvoiceService {
       invoice.unitPriceRows = await this.rowRepo.save(toSaveRows);
     }
 
-    // 5) If Received → create or update the voucher + details
+    // 5) If Received → create or update the journal voucher + details
     if (
       invoice.status === 'Recieved' &&
       ['G', 'S', 'SR'].includes(invoice.type)
     ) {
-      let voucher = await this.voucherRepo.findOne({
-        where: { purchaseInvoiceId: id },
+      let voucher = await this.journalVoucherRepo.findOne({
+        where: { invoice: { id } },
         relations: ['details'],
       });
 
-      // find GL 6011
       const expenseAcct = await this.accountRepo.findOneBy({
         accountNumber: '6011',
       });
       if (!expenseAcct) throw new Error('GL account 6011 not found');
 
-      // recompute totals
       let normalTotal = 0,
         ofrTotal = 0;
       invoice.items.forEach((it) => {
@@ -944,13 +765,11 @@ export class PurchaseInvoiceService {
       const normalLL = normalTotal * rate;
       const ofrLL = ofrTotal * rate;
 
-      // pvNumber
       const prefix = invoice.type === 'G' ? 'PVG' : 'PV';
-      const pvNumber = voucher
-        ? voucher.pvNumber
+      const jvNumber = voucher
+        ? voucher.jvNumber
         : await this.getNextPvNumber(prefix);
 
-      // DR/CR buckets
       let hdrDr = 0,
         hdrDrUSD = 0,
         hdrDrLL = 0,
@@ -1000,7 +819,6 @@ export class PurchaseInvoiceService {
         hdrCrLLOFR = ofrLL;
       }
 
-      // build detail DTOs
       const debitLine = {
         account: { id: expenseAcct.id },
         supplier: null,
@@ -1038,13 +856,11 @@ export class PurchaseInvoiceService {
         exchangeRateUSD: null,
       };
 
-      // create or update
       if (!voucher) {
-        voucher = this.voucherRepo.create({
+        voucher = this.journalVoucherRepo.create({
           purchaseInvoiceId: id,
-          account: { id: expenseAcct.id },
-          supplier: { id: invoice.supplierId },
-          pvNumber,
+          jvNumber,
+          jvType: 'PV',
           date: invoice.date,
           totalDr: hdrDr,
           totalDrUSD: hdrDrUSD,
@@ -1059,15 +875,22 @@ export class PurchaseInvoiceService {
           totalCrUSDOFR: hdrCrUSDOFR,
           totalCrLLOFR: hdrCrLLOFR,
           details: [
-            this.voucherRepo.manager.create(PurchaseVoucherDetail, debitLine),
-            this.voucherRepo.manager.create(PurchaseVoucherDetail, creditLine),
+            this.journalVoucherRepo.manager.create(
+              JournalVoucherDetail,
+              debitLine,
+            ),
+            this.journalVoucherRepo.manager.create(
+              JournalVoucherDetail,
+              creditLine,
+            ),
           ],
         });
       } else {
         Object.assign(voucher, {
           account: { id: expenseAcct.id },
           supplier: { id: invoice.supplierId },
-          pvNumber,
+          jvNumber,
+          jvType: 'PV',
           date: invoice.date,
           totalDr: hdrDr,
           totalDrUSD: hdrDrUSD,
@@ -1082,30 +905,40 @@ export class PurchaseInvoiceService {
           totalCrUSDOFR: hdrCrUSDOFR,
           totalCrLLOFR: hdrCrLLOFR,
         });
+
         if (!voucher.details || voucher.details.length !== 2) {
           voucher.details = [
-            this.voucherRepo.manager.create(PurchaseVoucherDetail, debitLine),
-            this.voucherRepo.manager.create(PurchaseVoucherDetail, creditLine),
+            this.journalVoucherRepo.manager.create(
+              JournalVoucherDetail,
+              debitLine,
+            ),
+            this.journalVoucherRepo.manager.create(
+              JournalVoucherDetail,
+              creditLine,
+            ),
           ];
         } else {
           Object.assign(voucher.details[0], debitLine);
           Object.assign(voucher.details[1], creditLine);
         }
       }
-      await this.voucherRepo.save(voucher);
+
+      await this.journalVoucherRepo.save(voucher);
 
       // ── 6) Reconcile inventory by **delta** + update/create transactions ───
 
       // ───────────── HANDLE STOCK: update ItemBatch & ItemVariant by delta ─────────────
-      // ───────────── HANDLE STOCK: update ItemBatch & ItemVariant by delta ─────────────
+      // ── 6) Reconcile inventory by **delta** + update/create transactions ───
       // ── 6) Reconcile inventory by **delta** + update/create transactions ───
       if (
         invoice.status === 'Recieved' &&
         ['G', 'S', 'SR'].includes(invoice.type)
       ) {
-        const dateReceived = new Date(invoice.date.toString().split('T')[0]);
+        const invoiceDate = new Date(invoice.date);
+        const year = invoiceDate.getFullYear();
+        const month = String(invoiceDate.getMonth() + 1).padStart(2, '0');
+        const dateReceived = `${month}/${year}`;
 
-        // 🔄 Revert deleted items stock
         for (const originalItem of originalItems) {
           const stillExists = invoice.items.find(
             (item) => item.itemVariantId === originalItem.variantId,
@@ -1119,9 +952,7 @@ export class PurchaseInvoiceService {
               where: {
                 itemVariant: { id: originalItem.variantId },
                 condition,
-                dateReceived: Raw((alias) => `DATE(${alias}) = :date`, {
-                  date: dateReceived.toISOString().split('T')[0],
-                }),
+                dateReceived,
               },
             });
 
@@ -1144,6 +975,12 @@ export class PurchaseInvoiceService {
                 Number(batch.startOFR ?? 0) +
                 Number(batch.inOFR ?? 0) -
                 Number(batch.outOFR ?? 0);
+
+              ['in', 'inOFR', 'balance', 'balanceOFR'].forEach((key) => {
+                if (isNaN(batch[key]))
+                  throw new Error(`NaN in ItemBatch.${key}`);
+              });
+
               await this.itemBatchRepo.save(batch);
             }
 
@@ -1168,6 +1005,7 @@ export class PurchaseInvoiceService {
                 variant.totalStartOFR +
                 variant.totalInOFR -
                 variant.totalOutOFR;
+
               await this.variantRepo.save(variant);
             }
           }
@@ -1182,26 +1020,16 @@ export class PurchaseInvoiceService {
           const oldSQM = original ? Number(original.sqm) : 0;
           const delta = newSQM - oldSQM;
 
-          console.log(
-            `🧾 ItemVariant ${item.itemVariantId} - oldSQM: ${oldSQM}, newSQM: ${newSQM}, delta: ${delta}`,
-          );
-
+          let batch = await this.itemBatchRepo.findOne({
+            where: {
+              itemVariant: { id: item.itemVariantId },
+              condition,
+              dateReceived,
+            },
+            relations: ['itemVariant'],
+          });
           if (delta !== 0) {
-            let batch = await this.itemBatchRepo.findOne({
-              where: {
-                itemVariant: { id: item.itemVariantId },
-                condition,
-                dateReceived: Raw((alias) => `DATE(${alias}) = :date`, {
-                  date: dateReceived.toISOString().split('T')[0],
-                }),
-              },
-              relations: ['itemVariant'],
-            });
-
             if (!batch) {
-              console.log(
-                `📦 Creating new batch for variant ${item.itemVariantId}`,
-              );
               batch = this.itemBatchRepo.create({
                 itemVariant: { id: item.itemVariantId },
                 condition,
@@ -1215,12 +1043,8 @@ export class PurchaseInvoiceService {
                 outOFR: 0,
                 balanceOFR: 0,
               });
+              batch = await this.itemBatchRepo.save(batch);
             }
-
-            console.log(`📦 Before Batch Update [${item.itemVariantId}]:`, {
-              in: batch.in,
-              inOFR: batch.inOFR,
-            });
 
             if (invoice.type === 'S') {
               batch.in = Number(batch.in ?? 0) + delta;
@@ -1242,18 +1066,7 @@ export class PurchaseInvoiceService {
             if (
               [start, inVal, out, startOFR, inOFR, outOFR].some((v) => isNaN(v))
             ) {
-              console.error(`❌ NaN detected in batch before balance calc`, {
-                start,
-                inVal,
-                out,
-                startOFR,
-                inOFR,
-                outOFR,
-                variantId: item.itemVariantId,
-              });
-              throw new Error(
-                'NaN detected in batch before balance calculation',
-              );
+              throw new Error('NaN in batch fields');
             }
 
             batch.balance = parseFloat((start + inVal - out).toFixed(2));
@@ -1261,9 +1074,8 @@ export class PurchaseInvoiceService {
               (startOFR + inOFR - outOFR).toFixed(2),
             );
 
-            console.log(`📦 After Batch Update [${item.itemVariantId}]:`, {
-              balance: batch.balance,
-              balanceOFR: batch.balanceOFR,
+            ['in', 'inOFR', 'balance', 'balanceOFR'].forEach((key) => {
+              if (isNaN(batch[key])) throw new Error(`NaN in ItemBatch.${key}`);
             });
 
             await this.itemBatchRepo.save(batch);
@@ -1273,17 +1085,14 @@ export class PurchaseInvoiceService {
               relations: ['batches'],
             });
 
-            if (!variant) {
-              console.warn(`⚠️ Variant not found: ${item.itemVariantId}`);
-              continue;
-            }
+            if (!variant) continue;
 
-            let totalStart = 0;
-            let totalIn = 0;
-            let totalOut = 0;
-            let totalStartOFR = 0;
-            let totalInOFR = 0;
-            let totalOutOFR = 0;
+            let totalStart = 0,
+              totalIn = 0,
+              totalOut = 0,
+              totalStartOFR = 0,
+              totalInOFR = 0,
+              totalOutOFR = 0;
 
             for (const b of variant.batches) {
               totalStart += Number(b.start ?? 0);
@@ -1300,44 +1109,14 @@ export class PurchaseInvoiceService {
             variant.totalStartOFR = totalStartOFR;
             variant.totalInOFR = totalInOFR;
             variant.totalOutOFR = totalOutOFR;
-
-            console.log(`🧠 Variant Totals Before Calculating Balance`, {
-              totalStart,
-              totalIn,
-              totalOut,
-              totalStartOFR,
-              totalInOFR,
-              totalOutOFR,
-            });
-
-            const totalBalance = parseFloat(
+            variant.totalBalance = parseFloat(
               (totalStart + totalIn - totalOut).toFixed(2),
             );
-            const totalBalanceOFR = parseFloat(
+            variant.totalBalanceOFR = parseFloat(
               (totalStartOFR + totalInOFR - totalOutOFR).toFixed(2),
             );
 
-            if (isNaN(totalBalance) || isNaN(totalBalanceOFR)) {
-              console.error(`❌ NaN detected in variant before save`, {
-                totalStart,
-                totalIn,
-                totalOut,
-                totalBalance,
-                totalStartOFR,
-                totalInOFR,
-                totalOutOFR,
-                totalBalanceOFR,
-                variantId: variant.id,
-              });
-              throw new Error(
-                'NaN detected in ItemVariant totals calculation!',
-              );
-            }
-
-            variant.totalBalance = totalBalance;
-            variant.totalBalanceOFR = totalBalanceOFR;
-
-            const isNaNCheck = [
+            [
               'totalStart',
               'totalIn',
               'totalOut',
@@ -1346,32 +1125,14 @@ export class PurchaseInvoiceService {
               'totalInOFR',
               'totalOutOFR',
               'totalBalanceOFR',
-            ];
-
-            for (const key of isNaNCheck) {
-              if (isNaN(variant[key])) {
-                console.error(`❌ NaN detected for ${key}`, {
-                  key,
-                  value: variant[key],
-                  variantId: variant.id,
-                });
-                throw new Error(
-                  `NaN detected in ItemVariant.${key} before saving.`,
-                );
-              }
-            }
-
-            console.log(`✅ Saving updated variant ${variant.id}`, {
-              totalStart: variant.totalStart,
-              totalIn: variant.totalIn,
-              totalOut: variant.totalOut,
-              totalBalance: variant.totalBalance,
+            ].forEach((key) => {
+              if (isNaN(variant[key]))
+                throw new Error(`NaN in ItemVariant.${key}`);
             });
 
             await this.variantRepo.save(variant);
           }
 
-          // inventory transaction create and update
           let qty = Number(item.quantity);
           let sqm = Number(item.sqm);
           let qtyOfr = 0;
@@ -1402,8 +1163,10 @@ export class PurchaseInvoiceService {
             where: { purchaseInvoiceItemId: item.id },
           });
 
+          const finalCost = Number(item.finalCost);
+          const finalOFR = Number(item.finalOFR);
+
           if (existingTx) {
-            // 🔄 Update it
             Object.assign(existingTx, {
               itemVariantId: item.itemVariantId,
               transactionType: 'purchase',
@@ -1411,13 +1174,13 @@ export class PurchaseInvoiceService {
               sqm: sqm,
               quantityofr: qtyOfr,
               sqmofr: sqmOfr,
-              finalcost: Number((item as any).finalCost ?? 0),
-              finalcostofr: Number((item as any).finalOFR ?? 0),
+              finalcost: isNaN(finalCost) ? 0 : finalCost,
+              finalcostofr: isNaN(finalOFR) ? 0 : finalOFR,
+              itemBatch: batch,
             });
 
             await this.inventoryTxRepo.save(existingTx);
           } else {
-            // ➕ Create new
             const newTx = this.inventoryTxRepo.create({
               itemVariantId: item.itemVariantId,
               transactionType: 'purchase',
@@ -1425,10 +1188,11 @@ export class PurchaseInvoiceService {
               sqm: sqm,
               quantityofr: qtyOfr,
               sqmofr: sqmOfr,
-              finalcost: Number((item as any).finalCost ?? 0),
-              finalcostofr: Number((item as any).finalOFR ?? 0),
+              finalcost: isNaN(finalCost) ? 0 : finalCost,
+              finalcostofr: isNaN(finalOFR) ? 0 : finalOFR,
               purchaseInvoiceItemId: item.id,
               invoiceItemId: null,
+              itemBatch: batch,
             });
 
             await this.inventoryTxRepo.save(newTx);

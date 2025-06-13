@@ -9,6 +9,7 @@ import {
 import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { JournalVoucherDetail } from './journalVoucherDetails.entity';
+import { PurchaseInvoice } from '../Purchase-Invoice/purchase-invoice.entity';
 
 @Entity('journal_vouchers')
 export class JournalVoucher {
@@ -66,10 +67,17 @@ export class JournalVoucher {
   @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
-
-
   @OneToMany(() => JournalVoucherDetail, (detail) => detail.journalVoucher, {
     cascade: true,
   })
   details: JournalVoucherDetail[];
+
+  @ManyToOne(() => PurchaseInvoice, (invoice) => invoice.journalVouchers, {
+    nullable: true,
+  })
+  @JoinColumn({ name: 'purchaseInvoiceId' })
+  invoice: PurchaseInvoice;
+
+  @Column({ nullable: true })
+  purchaseInvoiceId: number;
 }

@@ -12,6 +12,7 @@ import { Supplier } from '../supplier.entity';
 import { PurchaseInvoiceItem } from './purchase-invoice-item.entity';
 import { UnitPriceModalRow } from './unit-price-modal-row.entity.ts';
 import { PurchaseVoucher } from '../Vouchers/purchaseVoucher.entity';
+import { JournalVoucher } from '../Vouchers/journalVoucher.entity';
 
 @Entity('purchase_invoices')
 export class PurchaseInvoice {
@@ -29,7 +30,7 @@ export class PurchaseInvoice {
 
   @Column({
     type: 'enum',
-    enum: ['S', 'G', 'SR','RVR'],
+    enum: ['S', 'G', 'SR', 'RVR'],
     default: 'S',
   })
   type: 'S' | 'G' | 'SR' | 'RVR';
@@ -83,7 +84,7 @@ export class PurchaseInvoice {
   })
   items: PurchaseInvoiceItem[];
 
-  @OneToMany(() => UnitPriceModalRow, (row) => row.invoice, )
+  @OneToMany(() => UnitPriceModalRow, (row) => row.invoice)
   unitPriceRows: UnitPriceModalRow[];
 
   @CreateDateColumn()
@@ -94,4 +95,7 @@ export class PurchaseInvoice {
 
   @OneToMany(() => PurchaseVoucher, (v) => v.purchaseInvoice)
   vouchers: PurchaseVoucher[];
+
+  @OneToMany(() => JournalVoucher, (jv) => jv.invoice)
+  journalVouchers: JournalVoucher[];
 }

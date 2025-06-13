@@ -23,9 +23,8 @@ export class ItemBatch {
 
   @Column({ type: 'varchar', length: 100, nullable: true, default: null })
   condition: string;
-
-  @Column({ type: 'date', nullable: true, default: null })
-  dateReceived: Date;
+  @Column({ type: 'varchar', length: 7 }) // Format: MM/YYYY
+  dateReceived: string;
 
   // 🔽 Inventory Tracking (TOTALS)
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
@@ -42,7 +41,7 @@ export class ItemBatch {
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   startOFR: number; // Initial balance
-  
+
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   inOFR: number; // Total purchases
 
@@ -51,5 +50,4 @@ export class ItemBatch {
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   balanceOFR: number;
-
 }
