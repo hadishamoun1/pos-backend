@@ -12,7 +12,6 @@ import { BranchModule } from './branch/branch.module';
 import { AccountsModule } from './accounts/accounts.module';
 import { SupplierModule } from './suppliers/suppliers.module';
 import { InvoiceModule } from './invoice/invoice.module';
-import { ReceiptVoucherModule } from './receipt-voucher/receipt-voucher.module';
 import { PaymentVoucherModule } from './payment-voucher/payment-voucher.module';
 import { JournalVoucherModule } from './journal-voucher/journal-voucher.module';
 import { SalesVoucherModule } from './sales-voucher/sales-voucher.module';
@@ -56,7 +55,6 @@ import { TransfersModule } from './transfers/transfers.module';
     AccountsModule,
     SupplierModule,
     InvoiceModule,
-    ReceiptVoucherModule,
     PaymentVoucherModule,
     JournalVoucherModule,
     SalesVoucherModule,

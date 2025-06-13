@@ -10,6 +10,7 @@ import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
 import { JournalVoucherDetail } from './journalVoucherDetails.entity';
 import { PurchaseInvoice } from '../Purchase-Invoice/purchase-invoice.entity';
+import { ReceiptEntry } from '../recievables.entities';
 
 @Entity('journal_vouchers')
 export class JournalVoucher {
@@ -80,4 +81,11 @@ export class JournalVoucher {
 
   @Column({ nullable: true })
   purchaseInvoiceId: number;
+
+  // Inverse of ReceiptEntry.journalVoucher
+  @OneToMany(() => ReceiptEntry, (entry) => entry.journalVoucher)
+  receiptEntries: ReceiptEntry[];
+
+  @Column({ nullable: true })
+  receiptEntryId: number;
 }
