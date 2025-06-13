@@ -1,0 +1,35 @@
+// src/receipt-voucher/recievables.controller.ts
+import { Controller, Post, Body, Get } from '@nestjs/common';
+import { RecievablesService } from './recievables.service';
+import { ReceiptEntry } from '../entities/recievables.entities';
+
+@Controller('recievables')
+export class RecievablesController {
+  constructor(private readonly service: RecievablesService) {}
+
+  @Post()
+  create(
+    @Body()
+    body: {
+      customerId: number;
+      date: string; // ISO date
+      invoiceId?: string;
+      cashNumber: number;
+      currency: 'USD' | 'LL';
+      exchangeRate?: number;
+      amountExchanged: number;
+      comments?: string;
+      type: 'G' | 'S' | 'RVR';
+    },
+  ): Promise<ReceiptEntry> {
+    return this.service.create({
+      ...body,
+      date: new Date(body.date),
+    });
+  }
+
+  @Get()
+  findAll(): Promise<ReceiptEntry[]> {
+    return this.service.findAll();
+  }
+}

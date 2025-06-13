@@ -23,40 +23,40 @@ export class JournalVoucher {
   @Column({ type: 'varchar', length: 50, unique: true })
   jvNumber: string;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDr: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDrUSD: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDrLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDrOFR: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDrUSDOFR: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalDrLLOFR: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCr: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCrUSD: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCrLL: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCrOFR: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCrUSDOFR: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 30, scale: 2 })
   totalCrLLOFR: number;
 
   @Column({ type: 'varchar', length: 3 })

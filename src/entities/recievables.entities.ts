@@ -16,15 +16,15 @@ export class ReceiptEntry {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', length: 50, unique: true })
-  receiptNumber: string;
-
   @ManyToOne(() => Customer, { nullable: false })
   @JoinColumn({ name: 'customerId' })
   customer: Customer;
 
   @Column()
   customerId: number;
+
+  @Column({ type: 'varchar', length: 3 })
+  type: string;
 
   @Column({ type: 'date' })
   date: Date;
@@ -48,15 +48,14 @@ export class ReceiptEntry {
   comments: string;
 
   // Link to the parent Journal Voucher
-  @ManyToOne(() => JournalVoucher, (jv) => jv.receiptEntries, { nullable: false })
+  @ManyToOne(() => JournalVoucher, (jv) => jv.receiptEntries, {
+    nullable: false,
+  })
   @JoinColumn({ name: 'journalVoucherId' })
   journalVoucher: JournalVoucher;
 
-
   @Column()
   journalVoucherId: number;
-
-
 
   @CreateDateColumn()
   createdAt: Date;

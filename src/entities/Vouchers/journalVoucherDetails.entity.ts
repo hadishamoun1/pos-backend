@@ -129,6 +129,9 @@ export class JournalVoucherDetail {
   @ManyToOne(() => CurrencyRate, { nullable: true })
   exchangeRateUSD: CurrencyRate;
 
-  @ManyToOne(() => JournalVoucher, (journalVoucher) => journalVoucher.details)
+  @ManyToOne(() => JournalVoucher, (jv) => jv.details, { nullable: true })
+  @JoinColumn({ name: 'journalVoucherId' })
   journalVoucher: JournalVoucher;
+  @Column({ nullable: true })
+  journalVoucherId: number;
 }
