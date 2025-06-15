@@ -16,9 +16,10 @@ export class InventoryCountController {
   constructor(private readonly svc: InventoryCountService) {}
 
   @Post()
-  create(@Body() createData: any) {
-    return this.svc.createSingle(createData);
+  create(@Body() createData: any | any[]) {
+    return this.svc.create(createData);
   }
+  
 
   @Get()
   findAll() {

@@ -7,7 +7,7 @@ import { InventoryCount } from '../entities/inventory/count.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
-
+import { CountType } from '../entities/inventory/count.entity';
 @Injectable()
 export class InventoryCountService {
   constructor(
@@ -23,6 +23,19 @@ export class InventoryCountService {
     @InjectRepository(ItemBatch)
     private readonly itemBatchRepo: Repository<ItemBatch>,
   ) {}
+
+  async create(
+    createData: any | any[],
+  ): Promise<InventoryCount | InventoryCount[]> {
+    if (Array.isArray(createData)) {
+      const results: InventoryCount[] = [];
+      for (const row of createData) {
+        results.push(await this.createSingle(row));
+      }
+      return results;
+    }
+    return this.createSingle(createData);
+  }
 
   /** Accepts single or array of count-rows */
   async createSingle(data: any): Promise<InventoryCount> {
@@ -116,6 +129,7 @@ export class InventoryCountService {
     // 7) save the InventoryTransaction
     const txn = this.inventoryTxnRepo.create({
       itemVariant: variant,
+      itemBatchId: itemBatchId,
       transactionType: 'Count',
       sqm,
       sqmofr,
@@ -130,26 +144,30 @@ export class InventoryCountService {
     // 8) **update batch & variant totals** per your rules
     switch (type) {
       case 'RVR':
-        batch.start += sqm;
-        variant.totalStart += sqm;
+        batch.start = Number(batch.start) + sqm;
+        variant.totalStart = Number(variant.totalStart) + sqm;
         break;
+
       case 'S':
-        batch.start += sqm;
-        batch.startOFR += sqmofr;
-        variant.totalStart += sqm;
-        variant.totalStartOFR += sqmofr;
+        batch.start = Number(batch.start) + sqm;
+        batch.startOFR = Number(batch.startOFR) + sqmofr;
+        variant.totalStart = Number(variant.totalStart) + sqm;
+        variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
         break;
+
       case 'G':
-        batch.startOFR += sqmofr;
-        variant.totalStartOFR += sqmofr;
+        batch.startOFR = Number(batch.startOFR) + sqmofr;
+        variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
         break;
+
       case 'SR':
-        batch.start += sqm;
-        batch.startOFR += sqmofr;
-        variant.totalStart += sqm;
-        variant.totalStartOFR += sqmofr;
+        batch.start = Number(batch.start) + sqm;
+        batch.startOFR = Number(batch.startOFR) + sqmofr;
+        variant.totalStart = Number(variant.totalStart) + sqm;
+        variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
         break;
     }
+
     await this.itemBatchRepo.save(batch);
     await this.itemVariantRepo.save(variant);
 
@@ -218,136 +236,199 @@ export class InventoryCountService {
 
   async update(
     id: number,
-    data: any, // { itemVariantId?, date?, count?, type?, unit?, countOFR?, finalCost?, finalCostOfr? }
+    data: {
+      itemBatchId?: number;
+      date?: string;
+      count?: number;
+      unit?: 'box' | 'sheet' | 'sqm';
+      countOFR?: number;
+      type?: CountType;
+      finalCost?: number;
+      finalCostOfr?: number;
+    },
   ): Promise<InventoryCount> {
-    // 1) load existing count
+    // 1) Load existing count + its transaction
     const countRec = await this.inventoryCountRepo.findOne({
       where: { id },
       relations: ['itemVariant'],
     });
-    if (!countRec) {
+    if (!countRec)
       throw new NotFoundException(`InventoryCount #${id} not found`);
+
+    const txn = await this.inventoryTxnRepo.findOne({
+      where: { inventoryCountId: id },
+    });
+    if (!txn)
+      throw new NotFoundException(
+        `InventoryTransaction for count #${id} not found`,
+      );
+
+    // 2) Load the OLD batch & variant
+    const oldBatch = await this.itemBatchRepo.findOne({
+      where: { id: txn.itemBatchId },
+      relations: ['itemVariant'],
+    });
+    if (!oldBatch)
+      throw new NotFoundException(`ItemBatch #${txn.itemBatchId} not found`);
+    const oldVariant = oldBatch.itemVariant;
+
+    // 3) Deduct “old” quantities from oldBatch & oldVariant
+    const oldSqm = countRec.sqm;
+    const oldSqmOfr = txn.sqmofr;
+    switch (countRec.type) {
+      case CountType.RVR:
+        oldBatch.start = Number(oldBatch.start) - oldSqm;
+        oldVariant.totalStart = Number(oldVariant.totalStart) - oldSqm;
+        break;
+      case CountType.S:
+        oldBatch.start = Number(oldBatch.start) - oldSqm;
+        oldBatch.startOFR = Number(oldBatch.startOFR) - oldSqmOfr;
+        oldVariant.totalStart = Number(oldVariant.totalStart) - oldSqm;
+        oldVariant.totalStartOFR = Number(oldVariant.totalStartOFR) - oldSqmOfr;
+        break;
+      case CountType.G:
+        oldBatch.startOFR = Number(oldBatch.startOFR) - oldSqmOfr;
+        oldVariant.totalStartOFR = Number(oldVariant.totalStartOFR) - oldSqmOfr;
+        break;
+      case CountType.SR:
+        oldBatch.start = Number(oldBatch.start) - oldSqm;
+        oldBatch.startOFR = Number(oldBatch.startOFR) - oldSqmOfr;
+        oldVariant.totalStart = Number(oldVariant.totalStart) - oldSqm;
+        oldVariant.totalStartOFR = Number(oldVariant.totalStartOFR) - oldSqmOfr;
+        break;
     }
 
-    // 2) if they’re changing the variant, re-fetch it
-    let variant = countRec.itemVariant;
-    if (data.itemVariantId && data.itemVariantId !== variant.id) {
-      variant = await this.itemVariantRepo.findOne({
-        where: { id: data.itemVariantId },
+    // 4) Decide where to ADD the new quantities
+    //    by default it’s the same batch/variant:
+    let newBatch = oldBatch;
+    let newVariant = oldVariant;
+
+    // If they passed a different batchId, fetch that instead:
+    if (data.itemBatchId != null && data.itemBatchId !== oldBatch.id) {
+      newBatch = await this.itemBatchRepo.findOne({
+        where: { id: data.itemBatchId },
+        relations: ['itemVariant'],
       });
-      if (!variant) {
-        throw new NotFoundException(
-          `ItemVariant #${data.itemVariantId} not found`,
-        );
-      }
-      countRec.itemVariant = variant;
+      if (!newBatch)
+        throw new NotFoundException(`ItemBatch #${data.itemBatchId} not found`);
+      newVariant = newBatch.itemVariant;
+      countRec.itemVariant = newVariant;
     }
 
-    // 3) apply new fields (date, count, type, finalCost, finalCostOfr)
+    // 5) Apply the incoming fields to the count record
     countRec.date = data.date ?? countRec.date;
     countRec.count = data.count ?? countRec.count;
     countRec.type = data.type ?? countRec.type;
     countRec.finalCost = data.finalCost ?? countRec.finalCost;
     countRec.finalCostOfr = data.finalCostOfr ?? countRec.finalCostOfr;
 
-    // 4) recompute sqm and sqmofr based on unit + countOFR
-    const unit = data.unit ?? 'sheet'; // default or pass-through
-    const cntOfR = data.countOFR ?? 0;
+    // 6) Recompute SQM & rawSqmOfr
+    const unit = data.unit ?? 'sheet';
     const cnt = countRec.count;
-
-    const lengthCm = Number(variant.length);
-    const widthCm = Number(variant.width);
-    const oneSheetM2 = (lengthCm * widthCm) / 10000;
+    const cntOfr = data.countOFR ?? cnt;
+    const oneM2 =
+      (Number(newVariant.length) * Number(newVariant.width)) / 10000;
 
     let rawSqm = 0;
-    let rawSqmofr = 0;
+    let rawSqmOfr = 0;
     switch (unit) {
       case 'box':
-        rawSqm = oneSheetM2 * variant.sheetsPerBox * cnt;
-        rawSqmofr = oneSheetM2 * variant.sheetsPerBox * cntOfR;
+        rawSqm = oneM2 * newVariant.sheetsPerBox * cnt;
+        rawSqmOfr = oneM2 * newVariant.sheetsPerBox * cntOfr;
         break;
       case 'sheet':
-        rawSqm = oneSheetM2 * cnt;
-        rawSqmofr = oneSheetM2 * cntOfR;
+        rawSqm = oneM2 * cnt;
+        rawSqmOfr = oneM2 * cntOfr;
         break;
       case 'sqm':
         rawSqm = cnt;
-        rawSqmofr = cntOfR;
+        rawSqmOfr = cntOfr;
         break;
     }
     countRec.sqm = Number(rawSqm.toFixed(2));
-    // note: InventoryCount only stores `sqm`. We keep sqmofr in the transaction.
 
-    // 5) save the updated count
+    // 7) Update the transaction record
+    let newSqm = 0;
+    let newSqmOfr = 0;
+    let qty = 0;
+    let qtyOfr = 0;
 
-    if (countRec.type === 'S') {
-      countRec.finalCostOfr = countRec.finalCost;
+    switch (countRec.type) {
+      case CountType.S:
+        newSqm = countRec.sqm;
+        newSqmOfr = countRec.sqm;
+        qty = cnt;
+        qtyOfr = cnt;
+        break;
+      case CountType.SR:
+        newSqm = countRec.sqm;
+        newSqmOfr = Number(rawSqmOfr.toFixed(2));
+        qty = cnt;
+        qtyOfr = cntOfr;
+        break;
+      case CountType.G:
+        newSqm = 0;
+        newSqmOfr = countRec.sqm;
+        qty = 0;
+        qtyOfr = cnt;
+        break;
+      case CountType.RVR:
+        newSqm = countRec.sqm;
+        newSqmOfr = 0;
+        qty = cnt;
+        qtyOfr = 0;
+        break;
     }
 
-    const savedCount = await this.inventoryCountRepo.save(countRec);
-
-    // 6) find its transaction record
-    const txn = await this.inventoryTxnRepo.findOne({
-      where: { inventoryCountId: savedCount.id },
-    });
-    if (!txn) {
-      // if no transaction existed (unlikely), you could create one;
-      throw new NotFoundException(
-        `InventoryTransaction for count #${savedCount.id} not found`,
-      );
-    }
-
-    // 7) recompute the transaction fields (sqm, sqmofr, quantity, quantityofr)
-    let txnSqm = 0,
-      txnSqmOFR = 0,
-      qty = 0,
-      qtyOFR = 0;
-    let txnFinalCostOfr = 0;
-    let txnFinalCost = 0;
-
-    if (countRec.type === 'S') {
-      txnSqm = countRec.sqm;
-      txnSqmOFR = countRec.sqm;
-      qty = cnt;
-      qtyOFR = cnt;
-      txnFinalCostOfr = countRec.finalCost;
-      txnFinalCost = countRec.finalCost;
-    } else if (countRec.type === 'SR') {
-      txnSqm = countRec.sqm;
-      txnSqmOFR = Number(rawSqmofr.toFixed(2));
-      qty = cnt;
-      qtyOFR = cntOfR;
-      txnFinalCostOfr = countRec.finalCostOfr;
-      txnFinalCost = countRec.finalCost;
-    } else if (countRec.type === 'G') {
-      txnSqm = 0;
-      txnSqmOFR = countRec.sqm;
-      qty = 0;
-      qtyOFR = cnt;
-      txnFinalCostOfr = countRec.finalCostOfr;
-      txnFinalCost = countRec.finalCost;
-    } else if (countRec.type === 'RVR') {
-      txnSqm = countRec.sqm;
-      txnSqmOFR = 0;
-      qty = cnt;
-      qtyOFR = 0;
-      txnFinalCostOfr = countRec.finalCostOfr;
-      txnFinalCost = countRec.finalCost;
-    }
-
-    txn.sqm = txnSqm;
-    txn.sqmofr = txnSqmOFR;
+    txn.sqm = newSqm;
+    txn.sqmofr = newSqmOfr;
     txn.quantity = qty;
-    txn.quantityofr = qtyOFR;
-    // also update finalcost fields on txn to match count
-    txn.finalcost = savedCount.finalCost;
-    txn.finalcostofr = savedCount.finalCostOfr;
-    txn.itemVariant = variant;
-    txn.itemVariantId = variant.id;
+    txn.quantityofr = qtyOfr;
+    txn.finalcost = countRec.finalCost;
+    txn.finalcostofr = countRec.finalCostOfr;
+    txn.itemVariant = newVariant;
+    txn.itemBatchId = newBatch.id;
 
-    // 8) save transaction
+    // 8) ADD the new quantities back onto newBatch/newVariant
+    switch (countRec.type) {
+      case CountType.RVR:
+        newBatch.start = Number(newBatch.start) + newSqm;
+        newVariant.totalStart = Number(newVariant.totalStart) + newSqm;
+        break;
+      case CountType.S:
+        newBatch.start = Number(newBatch.start) + newSqm;
+        newBatch.startOFR = Number(newBatch.startOFR) + newSqmOfr;
+        newVariant.totalStart = Number(newVariant.totalStart) + newSqm;
+        newVariant.totalStartOFR = Number(newVariant.totalStartOFR) + newSqmOfr;
+        break;
+      case CountType.G:
+        newBatch.startOFR = Number(newBatch.startOFR) + newSqmOfr;
+        newVariant.totalStartOFR = Number(newVariant.totalStartOFR) + newSqmOfr;
+        break;
+      case CountType.SR:
+        newBatch.start = Number(newBatch.start) + newSqm;
+        newBatch.startOFR = Number(newBatch.startOFR) + newSqmOfr;
+        newVariant.totalStart = Number(newVariant.totalStart) + newSqm;
+        newVariant.totalStartOFR = Number(newVariant.totalStartOFR) + newSqmOfr;
+        break;
+    }
+
+    // 9) Persist everything
+    await this.inventoryCountRepo.save(countRec);
     await this.inventoryTxnRepo.save(txn);
+    // we always saved oldBatch above; now save newBatch/variant if they differ
+    if (newBatch.id !== oldBatch.id) {
+      await this.itemBatchRepo.save(newBatch);
+      await this.itemVariantRepo.save(newVariant);
+      // also persist the corrected oldBatch/oldVariant
+      await this.itemBatchRepo.save(oldBatch);
+      await this.itemVariantRepo.save(oldVariant);
+    } else {
+      // same batch: one save handles both additions/subtractions
+      await this.itemBatchRepo.save(newBatch);
+      await this.itemVariantRepo.save(newVariant);
+    }
 
-    return savedCount;
+    return countRec;
   }
 }
