@@ -20,6 +20,7 @@ export class RecievablesController {
       amountExchanged: number;
       comments?: string;
       type: 'G' | 'S' | 'RVR';
+      pmtType: 'Cash' | 'Check';  
     },
   ): Promise<ReceiptEntry> {
     return this.service.create({

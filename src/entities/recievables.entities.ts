@@ -47,7 +47,7 @@ export class ReceiptEntry {
   @Column({ type: 'text', nullable: true })
   comments: string;
 
-  @Column({ type: 'varchar', length: 20, nullable: true, default: 'Cash' })
+  @Column({ type: 'varchar', length: 20, nullable: true})
   pmtType: string;
 
   // Link to the parent Journal Voucher

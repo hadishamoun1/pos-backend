@@ -9,6 +9,7 @@ import { Customer } from '../entities/customer.entity';
 import { Account } from '../entities/account.entity';
 import { Settings } from '../entities/settings.entity';
 import { RecievablesGateway } from './recievables.broadcast';
+import { Sequence } from 'mysql2/typings/mysql/lib/protocol/sequences/Sequence';
 
 type ReceiptType = 'G' | 'S' | 'RVR';
 
@@ -46,6 +47,7 @@ export class RecievablesService {
     amountExchanged: number;
     comments?: string;
     type: ReceiptType;
+    pmtType: 'Cash' | 'Check';
   }): Promise<ReceiptEntry> {
     // 1) Active year
     const setting = await this.settingsRepo.findOne({
@@ -53,17 +55,19 @@ export class RecievablesService {
     });
     if (!setting) throw new NotFoundException('No active financial year set');
     const yy = setting.year.slice(-2);
+    // 2) Choose prefix: 'RVG' for G, else 'RV'
+    const prefix = data.type === 'G' ? 'RVG' : 'RV';
 
     // 2) New JV number
     const lastJv = await this.jvRepo.find({
-      where: { jvNumber: Like(`RV${yy}-%`) },
+      where: { jvNumber: Like(`${prefix}${yy}-%`) },
       order: { jvNumber: 'DESC' },
       take: 1,
     });
     const seq = lastJv.length
       ? parseInt(lastJv[0].jvNumber.split('-')[1], 10) + 1
       : 1;
-    const jvNumber = `RV${yy}-${String(seq).padStart(3, '0')}`;
+    const jvNumber = `${prefix}${yy}-${String(seq).padStart(3, '0')}`;
 
     // 3) Determine USD/LL parts from the two fields:
     //   - if currency=LL: cashNumber is LL, amountExchanged is USD
@@ -198,6 +202,7 @@ export class RecievablesService {
       comments: data.comments ?? null,
       type: data.type,
       journalVoucherId: jv.id,
+      pmtType: data.pmtType,
     });
 
     const savedEntry = await this.entryRepo.save(entry);
@@ -215,6 +220,10 @@ export class RecievablesService {
   async findSummary() {
     const entries = await this.entryRepo.find({
       relations: ['customer', 'journalVoucher'],
+      order: {
+        date: 'DESC',
+        id: 'DESC', 
+      },
     });
     return entries.map((e) => ({
       customerName: e.customer.customerName,
