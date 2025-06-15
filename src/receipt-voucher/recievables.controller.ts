@@ -1,5 +1,13 @@
 // src/receipt-voucher/recievables.controller.ts
-import { Controller, Post, Body, Get } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Put,
+  Get,
+  Body,
+  Param,
+  ParseIntPipe,
+} from '@nestjs/common';
 import { RecievablesService } from './recievables.service';
 import { ReceiptEntry } from '../entities/recievables.entities';
 
@@ -20,7 +28,7 @@ export class RecievablesController {
       amountExchanged: number;
       comments?: string;
       type: 'G' | 'S' | 'RVR';
-      pmtType: 'Cash' | 'Check';  
+      pmtType: 'Cash' | 'Check';
     },
   ): Promise<ReceiptEntry> {
     return this.service.create({
@@ -29,8 +37,31 @@ export class RecievablesController {
     });
   }
 
+  @Put(':id')
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body()
+    body: {
+      customerId: number;
+      date: string; // ISO date
+      invoiceId?: string;
+      cashNumber: number;
+      currency: 'USD' | 'LL';
+      exchangeRate?: number;
+      amountExchanged: number;
+      comments?: string;
+      type: 'G' | 'S' | 'RVR';
+      pmtType: 'Cash' | 'Check';
+    },
+  ): Promise<ReceiptEntry> {
+    return this.service.update(id, {
+      ...body,
+      date: new Date(body.date),
+    });
+  }
+
   @Get('v1/summary')
-  async getSummary() {
+  getSummary() {
     return this.service.findSummary();
   }
 }
