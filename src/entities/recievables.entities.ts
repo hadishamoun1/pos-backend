@@ -47,6 +47,9 @@ export class ReceiptEntry {
   @Column({ type: 'text', nullable: true })
   comments: string;
 
+  @Column({ type: 'varchar', length: 20, nullable: true, default: 'Cash' })
+  pmtType: string;
+
   // Link to the parent Journal Voucher
   @ManyToOne(() => JournalVoucher, (jv) => jv.receiptEntries, {
     nullable: false,

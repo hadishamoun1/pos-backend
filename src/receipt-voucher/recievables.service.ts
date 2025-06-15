@@ -8,6 +8,7 @@ import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails
 import { Customer } from '../entities/customer.entity';
 import { Account } from '../entities/account.entity';
 import { Settings } from '../entities/settings.entity';
+import { RecievablesGateway } from './recievables.broadcast';
 
 type ReceiptType = 'G' | 'S' | 'RVR';
 
@@ -31,6 +32,8 @@ export class RecievablesService {
 
     @InjectRepository(Settings)
     private readonly settingsRepo: Repository<Settings>,
+
+    private readonly gateway: RecievablesGateway,
   ) {}
 
   async create(data: {
@@ -196,10 +199,33 @@ export class RecievablesService {
       type: data.type,
       journalVoucherId: jv.id,
     });
-    return this.entryRepo.save(entry);
+
+    const savedEntry = await this.entryRepo.save(entry);
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // 8) Broadcast the updated list of entries to all connected clients
+    //    (you’ll need to inject your gateway as `private readonly gateway: RecievablesGateway`)
+    const all = await this.findSummary();
+    this.gateway.broadcastAll(all);
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    return savedEntry;
   }
 
-  findAll(): Promise<ReceiptEntry[]> {
-    return this.entryRepo.find({ relations: ['customer', 'journalVoucher'] });
+  async findSummary() {
+    const entries = await this.entryRepo.find({
+      relations: ['customer', 'journalVoucher'],
+    });
+    return entries.map((e) => ({
+      customerName: e.customer.customerName,
+      currency: e.currency,
+      exchangeRate: e.exchangeRate,
+      amountExchanged: e.amountExchanged,
+      cashNumber: e.cashNumber,
+      date: e.date,
+      jvNumber: e.journalVoucher.jvNumber,
+      comments: e.comments,
+      pmtType: e.pmtType,
+    }));
   }
 }

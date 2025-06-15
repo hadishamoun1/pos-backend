@@ -28,8 +28,8 @@ export class RecievablesController {
     });
   }
 
-  @Get()
-  findAll(): Promise<ReceiptEntry[]> {
-    return this.service.findAll();
+  @Get('v1/summary')
+  async getSummary() {
+    return this.service.findSummary();
   }
 }

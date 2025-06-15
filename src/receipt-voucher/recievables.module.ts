@@ -9,6 +9,7 @@ import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails
 import { Customer } from '../entities/customer.entity';
 import { Account } from '../entities/account.entity';
 import { Settings } from '../entities/settings.entity';
+import { RecievablesGateway } from './recievables.broadcast';
 
 @Module({
   imports: [
@@ -22,7 +23,7 @@ import { Settings } from '../entities/settings.entity';
     ]),
   ],
   controllers: [RecievablesController],
-  providers: [RecievablesService],
+  providers: [RecievablesService, RecievablesGateway],
   exports: [RecievablesService],
 })
 export class RecievablesModule {}
