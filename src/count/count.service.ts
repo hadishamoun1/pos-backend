@@ -6,6 +6,7 @@ import { Repository } from 'typeorm';
 import { InventoryCount } from '../entities/inventory/count.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 
 @Injectable()
 export class InventoryCountService {
@@ -18,51 +19,39 @@ export class InventoryCountService {
 
     @InjectRepository(InventoryTransaction)
     private readonly inventoryTxnRepo: Repository<InventoryTransaction>,
+
+    @InjectRepository(ItemBatch)
+    private readonly itemBatchRepo: Repository<ItemBatch>,
   ) {}
 
   /** Accepts single or array of count-rows */
-  async create(
-    createData: any | any[],
-  ): Promise<InventoryCount | InventoryCount[]> {
-    if (Array.isArray(createData)) {
-      const results: InventoryCount[] = [];
-      for (const row of createData) {
-        results.push(await this.createSingle(row));
-      }
-      return results;
-    }
-    return this.createSingle(createData);
-  }
-
-  /** internal helper: save the count AND its inventory transaction */
-  private async createSingle(data: any): Promise<InventoryCount> {
+  async createSingle(data: any): Promise<InventoryCount> {
     const {
-      itemVariantId,
+      itemBatchId,
       date,
       count,
       type,
       unit,
-      countOFR,
-      finalCost,
-      finalCostOfr,
+      countOFR = 0,
+      finalCost = 0,
+      finalCostOfr = 0,
     } = data;
 
-    // fetch variant
-    const variant = await this.itemVariantRepo.findOne({
-      where: { id: itemVariantId },
+    // 1) fetch the batch (and variant)
+    const batch = await this.itemBatchRepo.findOne({
+      where: { id: itemBatchId },
+      relations: ['itemVariant'],
     });
-    if (!variant) {
-      throw new NotFoundException(`ItemVariant #${itemVariantId} not found`);
+    if (!batch) {
+      throw new NotFoundException(`ItemBatch #${itemBatchId} not found`);
     }
+    const variant = batch.itemVariant;
 
-    // compute one sheet area (cm→m²)
-    const lengthCm = Number(variant.length);
-    const widthCm = Number(variant.width);
-    const oneSheetM2 = (lengthCm * widthCm) / 10000;
+    // 2) compute one‐sheet area (cm² → m²)
+    const oneSheetM2 = (Number(variant.length) * Number(variant.width)) / 10000;
 
-    // compute total sqm of this count
-    let rawSqm: number;
-    let rawSqmofr: number;
+    // 3) figure out sqm & sqmofr
+    let rawSqm: number, rawSqmofr: number;
     switch (unit) {
       case 'box':
         rawSqm = oneSheetM2 * variant.sheetsPerBox * count;
@@ -77,31 +66,27 @@ export class InventoryCountService {
         rawSqmofr = countOFR;
         break;
       default:
-        rawSqm = 0;
+        rawSqm = rawSqmofr = 0;
     }
-    // round to 2 decimals
     const sqm = Number(rawSqm.toFixed(2));
     const sqmofr = Number(rawSqmofr.toFixed(2));
 
-    let fc = 0;
-    let fco = 0;
-
+    // 4) compute finalCost fields
+    let fc = 0,
+      fco = 0;
     if (type === 'S') {
       fc = finalCost;
       fco = finalCost;
-    }
-    if (type === 'G') {
+    } else if (type === 'G') {
       fco = finalCostOfr;
-    }
-    if (type === 'RVR') {
+    } else if (type === 'RVR') {
       fc = finalCost;
-    }
-    if (type === 'SR') {
+    } else if (type === 'SR') {
       fc = finalCost;
       fco = finalCostOfr;
     }
 
-    // save the InventoryCount
+    // 5) save the InventoryCount
     const inventoryCount = this.inventoryCountRepo.create({
       itemVariant: variant,
       date,
@@ -113,57 +98,60 @@ export class InventoryCountService {
     });
     const savedCount = await this.inventoryCountRepo.save(inventoryCount);
 
-    // now compute transaction fields
-    let txnSqm = 0;
-    let txnSqmOFR = 0;
-    let qty = 0;
-    let qtyOFR = 0;
-    let txnFinalCostOfr = 0;
-    let txnFinalCost = 0;
+    // 6) derive txn quantities
+    let qty = 0,
+      qtyOFR = 0;
     if (type === 'S') {
-      txnSqm = sqm;
-      txnSqmOFR = sqm;
       qty = count;
       qtyOFR = count;
-      txnFinalCostOfr = finalCost;
-      txnFinalCost = finalCost;
     } else if (type === 'SR') {
-      txnSqm = sqm;
-      txnSqmOFR = sqmofr;
       qty = count;
       qtyOFR = countOFR;
-      txnFinalCostOfr = finalCostOfr;
-      txnFinalCost = finalCost;
     } else if (type === 'G') {
-      txnSqm = 0;
-      txnSqmOFR = sqm;
-      qty = 0;
       qtyOFR = count;
-      txnFinalCostOfr = finalCostOfr;
-      txnFinalCost = finalCost;
     } else if (type === 'RVR') {
-      txnSqm = sqm;
-      txnSqmOFR = 0;
       qty = count;
-      qtyOFR = 0;
-      txnFinalCostOfr = finalCostOfr;
-      txnFinalCost = finalCost;
     }
 
-    // create and save the InventoryTransaction
+    // 7) save the InventoryTransaction
     const txn = this.inventoryTxnRepo.create({
       itemVariant: variant,
       transactionType: 'Count',
-      sqm: txnSqm,
-      sqmofr: txnSqmOFR,
+      sqm,
+      sqmofr,
       quantity: qty,
       quantityofr: qtyOFR,
       inventoryCountId: savedCount.id,
-      finalcost: txnFinalCost,
-      finalcostofr: txnFinalCostOfr,
-      // other fields (finalcost, invoiceItemId, etc.) left as null/default
+      finalcost: fc,
+      finalcostofr: fco,
     });
     await this.inventoryTxnRepo.save(txn);
+
+    // 8) **update batch & variant totals** per your rules
+    switch (type) {
+      case 'RVR':
+        batch.start += sqm;
+        variant.totalStart += sqm;
+        break;
+      case 'S':
+        batch.start += sqm;
+        batch.startOFR += sqmofr;
+        variant.totalStart += sqm;
+        variant.totalStartOFR += sqmofr;
+        break;
+      case 'G':
+        batch.startOFR += sqmofr;
+        variant.totalStartOFR += sqmofr;
+        break;
+      case 'SR':
+        batch.start += sqm;
+        batch.startOFR += sqmofr;
+        variant.totalStart += sqm;
+        variant.totalStartOFR += sqmofr;
+        break;
+    }
+    await this.itemBatchRepo.save(batch);
+    await this.itemVariantRepo.save(variant);
 
     return savedCount;
   }

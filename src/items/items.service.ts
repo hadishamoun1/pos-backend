@@ -70,21 +70,34 @@ export class ItemsService {
   async getSelectedItemDetails(): Promise<any[]> {
     return await this.itemRepository
       .createQueryBuilder('item')
+      // join thickness
       .leftJoinAndSelect('item.thicknesses', 'thickness')
+      // join variants
       .leftJoinAndSelect('thickness.variants', 'variant')
+      // join batches on each variant
+      .leftJoinAndSelect('variant.batches', 'batch')
+      // pick just the fields you want
       .select([
-        'item.id', // Item fields
+        'item.id',
         'item.itemName',
         'item.type',
-        'thickness.thickness', // Thickness field
+
+        'thickness.id',
+        'thickness.thickness',
+
         'variant.id',
-        'variant.length', // ItemVariant fields
+        'variant.length',
         'variant.width',
         'variant.sheetsPerBox',
         'variant.origin',
+
+        'batch.id',
+        'batch.condition',
+        'batch.dateReceived',
       ])
       .getMany();
   }
+
   async createFullItem(data: {
     itemName: string;
     type: 'box' | 'sheet' | 'sqm';

@@ -17,7 +17,7 @@ export class InventoryCountController {
 
   @Post()
   create(@Body() createData: any) {
-    return this.svc.create(createData);
+    return this.svc.createSingle(createData);
   }
 
   @Get()

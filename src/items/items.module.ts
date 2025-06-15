@@ -5,9 +5,12 @@ import { ItemsController } from './items.controller';
 import { Item } from '../entities/inventory/item.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Item, Thickness, ItemVariant])],
+  imports: [
+    TypeOrmModule.forFeature([Item, Thickness, ItemVariant, ItemBatch]),
+  ],
   controllers: [ItemsController],
   providers: [ItemsService],
   exports: [ItemsService],
