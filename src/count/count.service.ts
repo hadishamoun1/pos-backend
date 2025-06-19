@@ -438,4 +438,157 @@ export class InventoryCountService {
 
     return countRec;
   }
+
+  async createSingleopening(data: any): Promise<InventoryCount> {
+    const {
+      itemVariantId,
+      date,
+      count,
+      type,
+      unit,
+      countOFR = 0,
+      finalCost = 0,
+      finalCostOfr = 0,
+    } = data;
+
+    // 1) Check for existing batch for this variant with dateReceived = null
+    let batch = await this.itemBatchRepo.findOne({
+      where: {
+        itemVariant: { id: itemVariantId },
+        dateReceived: null,
+      },
+      relations: ['itemVariant'],
+    });
+
+    // 2) If not found, create a new one
+    if (!batch) {
+      const variant = await this.itemVariantRepo.findOneBy({
+        id: itemVariantId,
+      });
+      if (!variant) {
+        throw new NotFoundException(`ItemVariant #${itemVariantId} not found`);
+      }
+
+      batch = this.itemBatchRepo.create({
+        itemVariant: variant,
+        dateReceived: null,
+        condition: 'Clean', // or default condition
+      });
+      await this.itemBatchRepo.save(batch);
+
+      // Attach the full variant for later use
+      batch.itemVariant = variant;
+    }
+
+    const variant = batch.itemVariant;
+
+    // 3) Compute sqm
+    const oneSheetM2 = (Number(variant.length) * Number(variant.width)) / 10000;
+    let rawSqm: number, rawSqmofr: number;
+
+    switch (unit) {
+      case 'box':
+        rawSqm = oneSheetM2 * variant.sheetsPerBox * count;
+        rawSqmofr = oneSheetM2 * variant.sheetsPerBox * countOFR;
+        break;
+      case 'sheet':
+        rawSqm = oneSheetM2 * count;
+        rawSqmofr = oneSheetM2 * countOFR;
+        break;
+      case 'sqm':
+        rawSqm = count;
+        rawSqmofr = countOFR;
+        break;
+      default:
+        rawSqm = rawSqmofr = 0;
+    }
+
+    const sqm = Number(rawSqm.toFixed(2));
+    const sqmofr = Number(rawSqmofr.toFixed(2));
+
+    // 4) Compute cost
+    let fc = 0,
+      fco = 0;
+    if (type === 'S') {
+      fc = finalCost;
+      fco = finalCost;
+    } else if (type === 'G') {
+      fco = finalCostOfr;
+    } else if (type === 'RVR') {
+      fc = finalCost;
+    } else if (type === 'SR') {
+      fc = finalCost;
+      fco = finalCostOfr;
+    }
+
+    // 5) Save inventory count
+    const inventoryCount = this.inventoryCountRepo.create({
+      itemVariant: variant,
+      date,
+      count,
+      type,
+      sqm,
+      finalCost: fc,
+      finalCostOfr: fco,
+    });
+    const savedCount = await this.inventoryCountRepo.save(inventoryCount);
+
+    // 6) Save inventory transaction
+    let qty = 0,
+      qtyOFR = 0;
+    if (type === 'S') {
+      qty = count;
+      qtyOFR = count;
+    } else if (type === 'SR') {
+      qty = count;
+      qtyOFR = countOFR;
+    } else if (type === 'G') {
+      qtyOFR = count;
+    } else if (type === 'RVR') {
+      qty = count;
+    }
+
+    const txn = this.inventoryTxnRepo.create({
+      itemVariant: variant,
+      itemBatchId: batch.id,
+      transactionType: 'Opening Count',
+      sqm,
+      sqmofr,
+      quantity: qty,
+      quantityofr: qtyOFR,
+      inventoryCountId: savedCount.id,
+      finalcost: fc,
+      finalcostofr: fco,
+    });
+    await this.inventoryTxnRepo.save(txn);
+
+    // 7) Update batch and variant totals
+    switch (type) {
+      case 'RVR':
+        batch.start = Number(batch.start) + sqm;
+        variant.totalStart = Number(variant.totalStart) + sqm;
+        break;
+      case 'S':
+        batch.start = Number(batch.start) + sqm;
+        batch.startOFR = Number(batch.startOFR) + sqm;
+        variant.totalStart = Number(variant.totalStart) + sqm;
+        variant.totalStartOFR = Number(variant.totalStartOFR) + sqm;
+        break;
+      case 'G':
+        batch.startOFR = Number(batch.startOFR) + sqmofr;
+        variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+        break;
+      case 'SR':
+        batch.start = Number(batch.start) + sqm;
+        batch.startOFR = Number(batch.startOFR) + sqmofr;
+        variant.totalStart = Number(variant.totalStart) + sqm;
+        variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+        break;
+    }
+
+    await this.itemBatchRepo.save(batch);
+    await this.itemVariantRepo.save(variant);
+
+    return savedCount;
+  }
 }
