@@ -150,9 +150,9 @@ export class InventoryCountService {
 
       case 'S':
         batch.start = Number(batch.start) + sqm;
-        batch.startOFR = Number(batch.startOFR) + sqmofr;
+        batch.startOFR = Number(batch.startOFR) + sqm;
         variant.totalStart = Number(variant.totalStart) + sqm;
-        variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+        variant.totalStartOFR = Number(variant.totalStartOFR) + sqm;
         break;
 
       case 'G':
@@ -199,22 +199,24 @@ export class InventoryCountService {
         'itemVariant',
         'itemVariant.thickness',
         'itemVariant.thickness.item',
+        'itemVariant.batches',
       ],
-      order: { date: 'DESC' },
+      order: { id: 'DESC' },
     });
 
     return counts.map((cnt) => {
       const v = cnt.itemVariant!;
       const t = v.thickness!;
       const item = t.item!;
+      const batches = v.batches || [];
 
       return {
         // the count’s own ID
         id: cnt.id,
 
         // ▶︎ newly added fields:
-        itemVariantName: item.itemName, // ← the “name” of the item
-        thickness: Number(t.thickness), // ← the glass thickness
+        itemVariantName: item.itemName,
+        thickness: Number(t.thickness),
 
         // variant dimensions & meta
         length: Number(v.length),
@@ -230,6 +232,11 @@ export class InventoryCountService {
         type: cnt.type,
         finalCost: Number(cnt.finalCost),
         finalCostOfr: Number(cnt.finalCostOfr),
+        itemBatches: batches.map((b) => ({
+          id: b.id,
+          condition: b.condition,
+          dateReceived: b.dateReceived,
+        })),
       };
     });
   }
