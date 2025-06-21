@@ -5,6 +5,7 @@ import { InventoryTransaction } from '../entities/inventory/inventoryTransaction
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransactionGateway } from './inventory-transaction.gateway';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { InvoiceItem } from 'src/entities/invoiceItem.entity';
 
 @Injectable()
 export class InventoryTransactionService {
@@ -126,13 +127,12 @@ export class InventoryTransactionService {
       sheetsPerBox: number;
       origin: string;
       itemType: string;
-      invoiceDate: Date;
+      invoiceDate: string;
       invoiceNumber: string;
       itemBatch: {
         id: number;
         condition: string;
         dateReceived: string;
- 
       } | null;
     }>
   > {
@@ -145,6 +145,7 @@ export class InventoryTransactionService {
         'purchaseInvoiceItem.invoice',
         'invoiceItem',
         'invoiceItem.invoice',
+        'inventoryCount',
         'itemBatch',
       ],
       order: { transactionDate: 'DESC' },
@@ -158,17 +159,29 @@ export class InventoryTransactionService {
           tx.itemVariant.thickness.item,
       )
       .map((tx) => {
-        const invoice =
-          tx.transactionType === 'purchase'
-            ? tx.purchaseInvoiceItem?.invoice
-            : tx.transactionType === 'sale'
-              ? tx.invoiceItem?.invoice
-              : undefined;
+        // ⬇️ Determine invoice date based on transaction type
+        let invoiceDateRaw: Date | string = tx.transactionDate;
 
-        const invoiceDate = invoice?.date
-          ? new Date(invoice.date)
-          : tx.transactionDate;
-        const invoiceNumber = invoice?.invoiceNumber ?? '—';
+        if (tx.transactionType === 'purchase') {
+          invoiceDateRaw =
+            tx.purchaseInvoiceItem?.invoice?.date ||
+            tx.invoiceItem?.invoice?.date ||
+            tx.transactionDate;
+        } else if (tx.transactionType === 'sale') {
+          invoiceDateRaw = tx.invoiceItem?.invoice?.date || tx.transactionDate;
+        } else {
+          invoiceDateRaw =
+            tx.inventoryCount?.date ||
+            tx.invoiceItem?.invoice?.date ||
+            tx.transactionDate;
+        }
+
+        const invoiceNumber =
+          tx.transactionType === 'purchase'
+            ? (tx.purchaseInvoiceItem?.invoice?.invoiceNumber ?? '—')
+            : tx.transactionType === 'sale'
+              ? (tx.invoiceItem?.invoice?.invoiceNumber ?? '—')
+              : (tx.invoiceItem?.invoice?.invoiceNumber ?? '—');
 
         const v = tx.itemVariant!;
         const t = v.thickness!;
@@ -191,21 +204,19 @@ export class InventoryTransactionService {
           sheetsPerBox: Number(v.sheetsPerBox),
           origin: v.origin,
           itemType: i.type,
-          invoiceDate,
+          invoiceDate: new Date(invoiceDateRaw).toISOString().split('T')[0],
           invoiceNumber,
           itemBatch: tx.itemBatch
             ? {
                 id: tx.itemBatch.id,
                 condition: tx.itemBatch.condition,
                 dateReceived: tx.itemBatch.dateReceived,
-        
               }
             : null,
         };
       });
 
     this.gateway.sendActivityUpdate(result);
-
     return result;
   }
 }

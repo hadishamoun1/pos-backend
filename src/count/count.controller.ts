@@ -8,6 +8,8 @@ import {
   Param,
   Patch,
   Delete,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { InventoryCountService } from './count.service';
 
@@ -19,7 +21,6 @@ export class InventoryCountController {
   create(@Body() createData: any | any[]) {
     return this.svc.create(createData);
   }
-  
 
   @Get()
   findAll() {
@@ -28,6 +29,17 @@ export class InventoryCountController {
   @Get('v1/filtered')
   getFilteredCounts() {
     return this.svc.getFilteredCounts();
+  }
+  @Get('filtered-with-balance')
+  async getFilteredCountsWithBalance() {
+    return this.svc.getFilteredCountsWithBatchBalance();
+  }
+  
+  @Post('v1/opening')
+  @HttpCode(HttpStatus.CREATED)
+  async createOpening(@Body() body: any) {
+    const result = await this.svc.createSingleopening(body);
+    return { message: 'Opening count created successfully', data: result };
   }
 
   /** Update an existing count (and its linked transaction) */
@@ -45,4 +57,5 @@ export class InventoryCountController {
   remove(@Param('id') id: string) {
     return this.svc.remove(+id);
   }
+
 }

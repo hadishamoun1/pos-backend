@@ -2,7 +2,7 @@
 
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { InventoryCount } from '../entities/inventory/count.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
@@ -146,18 +146,53 @@ export class InventoryCountService {
       case 'RVR':
         batch.start = Number(batch.start) + sqm;
         variant.totalStart = Number(variant.totalStart) + sqm;
+        batch.balance =
+          Number(batch.start || 0) +
+          Number(batch.in || 0) -
+          Number(batch.out || 0);
+        variant.totalBalance =
+          Number(variant.totalStart || 0) +
+          Number(variant.totalIn || 0) -
+          Number(variant.totalOut || 0);
         break;
 
       case 'S':
         batch.start = Number(batch.start) + sqm;
         batch.startOFR = Number(batch.startOFR) + sqm;
+        batch.balance =
+          Number(batch.start || 0) +
+          Number(batch.in || 0) -
+          Number(batch.out || 0);
+        batch.balanceOFR =
+          Number(batch.startOFR || 0) +
+          Number(batch.inOFR || 0) -
+          Number(batch.outOFR || 0);
         variant.totalStart = Number(variant.totalStart) + sqm;
         variant.totalStartOFR = Number(variant.totalStartOFR) + sqm;
+
+        variant.totalBalance =
+          Number(variant.totalStart || 0) +
+          Number(variant.totalIn || 0) -
+          Number(variant.totalOut || 0);
+        variant.totalBalanceOFR =
+          Number(variant.totalStartOFR || 0) +
+          Number(variant.totalInOFR || 0) -
+          Number(variant.totalOutOFR || 0);
         break;
 
       case 'G':
         batch.startOFR = Number(batch.startOFR) + sqmofr;
         variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+
+        batch.balanceOFR =
+          Number(batch.startOFR || 0) +
+          Number(batch.inOFR || 0) -
+          Number(batch.outOFR || 0);
+
+        variant.totalBalanceOFR =
+          Number(variant.totalStartOFR || 0) +
+          Number(variant.totalInOFR || 0) -
+          Number(variant.totalOutOFR || 0);
         break;
 
       case 'SR':
@@ -165,6 +200,22 @@ export class InventoryCountService {
         batch.startOFR = Number(batch.startOFR) + sqmofr;
         variant.totalStart = Number(variant.totalStart) + sqm;
         variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+        batch.balance =
+          Number(batch.start || 0) +
+          Number(batch.in || 0) -
+          Number(batch.out || 0);
+        batch.balanceOFR =
+          Number(batch.startOFR || 0) +
+          Number(batch.inOFR || 0) -
+          Number(batch.outOFR || 0);
+        variant.totalBalance =
+          Number(variant.totalStart || 0) +
+          Number(variant.totalIn || 0) -
+          Number(variant.totalOut || 0);
+        variant.totalBalanceOFR =
+          Number(variant.totalStartOFR || 0) +
+          Number(variant.totalInOFR || 0) -
+          Number(variant.totalOutOFR || 0);
         break;
     }
 
@@ -241,6 +292,52 @@ export class InventoryCountService {
     });
   }
 
+  // Add this new method in your `InventoryCountService`
+
+  async getFilteredCountsWithBatchBalance(): Promise<any[]> {
+    const counts = await this.inventoryCountRepo.find({
+      relations: [
+        'itemVariant',
+        'itemVariant.thickness',
+        'itemVariant.thickness.item',
+        'itemVariant.batches',
+      ],
+      order: { id: 'DESC' },
+    });
+
+    return counts.map((cnt) => {
+      const v = cnt.itemVariant!;
+      const t = v.thickness!;
+      const item = t.item!;
+      const batches = v.batches || [];
+
+      return {
+        id: cnt.id,
+        itemVariantName: item.itemName,
+        thickness: Number(t.thickness),
+        length: Number(v.length),
+        width: Number(v.width),
+        sheetsPerBox: v.sheetsPerBox,
+        origin: v.origin,
+        itemVariantType: item.type,
+        date: cnt.date,
+        count: cnt.count,
+        sqm: Number(cnt.sqm),
+        type: cnt.type,
+        finalCost: Number(cnt.finalCost),
+        finalCostOfr: Number(cnt.finalCostOfr),
+        itemBatches: batches.map((b) => ({
+          id: b.id,
+          condition: b.condition,
+          dateReceived: b.dateReceived,
+          start: b.start,
+          startOFR: b.startOFR,
+          balance: b.balance,
+          balanceOFR: b.balanceOFR,
+        })),
+      };
+    });
+  }
   async update(
     id: number,
     data: {
@@ -254,7 +351,6 @@ export class InventoryCountService {
       finalCostOfr?: number;
     },
   ): Promise<InventoryCount> {
-    // 1) Load existing count + its transaction
     const countRec = await this.inventoryCountRepo.findOne({
       where: { id },
       relations: ['itemVariant'],
@@ -270,7 +366,6 @@ export class InventoryCountService {
         `InventoryTransaction for count #${id} not found`,
       );
 
-    // 2) Load the OLD batch & variant
     const oldBatch = await this.itemBatchRepo.findOne({
       where: { id: txn.itemBatchId },
       relations: ['itemVariant'],
@@ -279,38 +374,36 @@ export class InventoryCountService {
       throw new NotFoundException(`ItemBatch #${txn.itemBatchId} not found`);
     const oldVariant = oldBatch.itemVariant;
 
-    // 3) Deduct “old” quantities from oldBatch & oldVariant
     const oldSqm = countRec.sqm;
     const oldSqmOfr = txn.sqmofr;
-    switch (countRec.type) {
+    const originalType = countRec.type;
+
+    // ROLLBACK
+    switch (originalType) {
       case CountType.RVR:
-        oldBatch.start = Number(oldBatch.start) - oldSqm;
-        oldVariant.totalStart = Number(oldVariant.totalStart) - oldSqm;
+        oldBatch.start -= oldSqm;
+        oldVariant.totalStart -= oldSqm;
         break;
       case CountType.S:
-        oldBatch.start = Number(oldBatch.start) - oldSqm;
-        oldBatch.startOFR = Number(oldBatch.startOFR) - oldSqmOfr;
-        oldVariant.totalStart = Number(oldVariant.totalStart) - oldSqm;
-        oldVariant.totalStartOFR = Number(oldVariant.totalStartOFR) - oldSqmOfr;
+        oldBatch.start -= oldSqm;
+        oldBatch.startOFR = oldBatch.start;
+        oldVariant.totalStart -= oldSqm;
+        oldVariant.totalStartOFR = oldVariant.totalStart;
         break;
       case CountType.G:
-        oldBatch.startOFR = Number(oldBatch.startOFR) - oldSqmOfr;
-        oldVariant.totalStartOFR = Number(oldVariant.totalStartOFR) - oldSqmOfr;
+        oldBatch.startOFR -= oldSqmOfr;
+        oldVariant.totalStartOFR -= oldSqmOfr;
         break;
       case CountType.SR:
-        oldBatch.start = Number(oldBatch.start) - oldSqm;
-        oldBatch.startOFR = Number(oldBatch.startOFR) - oldSqmOfr;
-        oldVariant.totalStart = Number(oldVariant.totalStart) - oldSqm;
-        oldVariant.totalStartOFR = Number(oldVariant.totalStartOFR) - oldSqmOfr;
+        oldBatch.start -= oldSqm;
+        oldBatch.startOFR -= oldSqmOfr;
+        oldVariant.totalStart -= oldSqm;
+        oldVariant.totalStartOFR -= oldSqmOfr;
         break;
     }
 
-    // 4) Decide where to ADD the new quantities
-    //    by default it’s the same batch/variant:
     let newBatch = oldBatch;
     let newVariant = oldVariant;
-
-    // If they passed a different batchId, fetch that instead:
     if (data.itemBatchId != null && data.itemBatchId !== oldBatch.id) {
       newBatch = await this.itemBatchRepo.findOne({
         where: { id: data.itemBatchId },
@@ -322,14 +415,12 @@ export class InventoryCountService {
       countRec.itemVariant = newVariant;
     }
 
-    // 5) Apply the incoming fields to the count record
     countRec.date = data.date ?? countRec.date;
     countRec.count = data.count ?? countRec.count;
     countRec.type = data.type ?? countRec.type;
     countRec.finalCost = data.finalCost ?? countRec.finalCost;
     countRec.finalCostOfr = data.finalCostOfr ?? countRec.finalCostOfr;
 
-    // 6) Recompute SQM & rawSqmOfr
     const unit = data.unit ?? 'sheet';
     const cnt = countRec.count;
     const cntOfr = data.countOFR ?? cnt;
@@ -352,9 +443,9 @@ export class InventoryCountService {
         rawSqmOfr = cntOfr;
         break;
     }
+
     countRec.sqm = Number(rawSqm.toFixed(2));
 
-    // 7) Update the transaction record
     let newSqm = 0;
     let newSqmOfr = 0;
     let qty = 0;
@@ -363,7 +454,7 @@ export class InventoryCountService {
     switch (countRec.type) {
       case CountType.S:
         newSqm = countRec.sqm;
-        newSqmOfr = countRec.sqm;
+        newSqmOfr = newSqm;
         qty = cnt;
         qtyOfr = cnt;
         break;
@@ -396,42 +487,66 @@ export class InventoryCountService {
     txn.itemVariant = newVariant;
     txn.itemBatchId = newBatch.id;
 
-    // 8) ADD the new quantities back onto newBatch/newVariant
+    // APPLY NEW VALUES
     switch (countRec.type) {
       case CountType.RVR:
-        newBatch.start = Number(newBatch.start) + newSqm;
-        newVariant.totalStart = Number(newVariant.totalStart) + newSqm;
+        newBatch.start += newSqm;
+        newVariant.totalStart += newSqm;
         break;
       case CountType.S:
-        newBatch.start = Number(newBatch.start) + newSqm;
-        newBatch.startOFR = Number(newBatch.startOFR) + newSqmOfr;
-        newVariant.totalStart = Number(newVariant.totalStart) + newSqm;
-        newVariant.totalStartOFR = Number(newVariant.totalStartOFR) + newSqmOfr;
+        newBatch.start += newSqm;
+        newBatch.startOFR = newBatch.start;
+        newVariant.totalStart += newSqm;
+        newVariant.totalStartOFR = newVariant.totalStart;
         break;
       case CountType.G:
-        newBatch.startOFR = Number(newBatch.startOFR) + newSqmOfr;
-        newVariant.totalStartOFR = Number(newVariant.totalStartOFR) + newSqmOfr;
+        newBatch.startOFR += newSqmOfr;
+        newVariant.totalStartOFR += newSqmOfr;
         break;
       case CountType.SR:
-        newBatch.start = Number(newBatch.start) + newSqm;
-        newBatch.startOFR = Number(newBatch.startOFR) + newSqmOfr;
-        newVariant.totalStart = Number(newVariant.totalStart) + newSqm;
-        newVariant.totalStartOFR = Number(newVariant.totalStartOFR) + newSqmOfr;
+        newBatch.start += newSqm;
+        newBatch.startOFR += newSqmOfr;
+        newVariant.totalStart += newSqm;
+        newVariant.totalStartOFR += newSqmOfr;
         break;
     }
 
-    // 9) Persist everything
+    // BALANCE UPDATES
+    newBatch.balance =
+      Number(newBatch.start || 0) +
+      Number(newBatch.in || 0) -
+      Number(newBatch.out || 0);
+    newBatch.balanceOFR = newBatch.startOFR ?? newBatch.balance;
+
+    newVariant.totalBalance =
+      Number(newVariant.totalStart || 0) +
+      Number(newVariant.totalIn || 0) -
+      Number(newVariant.totalOut || 0);
+    newVariant.totalBalanceOFR =
+      newVariant.totalStartOFR ?? newVariant.totalBalance;
+
     await this.inventoryCountRepo.save(countRec);
     await this.inventoryTxnRepo.save(txn);
-    // we always saved oldBatch above; now save newBatch/variant if they differ
+
     if (newBatch.id !== oldBatch.id) {
+      oldBatch.balance =
+        Number(oldBatch.start || 0) +
+        Number(oldBatch.in || 0) -
+        Number(oldBatch.out || 0);
+      oldBatch.balanceOFR = oldBatch.startOFR ?? oldBatch.balance;
+
+      oldVariant.totalBalance =
+        Number(oldVariant.totalStart || 0) +
+        Number(oldVariant.totalIn || 0) -
+        Number(oldVariant.totalOut || 0);
+      oldVariant.totalBalanceOFR =
+        oldVariant.totalStartOFR ?? oldVariant.totalBalance;
+
       await this.itemBatchRepo.save(newBatch);
       await this.itemVariantRepo.save(newVariant);
-      // also persist the corrected oldBatch/oldVariant
       await this.itemBatchRepo.save(oldBatch);
       await this.itemVariantRepo.save(oldVariant);
     } else {
-      // same batch: one save handles both additions/subtractions
       await this.itemBatchRepo.save(newBatch);
       await this.itemVariantRepo.save(newVariant);
     }
@@ -449,42 +564,61 @@ export class InventoryCountService {
       countOFR = 0,
       finalCost = 0,
       finalCostOfr = 0,
+      dateReceived: rawDateReceived = null, // 👈 new raw input
+      condition = 'Clean', // 👈 default value
     } = data;
 
-    // 1) Check for existing batch for this variant with dateReceived = null
+    // ✅ Format the dateReceived to MM/YYYY
+    const formatDateReceived = (value: string | null): string | null => {
+      if (!value) return null;
+      const [month, year] = value.split('/');
+      if (!month || !year) return null;
+      return `${month.padStart(2, '0')}/${year}`;
+    };
+
+    const formattedDateReceived = formatDateReceived(rawDateReceived);
+
+    // ✅ Step 1: Try to find existing batch
     let batch = await this.itemBatchRepo.findOne({
       where: {
         itemVariant: { id: itemVariantId },
-        dateReceived: null,
+        dateReceived: formattedDateReceived ? formattedDateReceived : IsNull(),
       },
       relations: ['itemVariant'],
     });
 
-    // 2) If not found, create a new one
+    console.log(
+      '✅ Batch search result:',
+      batch?.id,
+      'dateReceived:',
+      batch?.dateReceived,
+    );
+
+    // ✅ Step 2: If no such batch, create one
     if (!batch) {
       const variant = await this.itemVariantRepo.findOneBy({
         id: itemVariantId,
       });
-      if (!variant) {
+      if (!variant)
         throw new NotFoundException(`ItemVariant #${itemVariantId} not found`);
-      }
 
       batch = this.itemBatchRepo.create({
         itemVariant: variant,
-        dateReceived: null,
-        condition: 'Clean', // or default condition
+        dateReceived: formattedDateReceived || null,
+        condition: condition || 'Clean',
       });
       await this.itemBatchRepo.save(batch);
 
-      // Attach the full variant for later use
+      // Attach variant manually
       batch.itemVariant = variant;
     }
 
     const variant = batch.itemVariant;
 
-    // 3) Compute sqm
+    // ✅ Step 3: Compute sqm
     const oneSheetM2 = (Number(variant.length) * Number(variant.width)) / 10000;
-    let rawSqm: number, rawSqmofr: number;
+    let rawSqm = 0;
+    let rawSqmofr = 0;
 
     switch (unit) {
       case 'box':
@@ -499,14 +633,12 @@ export class InventoryCountService {
         rawSqm = count;
         rawSqmofr = countOFR;
         break;
-      default:
-        rawSqm = rawSqmofr = 0;
     }
 
     const sqm = Number(rawSqm.toFixed(2));
     const sqmofr = Number(rawSqmofr.toFixed(2));
 
-    // 4) Compute cost
+    // ✅ Step 4: Compute cost
     let fc = 0,
       fco = 0;
     if (type === 'S') {
@@ -521,7 +653,7 @@ export class InventoryCountService {
       fco = finalCostOfr;
     }
 
-    // 5) Save inventory count
+    // ✅ Step 5: Save inventory count
     const inventoryCount = this.inventoryCountRepo.create({
       itemVariant: variant,
       date,
@@ -533,20 +665,11 @@ export class InventoryCountService {
     });
     const savedCount = await this.inventoryCountRepo.save(inventoryCount);
 
-    // 6) Save inventory transaction
+    // ✅ Step 6: Save inventory transaction
     let qty = 0,
       qtyOFR = 0;
-    if (type === 'S') {
-      qty = count;
-      qtyOFR = count;
-    } else if (type === 'SR') {
-      qty = count;
-      qtyOFR = countOFR;
-    } else if (type === 'G') {
-      qtyOFR = count;
-    } else if (type === 'RVR') {
-      qty = count;
-    }
+    if (type === 'S' || type === 'SR') qty = count;
+    if (type === 'G' || type === 'SR') qtyOFR = countOFR || count;
 
     const txn = this.inventoryTxnRepo.create({
       itemVariant: variant,
@@ -562,27 +685,81 @@ export class InventoryCountService {
     });
     await this.inventoryTxnRepo.save(txn);
 
-    // 7) Update batch and variant totals
+    // ✅ Step 7: Update batch and variant totals
     switch (type) {
       case 'RVR':
         batch.start = Number(batch.start) + sqm;
         variant.totalStart = Number(variant.totalStart) + sqm;
+        batch.balance =
+          Number(batch.start || 0) +
+          Number(batch.in || 0) -
+          Number(batch.out || 0);
+        variant.totalBalance =
+          Number(variant.totalStart || 0) +
+          Number(variant.totalIn || 0) -
+          Number(variant.totalOut || 0);
         break;
+
       case 'S':
         batch.start = Number(batch.start) + sqm;
         batch.startOFR = Number(batch.startOFR) + sqm;
+        batch.balance =
+          Number(batch.start || 0) +
+          Number(batch.in || 0) -
+          Number(batch.out || 0);
+        batch.balanceOFR =
+          Number(batch.startOFR || 0) +
+          Number(batch.inOFR || 0) -
+          Number(batch.outOFR || 0);
         variant.totalStart = Number(variant.totalStart) + sqm;
         variant.totalStartOFR = Number(variant.totalStartOFR) + sqm;
+
+        variant.totalBalance =
+          Number(variant.totalStart || 0) +
+          Number(variant.totalIn || 0) -
+          Number(variant.totalOut || 0);
+        variant.totalBalanceOFR =
+          Number(variant.totalStartOFR || 0) +
+          Number(variant.totalInOFR || 0) -
+          Number(variant.totalOutOFR || 0);
         break;
+
       case 'G':
         batch.startOFR = Number(batch.startOFR) + sqmofr;
         variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+
+        batch.balanceOFR =
+          Number(batch.startOFR || 0) +
+          Number(batch.inOFR || 0) -
+          Number(batch.outOFR || 0);
+
+        variant.totalBalanceOFR =
+          Number(variant.totalStartOFR || 0) +
+          Number(variant.totalInOFR || 0) -
+          Number(variant.totalOutOFR || 0);
         break;
+
       case 'SR':
         batch.start = Number(batch.start) + sqm;
         batch.startOFR = Number(batch.startOFR) + sqmofr;
         variant.totalStart = Number(variant.totalStart) + sqm;
         variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+        batch.balance =
+          Number(batch.start || 0) +
+          Number(batch.in || 0) -
+          Number(batch.out || 0);
+        batch.balanceOFR =
+          Number(batch.startOFR || 0) +
+          Number(batch.inOFR || 0) -
+          Number(batch.outOFR || 0);
+        variant.totalBalance =
+          Number(variant.totalStart || 0) +
+          Number(variant.totalIn || 0) -
+          Number(variant.totalOut || 0);
+        variant.totalBalanceOFR =
+          Number(variant.totalStartOFR || 0) +
+          Number(variant.totalInOFR || 0) -
+          Number(variant.totalOutOFR || 0);
         break;
     }
 
