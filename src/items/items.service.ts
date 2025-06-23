@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Item } from '../entities/inventory/item.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
+import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 
 @Injectable()
 export class ItemsService {
@@ -14,6 +15,9 @@ export class ItemsService {
     private readonly thicknessRepository: Repository<Thickness>,
     @InjectRepository(ItemVariant)
     private readonly itemVariantRepository: Repository<ItemVariant>,
+
+    @InjectRepository(ItemNameDescription)
+    private readonly itemNameDescriptionRepository: Repository<ItemNameDescription>,
   ) {}
 
   // CRUD for Items
@@ -101,6 +105,12 @@ export class ItemsService {
   async createFullItem(data: {
     itemName: string;
     type: 'box' | 'sheet' | 'sqm';
+    descriptions?: Array<{
+      categoryName: string;
+      subCategory: string;
+      colorName: string;
+      designName: string;
+    }>;
     thicknesses: Array<{
       thickness: number | string;
       variants: Array<{
@@ -114,9 +124,8 @@ export class ItemsService {
       }>;
     }>;
   }): Promise<Item> {
-    const { itemName, type, thicknesses: rawTh } = data;
+    const { itemName, type, thicknesses: rawTh, descriptions = [] } = data;
 
-    // Normalize incoming DTOs to real numbers/booleans
     const incoming = rawTh.map((th) => ({
       thickness: Number(th.thickness),
       variants: th.variants.map((v) => ({
@@ -130,16 +139,15 @@ export class ItemsService {
       })),
     }));
 
-    // 1) Try to load any existing Item (+ its thicknesses & variants)
     let item = await this.itemRepository.findOne({
       where: { itemName, type },
-      relations: ['thicknesses', 'thicknesses.variants'],
+      relations: ['thicknesses', 'thicknesses.variants', 'descriptions'],
     });
 
     const isNewItem = !item;
     if (isNewItem) {
-      // build brand-new Item entity
       item = this.itemRepository.create({ itemName, type });
+
       item.thicknesses = incoming.map((thDto) => {
         const thEnt = this.thicknessRepository.create({
           thickness: thDto.thickness,
@@ -158,19 +166,24 @@ export class ItemsService {
         return thEnt;
       });
 
-      // cascade-save all at once
+      item.descriptions = descriptions.map((desc) =>
+        this.itemNameDescriptionRepository.create({
+          categoryName: desc.categoryName,
+          subCategory: desc.subCategory,
+          colorName: desc.colorName,
+          designName: desc.designName,
+        }),
+      );
+
       return this.itemRepository.save(item);
     }
 
-    // 2) Existing Item: only insert brand-new thicknesses/variants
     for (const thDto of incoming) {
-      // find matching thickness
       let thEnt = item.thicknesses.find(
         (t) => Number(t.thickness) === thDto.thickness,
       );
 
       if (!thEnt) {
-        // brand-new thickness
         thEnt = this.thicknessRepository.create({
           thickness: thDto.thickness,
           item,
@@ -179,7 +192,6 @@ export class ItemsService {
         item.thicknesses.push(thEnt);
       }
 
-      // ensure we have its variants loaded
       thEnt.variants = thEnt.variants || [];
 
       for (const vDto of thDto.variants) {
@@ -207,7 +219,27 @@ export class ItemsService {
       }
     }
 
-    // 3) Return the already-existing (and now extended) item.
+    for (const desc of descriptions) {
+      const exists = item.descriptions.find(
+        (d) =>
+          d.categoryName === desc.categoryName &&
+          d.subCategory === desc.subCategory &&
+          d.colorName === desc.colorName &&
+          d.designName === desc.designName,
+      );
+      if (!exists) {
+        const newDesc = this.itemNameDescriptionRepository.create({
+          categoryName: desc.categoryName,
+          subCategory: desc.subCategory,
+          colorName: desc.colorName,
+          designName: desc.designName,
+          item: item,
+        });
+        await this.itemNameDescriptionRepository.save(newDesc);
+        item.descriptions.push(newDesc);
+      }
+    }
+
     return item;
   }
 }
