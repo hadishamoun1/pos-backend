@@ -1,5 +1,6 @@
 import { Entity, Column, PrimaryGeneratedColumn, OneToMany } from 'typeorm';
 import { Thickness } from './thickness.entity';
+import { ItemNameDescription } from './itemNameDescription.entity';
 
 @Entity()
 export class Item {
@@ -14,4 +15,9 @@ export class Item {
 
   @OneToMany(() => Thickness, (thickness) => thickness.item, { cascade: true })
   thicknesses: Thickness[]; // Relationship to Thickness
+
+  
+  @OneToMany(() => ItemNameDescription, (desc) => desc.item)
+descriptions: ItemNameDescription[];
+
 }

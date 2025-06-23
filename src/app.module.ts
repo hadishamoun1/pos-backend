@@ -31,6 +31,7 @@ import { PurchaseInvoiceModule } from './purchase-invoice/purchase-invoice.modul
 import { InventoryCountModule } from './count/count.module';
 import { TransfersModule } from './transfers/transfers.module';
 import { RecievablesModule } from './receipt-voucher/recievables.module';
+import { ItemNameDescriptionModule } from './item-name-description/item-name-description.module';
 @Module({
   imports: [
     TypeOrmModule.forRoot({
@@ -74,6 +75,7 @@ import { RecievablesModule } from './receipt-voucher/recievables.module';
     InventoryCountModule,
     TransfersModule,
     RecievablesModule,
+    ItemNameDescriptionModule,
   ],
 })
 export class AppModule {}
