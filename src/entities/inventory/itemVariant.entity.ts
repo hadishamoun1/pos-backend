@@ -9,6 +9,7 @@ import {
 import { Thickness } from './thickness.entity';
 import { InventoryCount } from './count.entity';
 import { ItemBatch } from './itemBatch.entity';
+import { ItemNameDescription } from './itemNameDescription.entity';
 
 @Entity()
 export class ItemVariant {
@@ -70,4 +71,11 @@ export class ItemVariant {
 
   @OneToMany(() => InventoryCount, (cnt) => cnt.itemVariant)
   inventoryCounts: InventoryCount[];
+
+  @ManyToOne(() => ItemNameDescription, { eager: false, nullable: true })
+  @JoinColumn()
+  itemNameDescription: ItemNameDescription;
+
+  @Column({ nullable: true })
+  itemNameDescriptionId: number;
 }

@@ -74,6 +74,8 @@ export class ItemsService {
   async getSelectedItemDetails(): Promise<any[]> {
     return await this.itemRepository
       .createQueryBuilder('item')
+      // join item descriptions
+      .leftJoinAndSelect('item.descriptions', 'description')
       // join thickness
       .leftJoinAndSelect('item.thicknesses', 'thickness')
       // join variants
@@ -85,6 +87,12 @@ export class ItemsService {
         'item.id',
         'item.itemName',
         'item.type',
+
+        'description.id',
+        'description.categoryName',
+        'description.subCategory',
+        'description.colorName',
+        'description.designName',
 
         'thickness.id',
         'thickness.thickness',
@@ -121,52 +129,41 @@ export class ItemsService {
         fixBox?: boolean;
         fixLength?: boolean;
         fixWidth?: boolean;
-      }>;
+      }>[];
     }>;
   }): Promise<Item> {
     const { itemName, type, thicknesses: rawTh, descriptions = [] } = data;
 
+    // Step 1: Convert all values to numbers where needed
     const incoming = rawTh.map((th) => ({
       thickness: Number(th.thickness),
-      variants: th.variants.map((v) => ({
-        length: type === 'sqm' ? 0 : Number(v.length ?? 0),
-        width: type === 'sqm' ? 0 : Number(v.width ?? 0),
-        sheetsPerBox: type === 'sheet' ? 1 : Number(v.sheetsPerBox ?? 0),
-        origin: v.origin,
-        fixBox: v.fixBox ?? false,
-        fixLength: v.fixLength ?? false,
-        fixWidth: v.fixWidth ?? false,
-      })),
+      variants: Array.isArray(th.variants)
+        ? th.variants.map((v: any) => ({
+            length: type === 'sqm' ? 0 : Number(v?.length ?? 0),
+            width: type === 'sqm' ? 0 : Number(v?.width ?? 0),
+            sheetsPerBox: type === 'sheet' ? 1 : Number(v?.sheetsPerBox ?? 0),
+            origin: v?.origin ?? '',
+            fixBox: v?.fixBox ?? false,
+            fixLength: v?.fixLength ?? false,
+            fixWidth: v?.fixWidth ?? false,
+          }))
+        : [],
     }));
 
+    // Step 2: Check if item already exists
     let item = await this.itemRepository.findOne({
       where: { itemName, type },
       relations: ['thicknesses', 'thicknesses.variants', 'descriptions'],
     });
 
     const isNewItem = !item;
+
     if (isNewItem) {
+      // Step 3: Create new item
       item = this.itemRepository.create({ itemName, type });
 
-      item.thicknesses = incoming.map((thDto) => {
-        const thEnt = this.thicknessRepository.create({
-          thickness: thDto.thickness,
-        });
-        thEnt.variants = thDto.variants.map((vDto) =>
-          this.itemVariantRepository.create({
-            length: vDto.length,
-            width: vDto.width,
-            sheetsPerBox: vDto.sheetsPerBox,
-            origin: vDto.origin,
-            fixBox: vDto.fixBox,
-            fixLength: vDto.fixLength,
-            fixWidth: vDto.fixWidth,
-          }),
-        );
-        return thEnt;
-      });
-
-      item.descriptions = descriptions.map((desc) =>
+      // Step 4: Create and save descriptions
+      const descEntities = descriptions.map((desc) =>
         this.itemNameDescriptionRepository.create({
           categoryName: desc.categoryName,
           subCategory: desc.subCategory,
@@ -174,8 +171,64 @@ export class ItemsService {
           designName: desc.designName,
         }),
       );
+      item.descriptions = descEntities;
+
+      // Save the item first so we can assign itemId to descriptions
+      item = await this.itemRepository.save(item);
+
+      for (const desc of descEntities) {
+        desc.itemId = item.id;
+        await this.itemNameDescriptionRepository.save(desc);
+      }
+
+      // Step 5: Create thicknesses and variants
+      item.thicknesses = [];
+
+      for (const thDto of incoming) {
+        const thEnt = this.thicknessRepository.create({
+          thickness: thDto.thickness,
+          item,
+        });
+
+        thEnt.variants = thDto.variants.map((vDto, idx) => {
+          const matchingDesc = descEntities[idx] ?? null;
+
+          return this.itemVariantRepository.create({
+            length: vDto.length,
+            width: vDto.width,
+            sheetsPerBox: vDto.sheetsPerBox,
+            origin: vDto.origin,
+            fixBox: vDto.fixBox,
+            fixLength: vDto.fixLength,
+            fixWidth: vDto.fixWidth,
+            itemNameDescription: matchingDesc,
+          });
+        });
+
+        item.thicknesses.push(thEnt);
+      }
 
       return this.itemRepository.save(item);
+    }
+
+    // Step 6: If item already exists, add missing descriptions and thicknesses
+    for (const desc of descriptions) {
+      const exists = item.descriptions?.some(
+        (d) =>
+          d.categoryName === desc.categoryName &&
+          d.subCategory === desc.subCategory &&
+          d.colorName === desc.colorName &&
+          d.designName === desc.designName,
+      );
+
+      if (!exists) {
+        const newDesc = this.itemNameDescriptionRepository.create({
+          ...desc,
+          item,
+        });
+        await this.itemNameDescriptionRepository.save(newDesc);
+        item.descriptions.push(newDesc);
+      }
     }
 
     for (const thDto of incoming) {
@@ -194,14 +247,28 @@ export class ItemsService {
 
       thEnt.variants = thEnt.variants || [];
 
-      for (const vDto of thDto.variants) {
+      for (const [i, vDto] of thDto.variants.entries()) {
+        const matchingDesc = descriptions[i]
+          ? await this.itemNameDescriptionRepository.findOne({
+              where: {
+                categoryName: descriptions[i].categoryName,
+                subCategory: descriptions[i].subCategory,
+                colorName: descriptions[i].colorName,
+                designName: descriptions[i].designName,
+                item: { id: item.id },
+              },
+            })
+          : null;
+
         const found = thEnt.variants.find(
           (v) =>
             Number(v.length) === vDto.length &&
             Number(v.width) === vDto.width &&
             v.sheetsPerBox === vDto.sheetsPerBox &&
-            v.origin === vDto.origin,
+            v.origin === vDto.origin &&
+            v.itemNameDescription?.id === matchingDesc?.id,
         );
+
         if (!found) {
           const newVar = this.itemVariantRepository.create({
             length: vDto.length,
@@ -212,31 +279,12 @@ export class ItemsService {
             fixLength: vDto.fixLength,
             fixWidth: vDto.fixWidth,
             thickness: thEnt,
+            itemNameDescription: matchingDesc ?? undefined,
           });
+
           await this.itemVariantRepository.save(newVar);
           thEnt.variants.push(newVar);
         }
-      }
-    }
-
-    for (const desc of descriptions) {
-      const exists = item.descriptions.find(
-        (d) =>
-          d.categoryName === desc.categoryName &&
-          d.subCategory === desc.subCategory &&
-          d.colorName === desc.colorName &&
-          d.designName === desc.designName,
-      );
-      if (!exists) {
-        const newDesc = this.itemNameDescriptionRepository.create({
-          categoryName: desc.categoryName,
-          subCategory: desc.subCategory,
-          colorName: desc.colorName,
-          designName: desc.designName,
-          item: item,
-        });
-        await this.itemNameDescriptionRepository.save(newDesc);
-        item.descriptions.push(newDesc);
       }
     }
 
