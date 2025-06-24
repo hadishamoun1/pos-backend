@@ -80,9 +80,11 @@ export class ItemsService {
       .leftJoinAndSelect('item.thicknesses', 'thickness')
       // join variants
       .leftJoinAndSelect('thickness.variants', 'variant')
-      // join batches on each variant
+      // join the description linked to each variant
+      .leftJoinAndSelect('variant.itemNameDescription', 'variantDescription')
+      // join batches
       .leftJoinAndSelect('variant.batches', 'batch')
-      // pick just the fields you want
+      // select only the needed fields
       .select([
         'item.id',
         'item.itemName',
@@ -103,10 +105,17 @@ export class ItemsService {
         'variant.sheetsPerBox',
         'variant.origin',
 
+        'variantDescription.id',
+        'variantDescription.categoryName',
+        'variantDescription.subCategory',
+        'variantDescription.colorName',
+        'variantDescription.designName',
+
         'batch.id',
         'batch.condition',
         'batch.dateReceived',
       ])
+      .orderBy('description.id', 'DESC')
       .getMany();
   }
 
