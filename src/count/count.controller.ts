@@ -10,6 +10,7 @@ import {
   Delete,
   HttpCode,
   HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import { InventoryCountService } from './count.service';
 
@@ -34,7 +35,7 @@ export class InventoryCountController {
   async getFilteredCountsWithBalance() {
     return this.svc.getFilteredCountsWithBatchBalance();
   }
-  
+
   @Post('v1/opening')
   @HttpCode(HttpStatus.CREATED)
   async createOpening(@Body() body: any) {
@@ -42,6 +43,34 @@ export class InventoryCountController {
     return { message: 'Opening count created successfully', data: result };
   }
 
+  @Post('v1/inventory-check')
+  async createInventoryCheck(
+    @Body()
+    body: {
+      itemBatchId: number;
+      itemType: 'box' | 'sheet' | 'sqm';
+      length: number;
+      width: number;
+      sheetsPerBox: number;
+      records: {
+        count: number;
+        receivedDate: string;
+        status: 'adj+' | 'adj-' | 'breakage';
+      }[];
+    },
+  ): Promise<void> {
+    const { itemBatchId, itemType, length, width, sheetsPerBox, records } =
+      body;
+
+    await this.svc.createInventoryCheck(
+      itemBatchId,
+      itemType,
+      length,
+      width,
+      sheetsPerBox,
+      records,
+    );
+  }
   /** Update an existing count (and its linked transaction) */
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateData: any) {
@@ -57,5 +86,4 @@ export class InventoryCountController {
   remove(@Param('id') id: string) {
     return this.svc.remove(+id);
   }
-
 }

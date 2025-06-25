@@ -768,4 +768,174 @@ export class InventoryCountService {
 
     return savedCount;
   }
+
+  async createInventoryCheck(
+    itemBatchId: number,
+    itemType: 'box' | 'sheet' | 'sqm',
+    length: number,
+    width: number,
+    sheetsPerBox: number,
+    records: {
+      count: number;
+      receivedDate: string;
+      status: 'adj+' | 'adj-' | 'breakage';
+    }[],
+  ): Promise<void> {
+    const originalBatch = await this.itemBatchRepo.findOneOrFail({
+      where: { id: itemBatchId },
+      relations: ['itemVariant'],
+    });
+
+    const itemVariantId = originalBatch.itemVariant.id;
+    const variant = originalBatch.itemVariant;
+
+    const sqmPerUnit =
+      itemType === 'sqm'
+        ? 1
+        : (length / 100) *
+          (width / 100) *
+          (itemType === 'box' ? sheetsPerBox : 1);
+
+    console.log('\n🔎 Original Batch Found:', {
+      id: originalBatch.id,
+      itemVariantId,
+      startOFR: originalBatch.startOFR,
+      balanceOFR: originalBatch.balanceOFR,
+      condition: originalBatch.condition,
+    });
+
+    for (const record of records) {
+      const { count, receivedDate, status } = record;
+      const totalSQM = count * sqmPerUnit;
+
+      console.log('\n📦 Processing Record:', {
+        count,
+        receivedDate,
+        status,
+        totalSQM,
+      });
+
+      if (status === 'adj+') {
+        let targetBatch = await this.itemBatchRepo.findOne({
+          where: {
+            itemVariant: { id: itemVariantId },
+            dateReceived: receivedDate,
+            condition: originalBatch.condition,
+          },
+        });
+
+        if (!targetBatch) {
+          targetBatch = this.itemBatchRepo.create({
+            itemVariant: { id: itemVariantId },
+            dateReceived: receivedDate,
+            condition: originalBatch.condition,
+            startOFR: 0,
+            balanceOFR: 0,
+          });
+          await this.itemBatchRepo.save(targetBatch);
+          console.log('🆕 Created new target batch:', targetBatch);
+        } else {
+          console.log('✅ Found existing target batch:', {
+            id: targetBatch.id,
+            startOFR: targetBatch.startOFR,
+            balanceOFR: targetBatch.balanceOFR,
+          });
+        }
+
+        // ✅ Deduct from original
+        originalBatch.startOFR = Number(originalBatch.startOFR) - totalSQM;
+        originalBatch.balanceOFR = Number(originalBatch.balanceOFR) - totalSQM;
+
+        // ✅ Add to target
+        targetBatch.startOFR = Number(targetBatch.startOFR) + totalSQM;
+        targetBatch.balanceOFR = Number(targetBatch.balanceOFR) + totalSQM;
+
+        console.log('📉 Deducting from original batch:', {
+          id: originalBatch.id,
+          deductedSQM: totalSQM,
+        });
+        console.log('📈 Adding to target batch:', {
+          id: targetBatch.id,
+          addedSQM: totalSQM,
+        });
+
+        await this.itemBatchRepo.save([originalBatch, targetBatch]);
+
+        await this.inventoryTxnRepo.save([
+          this.inventoryTxnRepo.create({
+            transactionType: 'adjustment -',
+            quantity: 0,
+            quantityofr: -count,
+            sqmofr: -totalSQM,
+            sqm: 0,
+            itemBatchId: originalBatch.id,
+            itemVariantId,
+          }),
+          this.inventoryTxnRepo.create({
+            transactionType: 'adjustment +',
+            quantity: 0,
+            quantityofr: count,
+            sqmofr: totalSQM,
+            sqm: 0,
+            itemBatchId: targetBatch.id,
+            itemVariantId,
+          }),
+        ]);
+      } else if (status === 'breakage') {
+        // ✅ Deduct from batch
+        originalBatch.startOFR = Number(originalBatch.startOFR) - totalSQM;
+        originalBatch.balanceOFR = Number(originalBatch.balanceOFR) - totalSQM;
+
+        // ✅ Deduct from variant (breakage only)
+        variant.totalStartOFR = Number(variant.totalStartOFR) - totalSQM;
+        variant.totalBalanceOFR = Number(variant.totalBalanceOFR) - totalSQM;
+
+        console.log(`📉 Deducting (breakage) from batch and variant:`, {
+          batchId: originalBatch.id,
+          deductedSQM: totalSQM,
+          variantId: variant.id,
+        });
+
+        await this.itemBatchRepo.save(originalBatch);
+        await this.itemVariantRepo.save(variant);
+
+        await this.inventoryTxnRepo.save(
+          this.inventoryTxnRepo.create({
+            transactionType: status,
+            quantity: 0,
+            quantityofr: -count,
+            sqmofr: -totalSQM,
+            sqm: 0,
+            itemBatchId: originalBatch.id,
+            itemVariantId,
+          }),
+        );
+      } else {
+        // ✅ For adj- → deduct from batch only
+        originalBatch.startOFR = Number(originalBatch.startOFR) - totalSQM;
+        originalBatch.balanceOFR = Number(originalBatch.balanceOFR) - totalSQM;
+
+        console.log(`📉 Deducting (${status}) from original batch:`, {
+          id: originalBatch.id,
+          deductedSQM: totalSQM,
+        });
+
+        await this.itemBatchRepo.save(originalBatch);
+
+        await this.inventoryTxnRepo.save(
+          this.inventoryTxnRepo.create({
+            transactionType: status,
+            quantity: 0,
+            quantityofr: -count,
+            sqmofr: -totalSQM,
+            sqm: 0,
+            itemBatchId: originalBatch.id,
+            itemVariantId,
+          }),
+        );
+      }
+    }
+
+    console.log('\n✅ Inventory check completed.');
+  }
 }
