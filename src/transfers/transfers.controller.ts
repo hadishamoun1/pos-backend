@@ -29,21 +29,27 @@ export class TransfersController {
       type: t.type,
       location: t.location,
       createdAt: t.createdAt,
-      items: t.items.map((i) => ({
-        id: i.id,
-        transferId: i.transferId,
-        itemVariantId: i.itemVariantId,
-        quantity: i.quantity,
-        sqm: i.sqm,
-        price: i.price,
-        length: i.itemVariant.length,
-        width: i.itemVariant.width,
-        sheetsPerBox: i.itemVariant.sheetsPerBox,
-        origin: i.itemVariant.origin,
-        thickness: i.itemVariant.thickness.thickness,
-        itemName: i.itemVariant.thickness.item.itemName,
-        itemType: i.itemVariant.thickness.item.type,
-      })),
+      items: t.items.map((i) => {
+        const variant = i.itemBatch?.itemVariant;
+        const thickness = variant?.thickness;
+        const item = thickness?.item;
+
+        return {
+          id: i.id,
+          transferId: i.transferId,
+          itemVariantId: variant?.id || null,
+          quantity: i.quantity,
+          sqm: i.sqm,
+          price: i.price,
+          length: variant?.length || 0,
+          width: variant?.width || 0,
+          sheetsPerBox: variant?.sheetsPerBox || 0,
+          origin: variant?.origin || '',
+          thickness: thickness?.thickness || '',
+          itemName: item?.itemName || '',
+          itemType: item?.type || '',
+        };
+      }),
     }));
   }
 

@@ -623,15 +623,20 @@ export class InventoryCountService {
     switch (unit) {
       case 'box':
         rawSqm = oneSheetM2 * variant.sheetsPerBox * count;
-        rawSqmofr = oneSheetM2 * variant.sheetsPerBox * countOFR;
+        rawSqmofr =
+          type === 'G'
+            ? oneSheetM2 * variant.sheetsPerBox * count
+            : oneSheetM2 * variant.sheetsPerBox * countOFR;
         break;
+
       case 'sheet':
         rawSqm = oneSheetM2 * count;
-        rawSqmofr = oneSheetM2 * countOFR;
+        rawSqmofr = type === 'G' ? oneSheetM2 * count : oneSheetM2 * countOFR;
         break;
+
       case 'sqm':
         rawSqm = count;
-        rawSqmofr = countOFR;
+        rawSqmofr = type === 'G' ? count : countOFR;
         break;
     }
 
@@ -666,17 +671,47 @@ export class InventoryCountService {
     const savedCount = await this.inventoryCountRepo.save(inventoryCount);
 
     // ✅ Step 6: Save inventory transaction
-    let qty = 0,
-      qtyOFR = 0;
-    if (type === 'S' || type === 'SR') qty = count;
-    if (type === 'G' || type === 'SR') qtyOFR = countOFR || count;
+    let qty = 0;
+    let qtyOFR = 0;
+    let txnSqm = 0;
+    let txnSqmOFR = 0;
+
+    switch (type) {
+      case 'S':
+        qty = count;
+        qtyOFR = count;
+        txnSqm = sqm;
+        txnSqmOFR = sqm;
+        break;
+
+      case 'G':
+        qty = 0;
+        qtyOFR = count;
+        txnSqm = 0;
+        txnSqmOFR = sqmofr;
+        break;
+
+      case 'RVR':
+        qty = count;
+        qtyOFR = 0;
+        txnSqm = sqm;
+        txnSqmOFR = 0;
+        break;
+
+      case 'SR':
+        qty = count;
+        qtyOFR = countOFR;
+        txnSqm = sqm;
+        txnSqmOFR = sqmofr;
+        break;
+    }
 
     const txn = this.inventoryTxnRepo.create({
       itemVariant: variant,
       itemBatchId: batch.id,
       transactionType: 'Opening Count',
-      sqm,
-      sqmofr,
+      sqm: txnSqm,
+      sqmofr: txnSqmOFR,
       quantity: qty,
       quantityofr: qtyOFR,
       inventoryCountId: savedCount.id,
@@ -684,7 +719,6 @@ export class InventoryCountService {
       finalcostofr: fco,
     });
     await this.inventoryTxnRepo.save(txn);
-
     // ✅ Step 7: Update batch and variant totals
     switch (type) {
       case 'RVR':

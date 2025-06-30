@@ -5,7 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, EntityManager } from 'typeorm';
+import { Repository, EntityManager, IsNull } from 'typeorm';
 import { Transfer } from '../entities/inventory/transfer.entity';
 import { TransferItem } from '../entities/inventory/transferItem.entity';
 import { Settings } from '../entities/settings.entity';
@@ -16,6 +16,7 @@ import { Item } from 'src/entities/inventory/item.entity';
 
 import { InventoryTransactionGateway } from '../inventroy-transactions/inventory-transaction.gateway';
 import { InventoryTransactionService } from '../inventroy-transactions/inventroy-transactions.service';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 
 @Injectable()
 export class TransfersService {
@@ -37,6 +38,9 @@ export class TransfersService {
 
     @InjectRepository(ItemVariant)
     private readonly variantRepo: Repository<ItemVariant>,
+
+    @InjectRepository(ItemBatch)
+    private readonly ItemBatch: Repository<ItemBatch>,
 
     private readonly inventoryTransactionService: InventoryTransactionService,
     private readonly inventoryTransactionGateway: InventoryTransactionGateway,
@@ -109,7 +113,7 @@ export class TransfersService {
           location: data.location,
           items: (data.items || []).map((i: any) =>
             manager.getRepository(TransferItem).create({
-              itemVariantId: i.itemVariantId,
+              itemBatchId: i.itemBatchId,
               quantity: i.quantity,
               sqm: i.sqm,
               price: i.price,
@@ -124,9 +128,10 @@ export class TransfersService {
         const persisted = await manager.getRepository(TransferItem).find({
           where: { transferId: savedTransfer.id },
           relations: [
-            'itemVariant',
-            'itemVariant.thickness',
-            'itemVariant.thickness.item',
+            'itemBatch',
+            'itemBatch.itemVariant',
+            'itemBatch.itemVariant.thickness',
+            'itemBatch.itemVariant.thickness.item',
           ],
         });
 
@@ -135,203 +140,77 @@ export class TransfersService {
         //
         if (data.location === 'JF') {
           for (const ti of persisted) {
-            const boxVariant = ti.itemVariant;
-            const parentItem = boxVariant.thickness.item;
+            const fromBatch = ti.itemBatch; // Box batch
+            const fromVariant = fromBatch.itemVariant;
+            const parentItem = fromVariant.thickness.item;
 
-            // 7a) reject if not box
             if (parentItem.type !== 'box') {
-              const thValue = boxVariant.thickness.thickness;
               throw new BadRequestException(
-                `JF transfers only accept box‐type items. ` +
-                  `"${parentItem.itemName} ملم ${thValue}" is type "${parentItem.type}".`,
+                `JF transfers only accept box-type items. Found ${parentItem.itemName} (${parentItem.type})`,
               );
             }
 
-            // 7b) Deduct the boxes
-            const txOut = manager.getRepository(InventoryTransaction).create({
-              itemVariantId: boxVariant.id,
-              transactionType: 'MovedFrom',
-              quantity: 0,
-              quantityofr: -ti.quantity,
-              sqm: 0,
-              sqmofr: ti.sqm,
-              finalcost: 0,
-              finalcostofr: 0,
-            });
-            await manager.getRepository(InventoryTransaction).save(txOut);
-
-            // 7c) Find sheet‐type thickness
             const sheetThickness = await manager
               .getRepository(Thickness)
               .createQueryBuilder('th')
               .innerJoin(
                 'th.item',
                 'it',
-                'it.itemName = :nm AND it.type = :tp',
-                { nm: parentItem.itemName, tp: 'sheet' },
+                'it.itemName = :name AND it.type = :type',
+                {
+                  name: parentItem.itemName,
+                  type: 'sheet',
+                },
               )
-              .where('th.thickness = :val', {
-                val: boxVariant.thickness.thickness,
+              .where('th.thickness = :thick', {
+                thick: fromVariant.thickness.thickness,
               })
               .getOne();
 
             if (!sheetThickness) {
               throw new NotFoundException(
-                `No sheet‐type thickness ${boxVariant.thickness.thickness} ` +
-                  `for "${parentItem.itemName}"`,
+                `No sheet-type thickness ${fromVariant.thickness.thickness} for ${parentItem.itemName}`,
               );
             }
 
-            // 7d) Find exact sheet variant (origin + length + width)
             const sheetVariant = await manager
               .getRepository(ItemVariant)
               .findOne({
                 where: {
                   thickness: { id: sheetThickness.id } as any,
-                  origin: boxVariant.origin,
-                  length: boxVariant.length,
-                  width: boxVariant.width,
+                  origin: fromVariant.origin,
+                  length: fromVariant.length,
+                  width: fromVariant.width,
                 },
               });
 
             if (!sheetVariant) {
               throw new NotFoundException(
-                `No sheet variant for "${parentItem.itemName}" ` +
-                  `@ ${boxVariant.length}×${boxVariant.width} origin=${boxVariant.origin}`,
+                `No sheet variant for ${parentItem.itemName} @ ${fromVariant.length}×${fromVariant.width} origin=${fromVariant.origin}`,
               );
             }
 
-            // 7e) Credit sheets = boxes × sheetsPerBox
-            const sheetCount = ti.quantity * boxVariant.sheetsPerBox;
-            const txIn = manager.getRepository(InventoryTransaction).create({
-              itemVariantId: sheetVariant.id,
-              transactionType: 'MovedTo',
-              quantity: 0,
-              quantityofr: sheetCount,
-              sqm: 0,
-              sqmofr: ti.sqm,
-              finalcost: 0,
-              finalcostofr: 0,
+            let toBatch = await manager.getRepository(ItemBatch).findOne({
+              where: {
+                itemVariant: { id: sheetVariant.id },
+                condition: fromBatch.condition,
+                dateReceived: fromBatch.dateReceived,
+              },
             });
-            await manager.getRepository(InventoryTransaction).save(txIn);
-          }
-        }
 
-        //
-        // 8) FJ: “sheet → box” logic (now throws if any non-“sheet” found)
-        //
-        if (data.location === 'FJ') {
-          for (const ti of persisted) {
-            const sheetVariant = ti.itemVariant;
-            const parentItem = sheetVariant.thickness.item;
-
-            // 8a) Reject if not a sheet under FJ
-            if (parentItem.type !== 'sheet') {
-              const thValue = sheetVariant.thickness.thickness;
-              throw new BadRequestException(
-                `FJ transfers only accept sheet‐type items. ` +
-                  `"${parentItem.itemName} ملم ${thValue}" is type "${parentItem.type}".`,
-              );
-            }
-
-            // 8b) Remove the sheets
-            const txOutSheet = manager
-              .getRepository(InventoryTransaction)
-              .create({
-                itemVariantId: sheetVariant.id,
-                transactionType: 'MovedFrom',
-                quantity: 0,
-                quantityofr: -ti.quantity,
-                sqm: 0,
-                sqmofr: -ti.sqm,
-                finalcost: 0,
-                finalcostofr: 0,
+            if (!toBatch) {
+              toBatch = manager.getRepository(ItemBatch).create({
+                itemVariant: sheetVariant,
+                condition: fromBatch.condition,
+                dateReceived: fromBatch.dateReceived,
               });
-            await manager.getRepository(InventoryTransaction).save(txOutSheet);
-
-            // 8c) Find “box” thickness matching same itemName + thickness
-            const boxThickness = await manager
-              .getRepository(Thickness)
-              .createQueryBuilder('th')
-              .innerJoin(
-                'th.item',
-                'it',
-                'it.itemName = :nm AND it.type = :tp',
-                { nm: parentItem.itemName, tp: 'box' },
-              )
-              .where('th.thickness = :val', {
-                val: sheetVariant.thickness.thickness,
-              })
-              .getOne();
-
-            if (!boxThickness) {
-              throw new NotFoundException(
-                `No box‐type thickness ${sheetVariant.thickness.thickness} ` +
-                  `for "${parentItem.itemName}"`,
-              );
+              await manager.getRepository(ItemBatch).save(toBatch);
             }
 
-            // 8d) Find the exact box variant by origin + dimensions
-            const boxVariant = await manager
-              .getRepository(ItemVariant)
-              .findOne({
-                where: {
-                  thickness: { id: boxThickness.id } as any,
-                  origin: sheetVariant.origin,
-                  length: sheetVariant.length,
-                  width: sheetVariant.width,
-                },
-              });
-
-            if (!boxVariant) {
-              throw new NotFoundException(
-                `No box variant for "${parentItem.itemName}" ` +
-                  `@ ${sheetVariant.length}×${sheetVariant.width} origin=${sheetVariant.origin}`,
-              );
-            }
-
-            // 8e) Credit boxes = sheets ÷ sheetsPerBox (must divide evenly)
-            const perBox = boxVariant.sheetsPerBox;
-            if (perBox <= 0) {
-              throw new NotFoundException(
-                `Invalid sheetsPerBox for box variant id=${boxVariant.id}`,
-              );
-            }
-            if (ti.quantity % perBox !== 0) {
-              throw new NotFoundException(
-                `Sheet quantity ${ti.quantity} is not a multiple of ${perBox} ` +
-                  `for "${parentItem.itemName}"`,
-              );
-            }
-            const boxCount = ti.quantity / perBox;
-            const txInBox = manager.getRepository(InventoryTransaction).create({
-              itemVariantId: boxVariant.id,
-              transactionType: 'MovedTo',
-              quantity: 0,
-              quantityofr: boxCount,
-              sqm: 0,
-              sqmofr: ti.sqm,
-              finalcost: 0,
-              finalcostofr: 0,
-            });
-            await manager.getRepository(InventoryTransaction).save(txInBox);
-          }
-        }
-
-        //
-        // 9) SL: “(box or sheet) → sqm”
-        //
-        if (data.location === 'SL') {
-          for (const ti of persisted) {
-            const variant = ti.itemVariant;
-            const parentItem = variant.thickness.item;
-            if (parentItem.type !== 'box' && parentItem.type !== 'sheet') {
-              continue;
-            }
-
-            // 9a) Remove original units (boxes or sheets)
+            // ✅ InventoryTransaction: Box → Out (sqm only)
             const txOut = manager.getRepository(InventoryTransaction).create({
-              itemVariantId: variant.id,
+              itemVariantId: fromVariant.id,
+              itemBatchId: fromBatch.id,
               transactionType: 'MovedFrom',
               quantity: 0,
               quantityofr: -ti.quantity,
@@ -342,36 +221,239 @@ export class TransfersService {
             });
             await manager.getRepository(InventoryTransaction).save(txOut);
 
-            // 9b) Compute sheetArea and totalSqm
-            const lengthCm = parseFloat(variant.length.toString());
-            const widthCm = parseFloat(variant.width.toString());
-            const sheetArea = (lengthCm / 100) * (widthCm / 100);
-            let totalSqm: number;
+            // ✅ InventoryTransaction: Sheet → In (sqm only)
+            const txIn = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: sheetVariant.id,
+              itemBatchId: toBatch.id,
+              transactionType: 'MovedTo',
+              quantity: 0,
+              quantityofr: ti.quantity,
+              sqm: 0,
+              sqmofr: ti.sqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+            await manager.getRepository(InventoryTransaction).save(txIn);
+
+            // ✅ Update FROM (box) batch
+            fromBatch.outOFR = Number(fromBatch.outOFR || 0) + ti.sqm;
+            fromBatch.balanceOFR =
+              Number(fromBatch.startOFR || 0) +
+              Number(fromBatch.inOFR || 0) -
+              Number(fromBatch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(fromBatch);
+
+            // ✅ Update TO (sheet) batch
+            toBatch.inOFR = Number(toBatch.inOFR || 0) + ti.sqm;
+            toBatch.balanceOFR =
+              Number(toBatch.startOFR || 0) +
+              Number(toBatch.inOFR || 0) -
+              Number(toBatch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(toBatch);
+
+            // ✅ Update FROM (box) Variant Totals
+            fromVariant.totalOutOFR =
+              Number(fromVariant.totalOutOFR || 0) + ti.sqm;
+            fromVariant.totalBalanceOFR =
+              Number(fromVariant.totalStartOFR || 0) +
+              Number(fromVariant.totalInOFR || 0) -
+              Number(fromVariant.totalOutOFR || 0);
+
+            // ✅ Update TO (sheet) Variant Totals
+            sheetVariant.totalInOFR =
+              Number(sheetVariant.totalInOFR || 0) + ti.sqm;
+            sheetVariant.totalBalanceOFR =
+              Number(sheetVariant.totalStartOFR || 0) +
+              Number(sheetVariant.totalInOFR || 0) -
+              Number(sheetVariant.totalOutOFR || 0);
+
+            await manager
+              .getRepository(ItemVariant)
+              .save([fromVariant, sheetVariant]);
+          }
+        }
+
+        //
+        if (data.location === 'FJ') {
+          for (const ti of persisted) {
+            const fromBatch = ti.itemBatch; // Sheet batch
+            const fromVariant = fromBatch.itemVariant;
+            const parentItem = fromVariant.thickness.item;
+
+            if (parentItem.type !== 'sheet') {
+              throw new BadRequestException(
+                `FJ transfers only accept sheet-type items. Found ${parentItem.itemName} (${parentItem.type})`,
+              );
+            }
+
+            const boxThickness = await manager
+              .getRepository(Thickness)
+              .createQueryBuilder('th')
+              .innerJoin(
+                'th.item',
+                'it',
+                'it.itemName = :name AND it.type = :type',
+                {
+                  name: parentItem.itemName,
+                  type: 'box',
+                },
+              )
+              .where('th.thickness = :thick', {
+                thick: fromVariant.thickness.thickness,
+              })
+              .getOne();
+
+            if (!boxThickness) {
+              throw new NotFoundException(
+                `No box-type thickness ${fromVariant.thickness.thickness} for ${parentItem.itemName}`,
+              );
+            }
+
+            const boxVariant = await manager
+              .getRepository(ItemVariant)
+              .findOne({
+                where: {
+                  thickness: { id: boxThickness.id } as any,
+                  origin: fromVariant.origin,
+                  length: fromVariant.length,
+                  width: fromVariant.width,
+                },
+              });
+
+            if (!boxVariant) {
+              throw new NotFoundException(
+                `No box variant for ${parentItem.itemName} at ${fromVariant.length}×${fromVariant.width} origin=${fromVariant.origin}`,
+              );
+            }
+
+            let toBatch = await manager.getRepository(ItemBatch).findOne({
+              where: {
+                itemVariant: { id: boxVariant.id },
+                condition: fromBatch.condition,
+                dateReceived: fromBatch.dateReceived,
+              },
+            });
+
+            if (!toBatch) {
+              toBatch = manager.getRepository(ItemBatch).create({
+                itemVariant: boxVariant,
+                condition: fromBatch.condition,
+                dateReceived: fromBatch.dateReceived,
+              });
+              await manager.getRepository(ItemBatch).save(toBatch);
+            }
+
+            // ✅ Create InventoryTransaction: Sheets → Out (sqm only)
+            const txOut = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: fromVariant.id,
+              itemBatchId: fromBatch.id,
+              transactionType: 'MovedFrom',
+              quantity: 0,
+              quantityofr: -ti.quantity,
+              sqm: 0,
+              sqmofr: -ti.sqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+            await manager.getRepository(InventoryTransaction).save(txOut);
+
+            // ✅ Create InventoryTransaction: Box → In (sqm only)
+            const txIn = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: boxVariant.id,
+              itemBatchId: toBatch.id,
+              transactionType: 'MovedTo',
+              quantity: 0,
+              quantityofr: ti.quantity,
+              sqm: 0,
+              sqmofr: ti.sqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+            await manager.getRepository(InventoryTransaction).save(txIn);
+
+            // ✅ Update FROM (sheet) batch
+            fromBatch.outOFR = Number(fromBatch.outOFR || 0) + ti.sqm;
+            fromBatch.balanceOFR =
+              Number(fromBatch.startOFR || 0) +
+              Number(fromBatch.inOFR || 0) -
+              Number(fromBatch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(fromBatch);
+
+            // ✅ Update TO (box) batch
+            toBatch.inOFR = Number(toBatch.inOFR || 0) + ti.sqm;
+            toBatch.balanceOFR =
+              Number(toBatch.startOFR || 0) +
+              Number(toBatch.inOFR || 0) -
+              Number(toBatch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(toBatch);
+
+            // ✅ Update FROM (sheet) Variant Totals
+            fromVariant.totalOutOFR =
+              Number(fromVariant.totalOutOFR || 0) + ti.sqm;
+            fromVariant.totalBalanceOFR =
+              Number(fromVariant.totalStartOFR || 0) +
+              Number(fromVariant.totalInOFR || 0) -
+              Number(fromVariant.totalOutOFR || 0);
+
+            // ✅ Update TO (box) Variant Totals
+            boxVariant.totalInOFR = Number(boxVariant.totalInOFR || 0) + ti.sqm;
+            boxVariant.totalBalanceOFR =
+              Number(boxVariant.totalStartOFR || 0) +
+              Number(boxVariant.totalInOFR || 0) -
+              Number(boxVariant.totalOutOFR || 0);
+
+            await manager
+              .getRepository(ItemVariant)
+              .save([fromVariant, boxVariant]);
+          }
+        }
+
+        //
+        // 9) SL: “(box or sheet) → sqm”
+        //
+        if (data.location === 'SL') {
+          for (const ti of persisted) {
+            const fromBatch = ti.itemBatch;
+            const fromVariant = fromBatch.itemVariant;
+            const parentItem = fromVariant.thickness.item;
+
+            // ✅ Skip if not box or sheet
+            if (parentItem.type !== 'box' && parentItem.type !== 'sheet')
+              continue;
+
+            // ✅ Calculate sheet area
+            const lengthM = Number(fromVariant.length) / 100;
+            const widthM = Number(fromVariant.width) / 100;
+            const sheetArea = lengthM * widthM;
+
+            let totalSqm = 0;
             if (parentItem.type === 'box') {
-              totalSqm = ti.quantity * variant.sheetsPerBox * sheetArea;
-            } else {
+              totalSqm = ti.quantity * fromVariant.sheetsPerBox * sheetArea;
+            } else if (parentItem.type === 'sheet') {
               totalSqm = ti.quantity * sheetArea;
             }
 
-            // 9c) Find “sqm” variant (same itemName + thickness + origin)
+            // ✅ Find "sqm" thickness for this item
             const sqmThickness = await manager
               .getRepository(Thickness)
               .createQueryBuilder('th')
               .innerJoin(
                 'th.item',
                 'it',
-                'it.itemName = :nm AND it.type = :tp',
-                { nm: parentItem.itemName, tp: 'sqm' },
+                'it.itemName = :name AND it.type = :type',
+                {
+                  name: parentItem.itemName,
+                  type: 'sqm',
+                },
               )
-              .where('th.thickness = :val', {
-                val: variant.thickness.thickness,
+              .where('th.thickness = :thick', {
+                thick: fromVariant.thickness.thickness,
               })
               .getOne();
 
             if (!sqmThickness) {
               throw new NotFoundException(
-                `No “sqm”‐type thickness ${variant.thickness.thickness} ` +
-                  `for "${parentItem.itemName}"`,
+                `No "sqm" thickness ${fromVariant.thickness.thickness} for ${parentItem.itemName}`,
               );
             }
 
@@ -380,20 +462,56 @@ export class TransfersService {
               .findOne({
                 where: {
                   thickness: { id: sqmThickness.id } as any,
-                  origin: variant.origin,
+                  origin: fromVariant.origin,
                 },
               });
 
             if (!sqmVariant) {
               throw new NotFoundException(
-                `No “sqm” variant for "${parentItem.itemName}", ` +
-                  `thickness=${variant.thickness.thickness}, origin=${variant.origin}`,
+                `No sqm variant for ${parentItem.itemName}, thickness=${fromVariant.thickness.thickness}, origin=${fromVariant.origin}`,
               );
             }
 
-            // 9d) Credit the computed sqm
+            // ✅ Find / Create destination sqm batch
+            let toBatch = await manager.getRepository(ItemBatch).findOne({
+              where: {
+                itemVariant: { id: sqmVariant.id },
+                condition: fromBatch.condition,
+                dateReceived: fromBatch.dateReceived,
+              },
+            });
+
+            if (!toBatch) {
+              toBatch = manager.getRepository(ItemBatch).create({
+                itemVariant: sqmVariant,
+                condition: fromBatch.condition,
+                dateReceived: fromBatch.dateReceived,
+              });
+              await manager.getRepository(ItemBatch).save(toBatch);
+            }
+
+            //
+            // ✅ InventoryTransaction → Deduct from source batch
+            //
+            const txOut = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: fromVariant.id,
+              itemBatchId: fromBatch.id,
+              transactionType: 'MovedFrom',
+              quantity: 0,
+              quantityofr: -ti.quantity,
+              sqm: 0,
+              sqmofr: -totalSqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+            await manager.getRepository(InventoryTransaction).save(txOut);
+
+            //
+            // ✅ InventoryTransaction → Add to sqm batch
+            //
             const txIn = manager.getRepository(InventoryTransaction).create({
               itemVariantId: sqmVariant.id,
+              itemBatchId: toBatch.id,
               transactionType: 'MovedTo',
               quantity: 0,
               quantityofr: totalSqm,
@@ -403,97 +521,215 @@ export class TransfersService {
               finalcostofr: 0,
             });
             await manager.getRepository(InventoryTransaction).save(txIn);
+
+            //
+            // ✅ Update FROM Batch (box or sheet)
+            //
+            fromBatch.outOFR = Number(fromBatch.outOFR || 0) + totalSqm;
+            fromBatch.balanceOFR =
+              Number(fromBatch.startOFR || 0) +
+              Number(fromBatch.inOFR || 0) -
+              Number(fromBatch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(fromBatch);
+
+            //
+            // ✅ Update TO Batch (sqm)
+            //
+            toBatch.inOFR = Number(toBatch.inOFR || 0) + totalSqm;
+            toBatch.balanceOFR =
+              Number(toBatch.startOFR || 0) +
+              Number(toBatch.inOFR || 0) -
+              Number(toBatch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(toBatch);
+
+            //
+            // ✅ Update FROM Variant (box/sheet) Totals
+            //
+            fromVariant.totalOutOFR =
+              Number(fromVariant.totalOutOFR || 0) + totalSqm;
+            fromVariant.totalBalanceOFR =
+              Number(fromVariant.totalStartOFR || 0) +
+              Number(fromVariant.totalInOFR || 0) -
+              Number(fromVariant.totalOutOFR || 0);
+
+            //
+            // ✅ Update TO Variant (sqm) Totals
+            //
+            sqmVariant.totalInOFR =
+              Number(sqmVariant.totalInOFR || 0) + totalSqm;
+            sqmVariant.totalBalanceOFR =
+              Number(sqmVariant.totalStartOFR || 0) +
+              Number(sqmVariant.totalInOFR || 0) -
+              Number(sqmVariant.totalOutOFR || 0);
+
+            await manager
+              .getRepository(ItemVariant)
+              .save([fromVariant, sqmVariant]);
           }
         }
 
         //
-        // 10) LS: “ sqm → (box or sheet) ”
-        //
         if (data.location === 'LS') {
           for (const ti of persisted) {
-            const destVariant = ti.itemVariant;
+            const toBatch = ti.itemBatch;
+            const destVariant = toBatch.itemVariant;
             const parentItem = destVariant.thickness.item;
+
             if (parentItem.type !== 'box' && parentItem.type !== 'sheet') {
               continue;
             }
 
-            // 10a) Remove the SQM from its “sqm” variant
-            const originalSqmThickness = await manager
+            //
+            // ✅ Step 1: Find original SQM variant (same itemName, thickness, origin)
+            //
+            const sqmThickness = await manager
               .getRepository(Thickness)
               .createQueryBuilder('th')
               .innerJoin(
                 'th.item',
                 'it',
                 'it.itemName = :nm AND it.type = :tp',
-                { nm: parentItem.itemName, tp: 'sqm' },
+                {
+                  nm: parentItem.itemName,
+                  tp: 'sqm',
+                },
               )
               .where('th.thickness = :val', {
                 val: destVariant.thickness.thickness,
               })
               .getOne();
 
-            if (!originalSqmThickness) {
+            if (!sqmThickness) {
               throw new NotFoundException(
-                `No “sqm”‐type thickness ${destVariant.thickness.thickness} ` +
-                  `for "${parentItem.itemName}"`,
+                `No sqm thickness ${destVariant.thickness.thickness} for ${parentItem.itemName}`,
               );
             }
 
-            const originalSqmVariant = await manager
+            const sqmVariant = await manager
               .getRepository(ItemVariant)
               .findOne({
                 where: {
-                  thickness: { id: originalSqmThickness.id } as any,
+                  thickness: { id: sqmThickness.id } as any,
                   origin: destVariant.origin,
                 },
               });
 
-            if (!originalSqmVariant) {
+            if (!sqmVariant) {
               throw new NotFoundException(
-                `No “sqm” variant for "${parentItem.itemName}", ` +
-                  `thickness=${destVariant.thickness.thickness}, origin=${destVariant.origin}`,
+                `No sqm variant for ${parentItem.itemName}, thickness=${destVariant.thickness.thickness}, origin=${destVariant.origin}`,
               );
             }
 
-            // 10b) Deduct that many sqm
-            const txOutSqm = manager
-              .getRepository(InventoryTransaction)
-              .create({
-                itemVariantId: originalSqmVariant.id,
-                transactionType: 'MovedFrom',
-                quantity: 0,
-                quantityofr: -ti.sqm,
-                sqm: 0,
-                sqmofr: -ti.sqm,
-                finalcost: 0,
-                finalcostofr: 0,
-              });
-            await manager.getRepository(InventoryTransaction).save(txOutSqm);
+            //
+            // ✅ Step 2: Find / Create source sqm batch (same condition and dateReceived as destination)
+            //
+            let fromBatch = await manager.getRepository(ItemBatch).findOne({
+              where: {
+                itemVariant: { id: sqmVariant.id },
+                condition: toBatch.condition,
+                dateReceived: toBatch.dateReceived,
+              },
+            });
 
-            // 10c) Credit the destination (box or sheet) with its own unit count
-            const txInDest = manager
-              .getRepository(InventoryTransaction)
-              .create({
-                itemVariantId: destVariant.id,
-                transactionType: 'MovedTo',
-                quantity: 0,
-                quantityofr: ti.quantity,
-                sqm: 0,
-                sqmofr: ti.sqm,
-                finalcost: 0,
-                finalcostofr: 0,
+            if (!fromBatch) {
+              fromBatch = manager.getRepository(ItemBatch).create({
+                itemVariant: sqmVariant,
+                condition: toBatch.condition,
+                dateReceived: toBatch.dateReceived,
               });
-            await manager.getRepository(InventoryTransaction).save(txInDest);
+              await manager.getRepository(ItemBatch).save(fromBatch);
+            }
+
+            //
+            // ✅ Step 3: Create InventoryTransaction → Deduct from sqm batch
+            //
+            const txOut = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: sqmVariant.id,
+              itemBatchId: fromBatch.id,
+              transactionType: 'MovedFrom',
+              quantity: 0,
+              quantityofr: -ti.sqm,
+              sqm: 0,
+              sqmofr: -ti.sqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+            await manager.getRepository(InventoryTransaction).save(txOut);
+
+            //
+            // ✅ Step 4: Create InventoryTransaction → Credit box/sheet batch
+            //
+            const txIn = manager.getRepository(InventoryTransaction).create({
+              itemVariantId: destVariant.id,
+              itemBatchId: toBatch.id,
+              transactionType: 'MovedTo',
+              quantity: 0,
+              quantityofr: ti.quantity,
+              sqm: 0,
+              sqmofr: ti.sqm,
+              finalcost: 0,
+              finalcostofr: 0,
+            });
+            await manager.getRepository(InventoryTransaction).save(txIn);
+
+            //
+            // ✅ Step 5: Update FROM batch (sqm)
+            //
+            fromBatch.outOFR = Number(fromBatch.outOFR || 0) + ti.sqm;
+            fromBatch.balanceOFR =
+              Number(fromBatch.startOFR || 0) +
+              Number(fromBatch.inOFR || 0) -
+              Number(fromBatch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(fromBatch);
+
+            //
+            // ✅ Step 6: Update TO batch (box/sheet)
+            //
+            toBatch.inOFR = Number(toBatch.inOFR || 0) + ti.sqm;
+            toBatch.balanceOFR =
+              Number(toBatch.startOFR || 0) +
+              Number(toBatch.inOFR || 0) -
+              Number(toBatch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(toBatch);
+
+            //
+            // ✅ Step 7: Update FROM variant (sqm)
+            //
+            sqmVariant.totalOutOFR =
+              Number(sqmVariant.totalOutOFR || 0) + ti.sqm;
+            sqmVariant.totalBalanceOFR =
+              Number(sqmVariant.totalStartOFR || 0) +
+              Number(sqmVariant.totalInOFR || 0) -
+              Number(sqmVariant.totalOutOFR || 0);
+
+            //
+            // ✅ Step 8: Update TO variant (box/sheet)
+            //
+            destVariant.totalInOFR =
+              Number(destVariant.totalInOFR || 0) + ti.sqm;
+            destVariant.totalBalanceOFR =
+              Number(destVariant.totalStartOFR || 0) +
+              Number(destVariant.totalInOFR || 0) -
+              Number(destVariant.totalOutOFR || 0);
+
+            await manager
+              .getRepository(ItemVariant)
+              .save([sqmVariant, destVariant]);
           }
         }
+
         // 7) BR: “Breakage” → Deduct quantity and sqm from inventory
         //
+        // 7) Breakage → Deduct sqmOFR from batch and variant
         if (data.location === 'Breakage') {
           for (const ti of persisted) {
-            const variant = ti.itemVariant;
+            const batch = ti.itemBatch;
+            const variant = batch.itemVariant;
 
+            // Create InventoryTransaction
             const txOut = manager.getRepository(InventoryTransaction).create({
               itemVariantId: variant.id,
+              itemBatchId: batch.id,
               transactionType: 'Breakage',
               quantity: 0,
               quantityofr: -ti.quantity,
@@ -502,18 +738,35 @@ export class TransfersService {
               finalcost: 0,
               finalcostofr: 0,
             });
-
             await manager.getRepository(InventoryTransaction).save(txOut);
+
+            // Update Batch
+            batch.outOFR = Number(batch.outOFR || 0) + ti.sqm;
+            batch.balanceOFR =
+              Number(batch.startOFR || 0) +
+              Number(batch.inOFR || 0) -
+              Number(batch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(batch);
+
+            // Update Variant Totals
+            variant.totalOutOFR = Number(variant.totalOutOFR || 0) + ti.sqm;
+            variant.totalBalanceOFR =
+              Number(variant.totalStartOFR || 0) +
+              Number(variant.totalInOFR || 0) -
+              Number(variant.totalOutOFR || 0);
+            await manager.getRepository(ItemVariant).save(variant);
           }
         }
-        // 8) Adjustment +: Add quantity and sqm to inventory
-        //
+
+        // 8) Adjustment + → Add sqmOFR to batch and variant
         if (data.location === 'Adjustment +') {
           for (const ti of persisted) {
-            const variant = ti.itemVariant;
+            const batch = ti.itemBatch;
+            const variant = batch.itemVariant;
 
             const txIn = manager.getRepository(InventoryTransaction).create({
               itemVariantId: variant.id,
+              itemBatchId: batch.id,
               transactionType: 'Adjustment +',
               quantity: 0,
               quantityofr: ti.quantity,
@@ -522,18 +775,35 @@ export class TransfersService {
               finalcost: 0,
               finalcostofr: 0,
             });
-
             await manager.getRepository(InventoryTransaction).save(txIn);
+
+            // Update Batch
+            batch.inOFR = Number(batch.inOFR || 0) + ti.sqm;
+            batch.balanceOFR =
+              Number(batch.startOFR || 0) +
+              Number(batch.inOFR || 0) -
+              Number(batch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(batch);
+
+            // Update Variant Totals
+            variant.totalInOFR = Number(variant.totalInOFR || 0) + ti.sqm;
+            variant.totalBalanceOFR =
+              Number(variant.totalStartOFR || 0) +
+              Number(variant.totalInOFR || 0) -
+              Number(variant.totalOutOFR || 0);
+            await manager.getRepository(ItemVariant).save(variant);
           }
         }
-        // 9) Adjustment -: Subtract quantity and sqm from inventory
-        //
+
+        // 9) Adjustment - → Subtract sqmOFR from batch and variant
         if (data.location === 'Adjustment -') {
           for (const ti of persisted) {
-            const variant = ti.itemVariant;
+            const batch = ti.itemBatch;
+            const variant = batch.itemVariant;
 
             const txOut = manager.getRepository(InventoryTransaction).create({
               itemVariantId: variant.id,
+              itemBatchId: batch.id,
               transactionType: 'Adjustment -',
               quantity: 0,
               quantityofr: -ti.quantity,
@@ -542,8 +812,23 @@ export class TransfersService {
               finalcost: 0,
               finalcostofr: 0,
             });
-
             await manager.getRepository(InventoryTransaction).save(txOut);
+
+            // Update Batch
+            batch.outOFR = Number(batch.outOFR || 0) + ti.sqm;
+            batch.balanceOFR =
+              Number(batch.startOFR || 0) +
+              Number(batch.inOFR || 0) -
+              Number(batch.outOFR || 0);
+            await manager.getRepository(ItemBatch).save(batch);
+
+            // Update Variant Totals
+            variant.totalOutOFR = Number(variant.totalOutOFR || 0) + ti.sqm;
+            variant.totalBalanceOFR =
+              Number(variant.totalStartOFR || 0) +
+              Number(variant.totalInOFR || 0) -
+              Number(variant.totalOutOFR || 0);
+            await manager.getRepository(ItemVariant).save(variant);
           }
         }
 
@@ -580,9 +865,10 @@ export class TransfersService {
     return this.transfersRepo.find({
       relations: [
         'items',
-        'items.itemVariant',
-        'items.itemVariant.thickness',
-        'items.itemVariant.thickness.item',
+        'items.itemBatch',
+        'items.itemBatch.itemVariant',
+        'items.itemBatch.itemVariant.thickness',
+        'items.itemBatch.itemVariant.thickness.item',
       ],
       order: { id: 'DESC' },
     });

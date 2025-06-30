@@ -9,8 +9,8 @@ import { Settings } from '../entities/settings.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
-import { InventoryTransactionModule } from '../inventroy-transactions/inventroy-transactions.module'; 
-
+import { InventoryTransactionModule } from '../inventroy-transactions/inventroy-transactions.module';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -20,6 +20,7 @@ import { InventoryTransactionModule } from '../inventroy-transactions/inventroy-
       InventoryTransaction,
       Thickness,
       ItemVariant,
+      ItemBatch,
     ]),
     InventoryTransactionModule,
   ],

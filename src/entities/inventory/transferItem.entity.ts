@@ -8,6 +8,7 @@ import {
 } from 'typeorm';
 import { Transfer } from './transfer.entity';
 import { ItemVariant } from './itemVariant.entity';
+import { ItemBatch } from './itemBatch.entity';
 
 @Entity({ name: 'transfer_items' })
 export class TransferItem {
@@ -34,4 +35,10 @@ export class TransferItem {
 
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   price: number;
+  @ManyToOne(() => ItemBatch, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'itemBatchId' })
+  itemBatch: ItemBatch;
+
+  @Column({ nullable: true })
+  itemBatchId: number;
 }

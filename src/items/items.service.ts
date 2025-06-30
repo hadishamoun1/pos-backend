@@ -299,4 +299,85 @@ export class ItemsService {
 
     return item;
   }
+
+  async getitemDetails(): Promise<any[]> {
+    const items = await this.itemRepository
+      .createQueryBuilder('item')
+      .leftJoinAndSelect('item.descriptions', 'description')
+      .leftJoinAndSelect('item.thicknesses', 'thickness')
+      .leftJoinAndSelect('thickness.variants', 'variant')
+      .leftJoinAndSelect('variant.itemNameDescription', 'variantDescription')
+      .leftJoinAndSelect('variant.batches', 'batch')
+      .select([
+        'item.id',
+        'item.itemName',
+        'item.type',
+
+        'description.id',
+        'description.categoryName',
+        'description.subCategory',
+        'description.colorName',
+        'description.designName',
+
+        'thickness.id',
+        'thickness.thickness',
+
+        'variant.id',
+        'variant.length',
+        'variant.width',
+        'variant.sheetsPerBox',
+        'variant.origin',
+        'variant.itemNameDescriptionId',
+
+        'variantDescription.id',
+        'variantDescription.categoryName',
+        'variantDescription.subCategory',
+        'variantDescription.colorName',
+        'variantDescription.designName',
+
+        'batch.id',
+        'batch.condition',
+        'batch.dateReceived',
+        'batch.balanceOFR',
+      ])
+      .orderBy('description.id', 'DESC')
+      .getMany();
+
+    const result = [];
+
+    items.forEach((item) => {
+      item.thicknesses.forEach((thickness) => {
+        thickness.variants.forEach((variant) => {
+          result.push({
+            itemId: item.id,
+            itemName: item.itemName,
+            type: item.type,
+            thickness: Number(thickness.thickness),
+            length: Number(variant.length),
+            width: Number(variant.width),
+            sheetsPerBox: variant.sheetsPerBox,
+            origin: variant.origin,
+            itemNameDescriptionId: variant.itemNameDescriptionId,
+            itemNameDescription: variant.itemNameDescription
+              ? {
+                  id: variant.itemNameDescription.id,
+                  categoryName: variant.itemNameDescription.categoryName,
+                  subCategory: variant.itemNameDescription.subCategory,
+                  colorName: variant.itemNameDescription.colorName,
+                  designName: variant.itemNameDescription.designName,
+                }
+              : null,
+            batches: (variant.batches || []).map((b) => ({
+              id: b.id,
+              condition: b.condition,
+              dateReceived: b.dateReceived,
+              balanceOFR: b.balanceOFR,
+            })),
+          });
+        });
+      });
+    });
+
+    return result;
+  }
 }

@@ -70,6 +70,10 @@ export class ItemsController {
   async getSelectedColumns(): Promise<any[]> {
     return this.itemsService.getSelectedItemDetails();
   }
+  @Get('v2/filtered-items')
+  async getItemColumns(): Promise<any[]> {
+    return this.itemsService.getitemDetails();
+  }
 
   @Post('v1/create-complete-item')
   async createCompleteItem(@Body() createFullItemDto: any): Promise<Item> {
