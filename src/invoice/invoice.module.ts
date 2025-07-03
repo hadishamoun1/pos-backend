@@ -12,6 +12,8 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InvoiceGateway } from './invoice.gateway';
 import { SalesVoucher } from '../entities/Vouchers/salesVoucher.entity'; // Import SalesVoucher entity
 import { SalesVoucherDetail } from '../entities/Vouchers/salesVoucherDetails.entity'; // Import SalesVoucherDetail entity
+import { Settings } from '../entities/settings.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity'; 
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { SalesVoucherDetail } from '../entities/Vouchers/salesVoucherDetails.ent
       ItemVariant,
       SalesVoucher, // Add SalesVoucher entity
       SalesVoucherDetail, // Add SalesVoucherDetail entity
+      Settings,
+      ItemBatch
     ]),
   ],
   providers: [InvoiceService, InventoryTransaction, InvoiceGateway],
