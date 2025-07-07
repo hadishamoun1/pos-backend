@@ -14,6 +14,9 @@ import { SalesVoucher } from '../entities/Vouchers/salesVoucher.entity'; // Impo
 import { SalesVoucherDetail } from '../entities/Vouchers/salesVoucherDetails.entity'; // Import SalesVoucherDetail entity
 import { Settings } from '../entities/settings.entity';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity'; 
+import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
+import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+import { Account } from '../entities/account.entity';
 
 @Module({
   imports: [
@@ -28,7 +31,10 @@ import { ItemBatch } from '../entities/inventory/itemBatch.entity';
       SalesVoucher, // Add SalesVoucher entity
       SalesVoucherDetail, // Add SalesVoucherDetail entity
       Settings,
-      ItemBatch
+      ItemBatch,
+      JournalVoucher,
+      JournalVoucherDetail,
+      Account, 
     ]),
   ],
   providers: [InvoiceService, InventoryTransaction, InvoiceGateway],

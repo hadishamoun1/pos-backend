@@ -13,6 +13,9 @@ import { SalesVoucher } from '../entities/Vouchers/salesVoucher.entity';
 import { SalesVoucherDetail } from '../entities/Vouchers/salesVoucherDetails.entity';
 import { InvoiceGateway } from './invoice.gateway';
 import { Settings } from '../entities/settings.entity';
+import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
+import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+import { Account } from '../entities/account.entity';
 
 @Injectable()
 export class InvoiceService {
@@ -20,7 +23,7 @@ export class InvoiceService {
     private readonly dataSource: DataSource,
     @InjectRepository(Invoice)
     private readonly invoiceRepository: Repository<Invoice>,
-    @InjectRepository(SalesVoucher)
+
     @InjectRepository(InvoiceItem)
     private readonly invoiceItemRepo: Repository<InvoiceItem>,
 
@@ -29,6 +32,15 @@ export class InvoiceService {
 
     @InjectRepository(InventoryTransaction)
     private readonly inventoryTransactionRepo: Repository<InventoryTransaction>,
+
+    @InjectRepository(JournalVoucher)
+    private readonly journalVoucherRepo: Repository<JournalVoucher>,
+
+    @InjectRepository(JournalVoucherDetail)
+    private readonly journalVoucherDetailRepo: Repository<JournalVoucherDetail>,
+
+    @InjectRepository(Account)
+    private readonly accountRepo: Repository<Account>,
   ) {}
   /**
    * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
@@ -39,17 +51,18 @@ export class InvoiceService {
     await queryRunner.startTransaction();
 
     try {
-      // 1. Get the active year from settings
-      // 1. Get the active year from settings
+      console.log('🟢 Starting invoice creation');
+
       const setting = await this.settingsRepo.findOneBy({ isActive: true });
       if (!setting) throw new NotFoundException('Active year not found');
 
       const yearSuffix = setting.year.slice(-2);
       const isReturn = data.invoiceType === 'RVR';
-      const sequencePrefix = 'S'; // 'S' and 'RVR' share the same sequence
-      const typePrefix = data.invoiceType; // keep actual type
 
-      // 2. Get the last invoice for type S or RVR
+      const isG = data.invoiceType === 'G';
+
+      const sequencePrefix = 'S'; // always use 'S' for both S and RVR
+
       const lastInvoice = await this.invoiceRepository
         .createQueryBuilder('invoice')
         .where('invoice.invoiceType IN (:...types)', { types: ['S', 'RVR'] })
@@ -62,14 +75,12 @@ export class InvoiceService {
       let newNumber = 1;
       if (lastInvoice?.invoiceNumber) {
         const parts = lastInvoice.invoiceNumber.split('-');
-        const num = parseInt(parts[1]);
-        newNumber = num + 1;
+        newNumber = parseInt(parts[1]) + 1;
       }
 
-      // Use 'S25-00X' even for RVR
       const invoiceNumber = `${sequencePrefix}${yearSuffix}-${String(newNumber).padStart(3, '0')}`;
+      console.log('📄 New invoice number:', invoiceNumber);
 
-      // 3. Create and save invoice
       const invoice = this.invoiceRepository.create({
         customerId: data.customerId,
         date: data.date,
@@ -86,10 +97,23 @@ export class InvoiceService {
       });
 
       const savedInvoice = await queryRunner.manager.save(invoice);
+      console.log('✅ Invoice saved with ID:', savedInvoice.id);
 
-      // 4. Create invoice items
-      const items = data.items.map((item) =>
-        this.invoiceItemRepo.create({
+      const items = data.items.map((item, index) => {
+        console.log(`📦 Preparing item[${index}]`, item);
+        if (
+          item.sqm === undefined ||
+          item.quantity === undefined ||
+          item.itemVariantId === undefined ||
+          item.itemBatchId === undefined
+        ) {
+          console.error(`❌ Missing required field in item[${index}]`, item);
+          throw new BadRequestException(
+            `Missing required fields in item[${index}]`,
+          );
+        }
+
+        return this.invoiceItemRepo.create({
           invoiceId: savedInvoice.id,
           itemVariantId: item.itemVariantId,
           itemBatchId: item.itemBatchId,
@@ -98,13 +122,18 @@ export class InvoiceService {
           totalAmount: item.totalAmount,
           vat: item.vat,
           quantity: item.quantity,
-        }),
+        });
+      });
+
+      const savedItems = await queryRunner.manager
+        .getRepository(InvoiceItem)
+        .save(items);
+      console.log(
+        '✅ Saved invoice items:',
+        savedItems.map((i) => i.id),
       );
 
-      await queryRunner.manager.save(InvoiceItem, items);
-
-      // 5. Create Inventory Transactions
-      const inventoryTransactions = items.map((item) => {
+      const inventoryTransactions = savedItems.map((item) => {
         let quantity = 0;
         let sqm = 0;
         let quantityofr = 0;
@@ -140,10 +169,184 @@ export class InvoiceService {
         InventoryTransaction,
         inventoryTransactions,
       );
+      console.log('✅ Inventory transactions saved');
+
+      const jvPrefix = isG ? 'JVG' : 'JV';
+      const lastJV = await this.journalVoucherRepo
+        .createQueryBuilder('jv')
+        .where('jv.jvNumber LIKE :prefix', {
+          prefix: `${jvPrefix}${yearSuffix}-%`,
+        })
+        .orderBy('jv.id', 'DESC')
+        .getOne();
+
+      const jvSequence = lastJV?.jvNumber
+        ? parseInt(lastJV.jvNumber.split('-')[1]) + 1
+        : 1;
+
+      const jvNumber = `${jvPrefix}${yearSuffix}-${String(jvSequence).padStart(3, '0')}`;
+      const currencyCode = data.currencyId === 2 ? 'LL' : 'USD';
+      const useVAT = data.vatPercentage > 0;
+      const rate = Number(data.currencyRate);
+
+      let salesAccNumber = '';
+      let vatAccNumber = '';
+
+      if (useVAT) {
+        salesAccNumber = currencyCode === 'USD' ? '701101' : '701102';
+        vatAccNumber = currencyCode === 'USD' ? '443101' : '443102';
+      } else {
+        salesAccNumber = '701103';
+      }
+
+      const salesAccount = await this.accountRepo.findOneBy({
+        accountNumber: salesAccNumber,
+      });
+      if (!salesAccount)
+        throw new NotFoundException(
+          `Sales account ${salesAccNumber} not found`,
+        );
+
+      const vatAccount = useVAT
+        ? await this.accountRepo.findOneBy({ accountNumber: vatAccNumber })
+        : null;
+
+      if (useVAT && !vatAccount && !isG) {
+        throw new NotFoundException(`VAT account ${vatAccNumber} not found`);
+      }
+
+      const total = Number(data.grandTotal);
+      const totalWithoutVAT = Number(data.totalWithoutVAT);
+      const totalVAT = Number(data.totalVAT);
+      const totalLL = total * rate;
+      const totalWithoutVATLL = totalWithoutVAT * rate;
+      const totalVATLL = totalVAT * rate;
+
+      const details: JournalVoucherDetail[] = [];
+
+      function getJVFields(
+        type: 'dr' | 'cr',
+        val: number,
+        valLL: number,
+      ): Partial<JournalVoucherDetail> {
+        const fields: any = {
+          dr: 0,
+          drUSD: 0,
+          drLL: 0,
+          drOFR: 0,
+          drUSDOFR: 0,
+          drLLOFR: 0,
+          cr: 0,
+          crUSD: 0,
+          crLL: 0,
+          crOFR: 0,
+          crUSDOFR: 0,
+          crLLOFR: 0,
+        };
+
+        if (type === 'dr') {
+          if (isG) {
+            fields.drOFR = val;
+            fields.drUSDOFR = val;
+            fields.drLLOFR = valLL;
+          } else if (isReturn) {
+            fields.dr = val;
+            fields.drUSD = val;
+            fields.drLL = valLL;
+          } else {
+            fields.dr = val;
+            fields.drUSD = val;
+            fields.drLL = valLL;
+            fields.drOFR = val;
+            fields.drUSDOFR = val;
+            fields.drLLOFR = valLL;
+          }
+        } else if (type === 'cr') {
+          if (isG) {
+            fields.crOFR = val;
+            fields.crUSDOFR = val;
+            fields.crLLOFR = valLL;
+          } else if (isReturn) {
+            fields.cr = val;
+            fields.crUSD = val;
+            fields.crLL = valLL;
+          } else {
+            fields.cr = val;
+            fields.crUSD = val;
+            fields.crLL = valLL;
+            fields.crOFR = val;
+            fields.crUSDOFR = val;
+            fields.crLLOFR = valLL;
+          }
+        }
+
+        return fields;
+      }
+
+      details.push(
+        this.journalVoucherDetailRepo.create({
+          customerId: data.customerId,
+          description: isReturn ? 'Fake Sales Invoice' : 'Sales Invoice',
+          currency: currencyCode,
+          ...getJVFields('dr', total, totalLL),
+        }),
+      );
+
+      const salesCrAmount = isG ? totalWithoutVAT + totalVAT : totalWithoutVAT;
+      const salesCrAmountLL = isG
+        ? totalWithoutVATLL + totalVATLL
+        : totalWithoutVATLL;
+
+      details.push(
+        this.journalVoucherDetailRepo.create({
+          accountId: salesAccount.id,
+          description: 'Sales Revenue',
+          currency: currencyCode,
+          ...getJVFields('cr', salesCrAmount, salesCrAmountLL),
+        }),
+      );
+
+      if (useVAT && vatAccount && !isG) {
+        details.push(
+          this.journalVoucherDetailRepo.create({
+            accountId: vatAccount.id,
+            description: 'VAT Payable',
+            currency: currencyCode,
+            ...getJVFields('cr', totalVAT, totalVATLL),
+          }),
+        );
+      }
+
+      const sum = (field: keyof JournalVoucherDetail) =>
+        details.reduce((acc, entry) => acc + Number(entry[field] || 0), 0);
+
+      const journalVoucher = this.journalVoucherRepo.create({
+        jvNumber,
+        jvType: data.invoiceType,
+        date: data.date,
+        totalDr: sum('dr'),
+        totalDrUSD: sum('drUSD'),
+        totalDrLL: sum('drLL'),
+        totalDrOFR: sum('drOFR'),
+        totalDrUSDOFR: sum('drUSDOFR'),
+        totalDrLLOFR: sum('drLLOFR'),
+        totalCr: sum('cr'),
+        totalCrUSD: sum('crUSD'),
+        totalCrLL: sum('crLL'),
+        totalCrOFR: sum('crOFR'),
+        totalCrUSDOFR: sum('crUSDOFR'),
+        totalCrLLOFR: sum('crLLOFR'),
+        details,
+      });
+
+      await queryRunner.manager.save(JournalVoucher, journalVoucher);
+      console.log('✅ Journal voucher saved:', jvNumber);
 
       await queryRunner.commitTransaction();
+      console.log('🎉 Invoice creation complete');
       return savedInvoice;
     } catch (error) {
+      console.error('❌ Invoice creation failed:', error.message);
       await queryRunner.rollbackTransaction();
       throw new BadRequestException(error.message || 'Invoice creation failed');
     } finally {
