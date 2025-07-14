@@ -23,7 +23,10 @@ export class PurchaseInvoice {
   invoiceNumber: string;
 
   @Column({ type: 'date' })
-  date: string;
+  date: string; // Recieved date
+
+  @Column({ type: 'date', nullable: true })
+  poDate: string;  // normal date
 
   @Column({ type: 'date', nullable: true })
   expectedArrivalDate: Date;

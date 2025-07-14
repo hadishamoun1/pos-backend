@@ -464,6 +464,106 @@ export class PurchaseInvoiceService {
         exchangeRateAcc: null,
         exchangeRateUSD: null,
       });
+      const extraJVDetails: JournalVoucherDetail[] = [];
+
+      if (data.unitPriceRows?.length) {
+        for (const row of data.unitPriceRows) {
+          const value = Number(row.value || 0);
+          const valueOFR = Number(row.valueOFR || 0);
+          const valueLL = value * savedInvoice.exchangeRate;
+          const valueOFRLL = valueOFR * savedInvoice.exchangeRate;
+
+          let dr = 0,
+            drUSD = 0,
+            drLL = 0,
+            drOFR = 0,
+            drUSDOFR = 0,
+            drLLOFR = 0;
+
+          let cr = 0,
+            crUSD = 0,
+            crLL = 0,
+            crOFR = 0,
+            crUSDOFR = 0,
+            crLLOFR = 0;
+
+          if (savedInvoice.type === 'G') {
+            drOFR = valueOFR;
+            drUSDOFR = valueOFR;
+            drLLOFR = valueOFRLL;
+
+            crOFR = valueOFR;
+            crUSDOFR = valueOFR;
+            crLLOFR = valueOFRLL;
+          } else if (savedInvoice.type === 'S') {
+            dr = value;
+            drUSD = value;
+            drLL = valueLL;
+            drOFR = value;
+            drUSDOFR = value;
+            drLLOFR = valueLL;
+
+            cr = value;
+            crUSD = value;
+            crLL = valueLL;
+            crOFR = value;
+            crUSDOFR = value;
+            crLLOFR = valueLL;
+          } else if (savedInvoice.type === 'SR') {
+            dr = value;
+            drUSD = value;
+            drLL = valueLL;
+            drOFR = valueOFR;
+            drUSDOFR = valueOFR;
+            drLLOFR = valueOFRLL;
+
+            cr = value;
+            crUSD = value;
+            crLL = valueLL;
+            crOFR = valueOFR;
+            crUSDOFR = valueOFR;
+            crLLOFR = valueOFRLL;
+          }
+
+          const drLine = this.journalVoucherDetailRepo.create({
+            accountId: row.accountId ?? null,
+            dr,
+            drUSD,
+            drLL,
+            drOFR,
+            drUSDOFR,
+            drLLOFR,
+            cr: 0,
+            crUSD: 0,
+            crLL: 0,
+            crOFR: 0,
+            crUSDOFR: 0,
+            crLLOFR: 0,
+            exchangeRateAcc: null,
+            exchangeRateUSD: null,
+          });
+
+          const crLine = this.journalVoucherDetailRepo.create({
+            supplierId: row.supplierId ?? null,
+            dr: 0,
+            drUSD: 0,
+            drLL: 0,
+            drOFR: 0,
+            drUSDOFR: 0,
+            drLLOFR: 0,
+            cr,
+            crUSD,
+            crLL,
+            crOFR,
+            crUSDOFR,
+            crLLOFR,
+            exchangeRateAcc: null,
+            exchangeRateUSD: null,
+          });
+
+          extraJVDetails.push(drLine, crLine);
+        }
+      }
 
       const jv = this.journalVoucherRepo.create({
         jvNumber,
@@ -484,7 +584,7 @@ export class PurchaseInvoiceService {
         totalCrLLOFR: hdrCrLLOFR,
         exchangeRateAcc: null,
         exchangeRateUSD: null,
-        details: [debitLine, creditLine],
+        details: [debitLine, creditLine, ...extraJVDetails],
       });
 
       await this.journalVoucherRepo.save(jv);
