@@ -110,8 +110,8 @@ export class InventoryTransactionService {
 
   // src/inventory-transaction/inventory-transaction.service.ts
 
-  async getActivity(): Promise<
-    Array<{
+  async getActivity(): Promise<{
+    data: Array<{
       id: number;
       transactionType: string;
       sqm: number;
@@ -134,8 +134,14 @@ export class InventoryTransactionService {
         condition: string;
         dateReceived: string;
       } | null;
-    }>
-  > {
+    }>;
+    totals: {
+      totalQuantity: number;
+      totalQuantityOFR: number;
+      totalSQM: number;
+      totalSQMOFR: number;
+    };
+  }> {
     const txs = await this.inventoryTransactionRepository.find({
       relations: [
         'itemVariant',
@@ -159,7 +165,6 @@ export class InventoryTransactionService {
           tx.itemVariant.thickness.item,
       )
       .map((tx) => {
-        // ⬇️ Determine invoice date based on transaction type
         let invoiceDateRaw: Date | string = tx.transactionDate;
 
         if (tx.transactionType === 'purchase') {
@@ -190,10 +195,12 @@ export class InventoryTransactionService {
         return {
           id: tx.id,
           transactionType: tx.transactionType,
+          itemVariantId: tx.itemVariantId,
+
           sqm: Number(tx.sqm),
           sqmofr: Number(tx.sqmofr),
-          quantity: tx.quantity != null ? Number(tx.quantity) : null,
-          quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : null,
+          quantity: tx.quantity != null ? Number(tx.quantity) : 0,
+          quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : 0,
           finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
           finalcostofr:
             tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
@@ -216,7 +223,244 @@ export class InventoryTransactionService {
         };
       });
 
+    const totals = result.reduce(
+      (acc, curr) => {
+        acc.totalQuantity += curr.quantity || 0;
+        acc.totalQuantityOFR += curr.quantityofr || 0;
+        acc.totalSQM += curr.sqm || 0;
+        acc.totalSQMOFR += curr.sqmofr || 0;
+        return acc;
+      },
+      { totalQuantity: 0, totalQuantityOFR: 0, totalSQM: 0, totalSQMOFR: 0 },
+    );
+
     this.gateway.sendActivityUpdate(result);
-    return result;
+
+    return { data: result, totals };
+  }
+
+  async getFilteredActivity(query: any): Promise<{
+    data: any[];
+    totals: {
+      totalQuantity: number;
+      totalQuantityOFR: number;
+      totalSQM: number;
+      totalSQMOFR: number;
+    };
+  }> {
+    const qb = this.inventoryTransactionRepository
+      .createQueryBuilder('tx')
+      .leftJoinAndSelect('tx.itemVariant', 'itemVariant')
+      .leftJoinAndSelect('itemVariant.thickness', 'thickness')
+      .leftJoinAndSelect('thickness.item', 'item')
+      .leftJoinAndSelect('tx.purchaseInvoiceItem', 'purchaseInvoiceItem')
+      .leftJoinAndSelect('purchaseInvoiceItem.invoice', 'purchaseInvoice')
+      .leftJoinAndSelect('tx.invoiceItem', 'invoiceItem')
+      .leftJoinAndSelect('invoiceItem.invoice', 'salesInvoice')
+      .leftJoinAndSelect('tx.inventoryCount', 'inventoryCount')
+      .leftJoinAndSelect('tx.itemBatch', 'itemBatch');
+
+    if (query.itemVariantId) {
+      qb.andWhere('itemVariant.id = :itemVariantId', {
+        itemVariantId: query.itemVariantId,
+      });
+    }
+
+    if (query.itemBatchId) {
+      qb.andWhere('itemBatch.id = :itemBatchId', {
+        itemBatchId: query.itemBatchId,
+      });
+    }
+
+    if (query.itemName) {
+      qb.andWhere('item.itemName LIKE :itemName', {
+        itemName: `%${query.itemName}%`,
+      });
+    }
+
+    if (query.thickness) {
+      qb.andWhere('thickness.thickness = :thickness', {
+        thickness: query.thickness,
+      });
+    }
+
+    if (query.condition) {
+      qb.andWhere('itemBatch.condition LIKE :condition', {
+        condition: `%${query.condition}%`,
+      });
+    }
+
+    if (query.batchDate) {
+      qb.andWhere('itemBatch.dateReceived = :batchDate', {
+        batchDate: query.batchDate,
+      });
+    }
+
+    if (query.origin) {
+      qb.andWhere('itemVariant.origin LIKE :origin', {
+        origin: `%${query.origin}%`,
+      });
+    }
+
+    if (query.dimension) {
+      const dimensionParts = query.dimension.split('-');
+      if (dimensionParts.length >= 2) {
+        const [lengthWidthPart, sheetsPerBoxPart] = dimensionParts;
+        const [lengthStr, widthStr] = lengthWidthPart.split('×');
+
+        if (!isNaN(Number(lengthStr)) && !isNaN(Number(widthStr))) {
+          qb.andWhere('itemVariant.length = :length', {
+            length: Number(lengthStr),
+          });
+          qb.andWhere('itemVariant.width = :width', {
+            width: Number(widthStr),
+          });
+
+          if (
+            sheetsPerBoxPart !== undefined &&
+            !isNaN(Number(sheetsPerBoxPart))
+          ) {
+            qb.andWhere('itemVariant.sheetsPerBox = :sheetsPerBox', {
+              sheetsPerBox: Number(sheetsPerBoxPart),
+            });
+          }
+        }
+      }
+    }
+
+    if (query.quantity) {
+      qb.andWhere('tx.quantity = :quantity', { quantity: query.quantity });
+    }
+
+    if (query.quantityofr) {
+      qb.andWhere('tx.quantityofr = :quantityofr', {
+        quantityofr: query.quantityofr,
+      });
+    }
+
+    if (query.sqm) {
+      qb.andWhere('tx.sqm = :sqm', { sqm: query.sqm });
+    }
+
+    if (query.sqmofr) {
+      qb.andWhere('tx.sqmofr = :sqmofr', { sqmofr: query.sqmofr });
+    }
+
+    if (query.finalcost) {
+      qb.andWhere('tx.finalcost = :finalcost', { finalcost: query.finalcost });
+    }
+
+    if (query.finalcostofr) {
+      qb.andWhere('tx.finalcostofr = :finalcostofr', {
+        finalcostofr: query.finalcostofr,
+      });
+    }
+
+    if (query.status) {
+      qb.andWhere('tx.transactionType = :status', { status: query.status });
+    }
+
+    if (query.unit) {
+      qb.andWhere('item.type = :unit', { unit: query.unit });
+    }
+
+    if (query.transactionType) {
+      qb.andWhere('tx.transactionType = :transactionType', {
+        transactionType: query.transactionType,
+      });
+    }
+
+    if (query.date) {
+      qb.andWhere('DATE(tx.transactionDate) = :date', { date: query.date });
+    }
+
+    if (query.invoiceNumber) {
+      qb.andWhere(
+        `(purchaseInvoice.invoiceNumber LIKE :invoiceNumber OR salesInvoice.invoiceNumber LIKE :invoiceNumber)`,
+        { invoiceNumber: `%${query.invoiceNumber}%` },
+      );
+    }
+
+    const page = Number(query.page) || 1;
+    const pageSize = Number(query.pageSize) || 30;
+
+    const totalsQb = qb.clone();
+    const allForTotals = await totalsQb.getMany();
+
+    const [txs, total] = await qb
+      .orderBy('tx.transactionDate', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getManyAndCount();
+
+    const result = txs.map((tx) => {
+      let invoiceDateRaw: Date | string = tx.transactionDate;
+
+      if (tx.transactionType === 'purchase') {
+        invoiceDateRaw =
+          tx.purchaseInvoiceItem?.invoice?.date ||
+          tx.invoiceItem?.invoice?.date ||
+          tx.transactionDate;
+      } else if (tx.transactionType === 'sale') {
+        invoiceDateRaw = tx.invoiceItem?.invoice?.date || tx.transactionDate;
+      } else {
+        invoiceDateRaw =
+          tx.inventoryCount?.date ||
+          tx.invoiceItem?.invoice?.date ||
+          tx.transactionDate;
+      }
+
+      const invoiceNumber =
+        tx.transactionType === 'purchase'
+          ? (tx.purchaseInvoiceItem?.invoice?.invoiceNumber ?? '—')
+          : tx.transactionType === 'sale'
+            ? (tx.invoiceItem?.invoice?.invoiceNumber ?? '—')
+            : (tx.invoiceItem?.invoice?.invoiceNumber ?? '—');
+
+      const v = tx.itemVariant!;
+      const t = v.thickness!;
+      const i = t.item!;
+
+      return {
+        id: tx.id,
+        transactionType: tx.transactionType,
+        sqm: Number(tx.sqm),
+        sqmofr: Number(tx.sqmofr),
+        quantity: tx.quantity != null ? Number(tx.quantity) : 0,
+        quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : 0,
+        finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
+        finalcostofr: tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
+        thickness: t.thickness.toString(),
+        itemName: i.itemName,
+        length: Number(v.length),
+        width: Number(v.width),
+        sheetsPerBox: Number(v.sheetsPerBox),
+        origin: v.origin,
+        itemType: i.type,
+        invoiceDate: new Date(invoiceDateRaw).toISOString().split('T')[0],
+        invoiceNumber,
+        itemBatch: tx.itemBatch
+          ? {
+              id: tx.itemBatch.id,
+              condition: tx.itemBatch.condition,
+              dateReceived: tx.itemBatch.dateReceived,
+            }
+          : null,
+      };
+    });
+
+    const totals = allForTotals.reduce(
+      (acc, tx) => {
+        acc.totalQuantity += tx.quantity != null ? Number(tx.quantity) : 0;
+        acc.totalQuantityOFR +=
+          tx.quantityofr != null ? Number(tx.quantityofr) : 0;
+        acc.totalSQM += tx.sqm != null ? Number(tx.sqm) : 0;
+        acc.totalSQMOFR += tx.sqmofr != null ? Number(tx.sqmofr) : 0;
+        return acc;
+      },
+      { totalQuantity: 0, totalQuantityOFR: 0, totalSQM: 0, totalSQMOFR: 0 },
+    );
+
+    return { data: result, totals };
   }
 }

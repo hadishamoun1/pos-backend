@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
 import { InventoryTransactionService } from './inventroy-transactions.service';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 
@@ -39,6 +39,11 @@ export class InventoryTransactionController {
   async getActivity() {
     return this.inventoryTransactionService.getActivity();
   }
+  @Get('activity/v1/filtered')
+async getFilteredActivity(@Query() query: any) {
+  return this.inventoryTransactionService.getFilteredActivity(query);
+}
+
 
   /**
    * Get transactions for a specific item.
