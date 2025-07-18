@@ -1,11 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransactionGateway } from './inventory-transaction.gateway';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { InvoiceItem } from 'src/entities/invoiceItem.entity';
+import { Thickness } from 'src/entities/inventory/thickness.entity';
+import { Item } from 'src/entities/inventory/item.entity';
 
 @Injectable()
 export class InventoryTransactionService {
@@ -17,6 +19,12 @@ export class InventoryTransactionService {
 
     @InjectRepository(ItemVariant)
     private readonly itemVariantRepository: Repository<ItemVariant>,
+
+    @InjectRepository(Thickness)
+    private readonly thicknessRepository: Repository<Thickness>,
+
+    @InjectRepository(Item)
+    private readonly itemRepository: Repository<Item>,
     private readonly gateway: InventoryTransactionGateway,
   ) {}
 
@@ -110,7 +118,10 @@ export class InventoryTransactionService {
 
   // src/inventory-transaction/inventory-transaction.service.ts
 
-  async getActivity(): Promise<{
+  async getActivity(
+    page: number = 1,
+    pageSize: number = 50,
+  ): Promise<{
     data: Array<{
       id: number;
       transactionType: string;
@@ -141,89 +152,104 @@ export class InventoryTransactionService {
       totalSQM: number;
       totalSQMOFR: number;
     };
+    totalRecords: number;
   }> {
-    const txs = await this.inventoryTransactionRepository.find({
-      relations: [
-        'itemVariant',
-        'itemVariant.thickness',
-        'itemVariant.thickness.item',
-        'purchaseInvoiceItem',
-        'purchaseInvoiceItem.invoice',
-        'invoiceItem',
-        'invoiceItem.invoice',
-        'inventoryCount',
-        'itemBatch',
-      ],
-      order: { transactionDate: 'DESC' },
-    });
+    const baseQuery = this.inventoryTransactionRepository
+      .createQueryBuilder('tx')
+      .leftJoinAndSelect('tx.itemVariant', 'itemVariant')
+      .leftJoinAndSelect('itemVariant.thickness', 'thickness')
+      .leftJoinAndSelect('thickness.item', 'item')
+      .leftJoinAndSelect('tx.purchaseInvoiceItem', 'purchaseInvoiceItem')
+      .leftJoinAndSelect('purchaseInvoiceItem.invoice', 'purchaseInvoice')
+      .leftJoinAndSelect('tx.invoiceItem', 'invoiceItem')
+      .leftJoinAndSelect('invoiceItem.invoice', 'salesInvoice')
+      .leftJoinAndSelect('tx.inventoryCount', 'inventoryCount')
+      .leftJoinAndSelect('tx.itemBatch', 'itemBatch')
+      .orderBy('tx.transactionDate', 'DESC');
 
-    const result = txs
-      .filter(
-        (tx) =>
-          tx.itemVariant &&
-          tx.itemVariant.thickness &&
-          tx.itemVariant.thickness.item,
-      )
-      .map((tx) => {
-        let invoiceDateRaw: Date | string = tx.transactionDate;
+    // Clone for totals (no pagination)
+    const allForTotals = await baseQuery.clone().getMany();
 
-        if (tx.transactionType === 'purchase') {
-          invoiceDateRaw =
-            tx.purchaseInvoiceItem?.invoice?.date ||
-            tx.invoiceItem?.invoice?.date ||
-            tx.transactionDate;
-        } else if (tx.transactionType === 'sale') {
-          invoiceDateRaw = tx.invoiceItem?.invoice?.date || tx.transactionDate;
-        } else {
-          invoiceDateRaw =
-            tx.inventoryCount?.date ||
-            tx.invoiceItem?.invoice?.date ||
-            tx.transactionDate;
-        }
+    // Clone for total count
+    const totalRecords = await baseQuery.clone().getCount();
 
-        const invoiceNumber =
-          tx.transactionType === 'purchase'
-            ? (tx.purchaseInvoiceItem?.invoice?.invoiceNumber ?? '—')
-            : tx.transactionType === 'sale'
-              ? (tx.invoiceItem?.invoice?.invoiceNumber ?? '—')
-              : (tx.invoiceItem?.invoice?.invoiceNumber ?? '—');
+    // Apply pagination for the data fetch
+    const paginatedRecords = await baseQuery
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getMany();
 
-        const v = tx.itemVariant!;
-        const t = v.thickness!;
-        const i = t.item!;
+    const formatRecords = (txs: any[]) =>
+      txs
+        .filter(
+          (tx) =>
+            tx.itemVariant &&
+            tx.itemVariant.thickness &&
+            tx.itemVariant.thickness.item,
+        )
+        .map((tx) => {
+          let invoiceDateRaw: Date | string = tx.transactionDate;
 
-        return {
-          id: tx.id,
-          transactionType: tx.transactionType,
-          itemVariantId: tx.itemVariantId,
+          if (tx.transactionType === 'purchase') {
+            invoiceDateRaw =
+              tx.purchaseInvoiceItem?.invoice?.date ||
+              tx.invoiceItem?.invoice?.date ||
+              tx.transactionDate;
+          } else if (tx.transactionType === 'sale') {
+            invoiceDateRaw =
+              tx.invoiceItem?.invoice?.date || tx.transactionDate;
+          } else {
+            invoiceDateRaw =
+              tx.inventoryCount?.date ||
+              tx.invoiceItem?.invoice?.date ||
+              tx.transactionDate;
+          }
 
-          sqm: Number(tx.sqm),
-          sqmofr: Number(tx.sqmofr),
-          quantity: tx.quantity != null ? Number(tx.quantity) : 0,
-          quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : 0,
-          finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
-          finalcostofr:
-            tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
-          thickness: t.thickness.toString(),
-          itemName: i.itemName,
-          length: Number(v.length),
-          width: Number(v.width),
-          sheetsPerBox: Number(v.sheetsPerBox),
-          origin: v.origin,
-          itemType: i.type,
-          invoiceDate: new Date(invoiceDateRaw).toISOString().split('T')[0],
-          invoiceNumber,
-          itemBatch: tx.itemBatch
-            ? {
-                id: tx.itemBatch.id,
-                condition: tx.itemBatch.condition,
-                dateReceived: tx.itemBatch.dateReceived,
-              }
-            : null,
-        };
-      });
+          const invoiceNumber =
+            tx.transactionType === 'purchase'
+              ? (tx.purchaseInvoiceItem?.invoice?.invoiceNumber ?? '—')
+              : tx.transactionType === 'sale'
+                ? (tx.invoiceItem?.invoice?.invoiceNumber ?? '—')
+                : (tx.invoiceItem?.invoice?.invoiceNumber ?? '—');
 
-    const totals = result.reduce(
+          const v = tx.itemVariant!;
+          const t = v.thickness!;
+          const i = t.item!;
+
+          return {
+            id: tx.id,
+            transactionType: tx.transactionType,
+            itemVariantId: tx.itemVariantId,
+            sqm: Number(tx.sqm),
+            sqmofr: Number(tx.sqmofr),
+            quantity: tx.quantity != null ? Number(tx.quantity) : 0,
+            quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : 0,
+            finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
+            finalcostofr:
+              tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
+            thickness: t.thickness.toString(),
+            itemName: i.itemName,
+            length: Number(v.length),
+            width: Number(v.width),
+            sheetsPerBox: Number(v.sheetsPerBox),
+            origin: v.origin,
+            itemType: i.type,
+            invoiceDate: new Date(invoiceDateRaw).toISOString().split('T')[0],
+            invoiceNumber,
+            itemBatch: tx.itemBatch
+              ? {
+                  id: tx.itemBatch.id,
+                  condition: tx.itemBatch.condition,
+                  dateReceived: tx.itemBatch.dateReceived,
+                }
+              : null,
+          };
+        });
+
+    const formattedTotals = formatRecords(allForTotals);
+    const formattedPaginated = formatRecords(paginatedRecords);
+
+    const totals = formattedTotals.reduce(
       (acc, curr) => {
         acc.totalQuantity += curr.quantity || 0;
         acc.totalQuantityOFR += curr.quantityofr || 0;
@@ -234,9 +260,9 @@ export class InventoryTransactionService {
       { totalQuantity: 0, totalQuantityOFR: 0, totalSQM: 0, totalSQMOFR: 0 },
     );
 
-    this.gateway.sendActivityUpdate(result);
+    this.gateway.sendActivityUpdate(formattedPaginated);
 
-    return { data: result, totals };
+    return { data: formattedPaginated, totals, totalRecords };
   }
 
   async getFilteredActivity(query: any): Promise<{
@@ -247,6 +273,7 @@ export class InventoryTransactionService {
       totalSQM: number;
       totalSQMOFR: number;
     };
+    totalRecords: number;
   }> {
     const qb = this.inventoryTransactionRepository
       .createQueryBuilder('tx')
@@ -260,28 +287,79 @@ export class InventoryTransactionService {
       .leftJoinAndSelect('tx.inventoryCount', 'inventoryCount')
       .leftJoinAndSelect('tx.itemBatch', 'itemBatch');
 
-    if (query.itemVariantId) {
-      qb.andWhere('itemVariant.id = :itemVariantId', {
-        itemVariantId: query.itemVariantId,
-      });
-    }
-
     if (query.itemBatchId) {
       qb.andWhere('itemBatch.id = :itemBatchId', {
         itemBatchId: query.itemBatchId,
       });
     }
+    if (query.itemNameWithThickness) {
+      const [thicknessValue, itemNameValue] =
+        query.itemNameWithThickness.split('|');
 
-    if (query.itemName) {
-      qb.andWhere('item.itemName LIKE :itemName', {
-        itemName: `%${query.itemName}%`,
-      });
-    }
+      console.log(
+        'Parsed Filter → Thickness:',
+        thicknessValue,
+        'Item Name:',
+        itemNameValue,
+      );
 
-    if (query.thickness) {
-      qb.andWhere('thickness.thickness = :thickness', {
-        thickness: query.thickness,
+      const matchingItems = await this.itemRepository.find({
+        where: { itemName: itemNameValue.trim() },
       });
+
+      console.log(
+        'Matching Items:',
+        matchingItems.map((item) => ({
+          id: item.id,
+          name: item.itemName,
+          type: item.type,
+        })),
+      );
+
+      if (matchingItems.length > 0) {
+        const itemIds = matchingItems.map((item) => item.id);
+
+        const matchingThicknesses = await this.thicknessRepository.find({
+          where: {
+            thickness: Number(thicknessValue.trim()),
+            item: In(itemIds),
+          },
+          relations: ['item'],
+        });
+
+        console.log(
+          'Matching Thicknesses:',
+          matchingThicknesses.map((t) => ({
+            id: t.id,
+            thickness: t.thickness,
+            itemId: t.item.id,
+          })),
+        );
+
+        if (matchingThicknesses.length > 0) {
+          const thicknessIds = matchingThicknesses.map((t) => t.id);
+
+          qb.andWhere('itemVariant.thicknessId IN (:...thicknessIds)', {
+            thicknessIds,
+          });
+
+          qb.andWhere('item.itemName = :itemName', {
+            itemName: itemNameValue.trim(),
+          });
+
+          console.log(
+            'Applied Filter on InventoryTransaction with thicknessIds:',
+            thicknessIds,
+          );
+          console.log('And on Item Name:', itemNameValue.trim());
+        } else {
+          console.log('No matching thicknesses found — forcing empty result');
+          qb.andWhere('1 = 0');
+        }
+      } else {
+        console.log('No matching items found — forcing empty result');
+        qb.andWhere('1 = 0');
+      }
     }
 
     if (query.condition) {
@@ -384,14 +462,18 @@ export class InventoryTransactionService {
     const page = Number(query.page) || 1;
     const pageSize = Number(query.pageSize) || 30;
 
-    const totalsQb = qb.clone();
+    const totalsQb = qb.clone(); // Correct: this has all filters, no skip/take
     const allForTotals = await totalsQb.getMany();
 
-    const [txs, total] = await qb
+    const paginatedQb = qb.clone();
+    const [txs, total] = await paginatedQb
       .orderBy('tx.transactionDate', 'DESC')
       .skip((page - 1) * pageSize)
       .take(pageSize)
-      .getManyAndCount();
+      .getManyAndCount(); // ✅ getManyAndCount still gives paginated count
+
+    // But override total to be the count of all matching records before pagination
+    const realTotalRecords = allForTotals.length;
 
     const result = txs.map((tx) => {
       let invoiceDateRaw: Date | string = tx.transactionDate;
@@ -461,6 +543,11 @@ export class InventoryTransactionService {
       { totalQuantity: 0, totalQuantityOFR: 0, totalSQM: 0, totalSQMOFR: 0 },
     );
 
-    return { data: result, totals };
+    console.log('Applied Filters:', query);
+    console.log('Main Query SQL:', qb.getSql());
+    console.log('Query Parameters:', qb.getParameters());
+    console.log('Total Records Returned:', total);
+
+    return { data: result, totals, totalRecords: realTotalRecords };
   }
 }
