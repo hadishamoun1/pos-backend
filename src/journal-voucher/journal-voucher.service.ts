@@ -123,6 +123,8 @@ export class JournalVoucherService {
       relations: [
         'details', // Include details
         'details.account', // Include the related account for each detail
+        'details.customer',
+        'details.supplier',
       ],
     });
 
@@ -133,8 +135,12 @@ export class JournalVoucherService {
     // Map through the details to add accountNumber and accountName
     journalVoucher.details = journalVoucher.details.map((detail) => ({
       ...detail,
-      accountNumber: detail.account?.accountNumber || null, // Add accountNumber
-      accountName: detail.account?.accountName || null, // Add accountName
+      accountNumber: detail.account?.accountNumber || null,
+      accountName:
+        detail.account?.accountName ||
+        detail.supplier?.supplierName ||
+        detail.customer?.customerName ||
+        null,
     }));
 
     return journalVoucher;
