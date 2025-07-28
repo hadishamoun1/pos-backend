@@ -1,4 +1,13 @@
-import { Controller, Get, Post, Body, Param, Query, Put } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Query,
+  Put,
+  ParseIntPipe,
+} from '@nestjs/common';
 import { InvoiceService } from './invoice.service';
 import { Invoice } from '../entities/invoice.entity';
 
@@ -14,6 +23,20 @@ export class InvoiceController {
   @Get()
   async getAllInvoices(): Promise<Invoice[]> {
     return this.invoiceService.getAllInvoices();
+  }
+  @Get('v1/browsing/:customerId')
+  async getBrowsing(
+    @Param('customerId') customerId: number,
+    @Query('groupKey') groupKey?: string,
+    @Query('page') page = 1,
+    @Query('limit') limit = 5,
+  ) {
+    return this.invoiceService.getBrowsingInvoices(
+      customerId,
+      limit,
+      page,
+      groupKey,
+    );
   }
 
   @Get('v1/:id')

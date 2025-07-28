@@ -56,4 +56,6 @@ async getFilteredActivity(@Query() query: any) {
       itemVariantId,
     );
   }
+
+ 
 }

@@ -16,6 +16,7 @@ import { Settings } from '../entities/settings.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
+import { Thickness } from 'src/entities/inventory/thickness.entity';
 
 @Injectable()
 export class InvoiceService {
@@ -687,6 +688,117 @@ export class InvoiceService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  // invoices.service.ts
+
+  async getBrowsingInvoices(
+    customerId: number,
+    limitPerGroup = 5,
+    pagePerGroup = 1,
+    groupKey?: string,
+  ) {
+    const invoices = await this.invoiceRepository.find({
+      where: { customer: { id: customerId } },
+      relations: [
+        'items',
+        'items.itemBatch',
+        'items.itemVariant',
+        'items.itemVariant.thickness',
+        'items.itemVariant.thickness.item',
+        'items.itemVariant.itemNameDescription',
+      ],
+      order: { date: 'DESC' },
+    });
+
+    function getPriority(name: string) {
+      const n = name?.toLowerCase() || '';
+      if (n.includes('تريبلكس ابيض')) return 3;
+      if (n.includes('برونز')) return 2;
+      if (n.includes('اسود')) return 1;
+      if (n.includes('ابيض')) return 0;
+      return 99;
+    }
+
+    const allItems = invoices.flatMap((invoice) =>
+      invoice.items.map((item) => {
+        const variant = item.itemVariant;
+        const thicknessEntity = variant?.thickness;
+        const itemData = thicknessEntity?.item;
+        const itemDesc = variant?.itemNameDescription;
+        const itemBatch = item.itemBatch;
+
+        return {
+          invoiceDate: invoice.date,
+          invoiceNumber: invoice.invoiceNumber,
+          itemName: itemData?.itemName || '',
+          thickness: thicknessEntity?.thickness || '',
+          origin: variant?.origin || '',
+          type: itemData?.type || '',
+          box: itemData?.type === 'box' ? item.quantity : 0,
+          sheet: itemData?.type === 'sheet' ? item.quantity : 0,
+          sheetsPerBox:
+            itemData?.type === 'box' ? variant?.sheetsPerBox || 0 : null,
+          sqm: item.sqm,
+          unitPrice: item.unitPrice,
+          vat: item.vat,
+          totalAmount: item.totalAmount,
+          itemDescriptionId: itemDesc?.id || 0,
+          itemVariantId: variant?.id || 0,
+          itemBatchId: itemBatch?.id || 0,
+        };
+      }),
+    );
+
+    const grouped = new Map<string, any[]>();
+    for (const item of allItems) {
+      const key = `${item.itemName}_${item.thickness}_${item.origin}_${item.type}_${item.itemDescriptionId}_${item.itemVariantId}_${item.itemBatchId}`;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(item);
+    }
+
+    if (groupKey) {
+      const items = grouped.get(groupKey) || [];
+      const sortedItems = items.sort(
+        (a, b) =>
+          new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime(),
+      );
+      const start = (pagePerGroup - 1) * limitPerGroup;
+      return {
+        groupKey,
+        items: sortedItems.slice(start, start + limitPerGroup),
+        total: sortedItems.length,
+        page: pagePerGroup,
+        totalPages: Math.ceil(sortedItems.length / limitPerGroup),
+      };
+    }
+
+    const paginatedGroups = Array.from(grouped.entries()).map(
+      ([key, items]) => {
+        const sortedItems = items.sort(
+          (a, b) =>
+            new Date(b.invoiceDate).getTime() -
+            new Date(a.invoiceDate).getTime(),
+        );
+        return {
+          groupKey: key,
+          items: sortedItems.slice(0, limitPerGroup),
+          total: items.length,
+          page: 1,
+          totalPages: Math.ceil(items.length / limitPerGroup),
+        };
+      },
+    );
+
+    return paginatedGroups.sort((a, b) => {
+      const priA = getPriority(a.items[0]?.itemName);
+      const priB = getPriority(b.items[0]?.itemName);
+      if (priA !== priB) return priA - priB;
+      return (
+        parseFloat(String(a.items[0]?.thickness)) -
+        parseFloat(String(b.items[0]?.thickness))
+      );
+    });
   }
 }
 // async editInvoice(

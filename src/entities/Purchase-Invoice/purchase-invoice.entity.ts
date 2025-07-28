@@ -22,11 +22,21 @@ export class PurchaseInvoice {
   @Column({ type: 'varchar', nullable: true })
   invoiceNumber: string;
 
-  @Column({ type: 'date' })
-  date: string; // Recieved date
+  @Column({
+    type: 'date',
+    transformer: {
+      // when writing to the DB we accept a Date or a YYYY‑MM‑DD string
+      to: (value: Date | string) =>
+        value instanceof Date ? value.toISOString().slice(0, 10) : value,
+      // when reading from the DB we’ll return a Date set at midnight UTC
+      from: (value: string) =>
+        value ? new Date(value + 'T00:00:00.000Z') : null,
+    },
+  })
+  date: Date;
 
   @Column({ type: 'date', nullable: true })
-  poDate: string;  // normal date
+  poDate: string; // normal date
 
   @Column({ type: 'date', nullable: true })
   expectedArrivalDate: Date;

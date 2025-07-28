@@ -8,6 +8,7 @@ import { InventoryTransactionGateway } from './inventory-transaction.gateway';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 import { Item } from 'src/entities/inventory/item.entity';
 import { Thickness } from 'src/entities/inventory/thickness.entity';
+import { Transfer } from 'src/entities/inventory/transfer.entity';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { Thickness } from 'src/entities/inventory/thickness.entity';
       ItemBatch,
       Item,
       Thickness,
+      Transfer
     ]),
   ],
   controllers: [InventoryTransactionController],

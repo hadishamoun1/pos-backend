@@ -9,7 +9,6 @@ import {
 import { ItemVariant } from './itemVariant.entity';
 import { InventoryTransaction } from './inventoryTransactions.entity';
 
-
 export enum CountType {
   S = 'S',
   G = 'G',
@@ -32,7 +31,17 @@ export class InventoryCount {
   itemVariant!: ItemVariant;
 
   /** only the date portion, YYYY-MM-DD */
-  @Column({ type: 'date' })
+  @Column({
+    type: 'date',
+    transformer: {
+      // when writing to the DB we accept a Date or a YYYY‑MM‑DD string
+      to: (value: Date | string) =>
+        value instanceof Date ? value.toISOString().slice(0, 10) : value,
+      // when reading from the DB we’ll return a Date set at midnight UTC
+      from: (value: string) =>
+        value ? new Date(value + 'T00:00:00.000Z') : null,
+    },
+  })
   date!: string;
 
   /** counted quantity */

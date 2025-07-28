@@ -9,7 +9,8 @@ import { ItemVariant } from './itemVariant.entity';
 import { InvoiceItem } from '../invoiceItem.entity';
 import { PurchaseInvoiceItem } from '../Purchase-Invoice/purchase-invoice-item.entity';
 import { InventoryCount } from '../inventory/count.entity';
-import { ItemBatch } from './itemBatch.entity'; 
+import { ItemBatch } from './itemBatch.entity';
+import { Transfer } from './transfer.entity';
 
 @Entity()
 export class InventoryTransaction {
@@ -78,4 +79,10 @@ export class InventoryTransaction {
 
   @Column({ nullable: true }) // ✅ FK column
   itemBatchId?: number;
+
+  @ManyToOne(() => Transfer, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'transferId' })
+  transfer?: Transfer;
+  @Column({ nullable: true })
+  transferId?: number;
 }
