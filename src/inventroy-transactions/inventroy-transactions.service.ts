@@ -390,7 +390,32 @@ export class InventoryTransactionService {
     if (query.finalcostLt)
       qb.andWhere('tx.finalcost < :fcLt', { fcLt: query.finalcostLt });
 
-    // ─────────── SORTING ───────────
+    if (query.dateLt) {
+      qb.andWhere(
+        `COALESCE(
+           purchaseInvoice.date,
+           salesInvoice.date,
+           inventoryCount.date,
+           tx.transactionDate
+         ) < :dateLt`,
+        { dateLt: query.dateLt },
+      );
+    }
+
+    // **after** date
+    if (query.dateGt) {
+      qb.andWhere(
+        `COALESCE(
+           purchaseInvoice.date,
+           salesInvoice.date,
+           inventoryCount.date,
+           tx.transactionDate
+         ) > :dateGt`,
+        { dateGt: query.dateGt },
+      );
+    }
+
+    // ──────────────────── SORTING ────────────────────
     if (query.sortBy) {
       const dir =
         (query.sortDir || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';

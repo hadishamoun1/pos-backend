@@ -77,6 +77,7 @@ export class PurchaseInvoiceService {
     // 2) record inventory transactions
     if (savedInvoice.status === 'Recieved') {
       const invTxs: InventoryTransaction[] = [];
+      const invoiceDate = new Date(savedInvoice.date);
 
       for (const item of savedInvoice.items) {
         let qty = Number(item.quantity);
@@ -149,6 +150,7 @@ export class PurchaseInvoiceService {
           finalcostofr: Number((item as any).finalOFR ?? 0),
           purchaseInvoiceItemId: item.id,
           invoiceItemId: null,
+          dateForEachInvoice: invoiceDate,
         });
 
         invTxs.push(tx);

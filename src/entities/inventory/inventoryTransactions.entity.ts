@@ -85,4 +85,6 @@ export class InventoryTransaction {
   transfer?: Transfer;
   @Column({ nullable: true })
   transferId?: number;
+
+  @Column({ type: 'date', nullable: true }) dateForEachInvoice: Date;
 }
