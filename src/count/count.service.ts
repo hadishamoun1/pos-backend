@@ -138,6 +138,7 @@ export class InventoryCountService {
       inventoryCountId: savedCount.id,
       finalcost: fc,
       finalcostofr: fco,
+      dateForEachInvoice: new Date(savedCount.date),
     });
     await this.inventoryTxnRepo.save(txn);
 
@@ -717,6 +718,7 @@ export class InventoryCountService {
       inventoryCountId: savedCount.id,
       finalcost: fc,
       finalcostofr: fco,
+      dateForEachInvoice: new Date(savedCount.date),
     });
     await this.inventoryTxnRepo.save(txn);
     // ✅ Step 7: Update batch and variant totals
@@ -904,6 +906,7 @@ export class InventoryCountService {
             sqm: 0,
             itemBatchId: originalBatch.id,
             itemVariantId,
+            dateForEachInvoice: new Date(record.receivedDate),
           }),
           this.inventoryTxnRepo.create({
             transactionType: 'adjustment +',
@@ -913,6 +916,7 @@ export class InventoryCountService {
             sqm: 0,
             itemBatchId: targetBatch.id,
             itemVariantId,
+            dateForEachInvoice: new Date(record.receivedDate),
           }),
         ]);
       } else if (status === 'breakage') {
@@ -942,6 +946,7 @@ export class InventoryCountService {
             sqm: 0,
             itemBatchId: originalBatch.id,
             itemVariantId,
+            dateForEachInvoice: new Date(record.receivedDate),
           }),
         );
       } else {
@@ -965,6 +970,7 @@ export class InventoryCountService {
             sqm: 0,
             itemBatchId: originalBatch.id,
             itemVariantId,
+            dateForEachInvoice: new Date(receivedDate),
           }),
         );
       }

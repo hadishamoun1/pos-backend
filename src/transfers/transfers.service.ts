@@ -46,8 +46,23 @@ export class TransfersService {
     private readonly inventoryTransactionGateway: InventoryTransactionGateway,
   ) {}
 
+  /** Logs any NaN-valued numeric property on the passed-in object. */
+  private logIfNaN(obj: any, context: string) {
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === 'number' && isNaN(value)) {
+        console.error(`❌ NaN detected in ${context}.${key}`, obj);
+      }
+    }
+  }
+
   async create(data: any): Promise<Transfer> {
+    console.log(
+      '🛠️ TransfersService.create payload:',
+      JSON.stringify(data, null, 2),
+    );
+
     let savedTransfer: Transfer;
+
     await this.transfersRepo.manager.transaction(
       async (manager: EntityManager) => {
         //
@@ -218,7 +233,14 @@ export class TransfersService {
               sqmofr: -ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📤 about to save txOut:',
+              JSON.stringify(txOut, null, 2),
+            );
+            this.logIfNaN(txOut, 'txOut');
             await manager.getRepository(InventoryTransaction).save(txOut);
 
             // ✅ InventoryTransaction: Sheet → In (sqm only)
@@ -232,7 +254,14 @@ export class TransfersService {
               sqmofr: ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txIn:',
+              JSON.stringify(txIn, null, 2),
+            );
+            this.logIfNaN(txIn, 'txIn');
             await manager.getRepository(InventoryTransaction).save(txIn);
 
             // ✅ Update FROM (box) batch
@@ -354,7 +383,14 @@ export class TransfersService {
               sqmofr: -ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txout:',
+              JSON.stringify(txOut, null, 2),
+            );
+            this.logIfNaN(txOut, 'txOut');
             await manager.getRepository(InventoryTransaction).save(txOut);
 
             // ✅ Create InventoryTransaction: Box → In (sqm only)
@@ -368,7 +404,14 @@ export class TransfersService {
               sqmofr: ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txIn:',
+              JSON.stringify(txIn, null, 2),
+            );
+            this.logIfNaN(txIn, 'txIn');
             await manager.getRepository(InventoryTransaction).save(txIn);
 
             // ✅ Update FROM (sheet) batch
@@ -503,7 +546,13 @@ export class TransfersService {
               sqmofr: -totalSqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txOut:',
+              JSON.stringify(txOut, null, 2),
+            );
             await manager.getRepository(InventoryTransaction).save(txOut);
 
             //
@@ -519,7 +568,13 @@ export class TransfersService {
               sqmofr: totalSqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txIn:',
+              JSON.stringify(txIn, null, 2),
+            );
             await manager.getRepository(InventoryTransaction).save(txIn);
 
             //
@@ -653,7 +708,13 @@ export class TransfersService {
               sqmofr: -ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txout:',
+              JSON.stringify(txOut, null, 2),
+            );
             await manager.getRepository(InventoryTransaction).save(txOut);
 
             //
@@ -669,7 +730,13 @@ export class TransfersService {
               sqmofr: ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txIn:',
+              JSON.stringify(txIn, null, 2),
+            );
             await manager.getRepository(InventoryTransaction).save(txIn);
 
             //
@@ -737,7 +804,13 @@ export class TransfersService {
               sqmofr: -ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txOut:',
+              JSON.stringify(txOut, null, 2),
+            );
             await manager.getRepository(InventoryTransaction).save(txOut);
 
             // Update Batch
@@ -774,7 +847,13 @@ export class TransfersService {
               sqmofr: ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txIn:',
+              JSON.stringify(txIn, null, 2),
+            );
             await manager.getRepository(InventoryTransaction).save(txIn);
 
             // Update Batch
@@ -811,7 +890,13 @@ export class TransfersService {
               sqmofr: -ti.sqm,
               finalcost: 0,
               finalcostofr: 0,
+              transferId: savedTransfer.id,
+              dateForEachInvoice: new Date(savedTransfer.date),
             });
+            console.log(
+              '📥 about to save txOut:',
+              JSON.stringify(txOut, null, 2),
+            );
             await manager.getRepository(InventoryTransaction).save(txOut);
 
             // Update Batch

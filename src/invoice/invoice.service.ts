@@ -163,6 +163,7 @@ export class InvoiceService {
           quantityofr,
           sqmofr,
           transactionDate: new Date(),
+          dateForEachInvoice: new Date(savedInvoice.date),
         });
       });
 

@@ -275,8 +275,15 @@ export class InventoryTransactionService {
       .leftJoinAndSelect('tx.itemBatch', 'itemBatch');
 
     // ─────────── DEFINE computed “effectiveDate” ───────────
+    // now prefer the explicit dateForEachInvoice column if set
     qb.addSelect(
-      'COALESCE(purchaseInvoice.date, salesInvoice.date, inventoryCount.date, tx.transactionDate)',
+      `COALESCE(
+         tx.dateForEachInvoice,
+         purchaseInvoice.date,
+         salesInvoice.date,
+         inventoryCount.date,
+         tx.transactionDate
+       )`,
       'effectiveDate',
     );
 
@@ -331,6 +338,7 @@ export class InventoryTransactionService {
       qb.andWhere(
         `DATE(
            COALESCE(
+             tx.dateForEachInvoice,
              purchaseInvoice.date,
              salesInvoice.date,
              inventoryCount.date,
@@ -351,48 +359,68 @@ export class InventoryTransactionService {
         }
       }
     }
-    if (query.quantity)
+    if (query.quantity) {
       qb.andWhere('tx.quantity = :quantity', { quantity: query.quantity });
-    if (query.quantityofr)
+    }
+    if (query.quantityofr) {
       qb.andWhere('tx.quantityofr = :quantityofr', {
         quantityofr: query.quantityofr,
       });
-    if (query.sqm) qb.andWhere('tx.sqm = :sqm', { sqm: query.sqm });
-    if (query.sqmofr)
+    }
+    if (query.sqm) {
+      qb.andWhere('tx.sqm = :sqm', { sqm: query.sqm });
+    }
+    if (query.sqmofr) {
       qb.andWhere('tx.sqmofr = :sqmofr', { sqmofr: query.sqmofr });
-    if (query.finalcost)
+    }
+    if (query.finalcost) {
       qb.andWhere('tx.finalcost = :fc', { fc: query.finalcost });
-    if (query.finalcostofr)
+    }
+    if (query.finalcostofr) {
       qb.andWhere('tx.finalcostofr = :fcofr', { fcofr: query.finalcostofr });
-    if (query.status)
+    }
+    if (query.status) {
       qb.andWhere('tx.transactionType = :status', { status: query.status });
-    if (query.unit) qb.andWhere('item.type = :unit', { unit: query.unit });
-    if (query.transactionType)
+    }
+    if (query.unit) {
+      qb.andWhere('item.type = :unit', { unit: query.unit });
+    }
+    if (query.transactionType) {
       qb.andWhere('tx.transactionType = :tt', { tt: query.transactionType });
+    }
     if (query.invoiceNumber) {
       qb.andWhere(
         `(purchaseInvoice.invoiceNumber LIKE :inv OR salesInvoice.invoiceNumber LIKE :inv)`,
         { inv: `%${query.invoiceNumber}%` },
       );
     }
-    if (query.quantityGt)
+    if (query.quantityGt) {
       qb.andWhere('tx.quantity > :quantityGt', {
         quantityGt: query.quantityGt,
       });
-    if (query.quantityLt)
+    }
+    if (query.quantityLt) {
       qb.andWhere('tx.quantity < :quantityLt', {
         quantityLt: query.quantityLt,
       });
-    if (query.sqmGt) qb.andWhere('tx.sqm > :sqmGt', { sqmGt: query.sqmGt });
-    if (query.sqmLt) qb.andWhere('tx.sqm < :sqmLt', { sqmLt: query.sqmLt });
-    if (query.finalcostGt)
+    }
+    if (query.sqmGt) {
+      qb.andWhere('tx.sqm > :sqmGt', { sqmGt: query.sqmGt });
+    }
+    if (query.sqmLt) {
+      qb.andWhere('tx.sqm < :sqmLt', { sqmLt: query.sqmLt });
+    }
+    if (query.finalcostGt) {
       qb.andWhere('tx.finalcost > :fcGt', { fcGt: query.finalcostGt });
-    if (query.finalcostLt)
+    }
+    if (query.finalcostLt) {
       qb.andWhere('tx.finalcost < :fcLt', { fcLt: query.finalcostLt });
+    }
 
     if (query.dateLt) {
       qb.andWhere(
         `COALESCE(
+           tx.dateForEachInvoice,
            purchaseInvoice.date,
            salesInvoice.date,
            inventoryCount.date,
@@ -401,11 +429,10 @@ export class InventoryTransactionService {
         { dateLt: query.dateLt },
       );
     }
-
-    // **after** date
     if (query.dateGt) {
       qb.andWhere(
         `COALESCE(
+           tx.dateForEachInvoice,
            purchaseInvoice.date,
            salesInvoice.date,
            inventoryCount.date,
@@ -420,7 +447,7 @@ export class InventoryTransactionService {
       const dir =
         (query.sortDir || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
       if (query.sortBy === 'date') {
-        // ← sort by the computed alias for true chronological order
+        // now sorts by our new column as part of effectiveDate
         qb.orderBy('effectiveDate', dir);
       } else {
         const columnMap: Record<string, string> = {
@@ -449,14 +476,16 @@ export class InventoryTransactionService {
 
     // ─────────── SHAPE & RETURN ───────────
     const data = transactions.map((tx) => {
-      let invoiceDateRaw: Date | string = tx.transactionDate;
+      // prefer the new dateForEachInvoice if set, otherwise fall back
+      let invoiceDateRaw: Date | string =
+        tx.dateForEachInvoice || tx.transactionDate;
       if (tx.transactionType === 'purchase') {
         invoiceDateRaw =
           tx.purchaseInvoiceItem?.invoice?.date ?? invoiceDateRaw;
       } else if (tx.transactionType === 'sale') {
         invoiceDateRaw = tx.invoiceItem?.invoice?.date ?? invoiceDateRaw;
-      } else {
-        invoiceDateRaw = tx.inventoryCount?.date ?? invoiceDateRaw;
+      } else if (tx.inventoryCount) {
+        invoiceDateRaw = tx.inventoryCount.date ?? invoiceDateRaw;
       }
 
       const invoiceNumber =
@@ -486,7 +515,7 @@ export class InventoryTransactionService {
         sheetsPerBox: Number(v.sheetsPerBox),
         origin: v.origin,
         itemType: i.type,
-        invoiceDate: new Date(invoiceDateRaw).toISOString().split('T')[0],
+        invoiceDate: new Date(invoiceDateRaw).toISOString().slice(0, 10),
         invoiceNumber,
         itemBatch: tx.itemBatch
           ? {
@@ -505,7 +534,12 @@ export class InventoryTransactionService {
         totalSQM: acc.totalSQM + Number(tx.sqm),
         totalSQMOFR: acc.totalSQMOFR + Number(tx.sqmofr),
       }),
-      { totalQuantity: 0, totalQuantityOFR: 0, totalSQM: 0, totalSQMOFR: 0 },
+      {
+        totalQuantity: 0,
+        totalQuantityOFR: 0,
+        totalSQM: 0,
+        totalSQMOFR: 0,
+      },
     );
 
     return { data, totals, totalRecords };
