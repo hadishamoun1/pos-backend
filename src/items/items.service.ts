@@ -124,6 +124,7 @@ export class ItemsService {
     itemName: string;
     type: 'box' | 'sheet' | 'sqm';
     descriptions?: Array<{
+      itemNumber: string;
       categoryName: string;
       subCategory: string;
       colorName: string;
@@ -175,6 +176,7 @@ export class ItemsService {
       // Step 4: Create and save descriptions
       const descEntities = descriptions.map((desc) =>
         this.itemNameDescriptionRepository.create({
+          itemNumber: desc.itemNumber,
           categoryName: desc.categoryName,
           subCategory: desc.subCategory,
           colorName: desc.colorName,
@@ -225,6 +227,7 @@ export class ItemsService {
     for (const desc of descriptions) {
       const exists = item.descriptions?.some(
         (d) =>
+          d.itemNumber === desc.itemNumber &&
           d.categoryName === desc.categoryName &&
           d.subCategory === desc.subCategory &&
           d.colorName === desc.colorName &&
@@ -233,8 +236,12 @@ export class ItemsService {
 
       if (!exists) {
         const newDesc = this.itemNameDescriptionRepository.create({
-          ...desc,
-          item,
+          item: item,
+          itemNumber: desc.itemNumber,
+          categoryName: desc.categoryName,
+          subCategory: desc.subCategory,
+          colorName: desc.colorName,
+          designName: desc.designName,
         });
         await this.itemNameDescriptionRepository.save(newDesc);
         item.descriptions.push(newDesc);
@@ -261,6 +268,7 @@ export class ItemsService {
         const matchingDesc = descriptions[i]
           ? await this.itemNameDescriptionRepository.findOne({
               where: {
+                itemNumber:   descriptions[i].itemNumber,
                 categoryName: descriptions[i].categoryName,
                 subCategory: descriptions[i].subCategory,
                 colorName: descriptions[i].colorName,

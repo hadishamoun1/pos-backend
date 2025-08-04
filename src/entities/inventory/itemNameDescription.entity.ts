@@ -25,6 +25,9 @@ export class ItemNameDescription {
   @Column()
   designName: string;
 
+  @Column({ type: 'varchar', length: 50,  nullable: true })
+  itemNumber: string;
+
   @ManyToOne(() => Item, (item) => item.descriptions, {
     onDelete: 'CASCADE',
   })
