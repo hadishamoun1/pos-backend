@@ -114,6 +114,7 @@ export class ItemsService {
         'batch.id',
         'batch.condition',
         'batch.dateReceived',
+        'batch.balanceOFR',
       ])
       .orderBy('description.id', 'DESC')
       .getMany();

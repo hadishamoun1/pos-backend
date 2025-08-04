@@ -32,11 +32,4 @@ export class ItemNameDescription {
 
   @Column()
   itemId: number;
-
-  @ManyToOne(() => ItemVariant, { nullable: true })
-  @JoinColumn()
-  itemVariant: ItemVariant;
-
-  @Column({ nullable: true })
-  itemVariantId: number;
 }

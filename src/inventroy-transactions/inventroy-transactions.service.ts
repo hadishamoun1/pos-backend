@@ -142,6 +142,12 @@ export class InventoryTransactionService {
       invoiceNumber: string;
       itemBatch: { id: number; condition: string; dateReceived: string } | null;
       transfer: { id: number; transferNumber: string; date: string } | null;
+      description: {
+        categoryName: string;
+        subCategory: string;
+        colorName: string;
+        designName: string;
+      } | null;
     }>;
     totals: {
       totalQuantity: number;
@@ -156,6 +162,7 @@ export class InventoryTransactionService {
       .leftJoinAndSelect('tx.itemVariant', 'itemVariant')
       .leftJoinAndSelect('itemVariant.thickness', 'thickness')
       .leftJoinAndSelect('thickness.item', 'item')
+      .leftJoinAndSelect('itemVariant.itemNameDescription', 'itemDesc') // ← new join
       .leftJoinAndSelect('tx.purchaseInvoiceItem', 'purchaseInvoiceItem')
       .leftJoinAndSelect('purchaseInvoiceItem.invoice', 'purchaseInvoice')
       .leftJoinAndSelect('tx.invoiceItem', 'invoiceItem')
@@ -176,20 +183,18 @@ export class InventoryTransactionService {
       .getMany();
 
     const formatTx = (tx: any) => {
-      // default fallback
+      // pick the correct date & number
       let dateSrc: Date | string = tx.transactionDate;
       let numberSrc = '—';
-
-      // pick the non-null relation:
-      if (tx.purchaseInvoiceItemId != null && tx.purchaseInvoiceItem?.invoice) {
+      if (tx.purchaseInvoiceItemId && tx.purchaseInvoiceItem?.invoice) {
         dateSrc = tx.purchaseInvoiceItem.invoice.date;
         numberSrc = tx.purchaseInvoiceItem.invoice.invoiceNumber;
-      } else if (tx.invoiceItemId != null && tx.invoiceItem?.invoice) {
+      } else if (tx.invoiceItemId && tx.invoiceItem?.invoice) {
         dateSrc = tx.invoiceItem.invoice.date;
         numberSrc = tx.invoiceItem.invoice.invoiceNumber;
-      } else if (tx.inventoryCountId != null && tx.inventoryCount?.date) {
+      } else if (tx.inventoryCountId && tx.inventoryCount?.date) {
         dateSrc = tx.inventoryCount.date;
-      } else if (tx.transferId != null && tx.transfer) {
+      } else if (tx.transferId && tx.transfer) {
         dateSrc = tx.transfer.date;
         numberSrc = tx.transfer.transferNumber;
       }
@@ -197,6 +202,7 @@ export class InventoryTransactionService {
       const v = tx.itemVariant!;
       const t = v.thickness!;
       const i = t.item!;
+      const desc = v.itemNameDescription; // ← pulled in via join
 
       return {
         id: tx.id,
@@ -228,6 +234,14 @@ export class InventoryTransactionService {
               id: tx.transfer.id,
               transferNumber: tx.transfer.transferNumber,
               date: new Date(tx.transfer.date).toISOString().split('T')[0],
+            }
+          : null,
+        description: desc
+          ? {
+              categoryName: desc.categoryName,
+              subCategory: desc.subCategory,
+              colorName: desc.colorName,
+              designName: desc.designName,
             }
           : null,
       };
