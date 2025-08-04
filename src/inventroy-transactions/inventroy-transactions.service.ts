@@ -277,6 +277,7 @@ export class InventoryTransactionService {
       .leftJoinAndSelect('tx.itemVariant', 'itemVariant')
       .leftJoinAndSelect('itemVariant.thickness', 'thickness')
       .leftJoinAndSelect('thickness.item', 'item')
+      .leftJoinAndSelect('itemVariant.itemNameDescription', 'itemDesc')
       // purchase
       .leftJoinAndSelect('tx.purchaseInvoiceItem', 'purchaseInvoiceItem')
       .leftJoinAndSelect('purchaseInvoiceItem.invoice', 'purchaseInvoice')
@@ -302,6 +303,19 @@ export class InventoryTransactionService {
     );
 
     // ─────────── FILTERS ───────────
+
+    if (query.category) {
+      qb.andWhere('itemDesc.categoryName LIKE :category', {
+        category: `%${query.category}%`,
+      });
+    }
+
+    if (query.subCategory) {
+      qb.andWhere('itemDesc.subCategory LIKE :subCategory', {
+        subCategory: `%${query.subCategory}%`,
+      });
+    }
+
     if (query.itemBatchId) {
       qb.andWhere('itemBatch.id = :itemBatchId', {
         itemBatchId: query.itemBatchId,
@@ -512,6 +526,7 @@ export class InventoryTransactionService {
       const v = tx.itemVariant!;
       const t = v.thickness!;
       const i = t.item!;
+      const desc = v.itemNameDescription!;
 
       return {
         id: tx.id,
@@ -531,6 +546,10 @@ export class InventoryTransactionService {
         itemType: i.type,
         invoiceDate: new Date(invoiceDateRaw).toISOString().slice(0, 10),
         invoiceNumber,
+        category: desc.categoryName,
+        subCategory: desc.subCategory,
+        color: desc.colorName,
+        design: desc.designName,
         itemBatch: tx.itemBatch
           ? {
               id: tx.itemBatch.id,
