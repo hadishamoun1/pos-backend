@@ -90,11 +90,6 @@ export class ItemsService {
         'item.itemName',
         'item.type',
 
-        'description.id',
-        'description.categoryName',
-        'description.subCategory',
-        'description.colorName',
-        'description.designName',
 
         'thickness.id',
         'thickness.thickness',
@@ -106,6 +101,7 @@ export class ItemsService {
         'variant.origin',
 
         'variantDescription.id',
+        'variantDescription.itemNumber',
         'variantDescription.categoryName',
         'variantDescription.subCategory',
         'variantDescription.colorName',
@@ -268,7 +264,7 @@ export class ItemsService {
         const matchingDesc = descriptions[i]
           ? await this.itemNameDescriptionRepository.findOne({
               where: {
-                itemNumber:   descriptions[i].itemNumber,
+                itemNumber: descriptions[i].itemNumber,
                 categoryName: descriptions[i].categoryName,
                 subCategory: descriptions[i].subCategory,
                 colorName: descriptions[i].colorName,
