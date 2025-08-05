@@ -52,7 +52,6 @@ export class PurchaseInvoiceItem {
   @Column({ type: 'int', nullable: true })
   numberOfContainers: number;
 
-
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   cfr: number;
 
@@ -71,4 +70,57 @@ export class PurchaseInvoiceItem {
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   costpercentage: number;
 
+  // ───────── NEW PREVIOUS QUANTITIES ─────────
+
+  /** Quantity on hand before this invoice */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  previousQuantity: number;
+
+  /** Previous quantity × C (e.g. local currency) */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  previousQuantityC: number;
+
+  /** Previous quantity × VM (e.g. vendor margin) */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  previousQuantityVM: number;
+
+  /** Previous quantity × C × VM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  previousQuantityCVM: number;
+
+  // ───────── NEW PREVIOUS AVERAGE COSTS ─────────
+
+  /** Average cost before this invoice */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  previousAverageCost: number;
+
+  /** Previous average cost × C */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  previousAverageCostC: number;
+
+  /** Previous average cost × VM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  previousAverageCostVM: number;
+
+  /** Previous average cost × C × VM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  previousAverageCostCVM: number;
+
+  // ───────── NEW RUNNING AVERAGE COSTS ─────────
+
+  /** New average cost after this invoice */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  averageCost: number;
+
+  /** New average cost × C */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  averageCostC: number;
+
+  /** New average cost × VM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  averageCostVM: number;
+
+  /** New average cost × C × VM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  averageCostCVM: number;
 }
