@@ -50,4 +50,38 @@ export class InvoiceItem {
   vat: number;
   @Column({ type: 'int', default: 1 })
   quantity: number;
+
+  // ─── New cost tracking columns ────────────────────
+
+  /** Weighted average cost */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  averageCost: number;
+
+  /** Weighted average cost in C currency */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  averageCostC: number;
+
+  /** Weighted average cost VM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  averageCostVM: number;
+
+  /** Weighted average cost CVM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  averageCostCVM: number;
+
+  /** Most recent unit cost */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  lastCost: number;
+
+  /** Most recent unit cost in C currency */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  lastCostC: number;
+
+  /** Most recent unit cost VM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  lastCostVM: number;
+
+  /** Most recent unit cost CVM */
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  lastCostCVM: number;
 }
