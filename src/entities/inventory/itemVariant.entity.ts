@@ -78,5 +78,16 @@ export class ItemVariant {
 
   @Column({ nullable: true })
   itemNameDescriptionId: number;
-  
+
+  @Column('decimal', { precision: 12, scale: 2, nullable: true })
+  averageCost: number;
+
+  @Column('decimal', { precision: 12, scale: 2, nullable: true })
+  averageCostVM: number;
+
+  @Column('decimal', { precision: 12, scale: 2, nullable: true })
+  lastCost: number;
+
+  @Column('decimal', { precision: 12, scale: 2, nullable: true })
+  lastCostVM: number;
 }

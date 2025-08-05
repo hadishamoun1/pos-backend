@@ -25,8 +25,20 @@ export class ItemNameDescription {
   @Column()
   designName: string;
 
-  @Column({ type: 'varchar', length: 50,  nullable: true })
+  @Column({ type: 'varchar', length: 50, nullable: true })
   itemNumber: string;
+
+  @Column('decimal', { precision: 12, scale: 2, nullable: true })
+  averageCostC: number;
+
+  @Column('decimal', { precision: 12, scale: 2, nullable: true })
+  averageCostCVM: number;
+
+  @Column('decimal', { precision: 12, scale: 2, nullable: true })
+  lastCostC: number;
+
+  @Column('decimal', { precision: 12, scale: 2, nullable: true })
+  lastCostCVM: number;
 
   @ManyToOne(() => Item, (item) => item.descriptions, {
     onDelete: 'CASCADE',
