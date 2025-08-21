@@ -499,6 +499,38 @@ export class InventoryTransactionService {
       );
     }
 
+    // ─────────── OPTIONAL FILTERS FOR NEW PII FIELDS (ADDED) ───────────
+    const piiFields = [
+      'previousQuantity',
+      'previousQuantityC',
+      'previousQuantityVM',
+      'previousQuantityCVM',
+      'previousAverageCost',
+      'previousAverageCostC',
+      'previousAverageCostVM',
+      'previousAverageCostCVM',
+      'averageCost',
+      'averageCostC',
+      'averageCostVM',
+      'averageCostCVM',
+    ] as const;
+
+    for (const f of piiFields) {
+      const eq = query[f];
+      const gt = query[`${f}Gt`];
+      const lt = query[`${f}Lt`];
+
+      if (eq !== undefined) {
+        qb.andWhere(`purchaseInvoiceItem.${f} = :${f}`, { [f]: eq });
+      }
+      if (gt !== undefined) {
+        qb.andWhere(`purchaseInvoiceItem.${f} > :${f}Gt`, { [`${f}Gt`]: gt });
+      }
+      if (lt !== undefined) {
+        qb.andWhere(`purchaseInvoiceItem.${f} < :${f}Lt`, { [`${f}Lt`]: lt });
+      }
+    }
+
     // ──────────────────── SORTING ────────────────────
     if (query.sortBy) {
       const dir =
@@ -515,6 +547,20 @@ export class InventoryTransactionService {
           finalcost: 'tx.finalcost',
           finalcostofr: 'tx.finalcostofr',
           batchDate: 'itemBatch.dateReceived',
+
+          // ───── NEW: allow sorting by PII cost/quantity fields (ADDED)
+          previousQuantity: 'purchaseInvoiceItem.previousQuantity',
+          previousQuantityC: 'purchaseInvoiceItem.previousQuantityC',
+          previousQuantityVM: 'purchaseInvoiceItem.previousQuantityVM',
+          previousQuantityCVM: 'purchaseInvoiceItem.previousQuantityCVM',
+          previousAverageCost: 'purchaseInvoiceItem.previousAverageCost',
+          previousAverageCostC: 'purchaseInvoiceItem.previousAverageCostC',
+          previousAverageCostVM: 'purchaseInvoiceItem.previousAverageCostVM',
+          previousAverageCostCVM: 'purchaseInvoiceItem.previousAverageCostCVM',
+          averageCost: 'purchaseInvoiceItem.averageCost',
+          averageCostC: 'purchaseInvoiceItem.averageCostC',
+          averageCostVM: 'purchaseInvoiceItem.averageCostVM',
+          averageCostCVM: 'purchaseInvoiceItem.averageCostCVM',
         };
         qb.orderBy(columnMap[query.sortBy] || `tx.${query.sortBy}`, dir);
       }
@@ -532,6 +578,10 @@ export class InventoryTransactionService {
       .getManyAndCount();
 
     // ─────────── SHAPE & RETURN ───────────
+    // helper to convert nullable numerics (ADDED)
+    const toNumOrNull = (v: any) =>
+      v === null || v === undefined ? null : Number(v);
+
     const data = transactions.map((tx) => {
       // prefer the new dateForEachInvoice if set, otherwise fall back
       let invoiceDateRaw: Date | string =
@@ -556,6 +606,9 @@ export class InventoryTransactionService {
       const t = v.thickness!;
       const i = t.item!;
       const desc = v.itemNameDescription!;
+
+      // reference to purchase item (only present for purchases) (ADDED)
+      const pii = tx.purchaseInvoiceItem;
 
       return {
         id: tx.id,
@@ -586,6 +639,22 @@ export class InventoryTransactionService {
               dateReceived: tx.itemBatch.dateReceived,
             }
           : null,
+
+        // ───────── NEW: expose all PII costs/quantities (null for non-purchase rows) (ADDED)
+        previousQuantity: toNumOrNull(pii?.previousQuantity),
+        previousQuantityC: toNumOrNull(pii?.previousQuantityC),
+        previousQuantityVM: toNumOrNull(pii?.previousQuantityVM),
+        previousQuantityCVM: toNumOrNull(pii?.previousQuantityCVM),
+
+        previousAverageCost: toNumOrNull(pii?.previousAverageCost),
+        previousAverageCostC: toNumOrNull(pii?.previousAverageCostC),
+        previousAverageCostVM: toNumOrNull(pii?.previousAverageCostVM),
+        previousAverageCostCVM: toNumOrNull(pii?.previousAverageCostCVM),
+
+        averageCost: toNumOrNull(pii?.averageCost),
+        averageCostC: toNumOrNull(pii?.averageCostC),
+        averageCostVM: toNumOrNull(pii?.averageCostVM),
+        averageCostCVM: toNumOrNull(pii?.averageCostCVM),
       };
     });
 
