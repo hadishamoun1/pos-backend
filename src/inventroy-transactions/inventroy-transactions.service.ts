@@ -148,6 +148,19 @@ export class InventoryTransactionService {
         colorName: string;
         designName: string;
       } | null;
+
+      // ───────── NEW FIELDS FROM PurchaseInvoiceItem ─────────
+      previousQuantity: number | null;
+      previousQuantityC: number | null;
+      previousQuantityVM: number | null;
+      previousAverageCost: number | null;
+      previousAverageCostC: number | null;
+      previousAverageCostVM: number | null;
+      previousAverageCostCVM: number | null;
+      averageCost: number | null;
+      averageCostC: number | null;
+      averageCostCVM: number | null;
+      averageCostVM: number | null;
     }>;
     totals: {
       totalQuantity: number;
@@ -162,8 +175,8 @@ export class InventoryTransactionService {
       .leftJoinAndSelect('tx.itemVariant', 'itemVariant')
       .leftJoinAndSelect('itemVariant.thickness', 'thickness')
       .leftJoinAndSelect('thickness.item', 'item')
-      .leftJoinAndSelect('itemVariant.itemNameDescription', 'itemDesc') // ← new join
-      .leftJoinAndSelect('tx.purchaseInvoiceItem', 'purchaseInvoiceItem')
+      .leftJoinAndSelect('itemVariant.itemNameDescription', 'itemDesc')
+      .leftJoinAndSelect('tx.purchaseInvoiceItem', 'purchaseInvoiceItem') // already present
       .leftJoinAndSelect('purchaseInvoiceItem.invoice', 'purchaseInvoice')
       .leftJoinAndSelect('tx.invoiceItem', 'invoiceItem')
       .leftJoinAndSelect('invoiceItem.invoice', 'salesInvoice')
@@ -202,7 +215,10 @@ export class InventoryTransactionService {
       const v = tx.itemVariant!;
       const t = v.thickness!;
       const i = t.item!;
-      const desc = v.itemNameDescription; // ← pulled in via join
+      const desc = v.itemNameDescription;
+
+      // ───────── PII FIELDS ─────────
+      const pii = tx.purchaseInvoiceItem || {};
 
       return {
         id: tx.id,
@@ -244,6 +260,19 @@ export class InventoryTransactionService {
               designName: desc.designName,
             }
           : null,
+
+        // ───────── NEW FIELDS FROM PurchaseInvoiceItem ─────────
+        previousQuantity: pii.previousQuantity ?? null,
+        previousQuantityC: pii.previousQuantityC ?? null,
+        previousQuantityVM: pii.previousQuantityVM ?? null,
+        previousAverageCost: pii.previousAverageCost ?? null,
+        previousAverageCostC: pii.previousAverageCostC ?? null,
+        previousAverageCostVM: pii.previousAverageCostVM ?? null,
+        previousAverageCostCVM: pii.previousAverageCostCVM ?? null,
+        averageCost: pii.averageCost ?? null,
+        averageCostC: pii.averageCostC ?? null,
+        averageCostCVM: pii.averageCostCVM ?? null,
+        averageCostVM: pii.averageCostVM ?? null,
       };
     };
 

@@ -6,7 +6,7 @@ db_connection = mysql.connector.connect(
     host="localhost",
     user="root",
     password="70631859HADI",
-    database="pos_system_db"
+    database="new_schema"
 )
 cursor = db_connection.cursor()
 

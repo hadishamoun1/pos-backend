@@ -12,10 +12,12 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      ItemNameDescription,
       PurchaseInvoice,
       PurchaseInvoiceItem,
       UnitPriceModalRow,
