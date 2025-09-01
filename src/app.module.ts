@@ -40,7 +40,7 @@ import { ItemNameDescriptionModule } from './item-name-description/item-name-des
       port: 3306,
       username: 'root',
       password: '70631859HADI',
-      database: 'my_new_database',
+      database: 'new_schema',
       autoLoadEntities: true,
       synchronize: true,
     }),
