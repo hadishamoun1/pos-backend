@@ -289,7 +289,7 @@ console.log('📄 New invoice number:', invoiceNumber);
       details.push(
         this.journalVoucherDetailRepo.create({
           customerId: data.customerId,
-          description: isReturn ? 'Fake Sales Invoice' : 'Sales Invoice',
+          description: isReturn ? 'فاتورة' : 'فاتورة',
           currency: currencyCode,
            docNbr, 
           ...getJVFields('dr', total, totalLL),
@@ -304,7 +304,7 @@ console.log('📄 New invoice number:', invoiceNumber);
       details.push(
         this.journalVoucherDetailRepo.create({
           accountId: salesAccount.id,
-          description: 'فاتورة',
+          description: 'Sales Revenue',
           currency: currencyCode,
            docNbr, 
           ...getJVFields('cr', salesCrAmount, salesCrAmountLL),

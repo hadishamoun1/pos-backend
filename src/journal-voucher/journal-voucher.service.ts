@@ -9,6 +9,7 @@ import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
 import { CurrencyRate } from '../entities/currencyRate.entity';
+import { Customer } from 'src/entities/customer.entity';
 
 @Injectable()
 export class JournalVoucherService {
@@ -21,6 +22,8 @@ export class JournalVoucherService {
     private readonly accountRepository: Repository<Account>,
     @InjectRepository(CurrencyRate)
     private readonly currencyRateRepository: Repository<CurrencyRate>,
+    @InjectRepository(Customer)
+    private readonly customerRepo: Repository<Customer>,
   ) {}
 
   async createJournalVoucher(data: {
@@ -179,27 +182,74 @@ export class JournalVoucherService {
     });
   }
 
-  async getCustomerStatementOFR(params: {
+async getCustomerStatementOFR(params: {
   customerId: number;
-  currency?: 'USD' | 'LL' | 'EURO' | 'BASE';
+  type?: 'S' | 'G' | 'ALL';
   from?: string; // 'YYYY-MM-DD'
   to?: string;   // 'YYYY-MM-DD'
 }) {
-  const { customerId, currency = 'USD', from, to } = params;
+  const { customerId, type = 'ALL', from, to } = params;
 
-  // OFR column mapping
-  const colMap = {
+  // 1) Load customer & infer currency
+  const customer = await this.customerRepo.findOne({
+    where: { id: customerId },
+    relations: ['currency'],
+  });
+  if (!customer) throw new NotFoundException(`Customer ${customerId} not found`);
+
+  let currencyCode =
+    (customer as any)?.currency?.code as 'USD' | 'LL' | 'EURO' | 'BASE' | undefined;
+  if (!currencyCode) {
+    // fallback mapping if you don't store a code
+    currencyCode = customer.currencyId === 2 ? 'LL' : 'USD';
+  }
+
+  // 2) Column maps
+  // OFR columns (used for G rows)
+  const ofrColMap = {
     USD:  { dr: 'drUSDOFR',  cr: 'crUSDOFR'  },
     LL:   { dr: 'drLLOFR',   cr: 'crLLOFR'   },
-    EURO: { dr: 'drOFR',     cr: 'crOFR'     }, // no dedicated EURO OFR columns; use base OFR
+    EURO: { dr: 'drOFR',     cr: 'crOFR'     },
     BASE: { dr: 'drOFR',     cr: 'crOFR'     },
   } as const;
+  // Non-OFR columns (used for S rows)
+  const baseColMap = {
+    USD:  { dr: 'drUSD',  cr: 'crUSD'  },
+    LL:   { dr: 'drLL',   cr: 'crLL'   },
+    EURO: { dr: 'dr',     cr: 'cr'     }, // base amounts
+    BASE: { dr: 'dr',     cr: 'cr'     },
+  } as const;
 
-  const pair = colMap[currency] ?? colMap.USD;
-  const drCol = pair.dr as keyof JournalVoucherDetail;
-  const crCol = pair.cr as keyof JournalVoucherDetail;
+  // Helper to choose the correct column pair for a row kind
+  const getColsFor = (rowKind: 'S' | 'G') => {
+    if (rowKind === 'S') {
+      const p = baseColMap[currencyCode] ?? baseColMap.USD;
+      return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
+    } else {
+      const p = ofrColMap[currencyCode] ?? ofrColMap.USD;
+      return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
+    }
+  };
 
-  // Query rows for period
+  // 3) Type filter based on docNbr
+  const applyTypeFilter = (
+    qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
+  ) => {
+    if (type === 'S') {
+      qb.andWhere('d.docNbr LIKE :sPrefix', { sPrefix: 'S%' });
+    } else if (type === 'G') {
+      qb.andWhere('d.docNbr LIKE :gPrefix', { gPrefix: 'G%' });
+    } else {
+      // ALL → include only S and G
+      qb.andWhere('(d.docNbr LIKE :sPrefix OR d.docNbr LIKE :gPrefix)', {
+        sPrefix: 'S%',
+        gPrefix: 'G%',
+      });
+    }
+    return qb;
+  };
+
+  // 4) Main period query
   const qb = this.journalVoucherDetailRepository
     .createQueryBuilder('d')
     .leftJoinAndSelect('d.journalVoucher', 'jv')
@@ -209,31 +259,48 @@ export class JournalVoucherService {
   if (from) qb.andWhere('jv.date >= :from', { from });
   if (to)   qb.andWhere('jv.date <= :to',   { to });
 
+  applyTypeFilter(qb);
   qb.orderBy('jv.date', 'ASC').addOrderBy('d.id', 'ASC');
 
   const rows = await qb.getMany();
 
-  // Opening balance before "from" (OFR columns only)
+  // 5) Opening balance (apply same type filter and choose columns per row)
   let openingBalance = 0;
   if (from) {
-    const beforeRows = await this.journalVoucherDetailRepository
+    const beforeQb = this.journalVoucherDetailRepository
       .createQueryBuilder('d')
       .leftJoin('d.journalVoucher', 'jv')
       .where('d.customerId = :customerId', { customerId })
-      .andWhere('jv.date < :from', { from })
-      .getMany();
+      .andWhere('jv.date < :from', { from });
 
-    const openingDr = beforeRows.reduce((s, r) => s + Number(r[drCol] || 0), 0);
-    const openingCr = beforeRows.reduce((s, r) => s + Number(r[crCol] || 0), 0);
+    applyTypeFilter(beforeQb);
+
+    const beforeRows = await beforeQb.getMany();
+
+    let openingDr = 0;
+    let openingCr = 0;
+    for (const r of beforeRows) {
+      const rowKind: 'S' | 'G' =
+        r.docNbr?.startsWith('S') ? 'S' :
+        r.docNbr?.startsWith('G') ? 'G' : 'S'; // default to S if somehow missing
+      const { drCol, crCol } = getColsFor(rowKind);
+      openingDr += Number((r as any)[drCol] || 0);
+      openingCr += Number((r as any)[crCol] || 0);
+    }
     openingBalance = openingDr - openingCr;
   }
 
-  // Build items + running balance; include exchange rate fields conditionally
+  // 6) Build items with running balance (row-by-row column selection)
   let running = openingBalance;
-
   const items = rows.map((r) => {
-    const debit  = Number(r[drCol] || 0);
-    const credit = Number(r[crCol] || 0);
+    const rowKind: 'S' | 'G' =
+      r.docNbr?.startsWith('S') ? 'S' :
+      r.docNbr?.startsWith('G') ? 'G' : 'S';
+
+    const { drCol, crCol } = getColsFor(rowKind);
+
+    const debit  = Number((r as any)[drCol] || 0);
+    const credit = Number((r as any)[crCol] || 0);
     running += debit - credit;
 
     return {
@@ -241,12 +308,14 @@ export class JournalVoucherService {
       date: r.journalVoucher?.date,
       jvNumber: r.journalVoucher?.jvNumber,
       description: r.description ?? null,
+      docNbr: r.docNbr ?? null,
+      kind: rowKind, // S or G (for clarity in UI)
       debit,
       credit,
       balanceAfter: running,
-      // Include the relevant exchange rate fields for the selected currency
-      exRateUSD: currency === 'LL' ? Number(r.exRateUSD || 0) : undefined,
-      exRateEUROToUSD: currency === 'EURO' ? Number(r.exRateEUROToUSD || 0) : undefined,
+      // optional exchange-rate fields
+      exRateUSD: currencyCode === 'LL'   ? Number(r.exRateUSD || 0)        : undefined,
+      exRateEUROToUSD: currencyCode === 'EURO' ? Number(r.exRateEUROToUSD || 0) : undefined,
     };
   });
 
@@ -259,10 +328,25 @@ export class JournalVoucherService {
     { totalDebit: 0, totalCredit: 0 }
   );
 
+  // 7) Basis info for debugging
+  let basis:
+    | { mode: 'S' | 'G'; debitColumn: string; creditColumn: string }
+    | { mode: 'MIXED' } =
+    type === 'ALL'
+      ? { mode: 'MIXED' }
+      : {
+          mode: type,
+          ...(() => {
+            const cols = getColsFor(type);
+            return { debitColumn: cols.drCol as string, creditColumn: cols.crCol as string };
+          })(),
+        };
+
   return {
     customerId,
-    currency,
-    basis: { debitColumn: drCol, creditColumn: crCol }, // which OFR pair was used
+    currency: currencyCode,
+    type, // S | G | ALL
+    basis,
     from: from ?? null,
     to: to ?? null,
     openingBalance,
@@ -271,5 +355,7 @@ export class JournalVoucherService {
     items,
   };
 }
+
+
 
 }

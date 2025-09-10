@@ -6,6 +6,7 @@ import { Account } from '../entities/account.entity';
 import { CurrencyRate } from '../entities/currencyRate.entity';
 import { JournalVoucherService } from './journal-voucher.service';
 import { JournalVoucherController } from './journal-voucher.controller';
+import { Customer } from 'src/entities/customer.entity';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { JournalVoucherController } from './journal-voucher.controller';
       JournalVoucherDetail,
       Account,
       CurrencyRate,
+      Customer
     ]),
   ],
   controllers: [JournalVoucherController],
