@@ -26,93 +26,129 @@ export class JournalVoucherService {
     private readonly customerRepo: Repository<Customer>,
   ) {}
 
-  async createJournalVoucher(data: {
-    date: Date;
-    jvType: string;
-    details: {
-      accountId: number; // Each entry specifies its own accountId
-      description?: string | null;
-      debit: string;
-      debitUSD: string;
-      debitLL: string;
-      credit: string;
-      creditUSD: string;
-      creditLL: string;
-      currency: string;
-      exchangeRateEURtoUSD: string;
-      exchangeRate: string;
-      docNbr?: string | null;
-    }[];
-  }): Promise<JournalVoucher> {
-    const { date, jvType, details } = data;
+ async createJournalVoucher(data: {
+  date: Date;
+  jvType: string; // 'S' | 'G' | 'SR'
+  details: {
+    // Exactly one of these three must be provided:
+    accountId?: number;
+    customerId?: number;
+    supplierId?: number;
 
-    // Validate jvType
-    if (!jvType || !['S', 'G'].includes(jvType)) {
-      throw new BadRequestException('Invalid JV type. Must be "S" or "G".');
-    }
+    description?: string | null;
+    debit: string;
+    debitUSD: string;
+    debitLL: string;
+    credit: string;
+    creditUSD: string;
+    creditLL: string;
+    currency: string;
+    exchangeRateEURtoUSD: string;
+    exchangeRate: string;
+    docNbr?: string | null;
+  }[];
+}): Promise<JournalVoucher> {
+  const { date, jvType, details } = data;
 
-    // Validate details
-    if (!details || details.length === 0) {
-      throw new BadRequestException('Voucher must have at least one detail.');
-    }
-
-    // Generate JV Number
-    const prefix = jvType === 'S' ? 'JV' : 'JVG';
-    const lastVoucher = await this.journalVoucherRepository.find({
-      where: { jvNumber: Like(`${prefix} - %`) },
-      order: { jvNumber: 'DESC' },
-      take: 1,
-    });
-
-    const nextNumber =
-      lastVoucher.length > 0
-        ? parseInt(lastVoucher[0].jvNumber.split(' - ')[1], 10) + 1
-        : 1;
-    const jvNumber = `${prefix} - ${String(nextNumber).padStart(5, '0')}`;
-
-    // Prepare details
-    const resolvedDetails = details.map((detail) => {
-      return this.journalVoucherDetailRepository.create({
-        accountId: detail.accountId, // Use entry-specific accountId
-        description: detail.description || null,
-        dr: parseFloat(detail.debit),
-        drUSD: parseFloat(detail.debitUSD),
-        drLL: parseFloat(detail.debitLL),
-        cr: parseFloat(detail.credit),
-        crUSD: parseFloat(detail.creditUSD),
-        crLL: parseFloat(detail.creditLL),
-        currency: detail.currency,
-        exRateEUROToUSD: parseFloat(detail.exchangeRateEURtoUSD) || 0,
-        exRateUSD: parseFloat(detail.exchangeRate),
-        docNbr: detail.docNbr || null,
-      });
-    });
-
-    // Calculate totals
-    const totalDr = resolvedDetails.reduce((sum, d) => sum + d.dr, 0);
-    const totalDrUSD = resolvedDetails.reduce((sum, d) => sum + d.drUSD, 0);
-    const totalDrLL = resolvedDetails.reduce((sum, d) => sum + d.drLL, 0);
-    const totalCr = resolvedDetails.reduce((sum, d) => sum + d.cr, 0);
-    const totalCrUSD = resolvedDetails.reduce((sum, d) => sum + d.crUSD, 0);
-    const totalCrLL = resolvedDetails.reduce((sum, d) => sum + d.crLL, 0);
-
-    // Create the JournalVoucher entity
-    const journalVoucher = this.journalVoucherRepository.create({
-      date,
-      jvType,
-      jvNumber,
-      totalDr,
-      totalDrUSD,
-      totalDrLL,
-      totalCr,
-      totalCrUSD,
-      totalCrLL,
-      details: resolvedDetails,
-    });
-
-    // Save the journal voucher
-    return this.journalVoucherRepository.save(journalVoucher);
+  // 1) Validate JV type (UI uses S, G, SR)
+  if (!jvType || !['S', 'G', 'SR'].includes(jvType)) {
+    throw new BadRequestException('Invalid JV type. Must be "S", "G", or "SR".');
   }
+
+  // 2) Validate details exist
+  if (!details || details.length === 0) {
+    throw new BadRequestException('Voucher must have at least one detail.');
+  }
+
+  // 3) Generate JV number
+  const prefix = jvType === 'G' ? 'JVG' : 'JV';
+  const lastVoucher = await this.journalVoucherRepository.find({
+    where: { jvNumber: Like(`${prefix} - %`) },
+    order: { jvNumber: 'DESC' },
+    take: 1,
+  });
+
+  const nextNumber =
+    lastVoucher.length > 0
+      ? parseInt(lastVoucher[0].jvNumber.split(' - ')[1], 10) + 1
+      : 1;
+  const jvNumber = `${prefix} - ${String(nextNumber).padStart(5, '0')}`;
+
+  // helper to parse numbers safely (handles "", null, commas)
+  const toN = (v: any) => {
+    if (v === null || v === undefined) return 0;
+    const s = String(v).replace(/,/g, '');
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  // 4) Map input rows → entity rows with correct target column
+  const resolvedDetails = details.map((detail, idx) => {
+    const setFlags = [
+      detail.accountId ? 1 : 0,
+      detail.customerId ? 1 : 0,
+      detail.supplierId ? 1 : 0,
+    ];
+    const howManyTargets = setFlags.reduce((a, b) => a + b, 0);
+
+    if (howManyTargets !== 1) {
+      throw new BadRequestException(
+        `Each detail must provide exactly one of accountId/customerId/supplierId (row ${idx + 1}).`
+      );
+    }
+
+    // Build base payload
+    const basePayload: Partial<JournalVoucherDetail> = {
+      description: detail.description ?? null,
+      dr: toN(detail.debit),
+      drUSD: toN(detail.debitUSD),
+      drLL: toN(detail.debitLL),
+      cr: toN(detail.credit),
+      crUSD: toN(detail.creditUSD),
+      crLL: toN(detail.creditLL),
+      currency: detail.currency,
+      exRateEUROToUSD: toN(detail.exchangeRateEURtoUSD),
+      exRateUSD: toN(detail.exchangeRate),
+      docNbr: detail.docNbr ?? null,
+    };
+
+    // Attach the correct foreign key column (exactly one)
+    if (detail.accountId) {
+      (basePayload as any).accountId = detail.accountId;
+    } else if (detail.customerId) {
+      (basePayload as any).customerId = detail.customerId;
+    } else if (detail.supplierId) {
+      (basePayload as any).supplierId = detail.supplierId;
+    }
+
+    return this.journalVoucherDetailRepository.create(basePayload);
+  });
+
+  // 5) Totals (base-only here; add OFR if your schema requires it)
+  const totalDr = resolvedDetails.reduce((sum, d) => sum + toN(d.dr), 0);
+  const totalDrUSD = resolvedDetails.reduce((sum, d) => sum + toN(d.drUSD), 0);
+  const totalDrLL = resolvedDetails.reduce((sum, d) => sum + toN(d.drLL), 0);
+  const totalCr = resolvedDetails.reduce((sum, d) => sum + toN(d.cr), 0);
+  const totalCrUSD = resolvedDetails.reduce((sum, d) => sum + toN(d.crUSD), 0);
+  const totalCrLL = resolvedDetails.reduce((sum, d) => sum + toN(d.crLL), 0);
+
+  // 6) Create header
+  const journalVoucher = this.journalVoucherRepository.create({
+    date,
+    jvType,
+    jvNumber,
+    totalDr,
+    totalDrUSD,
+    totalDrLL,
+    totalCr,
+    totalCrUSD,
+    totalCrLL,
+    details: resolvedDetails,
+  });
+
+  // 7) Save
+  return this.journalVoucherRepository.save(journalVoucher);
+}
 
   async getAllJournalVouchers(): Promise<JournalVoucher[]> {
     return this.journalVoucherRepository.find({
@@ -212,44 +248,42 @@ async getCustomerStatementOFR(params: {
     EURO: { dr: 'drOFR',     cr: 'crOFR'     },
     BASE: { dr: 'drOFR',     cr: 'crOFR'     },
   } as const;
-  // Non-OFR columns (used for S rows)
+
+  // Non-OFR columns (used for S & other rows)
   const baseColMap = {
     USD:  { dr: 'drUSD',  cr: 'crUSD'  },
     LL:   { dr: 'drLL',   cr: 'crLL'   },
-    EURO: { dr: 'dr',     cr: 'cr'     }, // base amounts
+    EURO: { dr: 'dr',     cr: 'cr'     },
     BASE: { dr: 'dr',     cr: 'cr'     },
   } as const;
 
-  // Helper to choose the correct column pair for a row kind
-  const getColsFor = (rowKind: 'S' | 'G') => {
-    if (rowKind === 'S') {
-      const p = baseColMap[currencyCode] ?? baseColMap.USD;
-      return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
-    } else {
+  type RowKind = 'S' | 'G';
+
+  const getColsFor = (rowKind: RowKind) => {
+    if (rowKind === 'G') {
       const p = ofrColMap[currencyCode] ?? ofrColMap.USD;
       return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
     }
+    // 'S' = non-OFR
+    const p = baseColMap[currencyCode] ?? baseColMap.USD;
+    return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
   };
 
-  // 3) Type filter based on docNbr
+  // 3) Type filter — use JV.jvType primarily; docNbr is a fallback
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
     if (type === 'S') {
-      qb.andWhere('d.docNbr LIKE :sPrefix', { sPrefix: 'S%' });
+      qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
     } else if (type === 'G') {
-      qb.andWhere('d.docNbr LIKE :gPrefix', { gPrefix: 'G%' });
+      qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
     } else {
-      // ALL → include only S and G
-      qb.andWhere('(d.docNbr LIKE :sPrefix OR d.docNbr LIKE :gPrefix)', {
-        sPrefix: 'S%',
-        gPrefix: 'G%',
-      });
+      // ALL → include everything for this customer (receipts, manual JVs, returns, etc.)
     }
     return qb;
   };
 
-  // 4) Main period query
+  // 4) Main period query (all rows for the customer, filtered by date and type)
   const qb = this.journalVoucherDetailRepository
     .createQueryBuilder('d')
     .leftJoinAndSelect('d.journalVoucher', 'jv')
@@ -264,7 +298,7 @@ async getCustomerStatementOFR(params: {
 
   const rows = await qb.getMany();
 
-  // 5) Opening balance (apply same type filter and choose columns per row)
+  // 5) Opening balance (same filters; per-row column choice by JV type/docNbr)
   let openingBalance = 0;
   if (from) {
     const beforeQb = this.journalVoucherDetailRepository
@@ -274,15 +308,13 @@ async getCustomerStatementOFR(params: {
       .andWhere('jv.date < :from', { from });
 
     applyTypeFilter(beforeQb);
-
     const beforeRows = await beforeQb.getMany();
 
     let openingDr = 0;
     let openingCr = 0;
     for (const r of beforeRows) {
-      const rowKind: 'S' | 'G' =
-        r.docNbr?.startsWith('S') ? 'S' :
-        r.docNbr?.startsWith('G') ? 'G' : 'S'; // default to S if somehow missing
+      const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
+      const rowKind: RowKind = isG ? 'G' : 'S';
       const { drCol, crCol } = getColsFor(rowKind);
       openingDr += Number((r as any)[drCol] || 0);
       openingCr += Number((r as any)[crCol] || 0);
@@ -290,15 +322,13 @@ async getCustomerStatementOFR(params: {
     openingBalance = openingDr - openingCr;
   }
 
-  // 6) Build items with running balance (row-by-row column selection)
+  // 6) Items + running balance (per-row column choice by JV type/docNbr)
   let running = openingBalance;
   const items = rows.map((r) => {
-    const rowKind: 'S' | 'G' =
-      r.docNbr?.startsWith('S') ? 'S' :
-      r.docNbr?.startsWith('G') ? 'G' : 'S';
+    const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
+    const rowKind: RowKind = isG ? 'G' : 'S';
 
     const { drCol, crCol } = getColsFor(rowKind);
-
     const debit  = Number((r as any)[drCol] || 0);
     const credit = Number((r as any)[crCol] || 0);
     running += debit - credit;
@@ -309,12 +339,11 @@ async getCustomerStatementOFR(params: {
       jvNumber: r.journalVoucher?.jvNumber,
       description: r.description ?? null,
       docNbr: r.docNbr ?? null,
-      kind: rowKind, // S or G (for clarity in UI)
+      kind: rowKind, // 'S' (non-OFR) or 'G' (OFR)
       debit,
       credit,
       balanceAfter: running,
-      // optional exchange-rate fields
-      exRateUSD: currencyCode === 'LL'   ? Number(r.exRateUSD || 0)        : undefined,
+      exRateUSD: currencyCode === 'LL' ? Number(r.exRateUSD || 0) : undefined,
       exRateEUROToUSD: currencyCode === 'EURO' ? Number(r.exRateEUROToUSD || 0) : undefined,
     };
   });
@@ -328,31 +357,27 @@ async getCustomerStatementOFR(params: {
     { totalDebit: 0, totalCredit: 0 }
   );
 
-  // 7) Basis info for debugging
-  let basis:
-    | { mode: 'S' | 'G'; debitColumn: string; creditColumn: string }
-    | { mode: 'MIXED' } =
-    type === 'ALL'
-      ? { mode: 'MIXED' }
-      : {
-          mode: type,
-          ...(() => {
-            const cols = getColsFor(type);
-            return { debitColumn: cols.drCol as string, creditColumn: cols.crCol as string };
-          })(),
-        };
+  // 7) Basis note (for debugging/visibility)
+  const exampleCols = getColsFor('S');
+  const basis = {
+    currency: currencyCode,
+    sUses: { debitColumn: exampleCols.drCol as string, creditColumn: exampleCols.crCol as string },
+    gUses: {
+      debitColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).dr,
+      creditColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).cr,
+    },
+    selection: type, // S | G | ALL
+  };
 
   return {
     customerId,
-    currency: currencyCode,
-    type, // S | G | ALL
-    basis,
     from: from ?? null,
     to: to ?? null,
     openingBalance,
     totals,
     closingBalance: running,
     items,
+    basis,
   };
 }
 
