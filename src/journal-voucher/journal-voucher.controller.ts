@@ -9,6 +9,7 @@ import {
   HttpException,
   HttpStatus,
   BadRequestException,
+  Query,
 } from '@nestjs/common';
 import { JournalVoucherService } from './journal-voucher.service';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
@@ -104,5 +105,25 @@ export class JournalVoucherController {
   @Get('v1/list')
   async getVoucherSummary() {
     return this.journalVoucherService.getVoucherSummary();
+  }
+
+
+   // Example:
+  // /journal-vouchers/statements/customers/1?currency=USD
+  // /journal-vouchers/statements/customers/1?currency=LL&from=2025-01-01&to=2025-12-31
+  // /journal-vouchers/statements/customers/1?currency=EURO
+  @Get('statements/customers/:customerId')
+  async getCustomerStatementOFR(
+    @Param('customerId') customerId: string,
+    @Query('currency') currency: 'USD' | 'LL' | 'EURO' | 'BASE' = 'USD',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.journalVoucherService.getCustomerStatementOFR({
+      customerId: Number(customerId),
+      currency,
+      from,
+      to,
+    });
   }
 }

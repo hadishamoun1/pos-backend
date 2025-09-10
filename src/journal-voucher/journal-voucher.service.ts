@@ -178,4 +178,98 @@ export class JournalVoucherService {
       };
     });
   }
+
+  async getCustomerStatementOFR(params: {
+  customerId: number;
+  currency?: 'USD' | 'LL' | 'EURO' | 'BASE';
+  from?: string; // 'YYYY-MM-DD'
+  to?: string;   // 'YYYY-MM-DD'
+}) {
+  const { customerId, currency = 'USD', from, to } = params;
+
+  // OFR column mapping
+  const colMap = {
+    USD:  { dr: 'drUSDOFR',  cr: 'crUSDOFR'  },
+    LL:   { dr: 'drLLOFR',   cr: 'crLLOFR'   },
+    EURO: { dr: 'drOFR',     cr: 'crOFR'     }, // no dedicated EURO OFR columns; use base OFR
+    BASE: { dr: 'drOFR',     cr: 'crOFR'     },
+  } as const;
+
+  const pair = colMap[currency] ?? colMap.USD;
+  const drCol = pair.dr as keyof JournalVoucherDetail;
+  const crCol = pair.cr as keyof JournalVoucherDetail;
+
+  // Query rows for period
+  const qb = this.journalVoucherDetailRepository
+    .createQueryBuilder('d')
+    .leftJoinAndSelect('d.journalVoucher', 'jv')
+    .leftJoinAndSelect('d.customer', 'c')
+    .where('d.customerId = :customerId', { customerId });
+
+  if (from) qb.andWhere('jv.date >= :from', { from });
+  if (to)   qb.andWhere('jv.date <= :to',   { to });
+
+  qb.orderBy('jv.date', 'ASC').addOrderBy('d.id', 'ASC');
+
+  const rows = await qb.getMany();
+
+  // Opening balance before "from" (OFR columns only)
+  let openingBalance = 0;
+  if (from) {
+    const beforeRows = await this.journalVoucherDetailRepository
+      .createQueryBuilder('d')
+      .leftJoin('d.journalVoucher', 'jv')
+      .where('d.customerId = :customerId', { customerId })
+      .andWhere('jv.date < :from', { from })
+      .getMany();
+
+    const openingDr = beforeRows.reduce((s, r) => s + Number(r[drCol] || 0), 0);
+    const openingCr = beforeRows.reduce((s, r) => s + Number(r[crCol] || 0), 0);
+    openingBalance = openingDr - openingCr;
+  }
+
+  // Build items + running balance; include exchange rate fields conditionally
+  let running = openingBalance;
+
+  const items = rows.map((r) => {
+    const debit  = Number(r[drCol] || 0);
+    const credit = Number(r[crCol] || 0);
+    running += debit - credit;
+
+    return {
+      journalVoucherId: r.journalVoucherId,
+      date: r.journalVoucher?.date,
+      jvNumber: r.journalVoucher?.jvNumber,
+      description: r.description ?? null,
+      debit,
+      credit,
+      balanceAfter: running,
+      // Include the relevant exchange rate fields for the selected currency
+      exRateUSD: currency === 'LL' ? Number(r.exRateUSD || 0) : undefined,
+      exRateEUROToUSD: currency === 'EURO' ? Number(r.exRateEUROToUSD || 0) : undefined,
+    };
+  });
+
+  const totals = items.reduce(
+    (acc, li) => {
+      acc.totalDebit  += li.debit;
+      acc.totalCredit += li.credit;
+      return acc;
+    },
+    { totalDebit: 0, totalCredit: 0 }
+  );
+
+  return {
+    customerId,
+    currency,
+    basis: { debitColumn: drCol, creditColumn: crCol }, // which OFR pair was used
+    from: from ?? null,
+    to: to ?? null,
+    openingBalance,
+    totals,
+    closingBalance: running,
+    items,
+  };
+}
+
 }

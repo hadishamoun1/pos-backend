@@ -58,29 +58,30 @@ export class InvoiceService {
       if (!setting) throw new NotFoundException('Active year not found');
 
       const yearSuffix = setting.year.slice(-2);
-      const isReturn = data.invoiceType === 'RVR';
+     const isReturn = data.invoiceType === 'RVR';
+const isG = data.invoiceType === 'G';
 
-      const isG = data.invoiceType === 'G';
+const sequencePrefix = isG ? 'G' : 'S';                 // G for G, S for S/RVR
+const typesForSeq = isG ? ['G'] : ['S', 'RVR'];         // separate sequences
 
-      const sequencePrefix = 'S'; // always use 'S' for both S and RVR
+const lastInvoice = await this.invoiceRepository
+  .createQueryBuilder('invoice')
+  .where('invoice.invoiceType IN (:...types)', { types: typesForSeq })
+  .andWhere('invoice.invoiceNumber LIKE :prefix', {
+    prefix: `${sequencePrefix}${yearSuffix}-%`,
+  })
+  .orderBy('invoice.id', 'DESC')
+  .getOne();
 
-      const lastInvoice = await this.invoiceRepository
-        .createQueryBuilder('invoice')
-        .where('invoice.invoiceType IN (:...types)', { types: ['S', 'RVR'] })
-        .andWhere('invoice.invoiceNumber LIKE :prefix', {
-          prefix: `${sequencePrefix}${yearSuffix}-%`,
-        })
-        .orderBy('invoice.id', 'DESC')
-        .getOne();
+let newNumber = 1;
+if (lastInvoice?.invoiceNumber) {
+  const parts = lastInvoice.invoiceNumber.split('-');
+  newNumber = parseInt(parts[1], 10) + 1;
+}
 
-      let newNumber = 1;
-      if (lastInvoice?.invoiceNumber) {
-        const parts = lastInvoice.invoiceNumber.split('-');
-        newNumber = parseInt(parts[1]) + 1;
-      }
-
-      const invoiceNumber = `${sequencePrefix}${yearSuffix}-${String(newNumber).padStart(3, '0')}`;
-      console.log('📄 New invoice number:', invoiceNumber);
+const invoiceNumber = `${sequencePrefix}${yearSuffix}-${String(newNumber).padStart(3, '0')}`;
+console.log('📄 New invoice number:', invoiceNumber);
+      const docNbr = invoiceNumber;
 
       const invoice = this.invoiceRepository.create({
         customerId: data.customerId,
@@ -290,6 +291,7 @@ export class InvoiceService {
           customerId: data.customerId,
           description: isReturn ? 'Fake Sales Invoice' : 'Sales Invoice',
           currency: currencyCode,
+           docNbr, 
           ...getJVFields('dr', total, totalLL),
         }),
       );
@@ -302,8 +304,9 @@ export class InvoiceService {
       details.push(
         this.journalVoucherDetailRepo.create({
           accountId: salesAccount.id,
-          description: 'Sales Revenue',
+          description: 'فاتورة',
           currency: currencyCode,
+           docNbr, 
           ...getJVFields('cr', salesCrAmount, salesCrAmountLL),
         }),
       );
@@ -314,6 +317,7 @@ export class InvoiceService {
             accountId: vatAccount.id,
             description: 'VAT Payable',
             currency: currencyCode,
+            docNbr, 
             ...getJVFields('cr', totalVAT, totalVATLL),
           }),
         );
@@ -338,6 +342,7 @@ export class InvoiceService {
         totalCrOFR: sum('crOFR'),
         totalCrUSDOFR: sum('crUSDOFR'),
         totalCrLLOFR: sum('crLLOFR'),
+        
         details,
       });
 
