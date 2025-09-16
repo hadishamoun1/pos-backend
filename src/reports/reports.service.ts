@@ -1,0 +1,415 @@
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+
+import { Account } from '../entities/account.entity';
+import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
+import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+
+type TrialBalanceParams = {
+  from?: string | null;
+  to?: string | null;
+  /** “level = N” => start displaying from codes whose DIGIT length = N, then descend */
+  level?: number;
+  currency?: 'USD' | 'LL' | 'EURO' | 'BASE';
+  invoiceType?: 'ALL' | 'S' | 'G';
+  mainFrom?: string | null;
+  mainTo?: string | null;
+  subFrom?: string | null;
+  subTo?: string | null;
+  mainPrefixes?: string; // e.g. "601,705"
+};
+
+/* ===== Tree node types ===== */
+interface TBNodeSum {
+  openingBalance: number;
+  periodDebit: number;
+  periodCredit: number;
+  closingBalance: number;
+}
+
+interface TBNode {
+  keyDigits: string;         // digits only key (used for level and ordering)
+  code: string;              // accountNumber (exact, as in DB)
+  name: string;              // accountName
+  parentCode?: string;       // parent's accountNumber (exact)
+  children: Set<string>;     // children by accountNumber
+  sum: TBNodeSum;            // rolled numbers
+  leafHasActivity: boolean;  // this account itself has activity
+  depth: number;             // depth by parent chain (root=1, child=2, ...)
+}
+
+@Injectable()
+export class ReportsService {
+  constructor(
+    @InjectRepository(Account)
+    private readonly accountRepo: Repository<Account>,
+    @InjectRepository(JournalVoucherDetail)
+    private readonly jvdRepo: Repository<JournalVoucherDetail>,
+    @InjectRepository(JournalVoucher)
+    private readonly jvRepo: Repository<JournalVoucher>,
+  ) {}
+
+  private cmp(a: string, b: string) {
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  }
+  private digits(s?: string | null) {
+    return String(s ?? '').replace(/\D/g, '');
+  }
+  private parsePrefixes(mainPrefixes?: string) {
+    if (!mainPrefixes) return [];
+    return mainPrefixes.split(',').map((v) => v.trim()).filter(Boolean);
+  }
+
+  /**
+   * Prefix-band: compare only first N digits where N = max(len(from), len(to)).
+   */
+  private withinPrefixBand(code: string, from?: string | null, to?: string | null) {
+    const key = this.digits(code);
+    const f = this.digits(from);
+    const t = this.digits(to);
+
+    if (f && t) {
+      const n = Math.max(f.length, t.length);
+      if (key.length < n) return false;
+      const p = key.slice(0, n);
+      const fPad = f.padEnd(n, '0');
+      const tPad = t.padEnd(n, '9');
+      return this.cmp(p, fPad) >= 0 && this.cmp(p, tPad) <= 0;
+    } else if (f) {
+      return key.startsWith(f);
+    } else if (t) {
+      return key.startsWith(t);
+    }
+    return true;
+  }
+
+  private getColsFor(rowKind: 'S' | 'G', currency: 'USD' | 'LL' | 'EURO' | 'BASE') {
+    if (rowKind === 'G') {
+      const ofr = {
+        USD: { dr: 'drUSDOFR', cr: 'crUSDOFR' },
+        LL: { dr: 'drLLOFR', cr: 'crLLOFR' },
+        EURO: { dr: 'drOFR', cr: 'crOFR' },
+        BASE: { dr: 'drOFR', cr: 'crOFR' },
+      } as const;
+      const p = ofr[currency] ?? ofr.USD;
+      return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail } as const;
+    }
+    const base = {
+      USD: { dr: 'drUSD', cr: 'crUSD' },
+      LL: { dr: 'drLL', cr: 'crLL' },
+      EURO: { dr: 'dr', cr: 'cr' },
+      BASE: { dr: 'dr', cr: 'cr' },
+    } as const;
+    const p = base[currency] ?? base.USD;
+    return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail } as const;
+  }
+
+  // Build a rollup tree using REAL parent chain (`parentNumber`). We:
+  // 1) Create a node for each active leaf and all its ancestors up to the root.
+  // 2) Add leaf sums to the leaf, then roll them up through parentNumber to the highest parent.
+  // 3) Sort children by numeric account number (string compare numeric=true).
+  private buildTreeAndRollup(
+    activeLeafSums: Map<string, TBNodeSum>,         // accountNumber -> sums (only active leaves)
+    accountsByCode: Map<string, Account>,          // accountNumber -> Account
+  ) {
+    const nodes = new Map<string, TBNode>();
+
+    const ensureNode = (acc: Account): TBNode => {
+      const code = String(acc.accountNumber);
+      const ex = nodes.get(code);
+      if (ex) return ex;
+      const n: TBNode = {
+        keyDigits: this.digits(code),
+        code,
+        name: String(acc.accountName ?? ''),
+        parentCode: acc.parentNumber ?? undefined,
+        children: new Set<string>(),
+        sum: { openingBalance: 0, periodDebit: 0, periodCredit: 0, closingBalance: 0 },
+        leafHasActivity: false,
+        depth: 1, // will be updated
+      };
+      nodes.set(code, n);
+      return n;
+    };
+
+    // Create nodes for leaves and ancestors; attach leaf sums; then roll upward.
+    for (const [leafCode, sums] of activeLeafSums) {
+      const startAcc = accountsByCode.get(leafCode);
+      if (!startAcc) continue;
+
+      // Upward chain (create nodes and link parent->children)
+      let acc: Account | undefined = startAcc;
+      let prevCode: string | undefined;
+      const chain: string[] = [];
+      while (acc) {
+        const code = String(acc.accountNumber);
+        chain.push(code);
+
+        const node = ensureNode(acc);
+        if (prevCode) {
+          // link parent->child
+          node.children.add(prevCode);
+          const child = nodes.get(prevCode)!;
+          child.parentCode = code;
+        }
+        prevCode = code;
+
+        if (!acc.parentNumber) break;
+        acc = accountsByCode.get(acc.parentNumber);
+        if (!acc) break; // broken parent link → stop here
+      }
+
+      // Add sums to the leaf itself
+      const leafNode = nodes.get(leafCode)!;
+      leafNode.leafHasActivity = true;
+      leafNode.sum.openingBalance += sums.openingBalance;
+      leafNode.sum.periodDebit += sums.periodDebit;
+      leafNode.sum.periodCredit += sums.periodCredit;
+      leafNode.sum.closingBalance += sums.closingBalance;
+
+      // Roll up the same sums to all ancestors in the chain (excluding the leaf we already updated, but idempotent if included)
+      for (let i = 1; i < chain.length; i++) {
+        const anc = nodes.get(chain[i])!;
+        anc.sum.openingBalance += sums.openingBalance;
+        anc.sum.periodDebit += sums.periodDebit;
+        anc.sum.periodCredit += sums.periodCredit;
+        anc.sum.closingBalance += sums.closingBalance;
+      }
+    }
+
+    // Compute depth by walking up parent chain
+    const depthOf = (code: string): number => {
+      let d = 1;
+      let cur = nodes.get(code);
+      while (cur?.parentCode) {
+        d += 1;
+        cur = nodes.get(cur.parentCode);
+      }
+      return d;
+    };
+    for (const n of nodes.values()) n.depth = depthOf(n.code);
+
+    // Sort children for every node
+    const sortChildren = (n: TBNode) => {
+      n.children = new Set(
+        Array.from(n.children).sort((a, b) => this.cmp(a, b)), // numeric-aware compare on accountNumber
+      );
+    };
+    for (const n of nodes.values()) sortChildren(n);
+
+    // Roots = nodes with no parent in the built set
+    const roots = Array.from(nodes.values())
+      .filter((n) => !n.parentCode || !nodes.has(n.parentCode))
+      .sort((a, b) => this.cmp(a.code, b.code));
+
+    return { nodes, roots };
+  }
+
+  // Preorder traversal starting at the first digit-length >= requested level.
+  private preorderFromDigitLevel(nodes: Map<string, TBNode>, roots: TBNode[], requestedLevel: number) {
+    const lengths = new Set<number>(Array.from(nodes.values()).map((n) => n.keyDigits.length));
+    let startLen = Math.max(1, Number(requestedLevel || 1));
+    const maxLen = Math.max(...Array.from(lengths));
+    while (!lengths.has(startLen) && startLen < maxLen) startLen += 1;
+    if (!lengths.has(startLen)) startLen = Math.min(...Array.from(lengths)); // fallback (shouldn't happen)
+
+    // Starting nodes are those whose DIGIT length == startLen
+    const starts = Array.from(nodes.values())
+      .filter((n) => n.keyDigits.length === startLen)
+      .sort((a, b) => this.cmp(a.code, b.code));
+
+    const order: TBNode[] = [];
+    const dfs = (n: TBNode) => {
+      order.push(n);
+      for (const childCode of n.children) {
+        const ch = nodes.get(childCode)!;
+        dfs(ch);
+      }
+    };
+    for (const s of starts) dfs(s);
+
+    return order;
+  }
+
+  async getTrialBalance(params: TrialBalanceParams) {
+    const {
+      from,
+      to,
+      level,
+      currency = 'USD',
+      invoiceType = 'ALL',
+      mainFrom,
+      mainTo,
+      subFrom,
+      subTo,
+      mainPrefixes,
+    } = params;
+
+    // 1) Load accounts (need parentNumber and names)
+    const accounts = await this.accountRepo.find({
+      select: ['id', 'accountNumber', 'accountName', 'parentNumber'],
+    });
+    const accountsByCode = new Map<string, Account>(accounts.map((a) => [String(a.accountNumber), a]));
+
+    // 2) Selection by bands / prefixes (to decide which accounts' activity to include)
+    const prefixes = this.parsePrefixes(mainPrefixes);
+    let selected = accounts;
+    if (prefixes.length) {
+      selected = selected.filter((a) =>
+        prefixes.some((p) => this.digits(a.accountNumber).startsWith(this.digits(p))),
+      );
+    } else if (subFrom || subTo) {
+      selected = selected.filter((a) => this.withinPrefixBand(String(a.accountNumber), subFrom, subTo));
+    } else if (mainFrom || mainTo) {
+      selected = selected.filter((a) => this.withinPrefixBand(String(a.accountNumber), mainFrom, mainTo));
+    }
+    const selectedIds = new Set<number>(selected.map((a) => a.id));
+    if (!selectedIds.size) {
+      return {
+        from: from ?? null,
+        to: to ?? null,
+        currency,
+        invoiceType,
+        rows: [],
+        totals: { openingBalance: 0, periodDebit: 0, periodCredit: 0, closingBalance: 0 },
+      };
+    }
+
+    // 3) Helper to filter JV rows by invoiceType
+    const applyTypeFilter = (qb: ReturnType<typeof this.jvdRepo.createQueryBuilder>) => {
+      if (invoiceType === 'S') {
+        qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
+      } else if (invoiceType === 'G') {
+        qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
+      }
+      return qb;
+    };
+
+    // 4) Opening rows (strictly before "from")
+    let openingRows: JournalVoucherDetail[] = [];
+    if (from) {
+      const openQb = this.jvdRepo
+        .createQueryBuilder('d')
+        .leftJoinAndSelect('d.journalVoucher', 'jv')
+        .leftJoinAndSelect('d.account', 'acc')
+        .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
+        .andWhere('jv.date < :from', { from });
+      applyTypeFilter(openQb);
+      openingRows = await openQb.getMany();
+    }
+
+    // 5) Period rows (between from..to, honoring missing bounds)
+    const periodQb = this.jvdRepo
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.journalVoucher', 'jv')
+      .leftJoinAndSelect('d.account', 'acc')
+      .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) });
+    if (from) periodQb.andWhere('jv.date >= :from', { from });
+    if (to) periodQb.andWhere('jv.date <= :to', { to });
+    applyTypeFilter(periodQb);
+    const periodRows = await periodQb.getMany();
+
+    // 6) Aggregate by accountId (direct activity per account)
+    const pickCols = (r: JournalVoucherDetail) => {
+      const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
+      const { drCol, crCol } = this.getColsFor(isG ? 'G' : 'S', currency);
+      return {
+        debit: Number((r as any)[drCol] || 0),
+        credit: Number((r as any)[crCol] || 0),
+      };
+    };
+
+    const openingByAcc = new Map<number, { debit: number; credit: number }>();
+    for (const r of openingRows) {
+      const prev = openingByAcc.get(r.accountId) ?? { debit: 0, credit: 0 };
+      const { debit, credit } = pickCols(r);
+      prev.debit += debit;
+      prev.credit += credit;
+      openingByAcc.set(r.accountId, prev);
+    }
+
+    const periodByAcc = new Map<number, { debit: number; credit: number }>();
+    for (const r of periodRows) {
+      const prev = periodByAcc.get(r.accountId) ?? { debit: 0, credit: 0 };
+      const { debit, credit } = pickCols(r);
+      prev.debit += debit;
+      prev.credit += credit;
+      periodByAcc.set(r.accountId, prev);
+    }
+
+    // 7) Active accounts (any opening or period activity)
+    const activeIds = new Set<number>([
+      ...Array.from(openingByAcc.keys()),
+      ...Array.from(periodByAcc.keys()),
+    ]);
+    if (!activeIds.size) {
+      return {
+        from: from ?? null,
+        to: to ?? null,
+        currency,
+        invoiceType,
+        rows: [],
+        totals: { openingBalance: 0, periodDebit: 0, periodCredit: 0, closingBalance: 0 },
+      };
+    }
+
+    // 8) Leaf sums by accountNumber for selected+active accounts
+    const activeLeafSums = new Map<string, TBNodeSum>(); // accountNumber -> sums
+    for (const acc of selected) {
+      if (!activeIds.has(acc.id)) continue;
+      const op = openingByAcc.get(acc.id) ?? { debit: 0, credit: 0 };
+      const pr = periodByAcc.get(acc.id) ?? { debit: 0, credit: 0 };
+      const openingBalance = op.debit - op.credit;
+      const closingBalance = openingBalance + (pr.debit - pr.credit);
+
+      activeLeafSums.set(String(acc.accountNumber), {
+        openingBalance,
+        periodDebit: pr.debit,
+        periodCredit: pr.credit,
+        closingBalance,
+      });
+    }
+
+    // 9) Build REAL-parent tree, roll sums up to highest parent
+    const { nodes, roots } = this.buildTreeAndRollup(activeLeafSums, accountsByCode);
+
+    // 10) Preorder starting at requested digit level (with forward fallback)
+    const orderedNodes = this.preorderFromDigitLevel(nodes, roots, Math.max(1, Number(level || 1)));
+
+    // 11) Emit rows
+    const rows = orderedNodes.map((n) => ({
+      accountCode: n.code,
+      accountName: n.name,
+      openingBalance: n.sum.openingBalance,
+      periodDebit: n.sum.periodDebit,
+      periodCredit: n.sum.periodCredit,
+      closingBalance: n.sum.closingBalance,
+      isGroup: n.children.size > 0, // group if has descendants included
+      depth: n.depth,               // for optional indentation in UI
+    }));
+
+    // 12) Totals from leaves only (no double-count)
+    const totals = Array.from(nodes.values())
+      .filter((n) => n.leafHasActivity) // only direct-activity accounts
+      .reduce(
+        (t, n) => {
+          t.openingBalance += n.sum.openingBalance;
+          t.periodDebit += n.sum.periodDebit;
+          t.periodCredit += n.sum.periodCredit;
+          t.closingBalance += n.sum.closingBalance;
+          return t;
+        },
+        { openingBalance: 0, periodDebit: 0, periodCredit: 0, closingBalance: 0 },
+      );
+
+    return {
+      from: from ?? null,
+      to: to ?? null,
+      currency,
+      invoiceType,
+      rows,
+      totals,
+    };
+  }
+}
