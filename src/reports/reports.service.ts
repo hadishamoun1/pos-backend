@@ -84,6 +84,21 @@ export class ReportsService {
     return true;
   }
 
+
+    /** ALWAYS base columns (no OFR): used by the **Standard** endpoint */
+  private getBaseCols(currency: 'USD' | 'LL' | 'EURO' | 'BASE') {
+    const map = {
+      USD: { dr: 'drUSD', cr: 'crUSD' },
+      LL: { dr: 'drLL', cr: 'crLL' },
+      EURO: { dr: 'dr', cr: 'cr' },
+      BASE: { dr: 'dr', cr: 'cr' },
+    } as const;
+    const p = map[currency] ?? map.USD;
+    return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail } as const;
+  }
+
+
+  /** OFR aware (used by the existing hierarchical endpoint) */
   private getColsFor(rowKind: 'S' | 'G', currency: 'USD' | 'LL' | 'EURO' | 'BASE') {
     if (rowKind === 'G') {
       const ofr = {
@@ -95,15 +110,15 @@ export class ReportsService {
       const p = ofr[currency] ?? ofr.USD;
       return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail } as const;
     }
-    const base = {
-      USD: { dr: 'drUSD', cr: 'crUSD' },
-      LL: { dr: 'drLL', cr: 'crLL' },
-      EURO: { dr: 'dr', cr: 'cr' },
-      BASE: { dr: 'dr', cr: 'cr' },
-    } as const;
-    const p = base[currency] ?? base.USD;
-    return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail } as const;
+    return this.getBaseCols(currency);
   }
+/** Lexicographic compare on digits-only strings (prefix-friendly order). */
+private cmpLexDigits(a: string, b: string) {
+  const A = this.digits(a);
+  const B = this.digits(b);
+  return A.localeCompare(B, undefined, { numeric: false, sensitivity: 'base' });
+}
+  
 
   // Build a rollup tree using REAL parent chain (`parentNumber`). We:
   // 1) Create a node for each active leaf and all its ancestors up to the root.
@@ -412,4 +427,201 @@ export class ReportsService {
       totals,
     };
   }
+
+
+
+
+
+/* ===== STANDARD ENDPOINT (JV-only rows, flat, prefix-friendly order, with parent info) ===== */
+async getTrialBalanceStandard(params: TrialBalanceParams) {
+  const {
+    from,
+    to,
+    currency = 'USD',
+    invoiceType = 'ALL',
+    mainFrom,
+    mainTo,
+    subFrom,
+    subTo,
+    mainPrefixes,
+    level, // kept for signature; not used for ordering in JV-only mode
+  } = params;
+
+  // 1) Accounts & selection (need parentNumber + name to show parent columns)
+  const accounts = await this.accountRepo.find({
+    select: ['id', 'accountNumber', 'accountName', 'parentNumber'],
+  });
+  const byCode = new Map<string, Account>(accounts.map(a => [String(a.accountNumber), a]));
+
+  const prefixes = this.parsePrefixes(mainPrefixes);
+  let selected = accounts;
+  if (prefixes.length) {
+    selected = selected.filter(a =>
+      prefixes.some(p => this.digits(a.accountNumber).startsWith(this.digits(p))),
+    );
+  } else if (subFrom || subTo) {
+    selected = selected.filter(a => this.withinPrefixBand(String(a.accountNumber), subFrom, subTo));
+  } else if (mainFrom || mainTo) {
+    selected = selected.filter(a => this.withinPrefixBand(String(a.accountNumber), mainFrom, mainTo));
+  }
+
+  const selectedIds = new Set<number>(selected.map(a => a.id));
+  if (!selectedIds.size) {
+    return {
+      from: from ?? null,
+      to: to ?? null,
+      currency,
+      invoiceType,
+      rows: [],
+      totals: {
+        openingDebit: 0, openingCredit: 0, openingBalance: 0,
+        periodDebit: 0, periodCredit: 0, balance: 0,
+        closingBalance: 0,
+      },
+    };
+  }
+
+  // 2) Invoice type filter helper
+  const applyTypeFilter = (qb: ReturnType<typeof this.jvdRepo.createQueryBuilder>) => {
+    if (invoiceType === 'S') {
+      qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
+    } else if (invoiceType === 'G') {
+      qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
+    }
+    return qb;
+  };
+
+  // 3) Opening rows (before from) & Period rows ([from..to])
+  let openingRows: JournalVoucherDetail[] = [];
+  if (from) {
+    const openQb = this.jvdRepo
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.journalVoucher', 'jv')
+      .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
+      .andWhere('jv.date < :from', { from });
+    applyTypeFilter(openQb);
+    openingRows = await openQb.getMany();
+  }
+
+  const periodQb = this.jvdRepo
+    .createQueryBuilder('d')
+    .leftJoinAndSelect('d.journalVoucher', 'jv')
+    .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) });
+  if (from) periodQb.andWhere('jv.date >= :from', { from });
+  if (to)   periodQb.andWhere('jv.date <= :to', { to });
+  applyTypeFilter(periodQb);
+  const periodRows = await periodQb.getMany();
+
+  // 4) Sum by account using BASE columns (USD→drUSD/crUSD, LL→drLL/crLL, EURO|BASE→dr/cr)
+  const { drCol, crCol } = this.getBaseCols(currency);
+
+  type Tot = { debit: number; credit: number };
+  const sumByAcc = (rowsIn: JournalVoucherDetail[]) => {
+    const m = new Map<number, Tot>();
+    for (const r of rowsIn) {
+      const accId = r.accountId;
+      if (!accId) continue;
+      const debit  = Number((r as any)[drCol] || 0);
+      const credit = Number((r as any)[crCol] || 0);
+      const prev = m.get(accId) ?? { debit: 0, credit: 0 };
+      prev.debit  += debit;
+      prev.credit += credit;
+      m.set(accId, prev);
+    }
+    return m;
+  };
+
+  const openMap   = sumByAcc(openingRows);
+  const periodMap = sumByAcc(periodRows);
+
+  // 5) JV-only: include ONLY accounts that appear in JV (opening or period)
+  const activeIds = new Set<number>([
+    ...Array.from(openMap.keys()),
+    ...Array.from(periodMap.keys()),
+  ]);
+
+  if (!activeIds.size) {
+    return {
+      from: from ?? null,
+      to: to ?? null,
+      currency,
+      invoiceType,
+      rows: [],
+      totals: {
+        openingDebit: 0, openingCredit: 0, openingBalance: 0,
+        periodDebit: 0, periodCredit: 0, balance: 0,
+        closingBalance: 0,
+      },
+    };
+  }
+
+  // 6) Compose flat JV-only rows (include parentCode/parentName for each, but DO NOT add parent rows)
+  const rows = selected
+    .filter(acc => activeIds.has(acc.id))
+    .map(acc => {
+      const op = openMap.get(acc.id)   ?? { debit: 0, credit: 0 };
+      const pr = periodMap.get(acc.id) ?? { debit: 0, credit: 0 };
+
+      const openingBalance = op.debit - op.credit;
+      const balance        = pr.debit - pr.credit; // period net
+      const closingBalance = openingBalance + balance;
+
+      const parentAcc = acc.parentNumber ? byCode.get(acc.parentNumber) : undefined;
+
+      return {
+        accountCode: String(acc.accountNumber),
+        accountName: String(acc.accountName ?? ''),
+        parentCode:  parentAcc ? String(parentAcc.accountNumber) : null,
+        parentName:  parentAcc ? String(parentAcc.accountName ?? '') : null,
+
+        // Opening
+        openingDebit:   op.debit,
+        openingCredit:  op.credit,
+        openingBalance,
+
+        // Period
+        periodDebit:    pr.debit,
+        periodCredit:   pr.credit,
+        balance,
+
+        // Closing
+        closingBalance,
+      };
+    })
+    // ✅ prefix-friendly order: digits-only, lexicographic
+    .sort((a, b) => this.cmpLexDigits(a.accountCode, b.accountCode));
+
+  // 7) Totals = sum of displayed rows (per-account figures only)
+  const totals = rows.reduce(
+    (t, r) => {
+      t.openingDebit   += r.openingDebit;
+      t.openingCredit  += r.openingCredit;
+      t.openingBalance += r.openingBalance;
+      t.periodDebit    += r.periodDebit;
+      t.periodCredit   += r.periodCredit;
+      t.balance        += r.balance;
+      t.closingBalance += r.closingBalance;
+      return t;
+    },
+    {
+      openingDebit: 0,
+      openingCredit: 0,
+      openingBalance: 0,
+      periodDebit: 0,
+      periodCredit: 0,
+      balance: 0,
+      closingBalance: 0,
+    },
+  );
+
+  return {
+    from: from ?? null,
+    to: to ?? null,
+    currency,
+    invoiceType,
+    rows,
+    totals,
+  };
+}
+
 }
