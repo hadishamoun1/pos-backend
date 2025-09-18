@@ -49,4 +49,20 @@ export class ReportsController {
       mainPrefixes: q.mainPrefixes ?? '',
     });
   }
+  @Get('trial-balance/currencies')
+  async getTrialBalanceCurrencies(@Query() q: any) {
+    return this.reportsService.getTrialBalanceCurrencies({
+      from: q.from ?? null,
+      to: q.to ?? null,
+      level: q.level ? Number(q.level) : undefined,
+      currency: q.currency ?? 'USD',
+      invoiceType: q.invoiceType ?? 'ALL',
+      mainFrom: q.mainFrom ?? null,
+      mainTo: q.mainTo ?? null,
+      subFrom: q.subFrom ?? null,
+      subTo: q.subTo ?? null,
+      mainPrefixes: q.mainPrefixes ?? '',
+    });
+  }
+  
 }

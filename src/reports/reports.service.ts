@@ -624,4 +624,229 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
   };
 }
 
+
+
+/* ===== CURRENCIES ENDPOINT (JV-only rows, USD main + LL extra) ===== */
+async getTrialBalanceCurrencies(params: TrialBalanceParams) {
+  const {
+    from,
+    to,
+    currency = 'USD',         // kept for compatibility; NOT used for math here
+    invoiceType = 'ALL',
+    mainFrom,
+    mainTo,
+    subFrom,
+    subTo,
+    mainPrefixes,
+    level,
+  } = params;
+
+  // 1) Accounts & selection
+  const accounts = await this.accountRepo.find({
+    select: ['id', 'accountNumber', 'accountName', 'parentNumber'],
+  });
+  const byCode = new Map<string, Account>(accounts.map(a => [String(a.accountNumber), a]));
+
+  const prefixes = this.parsePrefixes(mainPrefixes);
+  let selected = accounts;
+  if (prefixes.length) {
+    selected = selected.filter(a =>
+      prefixes.some(p => this.digits(a.accountNumber).startsWith(this.digits(p))),
+    );
+  } else if (subFrom || subTo) {
+    selected = selected.filter(a => this.withinPrefixBand(String(a.accountNumber), subFrom, subTo));
+  } else if (mainFrom || mainTo) {
+    selected = selected.filter(a => this.withinPrefixBand(String(a.accountNumber), mainFrom, mainTo));
+  }
+
+  const selectedIds = new Set<number>(selected.map(a => a.id));
+  if (!selectedIds.size) {
+    return {
+      from: from ?? null,
+      to: to ?? null,
+      currency, // echoed only
+      invoiceType,
+      rows: [],
+      totals: {
+        openingDebit: 0, openingCredit: 0, openingBalance: 0,
+        periodDebit: 0, periodCredit: 0, balance: 0, closingBalance: 0,
+        openingBalanceLL: 0, periodDebitLL: 0, periodCreditLL: 0, balanceLL: 0, closingBalanceLL: 0,
+      },
+    };
+  }
+
+  // 2) Invoice type filter helper
+  const applyTypeFilter = (qb: ReturnType<typeof this.jvdRepo.createQueryBuilder>) => {
+    if (invoiceType === 'S') {
+      qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
+    } else if (invoiceType === 'G') {
+      qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
+    }
+    return qb;
+  };
+
+  // 3) Opening and Period rows
+  let openingRows: JournalVoucherDetail[] = [];
+  if (from) {
+    const openQb = this.jvdRepo
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.journalVoucher', 'jv')
+      .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
+      .andWhere('jv.date < :from', { from });
+    applyTypeFilter(openQb);
+    openingRows = await openQb.getMany();
+  }
+
+  const periodQb = this.jvdRepo
+    .createQueryBuilder('d')
+    .leftJoinAndSelect('d.journalVoucher', 'jv')
+    .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) });
+  if (from) periodQb.andWhere('jv.date >= :from', { from });
+  if (to)   periodQb.andWhere('jv.date <= :to', { to });
+  applyTypeFilter(periodQb);
+  const periodRows = await periodQb.getMany();
+
+  // 4) ✅ Pin "main" math to USD, and also compute LL in parallel
+  // CHANGE: remove getBaseCols(...) usage; always use USD here.
+  const usdDrCol = 'drUSD';
+  const usdCrCol = 'crUSD';
+  const llDrCol  = 'drLL';
+  const llCrCol  = 'crLL';
+
+  type TotDual = { debitUSD: number; creditUSD: number; debitLL: number; creditLL: number };
+  const sumByAccDual = (rowsIn: JournalVoucherDetail[]) => {
+    const m = new Map<number, TotDual>();
+    for (const r of rowsIn) {
+      const accId = r.accountId;
+      if (!accId) continue;
+
+      const debitUSD  = Number((r as any)[usdDrCol] || 0);
+      const creditUSD = Number((r as any)[usdCrCol] || 0);
+      const debitLL   = Number((r as any)[llDrCol]  || 0);
+      const creditLL  = Number((r as any)[llCrCol]  || 0);
+
+      const prev = m.get(accId) ?? { debitUSD: 0, creditUSD: 0, debitLL: 0, creditLL: 0 };
+      prev.debitUSD  += debitUSD;
+      prev.creditUSD += creditUSD;
+      prev.debitLL   += debitLL;
+      prev.creditLL  += creditLL;
+      m.set(accId, prev);
+    }
+    return m;
+  };
+
+  const openMap   = sumByAccDual(openingRows);
+  const periodMap = sumByAccDual(periodRows);
+
+  // 5) JV-only accounts
+  const activeIds = new Set<number>([
+    ...Array.from(openMap.keys()),
+    ...Array.from(periodMap.keys()),
+  ]);
+
+  if (!activeIds.size) {
+    return {
+      from: from ?? null,
+      to: to ?? null,
+      currency, // echoed only
+      invoiceType,
+      rows: [],
+      totals: {
+        openingDebit: 0, openingCredit: 0, openingBalance: 0,
+        periodDebit: 0, periodCredit: 0, balance: 0, closingBalance: 0,
+        openingBalanceLL: 0, periodDebitLL: 0, periodCreditLL: 0, balanceLL: 0, closingBalanceLL: 0,
+      },
+    };
+  }
+
+  // 6) Build rows (USD main + LL extras), prefix-friendly sort
+  const rows = selected
+    .filter(acc => activeIds.has(acc.id))
+    .map(acc => {
+      const op = openMap.get(acc.id)   ?? { debitUSD: 0, creditUSD: 0, debitLL: 0, creditLL: 0 };
+      const pr = periodMap.get(acc.id) ?? { debitUSD: 0, creditUSD: 0, debitLL: 0, creditLL: 0 };
+
+      // USD main
+      const openingBalance = op.debitUSD - op.creditUSD;
+      const balance        = pr.debitUSD - pr.creditUSD;      // period net USD
+      const closingBalance = openingBalance + balance;
+
+      // LL extras
+      const openingBalanceLL = op.debitLL - op.creditLL;
+      const balanceLL        = pr.debitLL - pr.creditLL;      // period net LL
+      const closingBalanceLL = openingBalanceLL + balanceLL;
+
+      const parentAcc = acc.parentNumber ? byCode.get(acc.parentNumber) : undefined;
+
+      return {
+        accountCode: String(acc.accountNumber),
+        accountName: String(acc.accountName ?? ''),
+        parentCode:  parentAcc ? String(parentAcc.accountNumber) : null,
+        parentName:  parentAcc ? String(parentAcc.accountName ?? '') : null,
+
+        // USD (main columns in your UI)
+        openingDebit:  op.debitUSD,
+        openingCredit: op.creditUSD,
+        openingBalance,
+        periodDebit:   pr.debitUSD,
+        periodCredit:  pr.creditUSD,
+        balance,
+        closingBalance,
+
+        // LL (extra columns requested)
+        openingBalanceLL,
+        periodDebitLL:  pr.debitLL,
+        periodCreditLL: pr.creditLL,
+        balanceLL,
+        closingBalanceLL,
+      };
+    })
+    .sort((a, b) => this.cmpLexDigits(a.accountCode, b.accountCode)); // same order as Standard
+
+  // 7) Totals (USD + LL)
+  const totals = rows.reduce(
+    (t, r) => {
+      t.openingDebit   += r.openingDebit;
+      t.openingCredit  += r.openingCredit;
+      t.openingBalance += r.openingBalance;
+      t.periodDebit    += r.periodDebit;
+      t.periodCredit   += r.periodCredit;
+      t.balance        += r.balance;
+      t.closingBalance += r.closingBalance;
+
+      t.openingBalanceLL += r.openingBalanceLL;
+      t.periodDebitLL    += r.periodDebitLL;
+      t.periodCreditLL   += r.periodCreditLL;
+      t.balanceLL        += r.balanceLL;
+      t.closingBalanceLL += r.closingBalanceLL;
+      return t;
+    },
+    {
+      openingDebit: 0,
+      openingCredit: 0,
+      openingBalance: 0,
+      periodDebit: 0,
+      periodCredit: 0,
+      balance: 0,
+      closingBalance: 0,
+
+      openingBalanceLL: 0,
+      periodDebitLL: 0,
+      periodCreditLL: 0,
+      balanceLL: 0,
+      closingBalanceLL: 0,
+    },
+  );
+
+  return {
+    from: from ?? null,
+    to: to ?? null,
+    currency,      // echoed (request value), but math is USD + LL as above
+    invoiceType,
+    rows,
+    totals,
+  };
+}
+
+
 }
