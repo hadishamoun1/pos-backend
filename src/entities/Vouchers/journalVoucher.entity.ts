@@ -17,7 +17,7 @@ export class JournalVoucher {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'date' })
+  @Column({ type: 'date',nullable:true })
   date: Date;
 
   @Column({ type: 'varchar', length: 50, unique: true })

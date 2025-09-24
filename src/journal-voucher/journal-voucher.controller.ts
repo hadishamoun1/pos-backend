@@ -128,4 +128,20 @@ async getCustomerStmt(
   });
 }
 
+
+ @Get('account-statement/ofr')
+  async getAccountStatementOFR(
+    @Query('accountId', ParseIntPipe) accountId: number,
+    @Query('type') type?: 'S' | 'G' | 'ALL',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.journalVoucherService.getAccountStatementOFR({
+      accountId,
+      type: (type as any) ?? 'ALL',
+      from,
+      to,
+    });
+  }
+
 }

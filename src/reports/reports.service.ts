@@ -263,7 +263,7 @@ private cmpLexDigits(a: string, b: string) {
 
     // 1) Load accounts (need parentNumber and names)
     const accounts = await this.accountRepo.find({
-      select: ['id', 'accountNumber', 'accountName', 'parentNumber'],
+      select: ['id', 'accountNumber', 'arabicAccountName', 'parentNumber'],
     });
     const accountsByCode = new Map<string, Account>(accounts.map((a) => [String(a.accountNumber), a]));
 
@@ -449,7 +449,7 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
 
   // 1) Accounts & selection (need parentNumber + name to show parent columns)
   const accounts = await this.accountRepo.find({
-    select: ['id', 'accountNumber', 'accountName', 'parentNumber'],
+    select: ['id', 'accountNumber', 'arabicAccountName', 'parentNumber'],
   });
   const byCode = new Map<string, Account>(accounts.map(a => [String(a.accountNumber), a]));
 
@@ -570,9 +570,9 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
 
       return {
         accountCode: String(acc.accountNumber),
-        accountName: String(acc.accountName ?? ''),
+        accountName: String(acc.arabicAccountName ?? ''),
         parentCode:  parentAcc ? String(parentAcc.accountNumber) : null,
-        parentName:  parentAcc ? String(parentAcc.accountName ?? '') : null,
+        parentName:  parentAcc ? String(parentAcc.arabicAccountName ?? '') : null,
 
         // Opening
         openingDebit:   op.debit,
@@ -643,7 +643,7 @@ async getTrialBalanceCurrencies(params: TrialBalanceParams) {
 
   // 1) Accounts & selection
   const accounts = await this.accountRepo.find({
-    select: ['id', 'accountNumber', 'accountName', 'parentNumber'],
+    select: ['id', 'accountNumber', 'arabicAccountName', 'parentNumber'],
   });
   const byCode = new Map<string, Account>(accounts.map(a => [String(a.accountNumber), a]));
 
@@ -780,9 +780,9 @@ async getTrialBalanceCurrencies(params: TrialBalanceParams) {
 
       return {
         accountCode: String(acc.accountNumber),
-        accountName: String(acc.accountName ?? ''),
+        accountName: String(acc.arabicAccountName ?? ''),
         parentCode:  parentAcc ? String(parentAcc.accountNumber) : null,
-        parentName:  parentAcc ? String(parentAcc.accountName ?? '') : null,
+        parentName:  parentAcc ? String(parentAcc.arabicAccountName ?? '') : null,
 
         // USD (main columns in your UI)
         openingDebit:  op.debitUSD,

@@ -196,7 +196,7 @@ export class AccountsService {
           const node: any = {
             id: acc.id,
             accountNumber: acc.accountNumber,
-            accountName: acc.accountName,
+            accountName: acc.arabicAccountName,
             parentNumber: acc.parentNumber || null,
             children: [],
           };

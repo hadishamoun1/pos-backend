@@ -382,5 +382,159 @@ async getCustomerStatementOFR(params: {
 }
 
 
+async getAccountStatementOFR(params: {
+  accountId: number;
+  type?: 'S' | 'G' | 'ALL';
+  from?: string; // 'YYYY-MM-DD'
+  to?: string;   // 'YYYY-MM-DD'
+}) {
+  const { accountId, type = 'ALL', from, to } = params;
+
+  // 1) Load account & infer currency
+  const account = await this.accountRepository.findOne({
+    where: { id: accountId },
+    relations: ['currency'],
+  });
+  if (!account) throw new NotFoundException(`Account ${accountId} not found`);
+
+  let currencyCode =
+    (account as any)?.currency?.code as 'USD' | 'LL' | 'EURO' | 'BASE' | undefined;
+  if (!currencyCode) {
+    // fallback if you only store numeric currencyId
+    currencyCode = (account as any)?.currencyId === 2 ? 'LL' : 'USD';
+  }
+
+  // 2) Column maps
+  const ofrColMap = {
+    USD:  { dr: 'drUSDOFR',  cr: 'crUSDOFR'  },
+    LL:   { dr: 'drLLOFR',   cr: 'crLLOFR'   },
+    EURO: { dr: 'drOFR',     cr: 'crOFR'     },
+    BASE: { dr: 'drOFR',     cr: 'crOFR'     },
+  } as const;
+
+  const baseColMap = {
+    USD:  { dr: 'drUSD',  cr: 'crUSD'  },
+    LL:   { dr: 'drLL',   cr: 'crLL'   },
+    EURO: { dr: 'dr',     cr: 'cr'     },
+    BASE: { dr: 'dr',     cr: 'cr'     },
+  } as const;
+
+  type RowKind = 'S' | 'G';
+  const getColsFor = (rowKind: RowKind) => {
+    if (rowKind === 'G') {
+      const p = ofrColMap[currencyCode] ?? ofrColMap.USD;
+      return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
+    }
+    const p = baseColMap[currencyCode] ?? baseColMap.USD;
+    return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
+  };
+
+  // 3) Type filter
+  const applyTypeFilter = (
+    qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
+  ) => {
+    if (type === 'S') {
+      qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
+    } else if (type === 'G') {
+      qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
+    }
+    return qb;
+  };
+
+  // 4) Period rows for this account
+  const qb = this.journalVoucherDetailRepository
+    .createQueryBuilder('d')
+    .leftJoinAndSelect('d.journalVoucher', 'jv')
+    .where('d.accountId = :accountId', { accountId });
+
+  if (from) qb.andWhere('jv.date >= :from', { from });
+  if (to)   qb.andWhere('jv.date <= :to',   { to });
+
+  applyTypeFilter(qb);
+  qb.orderBy('jv.date', 'ASC').addOrderBy('d.id', 'ASC');
+
+  const rows = await qb.getMany();
+
+  // 5) Opening balance (before "from")
+  let openingBalance = 0;
+  if (from) {
+    const beforeQb = this.journalVoucherDetailRepository
+      .createQueryBuilder('d')
+      .leftJoin('d.journalVoucher', 'jv')
+      .where('d.accountId = :accountId', { accountId })
+      .andWhere('jv.date < :from', { from });
+
+    applyTypeFilter(beforeQb);
+    const beforeRows = await beforeQb.getMany();
+
+    let openingDr = 0, openingCr = 0;
+    for (const r of beforeRows) {
+      const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
+      const { drCol, crCol } = getColsFor(isG ? 'G' : 'S');
+      openingDr += Number((r as any)[drCol] || 0);
+      openingCr += Number((r as any)[crCol] || 0);
+    }
+    openingBalance = openingDr - openingCr;
+  }
+
+  // 6) Items + running balance
+  let running = openingBalance;
+  const items = rows.map((r) => {
+    const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
+    const { drCol, crCol } = getColsFor(isG ? 'G' : 'S');
+
+    const debit  = Number((r as any)[drCol] || 0);
+    const credit = Number((r as any)[crCol] || 0);
+    running += debit - credit;
+
+    return {
+      journalVoucherId: r.journalVoucherId,
+      date: r.journalVoucher?.date,
+      jvNumber: r.journalVoucher?.jvNumber,
+      description: r.description ?? null,
+      docNbr: r.docNbr ?? null,
+      kind: isG ? 'G' : 'S',
+      debit,
+      credit,
+      balanceAfter: running,
+      exRateUSD:  currencyCode === 'LL'   ? Number(r.exRateUSD || 0)      : undefined,
+      exRateEUROToUSD: currencyCode === 'EURO' ? Number(r.exRateEUROToUSD || 0) : undefined,
+    };
+  });
+
+  const totals = items.reduce(
+    (t, it) => {
+      t.totalDebit  += it.debit;
+      t.totalCredit += it.credit;
+      return t;
+    },
+    { totalDebit: 0, totalCredit: 0 }
+  );
+
+  const exampleColsS = getColsFor('S');
+  return {
+    accountId,
+    accountCode: (account as Account).accountNumber,
+    accountName: (account as Account).accountName,
+    from: from ?? null,
+    to: to ?? null,
+    openingBalance,
+    totals,
+    closingBalance: running,
+    items,
+    basis: {
+      currency: currencyCode,
+      sUses: { debitColumn: exampleColsS.drCol as string, creditColumn: exampleColsS.crCol as string },
+      gUses: {
+        debitColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).dr,
+        creditColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).cr,
+      },
+      selection: type,
+    },
+  };
+}
+
+
+
 
 }

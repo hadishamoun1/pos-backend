@@ -41,7 +41,7 @@ import { ReportsModule } from './reports/reports.module';
       port: 3306,
       username: 'root',
       password: '70631859HADI',
-      database: 'new_schema',
+      database: 'new_schema2',
       autoLoadEntities: true,
       synchronize: true,
     }),
