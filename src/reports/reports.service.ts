@@ -433,21 +433,22 @@ private cmpLexDigits(a: string, b: string) {
 
 
 /* ===== STANDARD ENDPOINT (JV-only rows, flat, prefix-friendly order, with parent info) ===== */
+/* ===== STANDARD ENDPOINT (JV-only rows; respects `currency` via getBaseCols) ===== */
 async getTrialBalanceStandard(params: TrialBalanceParams) {
   const {
     from,
     to,
-    currency = 'USD',
+    currency = 'USD',       // <-- respected here via getBaseCols(...)
     invoiceType = 'ALL',
     mainFrom,
     mainTo,
     subFrom,
     subTo,
     mainPrefixes,
-    level, // kept for signature; not used for ordering in JV-only mode
+    level,                  // kept for signature; not used in JV-only mode
   } = params;
 
-  // 1) Accounts & selection (need parentNumber + name to show parent columns)
+  // 1) Accounts & selection (kept as in your code)
   const accounts = await this.accountRepo.find({
     select: ['id', 'accountNumber', 'arabicAccountName', 'parentNumber'],
   });
@@ -481,89 +482,70 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
     };
   }
 
-  // 2) Invoice type filter helper
-  const applyTypeFilter = (qb: ReturnType<typeof this.jvdRepo.createQueryBuilder>) => {
-    if (invoiceType === 'S') {
-      qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
-    } else if (invoiceType === 'G') {
-      qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
-    }
-    return qb;
-  };
-
-  // 3) Opening rows (before from) & Period rows ([from..to])
-  let openingRows: JournalVoucherDetail[] = [];
-  if (from) {
-    const openQb = this.jvdRepo
-      .createQueryBuilder('d')
-      .leftJoinAndSelect('d.journalVoucher', 'jv')
-      .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
-      .andWhere('jv.date < :from', { from });
-    applyTypeFilter(openQb);
-    openingRows = await openQb.getMany();
-  }
-
-  const periodQb = this.jvdRepo
-    .createQueryBuilder('d')
-    .leftJoinAndSelect('d.journalVoucher', 'jv')
-    .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) });
-  if (from) periodQb.andWhere('jv.date >= :from', { from });
-  if (to)   periodQb.andWhere('jv.date <= :to', { to });
-  applyTypeFilter(periodQb);
-  const periodRows = await periodQb.getMany();
-
-  // 4) Sum by account using BASE columns (USD→drUSD/crUSD, LL→drLL/crLL, EURO|BASE→dr/cr)
+  // 2) Resolve base columns for the chosen currency
+  // getBaseCols(currency) should return the *column names* that exist on JVD rows
+  // e.g. { drCol: 'drUSD', crCol: 'crUSD' } or { drCol: 'drLL', crCol: 'crLL' } or { drCol: 'dr', crCol: 'cr' }
   const { drCol, crCol } = this.getBaseCols(currency);
 
-  type Tot = { debit: number; credit: number };
-  const sumByAcc = (rowsIn: JournalVoucherDetail[]) => {
-    const m = new Map<number, Tot>();
-    for (const r of rowsIn) {
-      const accId = r.accountId;
-      if (!accId) continue;
-      const debit  = Number((r as any)[drCol] || 0);
-      const credit = Number((r as any)[crCol] || 0);
-      const prev = m.get(accId) ?? { debit: 0, credit: 0 };
-      prev.debit  += debit;
-      prev.credit += credit;
-      m.set(accId, prev);
-    }
-    return m;
-  };
+  // 3) Invoice-type predicate (kept behavior: S = S or docNbr S%, G = G or docNbr G%)
+  const invoiceTypeSql =
+    invoiceType === 'S'
+      ? "(jv.jvType = 'S' OR d.docNbr LIKE 'S%')"
+      : invoiceType === 'G'
+      ? "(jv.jvType = 'G' OR d.docNbr LIKE 'G%')"
+      : '1=1';
 
-  const openMap   = sumByAcc(openingRows);
-  const periodMap = sumByAcc(periodRows);
+  // 4) Single aggregated query (opening + period) using the base debit/credit columns
+  // Notes:
+  //  - Use getRawMany() to avoid instantiating entities for each detail row.
+  //  - Only join JV to access date (and type for the filter).
+  //  - Use 0/1 in CASE to remain MySQL-friendly.
+  const qb = this.jvdRepo
+    .createQueryBuilder('d')
+    .leftJoin('d.journalVoucher', 'jv')
+    .select('d.accountId', 'accountId')
+    // Opening sums (date < :from if from provided; else 0)
+    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${drCol} ELSE 0 END)`, 'openDebit')
+    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${crCol} ELSE 0 END)`, 'openCredit')
+    // Period sums (from..to if provided, else TRUE to include all)
+    .addSelect(
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${drCol} ELSE 0 END)`,
+      'perDebit',
+    )
+    .addSelect(
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${crCol} ELSE 0 END)`,
+      'perCredit',
+    )
+    .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
+    .andWhere(invoiceTypeSql)
+    .groupBy('d.accountId');
 
-  // 5) JV-only: include ONLY accounts that appear in JV (opening or period)
-  const activeIds = new Set<number>([
-    ...Array.from(openMap.keys()),
-    ...Array.from(periodMap.keys()),
-  ]);
+  if (from) qb.setParameter('from', from);
+  if (to) qb.setParameter('to', to);
 
-  if (!activeIds.size) {
-    return {
-      from: from ?? null,
-      to: to ?? null,
-      currency,
-      invoiceType,
-      rows: [],
-      totals: {
-        openingDebit: 0, openingCredit: 0, openingBalance: 0,
-        periodDebit: 0, periodCredit: 0, balance: 0,
-        closingBalance: 0,
-      },
-    };
-  }
+  const raw = await qb.getRawMany<{
+    accountId: number | string;
+    openDebit: string; openCredit: string;
+    perDebit: string;  perCredit: string;
+  }>();
 
-  // 6) Compose flat JV-only rows (include parentCode/parentName for each, but DO NOT add parent rows)
+  // 5) Fast lookup by accountId
+  const rawByAcc = new Map<number, typeof raw[number]>();
+  for (const r of raw) rawByAcc.set(Number(r.accountId), r);
+
+  // 6) Compose flat JV-only rows (include parent info but don't add parent rows)
   const rows = selected
-    .filter(acc => activeIds.has(acc.id))
     .map(acc => {
-      const op = openMap.get(acc.id)   ?? { debit: 0, credit: 0 };
-      const pr = periodMap.get(acc.id) ?? { debit: 0, credit: 0 };
+      const agg = rawByAcc.get(acc.id);
+      if (!agg) return null;
 
-      const openingBalance = op.debit - op.credit;
-      const balance        = pr.debit - pr.credit; // period net
+      const openDebit  = +agg.openDebit  || 0;
+      const openCredit = +agg.openCredit || 0;
+      const perDebit   = +agg.perDebit   || 0;
+      const perCredit  = +agg.perCredit  || 0;
+
+      const openingBalance = openDebit - openCredit;
+      const balance        = perDebit - perCredit; // period net
       const closingBalance = openingBalance + balance;
 
       const parentAcc = acc.parentNumber ? byCode.get(acc.parentNumber) : undefined;
@@ -575,23 +557,36 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
         parentName:  parentAcc ? String(parentAcc.arabicAccountName ?? '') : null,
 
         // Opening
-        openingDebit:   op.debit,
-        openingCredit:  op.credit,
+        openingDebit:  openDebit,
+        openingCredit: openCredit,
         openingBalance,
 
         // Period
-        periodDebit:    pr.debit,
-        periodCredit:   pr.credit,
+        periodDebit:   perDebit,
+        periodCredit:  perCredit,
         balance,
 
         // Closing
         closingBalance,
       };
     })
-    // ✅ prefix-friendly order: digits-only, lexicographic
-    .sort((a, b) => this.cmpLexDigits(a.accountCode, b.accountCode));
+    .filter(Boolean)
+    // prefix-friendly order: digits-only, lexicographic (kept)
+    .sort((a, b) => this.cmpLexDigits((a as any).accountCode, (b as any).accountCode)) as Array<{
+      accountCode: string;
+      accountName: string;
+      parentCode: string | null;
+      parentName: string | null;
+      openingDebit: number;
+      openingCredit: number;
+      openingBalance: number;
+      periodDebit: number;
+      periodCredit: number;
+      balance: number;
+      closingBalance: number;
+    }>;
 
-  // 7) Totals = sum of displayed rows (per-account figures only)
+  // 7) Totals (sum of displayed rows)
   const totals = rows.reduce(
     (t, r) => {
       t.openingDebit   += r.openingDebit;
@@ -617,13 +612,12 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
   return {
     from: from ?? null,
     to: to ?? null,
-    currency,
+    currency,   // echoed; math uses getBaseCols(currency)
     invoiceType,
     rows,
     totals,
   };
 }
-
 
 
 /* ===== CURRENCIES ENDPOINT (JV-only rows, USD main + LL extra) ===== */
@@ -641,7 +635,7 @@ async getTrialBalanceCurrencies(params: TrialBalanceParams) {
     level,
   } = params;
 
-  // 1) Accounts & selection
+  // 1) Accounts & selection (kept: your existing helpers)
   const accounts = await this.accountRepo.find({
     select: ['id', 'accountNumber', 'arabicAccountName', 'parentNumber'],
   });
@@ -675,105 +669,88 @@ async getTrialBalanceCurrencies(params: TrialBalanceParams) {
     };
   }
 
-  // 2) Invoice type filter helper
-  const applyTypeFilter = (qb: ReturnType<typeof this.jvdRepo.createQueryBuilder>) => {
-    if (invoiceType === 'S') {
-      qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
-    } else if (invoiceType === 'G') {
-      qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
-    }
-    return qb;
-  };
+  // 2) Invoice type predicate (kept behavior: S = S or docNbr S%, G = G or docNbr G%)
+  const invoiceTypeSql =
+    invoiceType === 'S'
+      ? "(jv.jvType = 'S' OR d.docNbr LIKE 'S%')"
+      : invoiceType === 'G'
+      ? "(jv.jvType = 'G' OR d.docNbr LIKE 'G%')"
+      : '1=1';
 
-  // 3) Opening and Period rows
-  let openingRows: JournalVoucherDetail[] = [];
-  if (from) {
-    const openQb = this.jvdRepo
-      .createQueryBuilder('d')
-      .leftJoinAndSelect('d.journalVoucher', 'jv')
-      .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
-      .andWhere('jv.date < :from', { from });
-    applyTypeFilter(openQb);
-    openingRows = await openQb.getMany();
-  }
-
-  const periodQb = this.jvdRepo
+  // 3) Single aggregated query (opening + period, USD + LL) — FAST
+  // Notes:
+  //  - We use getRawMany() to avoid instantiating entities for every JV detail row.
+  //  - We only join JV to access date (and jvType for the filter).
+  //  - CASE WHEN ... THEN ... END sums keep everything in one pass.
+  const qb = this.jvdRepo
     .createQueryBuilder('d')
-    .leftJoinAndSelect('d.journalVoucher', 'jv')
-    .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) });
-  if (from) periodQb.andWhere('jv.date >= :from', { from });
-  if (to)   periodQb.andWhere('jv.date <= :to', { to });
-  applyTypeFilter(periodQb);
-  const periodRows = await periodQb.getMany();
+    .leftJoin('d.journalVoucher', 'jv')
+    .select('d.accountId', 'accountId')
+    // Opening: date < :from (if from given; otherwise sums 0)
+    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : 'FALSE'} THEN d.drUSD ELSE 0 END)`, 'openDebitUSD')
+    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : 'FALSE'} THEN d.crUSD ELSE 0 END)`, 'openCreditUSD')
+    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : 'FALSE'} THEN d.drLL  ELSE 0 END)`, 'openDebitLL')
+    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : 'FALSE'} THEN d.crLL  ELSE 0 END)`, 'openCreditLL')
+    // Period: from..to (if bounds given; otherwise TRUE to include all)
+    .addSelect(
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : 'TRUE')} AND ${(to ? 'jv.date <= :to' : 'TRUE')} THEN d.drUSD ELSE 0 END)`,
+      'perDebitUSD',
+    )
+    .addSelect(
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : 'TRUE')} AND ${(to ? 'jv.date <= :to' : 'TRUE')} THEN d.crUSD ELSE 0 END)`,
+      'perCreditUSD',
+    )
+    .addSelect(
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : 'TRUE')} AND ${(to ? 'jv.date <= :to' : 'TRUE')} THEN d.drLL  ELSE 0 END)`,
+      'perDebitLL',
+    )
+    .addSelect(
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : 'TRUE')} AND ${(to ? 'jv.date <= :to' : 'TRUE')} THEN d.crLL  ELSE 0 END)`,
+      'perCreditLL',
+    )
+    .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
+    .andWhere(invoiceTypeSql)
+    .groupBy('d.accountId');
 
-  // 4) ✅ Pin "main" math to USD, and also compute LL in parallel
-  // CHANGE: remove getBaseCols(...) usage; always use USD here.
-  const usdDrCol = 'drUSD';
-  const usdCrCol = 'crUSD';
-  const llDrCol  = 'drLL';
-  const llCrCol  = 'crLL';
+  if (from) qb.setParameter('from', from);
+  if (to) qb.setParameter('to', to);
 
-  type TotDual = { debitUSD: number; creditUSD: number; debitLL: number; creditLL: number };
-  const sumByAccDual = (rowsIn: JournalVoucherDetail[]) => {
-    const m = new Map<number, TotDual>();
-    for (const r of rowsIn) {
-      const accId = r.accountId;
-      if (!accId) continue;
+  const raw = await qb.getRawMany<{
+    accountId: number;
+    openDebitUSD: string; openCreditUSD: string;
+    openDebitLL: string;  openCreditLL: string;
+    perDebitUSD: string;  perCreditUSD: string;
+    perDebitLL: string;   perCreditLL: string;
+  }>();
 
-      const debitUSD  = Number((r as any)[usdDrCol] || 0);
-      const creditUSD = Number((r as any)[usdCrCol] || 0);
-      const debitLL   = Number((r as any)[llDrCol]  || 0);
-      const creditLL  = Number((r as any)[llCrCol]  || 0);
+  // 4) Fast lookup by accountId
+  const rawByAcc = new Map<number, typeof raw[number]>();
+  for (const r of raw) rawByAcc.set(Number(r.accountId), r);
 
-      const prev = m.get(accId) ?? { debitUSD: 0, creditUSD: 0, debitLL: 0, creditLL: 0 };
-      prev.debitUSD  += debitUSD;
-      prev.creditUSD += creditUSD;
-      prev.debitLL   += debitLL;
-      prev.creditLL  += creditLL;
-      m.set(accId, prev);
-    }
-    return m;
-  };
-
-  const openMap   = sumByAccDual(openingRows);
-  const periodMap = sumByAccDual(periodRows);
-
-  // 5) JV-only accounts
-  const activeIds = new Set<number>([
-    ...Array.from(openMap.keys()),
-    ...Array.from(periodMap.keys()),
-  ]);
-
-  if (!activeIds.size) {
-    return {
-      from: from ?? null,
-      to: to ?? null,
-      currency, // echoed only
-      invoiceType,
-      rows: [],
-      totals: {
-        openingDebit: 0, openingCredit: 0, openingBalance: 0,
-        periodDebit: 0, periodCredit: 0, balance: 0, closingBalance: 0,
-        openingBalanceLL: 0, periodDebitLL: 0, periodCreditLL: 0, balanceLL: 0, closingBalanceLL: 0,
-      },
-    };
-  }
-
-  // 6) Build rows (USD main + LL extras), prefix-friendly sort
+  // 5) Build rows (USD main + LL extras), prefix-friendly sort (kept)
   const rows = selected
-    .filter(acc => activeIds.has(acc.id))
     .map(acc => {
-      const op = openMap.get(acc.id)   ?? { debitUSD: 0, creditUSD: 0, debitLL: 0, creditLL: 0 };
-      const pr = periodMap.get(acc.id) ?? { debitUSD: 0, creditUSD: 0, debitLL: 0, creditLL: 0 };
+      const r = rawByAcc.get(acc.id);
+      if (!r) return null;
+
+      const openDebitUSD  = +r.openDebitUSD  || 0;
+      const openCreditUSD = +r.openCreditUSD || 0;
+      const perDebitUSD   = +r.perDebitUSD   || 0;
+      const perCreditUSD  = +r.perCreditUSD  || 0;
+
+      const openDebitLL  = +r.openDebitLL  || 0;
+      const openCreditLL = +r.openCreditLL || 0;
+      const perDebitLL   = +r.perDebitLL   || 0;
+      const perCreditLL  = +r.perCreditLL  || 0;
 
       // USD main
-      const openingBalance = op.debitUSD - op.creditUSD;
-      const balance        = pr.debitUSD - pr.creditUSD;      // period net USD
+      const openingBalance = openDebitUSD - openCreditUSD;
+      const balance        = perDebitUSD - perCreditUSD;   // period net USD
       const closingBalance = openingBalance + balance;
 
       // LL extras
-      const openingBalanceLL = op.debitLL - op.creditLL;
-      const balanceLL        = pr.debitLL - pr.creditLL;      // period net LL
+      const openingBalanceLL = openDebitLL - openCreditLL;
+      const balanceLL        = perDebitLL - perCreditLL;   // period net LL
       const closingBalanceLL = openingBalanceLL + balanceLL;
 
       const parentAcc = acc.parentNumber ? byCode.get(acc.parentNumber) : undefined;
@@ -785,25 +762,43 @@ async getTrialBalanceCurrencies(params: TrialBalanceParams) {
         parentName:  parentAcc ? String(parentAcc.arabicAccountName ?? '') : null,
 
         // USD (main columns in your UI)
-        openingDebit:  op.debitUSD,
-        openingCredit: op.creditUSD,
+        openingDebit:  openDebitUSD,
+        openingCredit: openCreditUSD,
         openingBalance,
-        periodDebit:   pr.debitUSD,
-        periodCredit:  pr.creditUSD,
+        periodDebit:   perDebitUSD,
+        periodCredit:  perCreditUSD,
         balance,
         closingBalance,
 
         // LL (extra columns requested)
         openingBalanceLL,
-        periodDebitLL:  pr.debitLL,
-        periodCreditLL: pr.creditLL,
+        periodDebitLL:  perDebitLL,
+        periodCreditLL: perCreditLL,
         balanceLL,
         closingBalanceLL,
       };
     })
-    .sort((a, b) => this.cmpLexDigits(a.accountCode, b.accountCode)); // same order as Standard
+    .filter(Boolean)
+    .sort((a, b) => this.cmpLexDigits((a as any).accountCode, (b as any).accountCode)) as Array<{
+      accountCode: string;
+      accountName: string;
+      parentCode: string | null;
+      parentName: string | null;
+      openingDebit: number;
+      openingCredit: number;
+      openingBalance: number;
+      periodDebit: number;
+      periodCredit: number;
+      balance: number;
+      closingBalance: number;
+      openingBalanceLL: number;
+      periodDebitLL: number;
+      periodCreditLL: number;
+      balanceLL: number;
+      closingBalanceLL: number;
+    }>;
 
-  // 7) Totals (USD + LL)
+  // 6) Totals (unchanged logic)
   const totals = rows.reduce(
     (t, r) => {
       t.openingDebit   += r.openingDebit;

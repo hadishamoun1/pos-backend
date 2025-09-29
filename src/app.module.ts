@@ -48,6 +48,7 @@ import { ConfigModule } from '@nestjs/config';
         database: process.env.DB_NAME || 'new_schema2',
         autoLoadEntities: true,
         synchronize: true,
+        
       }),
     }),
     UserModule,
