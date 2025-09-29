@@ -33,17 +33,22 @@ import { TransfersModule } from './transfers/transfers.module';
 import { RecievablesModule } from './receipt-voucher/recievables.module';
 import { ItemNameDescriptionModule } from './item-name-description/item-name-description.module';
 import { ReportsModule } from './reports/reports.module';
+import { ConfigModule } from '@nestjs/config';
+
 @Module({
   imports: [
-    TypeOrmModule.forRoot({
-      type: 'mysql',
-      host: 'localhost',
-      port: 3306,
-      username: 'root',
-      password: '70631859HADI',
-      database: 'new_schema2',
-      autoLoadEntities: true,
-      synchronize: true,
+    ConfigModule.forRoot({ isGlobal: true }),
+    TypeOrmModule.forRootAsync({
+      useFactory: () => ({
+        type: 'mysql',
+        host: process.env.DB_HOST || 'localhost',
+        port: Number(process.env.DB_PORT || 3306),
+        username: process.env.DB_USER || 'root',
+        password: process.env.DB_PASS || '70631859HADI',
+        database: process.env.DB_NAME || 'new_schema2',
+        autoLoadEntities: true,
+        synchronize: true,
+      }),
     }),
     UserModule,
     CustomerModule,

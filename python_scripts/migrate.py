@@ -4,7 +4,7 @@ import mysql.connector
 
 # --- CONFIG ---
 CSV_FILE_PATH = "subaccounts.csv"
-FORCE_INSERT_ORPHANS = False  # see notes below
+FORCE_INSERT_ORPHANS = True  # see notes below
 # ---------------
 
 def normalize_keys(d):

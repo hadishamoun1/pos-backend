@@ -20,7 +20,7 @@ export class JournalVoucher {
   @Column({ type: 'date',nullable:true })
   date: Date;
 
-  @Column({ type: 'varchar', length: 50, unique: true })
+  @Column({ type: 'varchar', length: 50, unique: false })
   jvNumber: string;
 
   @Column({ type: 'decimal', precision: 50, scale: 2,default:0 })
