@@ -7,6 +7,7 @@ import {
   Query,
   Put,
   ParseIntPipe,
+  DefaultValuePipe,
 } from '@nestjs/common';
 import { InvoiceService } from './invoice.service';
 import { Invoice } from '../entities/invoice.entity';
@@ -46,10 +47,10 @@ export class InvoiceController {
 
   @Get('filtered')
   async getFilteredInvoices(
-    @Query('page') page: number = 1,
-    @Query('limit') limit: number = 100,
+    @Query('page',  new DefaultValuePipe(1),   ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(100), ParseIntPipe) limit: number,
   ) {
-    return this.invoiceService.getFilteredInvoices(Number(page), Number(limit));
+    return this.invoiceService.getFilteredInvoices(page, limit);
   }
 
   @Put(':id')

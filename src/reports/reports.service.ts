@@ -9,7 +9,7 @@ import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails
 type TrialBalanceParams = {
   from?: string | null;
   to?: string | null;
-  /** “level = N” => start displaying from codes whose DIGIT length = N, then descend */
+  /** “level = N” => start displaying from codes whose DIGIT length = N, then descend by prefixes */
   level?: number;
   currency?: 'USD' | 'LL' | 'EURO' | 'BASE';
   invoiceType?: 'ALL' | 'S' | 'G';
@@ -20,7 +20,7 @@ type TrialBalanceParams = {
   mainPrefixes?: string; // e.g. "601,705"
 };
 
-/* ===== Tree node types ===== */
+/* ===== Row shapes for rollup ===== */
 interface TBNodeSum {
   openingBalance: number;
   periodDebit: number;
@@ -29,14 +29,14 @@ interface TBNodeSum {
 }
 
 interface TBNode {
-  keyDigits: string;         // digits only key (used for level and ordering)
-  code: string;              // accountNumber (exact, as in DB)
-  name: string;              // accountName
-  parentCode?: string;       // parent's accountNumber (exact)
-  children: Set<string>;     // children by accountNumber
-  sum: TBNodeSum;            // rolled numbers
-  leafHasActivity: boolean;  // this account itself has activity
-  depth: number;             // depth by parent chain (root=1, child=2, ...)
+  keyDigits: string;         // digits-only key (group/leaf)
+  code: string;              // group: prefix string (e.g. '224'), leaf: real accountNumber
+  name: string;              // group: name if an account exists with same digits, else ''; leaf: account name
+  parentCode?: string;       // parent group's prefix (for groups/leaves); undefined for roots
+  children: Set<string>;     // internal keys
+  sum: TBNodeSum;
+  leafHasActivity: boolean;  // true only for real leaf accounts
+  depth: number;             // 1-based depth relative to requested start level
 }
 
 @Injectable()
@@ -50,6 +50,7 @@ export class ReportsService {
     private readonly jvRepo: Repository<JournalVoucher>,
   ) {}
 
+  /* ===== small helpers ===== */
   private cmp(a: string, b: string) {
     return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
   }
@@ -61,9 +62,7 @@ export class ReportsService {
     return mainPrefixes.split(',').map((v) => v.trim()).filter(Boolean);
   }
 
-  /**
-   * Prefix-band: compare only first N digits where N = max(len(from), len(to)).
-   */
+  /** Prefix-band: compare only first N digits where N = max(len(from), len(to)). */
   private withinPrefixBand(code: string, from?: string | null, to?: string | null) {
     const key = this.digits(code);
     const f = this.digits(from);
@@ -84,8 +83,13 @@ export class ReportsService {
     return true;
   }
 
+      private cmpLexDigits(a: string, b: string) {
+  const A = this.digits(a);
+  const B = this.digits(b);
+  return A.localeCompare(B, undefined, { numeric: false, sensitivity: 'base' });
+}
 
-    /** ALWAYS base columns (no OFR): used by the **Standard** endpoint */
+  /** ALWAYS base columns (no OFR): used by the standard endpoint logic elsewhere */
   private getBaseCols(currency: 'USD' | 'LL' | 'EURO' | 'BASE') {
     const map = {
       USD: { dr: 'drUSD', cr: 'crUSD' },
@@ -97,156 +101,177 @@ export class ReportsService {
     return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail } as const;
   }
 
-
-  /** OFR aware (used by the existing hierarchical endpoint) */
+  /** OFR aware (for S vs G voucher math) */
   private getColsFor(rowKind: 'S' | 'G', currency: 'USD' | 'LL' | 'EURO' | 'BASE') {
     if (rowKind === 'G') {
       const ofr = {
         USD: { dr: 'drUSDOFR', cr: 'crUSDOFR' },
-        LL: { dr: 'drLLOFR', cr: 'crLLOFR' },
-        EURO: { dr: 'drOFR', cr: 'crOFR' },
-        BASE: { dr: 'drOFR', cr: 'crOFR' },
+        LL:  { dr: 'drLLOFR',  cr: 'crLLOFR'  },
+        EURO:{ dr: 'drOFR',    cr: 'crOFR'    },
+        BASE:{ dr: 'drOFR',    cr: 'crOFR'    },
       } as const;
       const p = ofr[currency] ?? ofr.USD;
       return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail } as const;
     }
     return this.getBaseCols(currency);
   }
-/** Lexicographic compare on digits-only strings (prefix-friendly order). */
-private cmpLexDigits(a: string, b: string) {
-  const A = this.digits(a);
-  const B = this.digits(b);
-  return A.localeCompare(B, undefined, { numeric: false, sensitivity: 'base' });
-}
-  
 
-  // Build a rollup tree using REAL parent chain (`parentNumber`). We:
-  // 1) Create a node for each active leaf and all its ancestors up to the root.
-  // 2) Add leaf sums to the leaf, then roll them up through parentNumber to the highest parent.
-  // 3) Sort children by numeric account number (string compare numeric=true).
-  private buildTreeAndRollup(
-    activeLeafSums: Map<string, TBNodeSum>,         // accountNumber -> sums (only active leaves)
-    accountsByCode: Map<string, Account>,          // accountNumber -> Account
+  /* =======================================================================
+     PREFIX GROUPED TREE (capped to 3 group levels before the leaf)
+     ======================================================================= */
+  private buildPrefixTreeAndRollup(
+    activeLeafSums: Map<string, TBNodeSum>,   // accountNumber -> sums
+    accountsByCode: Map<string, Account>,
+    startLevel: number
   ) {
-    const nodes = new Map<string, TBNode>();
+    const digitsOnly = (s: string) => String(s ?? '').replace(/\D/g, '');
 
-    const ensureNode = (acc: Account): TBNode => {
-      const code = String(acc.accountNumber);
-      const ex = nodes.get(code);
-      if (ex) return ex;
-      const n: TBNode = {
-        keyDigits: this.digits(code),
-        code,
-        name: String(acc.accountName ?? ''),
-        parentCode: acc.parentNumber ?? undefined,
-        children: new Set<string>(),
-        sum: { openingBalance: 0, periodDebit: 0, periodCredit: 0, closingBalance: 0 },
-        leafHasActivity: false,
-        depth: 1, // will be updated
-      };
-      nodes.set(code, n);
+    // map digits-only → one matching account (for optional name on groups)
+    const accByDigits = new Map<string, Account>();
+    for (const acc of accountsByCode.values()) {
+      const d = digitsOnly(acc.accountNumber);
+      if (!accByDigits.has(d)) accByDigits.set(d, acc);
+    }
+
+    type Key = string;
+    const gKey = (pref: string) => `G|${pref}`;   // group node key
+    const lKey = (code: string)  => `L|${code}`;  // leaf node key
+
+    const nodes = new Map<Key, TBNode>();
+    const roots = new Set<Key>();
+
+    const ensureGroup = (pref: string) => {
+      const key = gKey(pref);
+      let n = nodes.get(key);
+      if (!n) {
+        const acc = accByDigits.get(pref);
+        n = {
+          keyDigits: pref,
+          code: pref,
+          name: acc?.arabicAccountName ?? (acc as any)?.accountName ?? '',
+          parentCode: undefined, // will be set when linked
+          children: new Set<Key>(),
+          sum: { openingBalance: 0, periodDebit: 0, periodCredit: 0, closingBalance: 0 },
+          leafHasActivity: false,
+          depth: Math.max(1, pref.length - startLevel + 1),
+        };
+        nodes.set(key, n);
+      }
       return n;
     };
 
-    // Create nodes for leaves and ancestors; attach leaf sums; then roll upward.
-    for (const [leafCode, sums] of activeLeafSums) {
-      const startAcc = accountsByCode.get(leafCode);
-      if (!startAcc) continue;
-
-      // Upward chain (create nodes and link parent->children)
-      let acc: Account | undefined = startAcc;
-      let prevCode: string | undefined;
-      const chain: string[] = [];
-      while (acc) {
-        const code = String(acc.accountNumber);
-        chain.push(code);
-
-        const node = ensureNode(acc);
-        if (prevCode) {
-          // link parent->child
-          node.children.add(prevCode);
-          const child = nodes.get(prevCode)!;
-          child.parentCode = code;
-        }
-        prevCode = code;
-
-        if (!acc.parentNumber) break;
-        acc = accountsByCode.get(acc.parentNumber);
-        if (!acc) break; // broken parent link → stop here
+    const ensureLeaf = (code: string) => {
+      const key = lKey(code);
+      let n = nodes.get(key);
+      if (!n) {
+        const acc = accountsByCode.get(code);
+        n = {
+          keyDigits: digitsOnly(code),
+          code,
+          name: String(acc?.arabicAccountName ?? (acc as any)?.accountName ?? ''),
+          parentCode: undefined, // will be set when linked
+          children: new Set<Key>(),
+          sum: { openingBalance: 0, periodDebit: 0, periodCredit: 0, closingBalance: 0 },
+          leafHasActivity: true,
+          depth: 1,
+        };
+        nodes.set(key, n);
       }
+      return n;
+    };
 
-      // Add sums to the leaf itself
-      const leafNode = nodes.get(leafCode)!;
-      leafNode.leafHasActivity = true;
-      leafNode.sum.openingBalance += sums.openingBalance;
-      leafNode.sum.periodDebit += sums.periodDebit;
-      leafNode.sum.periodCredit += sums.periodCredit;
-      leafNode.sum.closingBalance += sums.closingBalance;
+    const MAX_GROUP_LEVELS = 3; // cap to 3 group prefixes (level, level+1, level+2)
 
-      // Roll up the same sums to all ancestors in the chain (excluding the leaf we already updated, but idempotent if included)
-      for (let i = 1; i < chain.length; i++) {
-        const anc = nodes.get(chain[i])!;
-        anc.sum.openingBalance += sums.openingBalance;
-        anc.sum.periodDebit += sums.periodDebit;
-        anc.sum.periodCredit += sums.periodCredit;
-        anc.sum.closingBalance += sums.closingBalance;
+    // 1) create leaves and attach under prefix groups (capped) + set parentCode
+    for (const [accCode, sums] of activeLeafSums) {
+      const leaf = ensureLeaf(accCode);
+      // set leaf sums
+      leaf.sum.openingBalance += sums.openingBalance;
+      leaf.sum.periodDebit    += sums.periodDebit;
+      leaf.sum.periodCredit   += sums.periodCredit;
+      leaf.sum.closingBalance += sums.closingBalance;
+
+      const d = leaf.keyDigits;
+      if (!d) continue;
+
+      if (d.length > startLevel) {
+        // chain of groups from startLevel up to min(d.length - 1, startLevel + MAX_GROUP_LEVELS - 1)
+        let parentKey: Key | null = null;
+        const lastGroupLen = Math.min(d.length - 1, startLevel + MAX_GROUP_LEVELS - 1);
+        for (let k = startLevel; k <= lastGroupLen; k++) {
+          const pref = d.slice(0, k);
+          const g = ensureGroup(pref);
+          const gK = gKey(pref);
+          if (k === startLevel) roots.add(gK); // root groups at the first level
+          if (parentKey) {
+            // link parent group → child group + set child's parentCode
+            nodes.get(parentKey)!.children.add(gK);
+            const child = nodes.get(gK)!;
+            child.parentCode = nodes.get(parentKey)!.code; // parent group's code (prefix)
+          }
+          parentKey = gK;
+        }
+        if (parentKey) {
+          // link last group → leaf + set leaf parentCode
+          nodes.get(parentKey)!.children.add(lKey(accCode));
+          leaf.parentCode = nodes.get(parentKey)!.code; // parent group's prefix
+          leaf.depth = nodes.get(parentKey)!.depth + 1;
+        }
+      } else {
+        // equal to start level (or shorter)
+        const rootGKey = gKey(d);
+        if (nodes.has(rootGKey)) {
+          nodes.get(rootGKey)!.children.add(lKey(accCode));
+          leaf.parentCode = nodes.get(rootGKey)!.code;
+          leaf.depth = nodes.get(rootGKey)!.depth + 1;
+        } else {
+          // no group node at this prefix -> leaf is a root
+          roots.add(lKey(accCode));
+          leaf.parentCode = undefined;
+          leaf.depth = 1;
+        }
       }
     }
 
-    // Compute depth by walking up parent chain
-    const depthOf = (code: string): number => {
-      let d = 1;
-      let cur = nodes.get(code);
-      while (cur?.parentCode) {
-        d += 1;
-        cur = nodes.get(cur.parentCode);
+    // 2) roll-up sums (postorder)
+    const visited = new Set<Key>();
+    const post = (key: Key): TBNodeSum => {
+      if (visited.has(key)) return nodes.get(key)!.sum;
+      visited.add(key);
+      const n = nodes.get(key)!;
+      if (n.children.size === 0) return n.sum;
+      const s = { openingBalance: 0, periodDebit: 0, periodCredit: 0, closingBalance: 0 };
+      for (const ch of n.children) {
+        const cs = post(ch);
+        s.openingBalance += cs.openingBalance;
+        s.periodDebit    += cs.periodDebit;
+        s.periodCredit   += cs.periodCredit;
+        s.closingBalance += cs.closingBalance;
       }
-      return d;
+      n.sum = s;
+      return s;
     };
-    for (const n of nodes.values()) n.depth = depthOf(n.code);
+    for (const r of roots) post(r);
 
-    // Sort children for every node
-    const sortChildren = (n: TBNode) => {
-      n.children = new Set(
-        Array.from(n.children).sort((a, b) => this.cmp(a, b)), // numeric-aware compare on accountNumber
-      );
+    // 3) preorder emit groups first, then children (sorted by digits)
+    const keyDigits = (k: Key) => nodes.get(k)!.keyDigits;
+    const sortByDigits = (a: Key, b: Key) =>
+      keyDigits(a).localeCompare(keyDigits(b), undefined, { numeric: false, sensitivity: 'base' });
+
+    const orderedKeys: Key[] = [];
+    const pre = (k: Key) => {
+      orderedKeys.push(k);
+      const kids = Array.from(nodes.get(k)!.children).sort(sortByDigits);
+      for (const ch of kids) pre(ch);
     };
-    for (const n of nodes.values()) sortChildren(n);
+    for (const r of Array.from(roots).sort(sortByDigits)) pre(r);
 
-    // Roots = nodes with no parent in the built set
-    const roots = Array.from(nodes.values())
-      .filter((n) => !n.parentCode || !nodes.has(n.parentCode))
-      .sort((a, b) => this.cmp(a.code, b.code));
-
-    return { nodes, roots };
+    return { nodes, orderedKeys };
   }
 
-  // Preorder traversal starting at the first digit-length >= requested level.
-  private preorderFromDigitLevel(nodes: Map<string, TBNode>, roots: TBNode[], requestedLevel: number) {
-    const lengths = new Set<number>(Array.from(nodes.values()).map((n) => n.keyDigits.length));
-    let startLen = Math.max(1, Number(requestedLevel || 1));
-    const maxLen = Math.max(...Array.from(lengths));
-    while (!lengths.has(startLen) && startLen < maxLen) startLen += 1;
-    if (!lengths.has(startLen)) startLen = Math.min(...Array.from(lengths)); // fallback (shouldn't happen)
-
-    // Starting nodes are those whose DIGIT length == startLen
-    const starts = Array.from(nodes.values())
-      .filter((n) => n.keyDigits.length === startLen)
-      .sort((a, b) => this.cmp(a.code, b.code));
-
-    const order: TBNode[] = [];
-    const dfs = (n: TBNode) => {
-      order.push(n);
-      for (const childCode of n.children) {
-        const ch = nodes.get(childCode)!;
-        dfs(ch);
-      }
-    };
-    for (const s of starts) dfs(s);
-
-    return order;
-  }
-
+  /* =======================================================================
+     GROUPED TRIAL BALANCE (by digit prefixes)
+     ======================================================================= */
   async getTrialBalance(params: TrialBalanceParams) {
     const {
       from,
@@ -261,13 +286,13 @@ private cmpLexDigits(a: string, b: string) {
       mainPrefixes,
     } = params;
 
-    // 1) Load accounts (need parentNumber and names)
+    // 1) Load accounts (need names to label leaves; may label groups if an exact account exists for a prefix)
     const accounts = await this.accountRepo.find({
       select: ['id', 'accountNumber', 'arabicAccountName', 'parentNumber'],
     });
     const accountsByCode = new Map<string, Account>(accounts.map((a) => [String(a.accountNumber), a]));
 
-    // 2) Selection by bands / prefixes (to decide which accounts' activity to include)
+    // 2) Selection by bands / prefixes (which accounts can contribute activity)
     const prefixes = this.parsePrefixes(mainPrefixes);
     let selected = accounts;
     if (prefixes.length) {
@@ -291,7 +316,7 @@ private cmpLexDigits(a: string, b: string) {
       };
     }
 
-    // 3) Helper to filter JV rows by invoiceType
+    // 3) Invoice-type filter
     const applyTypeFilter = (qb: ReturnType<typeof this.jvdRepo.createQueryBuilder>) => {
       if (invoiceType === 'S') {
         qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
@@ -301,7 +326,7 @@ private cmpLexDigits(a: string, b: string) {
       return qb;
     };
 
-    // 4) Opening rows (strictly before "from")
+    // 4) Opening (before `from`)
     let openingRows: JournalVoucherDetail[] = [];
     if (from) {
       const openQb = this.jvdRepo
@@ -314,23 +339,23 @@ private cmpLexDigits(a: string, b: string) {
       openingRows = await openQb.getMany();
     }
 
-    // 5) Period rows (between from..to, honoring missing bounds)
+    // 5) Period ([from..to])
     const periodQb = this.jvdRepo
       .createQueryBuilder('d')
       .leftJoinAndSelect('d.journalVoucher', 'jv')
       .leftJoinAndSelect('d.account', 'acc')
       .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) });
     if (from) periodQb.andWhere('jv.date >= :from', { from });
-    if (to) periodQb.andWhere('jv.date <= :to', { to });
+    if (to)   periodQb.andWhere('jv.date <= :to',   { to });
     applyTypeFilter(periodQb);
     const periodRows = await periodQb.getMany();
 
-    // 6) Aggregate by accountId (direct activity per account)
+    // 6) Sum by accountId using correct columns (OFR for G)
     const pickCols = (r: JournalVoucherDetail) => {
       const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
       const { drCol, crCol } = this.getColsFor(isG ? 'G' : 'S', currency);
       return {
-        debit: Number((r as any)[drCol] || 0),
+        debit:  Number((r as any)[drCol] || 0),
         credit: Number((r as any)[crCol] || 0),
       };
     };
@@ -339,7 +364,7 @@ private cmpLexDigits(a: string, b: string) {
     for (const r of openingRows) {
       const prev = openingByAcc.get(r.accountId) ?? { debit: 0, credit: 0 };
       const { debit, credit } = pickCols(r);
-      prev.debit += debit;
+      prev.debit  += debit;
       prev.credit += credit;
       openingByAcc.set(r.accountId, prev);
     }
@@ -348,12 +373,12 @@ private cmpLexDigits(a: string, b: string) {
     for (const r of periodRows) {
       const prev = periodByAcc.get(r.accountId) ?? { debit: 0, credit: 0 };
       const { debit, credit } = pickCols(r);
-      prev.debit += debit;
+      prev.debit  += debit;
       prev.credit += credit;
       periodByAcc.set(r.accountId, prev);
     }
 
-    // 7) Active accounts (any opening or period activity)
+    // 7) Active accounts (appear in opening or period)
     const activeIds = new Set<number>([
       ...Array.from(openingByAcc.keys()),
       ...Array.from(periodByAcc.keys()),
@@ -369,7 +394,7 @@ private cmpLexDigits(a: string, b: string) {
       };
     }
 
-    // 8) Leaf sums by accountNumber for selected+active accounts
+    // 8) Prepare leaf sums by **real accountNumber** (for selected + active)
     const activeLeafSums = new Map<string, TBNodeSum>(); // accountNumber -> sums
     for (const acc of selected) {
       if (!activeIds.has(acc.id)) continue;
@@ -380,38 +405,41 @@ private cmpLexDigits(a: string, b: string) {
 
       activeLeafSums.set(String(acc.accountNumber), {
         openingBalance,
-        periodDebit: pr.debit,
+        periodDebit:  pr.debit,
         periodCredit: pr.credit,
         closingBalance,
       });
     }
 
-    // 9) Build REAL-parent tree, roll sums up to highest parent
-    const { nodes, roots } = this.buildTreeAndRollup(activeLeafSums, accountsByCode);
+    // 9) Build PREFIX tree (virtual groups by digits) & rollup (capped to 3 groups)
+    const startLevel = Math.max(1, Number(level || 1));
+    const { nodes, orderedKeys } =
+      this.buildPrefixTreeAndRollup(activeLeafSums, accountsByCode, startLevel);
 
-    // 10) Preorder starting at requested digit level (with forward fallback)
-    const orderedNodes = this.preorderFromDigitLevel(nodes, roots, Math.max(1, Number(level || 1)));
+    // 10) Emit rows (groups and leaves) WITH parentCode
+    const rows = orderedKeys.map((k) => {
+      const n = nodes.get(k)!;
+      return {
+        accountCode: n.code,                // groups: "22","224",...  leaves: real account number
+        accountName: n.name || '',          // group name if exact account exists; otherwise empty
+        parentCode: n.parentCode ?? null,   // 👈 added
+        openingBalance: n.sum.openingBalance,
+        periodDebit:    n.sum.periodDebit,
+        periodCredit:   n.sum.periodCredit,
+        closingBalance: n.sum.closingBalance,
+        isGroup: n.children.size > 0,
+        depth: n.depth,
+      };
+    });
 
-    // 11) Emit rows
-    const rows = orderedNodes.map((n) => ({
-      accountCode: n.code,
-      accountName: n.name,
-      openingBalance: n.sum.openingBalance,
-      periodDebit: n.sum.periodDebit,
-      periodCredit: n.sum.periodCredit,
-      closingBalance: n.sum.closingBalance,
-      isGroup: n.children.size > 0, // group if has descendants included
-      depth: n.depth,               // for optional indentation in UI
-    }));
-
-    // 12) Totals from leaves only (no double-count)
+    // 11) Totals from leaves only (no double-counting)
     const totals = Array.from(nodes.values())
-      .filter((n) => n.leafHasActivity) // only direct-activity accounts
+      .filter((n) => n.children.size === 0 && n.leafHasActivity)
       .reduce(
         (t, n) => {
           t.openingBalance += n.sum.openingBalance;
-          t.periodDebit += n.sum.periodDebit;
-          t.periodCredit += n.sum.periodCredit;
+          t.periodDebit    += n.sum.periodDebit;
+          t.periodCredit   += n.sum.periodCredit;
           t.closingBalance += n.sum.closingBalance;
           return t;
         },
@@ -553,7 +581,7 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
       return {
         accountCode: String(acc.accountNumber),
         accountName: String(acc.arabicAccountName ?? ''),
-        parentCode:  parentAcc ? String(parentAcc.accountNumber) : null,
+        parentCode:  String(acc.parentNumber) ,
         parentName:  parentAcc ? String(parentAcc.arabicAccountName ?? '') : null,
 
         // Opening

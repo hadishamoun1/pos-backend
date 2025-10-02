@@ -436,33 +436,38 @@ console.log('📄 New invoice number:', invoiceNumber);
     };
   }
 
-  async getFilteredInvoices(
-    page: number,
-    limit: number,
-  ): Promise<{ data: any[]; total: number; totalPages: number }> {
-    const [invoices, total] = await this.invoiceRepository.findAndCount({
-      relations: ['customer'],
-      order: { id: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+ async getFilteredInvoices(
+  page: number,
+  limit: number,
+): Promise<{ data: any[]; total: number; totalPages: number }> {
+  const pageNum = Number.isFinite(page)  && page  > 0 ? page  : 1;
+  const take    = Number.isFinite(limit) && limit > 0 ? limit : 100;
+  const skip    = (pageNum - 1) * take;
 
-    return {
-      data: invoices.map((invoice) => ({
-        id: invoice.id,
-        invoiceNumber: invoice.invoiceNumber,
-        date: invoice.date,
-        totalWithoutVAT: invoice.totalWithoutVAT,
-        totalVAT: invoice.totalVAT,
-        grandTotal: invoice.grandTotal,
-        customerId: invoice.customer?.id,
-        customerName: invoice.customer?.customerName,
-        invoiceType: invoice.invoiceType,
-      })),
-      total,
-      totalPages: Math.ceil(total / limit),
-    };
-  }
+  const [invoices, total] = await this.invoiceRepository.findAndCount({
+    relations: ['customer'],
+    order: { id: 'DESC' },
+    skip,
+    take,
+  });
+
+  return {
+    data: invoices.map((invoice) => ({
+      id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      date: invoice.date,
+      totalWithoutVAT: invoice.totalWithoutVAT,
+      totalVAT: invoice.totalVAT,
+      grandTotal: invoice.grandTotal,
+      customerId: invoice.customer?.id,
+      customerName: invoice.customer?.customerName,
+      invoiceType: invoice.invoiceType,
+    })),
+    total,
+    totalPages: Math.ceil(total / take),
+  };
+}
+
 
   async editInvoice(
     invoiceId: number,
