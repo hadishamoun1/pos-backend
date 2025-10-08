@@ -46,7 +46,7 @@ def main():
             rid = pick(r, "id", "account id", "accountid")
             acc_number = pick(r, "account number", "accountnumber", "account_code", "code")
             acc_name = pick(r, "account name", "accountname", "name")
-            parent_number = pick(r, "parent account number", "parentnumber", "parent_account_number")
+            parent_number = pick(r, "parent account number", "parentnumber", "parent_account_number","parentaccountnumber" )
             arabic_name = pick(r, "arabic account name", "arabicaccountname", "arabic_name")
 
             # NEW: currencyId (accept various headers)

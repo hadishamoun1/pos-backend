@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like } from 'typeorm';
 import { Supplier } from '../entities/supplier.entity';
@@ -16,58 +16,94 @@ export class SupplierService {
     private currencyRepository: Repository<Currency>,
   ) {}
 
+  /**
+   * Create supplier.
+   * - Validates currency
+   * - Links to parent account 4011
+   * - Generates supplierAccountNumber "4011####" unless you pass one
+   * - Saves new fields: firstName, middleName, area, companyType, paymentTerms
+   */
   async createSupplier(
-    supplierData: Partial<Supplier> & { currencyId: number },
+    supplierData: Partial<Supplier> & { currencyId: number; supplierAccountNumber?: string },
   ): Promise<Supplier> {
-    const { supplierName, currencyId, ...otherFields } = supplierData;
+    const {
+      supplierName,
+      currencyId,
+      supplierAccountNumber: providedNumber,
+      firstName,
+      middleName,
+      area,
+      companyType,
+      paymentTerms,
+      address,
+      phoneNumber,
+      financialNumber,
+      vat,
+      ...rest
+    } = supplierData;
+
+    if (!supplierName) {
+      throw new NotFoundException('supplierName is required.');
+    }
+    if (!currencyId) {
+      throw new NotFoundException('currencyId is required.');
+    }
 
     // Validate currency
-    const currency = await this.currencyRepository.findOne({
-      where: { id: currencyId },
-    });
+    const currency = await this.currencyRepository.findOne({ where: { id: currencyId } });
     if (!currency) {
       throw new NotFoundException(`Currency with ID ${currencyId} not found.`);
     }
 
-    // Generate supplier account number
-    const accountPrefix = '4011';
-    const lastSupplier = await this.supplierRepository.find({
-      where: { supplierAccountNumber: Like(`${accountPrefix}%`) },
-      order: { supplierAccountNumber: 'DESC' },
-      take: 1,
-    });
-
-    const newSupplierNumber =
-      lastSupplier.length > 0
-        ? parseInt(
-            lastSupplier[0].supplierAccountNumber.replace(accountPrefix, ''),
-          ) + 1
-        : 1;
-
-    const supplierAccountNumber = `${accountPrefix}${newSupplierNumber
-      .toString()
-      .padStart(4, '0')}`;
-
-    // Link to the 4011 account
-    const account = await this.accountRepository.findOne({
-      where: { accountNumber: accountPrefix },
-    });
+    // Link to the 4011 parent account
+    const parentAccountNumber = '4011';
+    const account = await this.accountRepository.findOne({ where: { accountNumber: parentAccountNumber } });
     if (!account) {
-      throw new NotFoundException(
-        `Account with number ${accountPrefix} not found.`,
-      );
+      throw new NotFoundException(`Account with number ${parentAccountNumber} not found.`);
     }
+
+    // Use provided supplierAccountNumber or generate next 4011#### sequence
+    const supplierAccountNumber =
+      providedNumber && String(providedNumber).trim()
+        ? String(providedNumber).trim()
+        : await this.generateSupplierAccountNumber();
 
     // Create supplier
     const supplier = this.supplierRepository.create({
       supplierAccountNumber,
       supplierName,
+      firstName,
+      middleName,
+      area,
+      companyType,
+      paymentTerms,
+      address,
+      phoneNumber,
+      financialNumber,
+      vat,
       currency,
       account,
-      ...otherFields,
+      ...rest,
     });
 
     return this.supplierRepository.save(supplier);
+  }
+
+  /** Generate next "4011####" based on the current max */
+  private async generateSupplierAccountNumber(): Promise<string> {
+    const accountPrefix = '4011';
+    const last = await this.supplierRepository.find({
+      where: { supplierAccountNumber: Like(`${accountPrefix}%`) },
+      order: { supplierAccountNumber: 'DESC' },
+      take: 1,
+    });
+
+    const nextNum =
+      last.length > 0
+        ? parseInt(last[0].supplierAccountNumber.replace(accountPrefix, ''), 10) + 1
+        : 1;
+
+    return `${accountPrefix}${nextNum.toString().padStart(4, '0')}`;
   }
 
   async getAllSuppliers(): Promise<Supplier[]> {
@@ -85,6 +121,10 @@ export class SupplierService {
     return supplier;
   }
 
+  /**
+   * Paginated list for tables
+   * Note: only selecting fields that exist in the current entity.
+   */
   async getSuppliersPaginated(
     page: number,
     limit: number,
@@ -94,10 +134,13 @@ export class SupplierService {
         'id',
         'supplierAccountNumber',
         'supplierName',
+        'firstName',
+        'middleName',
+        'area',
+        'companyType',
+        'paymentTerms',
         'address',
-        'location',
         'phoneNumber',
-        'invoiceType',
         'vat',
         'financialNumber',
       ],
@@ -106,41 +149,44 @@ export class SupplierService {
       take: limit,
     });
 
-    const filteredSuppliers = suppliers.map((supplier) => ({
-      id: supplier.id,
-      supplierAccountNumber: supplier.supplierAccountNumber,
-      supplierName: supplier.supplierName,
-      address: supplier.address,
-      location: supplier.location,
-      phoneNumber: supplier.phoneNumber,
-      invoiceType: supplier.invoiceType,
-      vat: supplier.vat,
-      currencyCode: supplier.currency.currencyCode,
-      financialNumber: supplier.financialNumber,
+    const rows = suppliers.map((s) => ({
+      id: s.id,
+      supplierAccountNumber: s.supplierAccountNumber,
+      supplierName: s.supplierName,
+      firstName: s.firstName,
+      middleName: s.middleName,
+      area: s.area,
+      companyType: s.companyType,
+      paymentTerms: s.paymentTerms,
+      address: s.address,
+      phoneNumber: s.phoneNumber,
+      vat: s.vat,
+      financialNumber: s.financialNumber,
+      currencyCode: s.currency?.currencyCode,
     }));
 
-    return { suppliers: filteredSuppliers, total };
+    return { suppliers: rows, total };
   }
 
   async deleteSupplier(id: number): Promise<void> {
     const supplier = await this.getSupplierById(id);
     await this.supplierRepository.remove(supplier);
   }
+
   async getFilteredSuppliers(): Promise<Partial<Supplier>[]> {
     const suppliers = await this.supplierRepository.find({
       select: ['id', 'supplierName'],
     });
-
     return suppliers;
   }
 
-
-
-async searchSuppliers(query: string): Promise<Partial<Supplier>[]> {
-  return this.supplierRepository.find({
-    where: { supplierName: Like(`%${query}%`) },
-    select: ['id', 'supplierName'],
-  });
-}
-
+  async searchSuppliers(query: string): Promise<{ id: number; supplierName: string }[]> {
+    if (!query) return [];
+    const results = await this.supplierRepository.find({
+      where: { supplierName: Like(`%${query}%`) },
+      select: ['id', 'supplierName'],
+      take: 10,
+    });
+    return results.map(r => ({ id: r.id, supplierName: r.supplierName }));
+  }
 }

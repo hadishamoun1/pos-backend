@@ -22,14 +22,31 @@ export class Customer {
   @Column({ type: 'varchar', length: 255 })
   customerName: string;
 
-  @Column({ type: 'boolean', default: true })
-  accessible: boolean;
+  // NEW: optional structured name fields
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  firstName?: string;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  middleName?: string;
+
+    @Column({ type: 'varchar', length: 100, nullable: true })
+  paymentTerms?: string;
+
+  // NEW: area / description / company type
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  area?: string;
+
+
+
+  @Column({ type: 'text', nullable: true})
+  companyType?: string;
+
+ 
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   address?: string;
 
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  location?: string;
+  
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   phoneNumber?: string;
@@ -59,6 +76,7 @@ export class Customer {
 
   @OneToMany(() => Invoice, (invoice) => invoice.customer)
   invoices: Invoice[];
+
   @OneToMany(() => Request, (request) => request.customer)
   requests: Request[];
 }
