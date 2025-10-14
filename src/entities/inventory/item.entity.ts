@@ -13,11 +13,6 @@ export class Item {
   @Column({ type: 'enum', enum: ['box', 'sheet', 'sqm','unit'], default: 'box' })
   type: string; // Enum for item type
 
-  // item.entity.ts
-  @OneToMany(() => ItemNameDescription, (desc) => desc.item, {
-    cascade: ['insert', 'update'],
-  })
-  descriptions: ItemNameDescription[];
 
   @OneToMany(() => Thickness, (t) => t.item, { cascade: ['insert', 'update'] })
   thicknesses: Thickness[];

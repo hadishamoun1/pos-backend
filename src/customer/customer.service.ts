@@ -217,19 +217,30 @@ export class CustomerService {
   /**
    * ✅ Search customers by name and return only id & customerName
    */
-  async searchCustomers(
-    query: string,
-  ): Promise<{ id: number; customerName: string }[]> {
-    if (!query) {
-      return [];
-    }
+/**
+ * ✅ Search customers by name (or firstName) and return id, customerName, firstName, address
+ */
+async searchCustomers(
+  query: string,
+): Promise<Array<{ id: number; customerName: string; firstName: string | null; address: string | null }>> {
+  if (!query?.trim()) return [];
 
-    const results = await this.customerRepository.find({
-      where: { customerName: Like(`%${query}%`) },
-      select: ['id', 'customerName'],
-      take: 10,
-    });
+  const q = `%${query.trim()}%`;
 
-    return results.map(r => ({ id: r.id, customerName: r.customerName }));
-  }
+  const results = await this.customerRepository.find({
+    // match on customerName OR firstName (remove the second object if you only want customerName)
+    where: [{ customerName: Like(q) }, { firstName: Like(q) }],
+ select: ['id', 'customerName', 'firstName', 'address', 'phoneNumber'],
+    take: 10,
+  });
+
+  return results.map(r => ({
+    id: r.id,
+    customerName: r.customerName,
+    firstName: r.firstName ?? null,
+    address: r.address ?? null,
+    phoneNumber : r.phoneNumber ?? null,
+  }));
+}
+
 }

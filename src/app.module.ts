@@ -14,7 +14,6 @@ import { SupplierModule } from './suppliers/suppliers.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { PaymentVoucherModule } from './payment-voucher/payment-voucher.module';
 import { JournalVoucherModule } from './journal-voucher/journal-voucher.module';
-import { SalesVoucherModule } from './sales-voucher/sales-voucher.module';
 import { PurchaseVoucherModule } from './purchase-voucher/purchase-voucher.module';
 import { CreditNoteModule } from './credit-note/credit-note.module';
 import { DebitNoteModule } from './debit-note/debit-note.module';
@@ -65,7 +64,6 @@ import { ConfigModule } from '@nestjs/config';
     InvoiceModule,
     PaymentVoucherModule,
     JournalVoucherModule,
-    SalesVoucherModule,
     PurchaseVoucherModule,
     CreditNoteModule,
     DebitNoteModule,

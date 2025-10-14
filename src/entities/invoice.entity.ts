@@ -10,7 +10,6 @@ import { Customer } from './customer.entity';
 import { Branch } from './branch.entity';
 import { Currency } from './currency.entity';
 import { InvoiceItem } from './invoiceItem.entity';
-import { SalesVoucher } from '../entities/Vouchers/salesVoucher.entity';
 
 @Entity('invoices')
 export class Invoice {
@@ -68,8 +67,7 @@ export class Invoice {
   @OneToMany(() => InvoiceItem, (item) => item.invoice)
   items: InvoiceItem[];
 
-  @OneToMany(() => SalesVoucher, (salesVoucher) => salesVoucher.invoice)
-  salesVouchers: SalesVoucher[];
+
 
 
 }

@@ -10,8 +10,6 @@ import { InvoiceController } from './invoice.controller';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InvoiceGateway } from './invoice.gateway';
-import { SalesVoucher } from '../entities/Vouchers/salesVoucher.entity'; // Import SalesVoucher entity
-import { SalesVoucherDetail } from '../entities/Vouchers/salesVoucherDetails.entity'; // Import SalesVoucherDetail entity
 import { Settings } from '../entities/settings.entity';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity'; 
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
@@ -28,8 +26,6 @@ import { Account } from '../entities/account.entity';
       InvoiceItem,
       InventoryTransaction,
       ItemVariant,
-      SalesVoucher, // Add SalesVoucher entity
-      SalesVoucherDetail, // Add SalesVoucherDetail entity
       Settings,
       ItemBatch,
       JournalVoucher,

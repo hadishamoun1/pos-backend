@@ -1,4 +1,4 @@
-import { Controller, Put,Get, Post, Param, Body, Query } from '@nestjs/common';
+import { Controller, Put,Get, Post, Param, Body, Query, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
 import { RequestService } from './requests.service';
 import { Request } from '../entities/request.entity';
 
@@ -22,12 +22,12 @@ export class RequestController {
   }
 
   @Get('v1/filtered')
-  async getFilteredRequests(
-    @Query('page') page: number = 1,
-    @Query('limit') limit: number = 100,
-  ) {
-    return this.requestService.getFilteredRequests(Number(page), Number(limit));
-  }
+getFilteredRequests(
+  @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+  @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+) {
+  return this.requestService.getFilteredRequests(page, limit);
+}
 
 
   @Put(':id')

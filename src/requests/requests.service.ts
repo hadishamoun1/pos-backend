@@ -174,40 +174,48 @@ export class RequestService {
     };
   }
 
-  async getFilteredRequests(page: number = 1, limit: number = 10) {
-    const [requests, total] = await this.requestRepo.findAndCount({
-      relations: [
-        'customer',
-        'details',
-        'details.itemVariant',
-        'details.itemVariant.thickness',
-        'details.itemVariant.thickness.item',
-      ],
-      order: { id: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+async getFilteredRequests(page: number = 1, limit: number = 10) {
+  // 🔒 Coerce + clamp — never trust inputs at runtime
+  const pageNum  = Math.max(1, Number(page)  || 1);
+  const limitNum = Math.min(500, Math.max(1, Number(limit) || 50));
+  const skip     = (pageNum - 1) * limitNum;
 
-    const response = {
-      data: requests.map((request) => ({
-        id: request.id,
-        requestNumber: request.requestNumber,
-        requestDate: request.requestDate,
-        totalAmount: request.totalAmount,
-        vatAmount: request.vatAmount,
-        grandTotal: request.grandTotal,
-        customerName: request.customer.customerName,
-        invoiceType: request.customer.invoiceType,
-      })),
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
-    };
-    // ✅ Emit real-time updates
-    this.requestGateway.sendFilteredRequests(response);
+  // Optional debug (remove later)
+  console.log('[REQ] page/limit (raw):', page, limit, typeof page, typeof limit);
+  console.log('[REQ] pageNum/limitNum/skip:', pageNum, limitNum, skip);
 
-    return response;
-  }
+  const [requests, total] = await this.requestRepo.findAndCount({
+    relations: [
+      'customer',
+      'details',
+      'details.itemVariant',
+      'details.itemVariant.thickness',
+      'details.itemVariant.thickness.item',
+    ],
+    order: { id: 'DESC' },
+    skip,           // ✅ number
+    take: limitNum, // ✅ number
+  });
+
+  const response = {
+    data: requests.map((request) => ({
+      id: request.id,
+      requestNumber: request.requestNumber,
+      requestDate: request.requestDate,
+      totalAmount: request.totalAmount,
+      vatAmount: request.vatAmount,
+      grandTotal: request.grandTotal,
+      customerName: request.customer.customerName,
+      invoiceType: request.customer.invoiceType,
+    })),
+    total,
+    page: pageNum,
+    totalPages: Math.ceil(total / limitNum),
+  };
+
+  this.requestGateway.sendFilteredRequests(response);
+  return response;
+}
 
 
   async updateRequest(id: number, data: any): Promise<Request> {

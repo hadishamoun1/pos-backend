@@ -40,11 +40,5 @@ export class ItemNameDescription {
   @Column('decimal', { precision: 12, scale: 2, nullable: true })
   lastCostCVM: number;
 
-  @ManyToOne(() => Item, (item) => item.descriptions, {
-    onDelete: 'CASCADE',
-  })
-  item: Item;
 
-  @Column()
-  itemId: number;
 }
