@@ -31,8 +31,19 @@ export class ItemsController {
   }
 
   @Get('v1/filtered-items')
-  async getSelectedColumns(): Promise<any[]> {
-    return this.itemsService.getSelectedItemDetails();
+async getSelectedPaginated(
+  @Query('page') page?: string,
+  @Query('limit') limit?: string,
+  @Query('includeEmpty') includeEmpty?: string,
+) {
+  const p = Number(page ?? 1);
+  const l = Number(limit ?? 50);
+  const ie = includeEmpty === '1' || includeEmpty === 'true';
+  return this.itemsService.getSelectedItemDetailsPaginated({
+    page: p,
+    limit: l,
+    includeEmpty: ie,
+  });
   }
 // items.controller.ts
 

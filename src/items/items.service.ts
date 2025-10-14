@@ -83,18 +83,23 @@ export class ItemsService {
     });
   }
 
-async getSelectedItemDetails(): Promise<any[]> {
-  return await this.itemRepository
+// items.service.ts
+async getSelectedItemDetailsPaginated(opts?: {
+  page?: number;
+  limit?: number;
+  includeEmpty?: boolean; // optional: keep variants with no batches
+}) {
+  const page = Math.max(1, Number(opts?.page ?? 1));
+  const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
+  const offset = (page - 1) * limit;
+  const includeEmpty = !!opts?.includeEmpty;
+
+  const qb = this.itemRepository
     .createQueryBuilder('item')
-    // join thickness
     .leftJoinAndSelect('item.thicknesses', 'thickness')
-    // join variants
     .leftJoinAndSelect('thickness.variants', 'variant')
-    // join the description linked to each variant
     .leftJoinAndSelect('variant.itemNameDescription', 'variantDescription')
-    // join batches
     .leftJoinAndSelect('variant.batches', 'batch')
-    // select only the needed fields
     .select([
       'item.id',
       'item.itemName',
@@ -121,10 +126,34 @@ async getSelectedItemDetails(): Promise<any[]> {
       'batch.dateReceived',
       'batch.balanceOFR',
     ])
-    .orderBy('item.id', 'DESC')               // valid column
-    .addOrderBy('thickness.thickness', 'ASC') // optional: nice grouping
-    .addOrderBy('variant.id', 'ASC')          // optional
-    .getMany();
+    .orderBy('item.id', 'DESC')
+    .addOrderBy('thickness.thickness', 'ASC')
+    .addOrderBy('variant.id', 'ASC')
+    .skip(offset)
+    .take(limit + 1); // fetch one extra to know if more pages exist
+
+  // Execute
+  const rows = await qb.getMany();
+
+  // Optional: prune variants without batches
+  if (!includeEmpty) {
+    for (const it of rows) {
+      for (const th of it.thicknesses || []) {
+        th.variants = (th.variants || []).filter((v) => (v.batches || []).length > 0);
+      }
+      it.thicknesses = (it.thicknesses || []).filter((th) => (th.variants || []).length > 0);
+    }
+  }
+
+  const hasMore = rows.length > limit;
+  const data = hasMore ? rows.slice(0, limit) : rows;
+
+  return {
+    page,
+    limit,
+    hasMore,
+    data,
+  };
 }
 
 
