@@ -87,66 +87,88 @@ export class ItemsService {
 async getSelectedItemDetailsPaginated(opts?: {
   page?: number;
   limit?: number;
-  includeEmpty?: boolean; // optional: keep variants with no batches
+  includeEmpty?: boolean; // kept for compatibility, ignored
 }) {
   const page = Math.max(1, Number(opts?.page ?? 1));
   const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
   const offset = (page - 1) * limit;
-  const includeEmpty = !!opts?.includeEmpty;
 
-  const qb = this.itemRepository
-    .createQueryBuilder('item')
-    .leftJoinAndSelect('item.thicknesses', 'thickness')
-    .leftJoinAndSelect('thickness.variants', 'variant')
+  // ✅ paginate on VARIANT for stable pages
+  const qb = this.itemVariantRepository
+    .createQueryBuilder('variant')
+    .innerJoinAndSelect('variant.thickness', 'thickness')
+    .innerJoinAndSelect('thickness.item', 'item')
     .leftJoinAndSelect('variant.itemNameDescription', 'variantDescription')
-    .leftJoinAndSelect('variant.batches', 'batch')
+    // ⛔️ NO batches join — we show all variants regardless of stock/batches
     .select([
-      'item.id',
-      'item.itemName',
-      'item.type',
-
-      'thickness.id',
-      'thickness.thickness',
-
+      // variant
       'variant.id',
       'variant.length',
       'variant.width',
       'variant.sheetsPerBox',
       'variant.origin',
 
+      // thickness
+      'thickness.id',
+      'thickness.thickness',
+
+      // item
+      'item.id',
+      'item.itemName',
+      'item.type',
+
+      // description
       'variantDescription.id',
       'variantDescription.itemNumber',
       'variantDescription.categoryName',
       'variantDescription.subCategory',
       'variantDescription.colorName',
       'variantDescription.designName',
-
-      'batch.id',
-      'batch.condition',
-      'batch.dateReceived',
-      'batch.balanceOFR',
     ])
+    // stable order used by both pages and regrouping
     .orderBy('item.id', 'DESC')
     .addOrderBy('thickness.thickness', 'ASC')
     .addOrderBy('variant.id', 'ASC')
     .skip(offset)
     .take(limit + 1); // fetch one extra to know if more pages exist
 
-  // Execute
-  const rows = await qb.getMany();
+  const variants = await qb.getMany();
 
-  // Optional: prune variants without batches
-  if (!includeEmpty) {
-    for (const it of rows) {
-      for (const th of it.thicknesses || []) {
-        th.variants = (th.variants || []).filter((v) => (v.batches || []).length > 0);
-      }
-      it.thicknesses = (it.thicknesses || []).filter((th) => (th.variants || []).length > 0);
+  const hasMore = variants.length > limit;
+  const pageSlice = hasMore ? variants.slice(0, limit) : variants;
+
+  // 🔁 regroup into { items: [{ thicknesses: [{ variants: [...] }]}] }
+  const itemMap = new Map<number, any>();
+
+  for (const v of pageSlice) {
+    const th = v.thickness;
+    const it = th.item;
+
+    // ensure item bucket
+    let itemBucket = itemMap.get(it.id);
+    if (!itemBucket) {
+      itemBucket = {
+        id: it.id,
+        itemName: it.itemName,
+        type: it.type,
+        thicknesses: [],
+      };
+      itemMap.set(it.id, itemBucket);
     }
+
+    // ensure thickness bucket
+    let thBucket = itemBucket.thicknesses.find((t: any) => t.id === th.id);
+    if (!thBucket) {
+      thBucket = { id: th.id, thickness: th.thickness, variants: [] };
+      itemBucket.thicknesses.push(thBucket);
+    }
+
+    // strip circular refs before pushing variant
+    const { thickness, ...variantPlain } = v as any;
+    thBucket.variants.push(variantPlain);
   }
 
-  const hasMore = rows.length > limit;
-  const data = hasMore ? rows.slice(0, limit) : rows;
+  const data = Array.from(itemMap.values());
 
   return {
     page,
@@ -155,6 +177,7 @@ async getSelectedItemDetailsPaginated(opts?: {
     data,
   };
 }
+
 
 
  async createFullItem(data: {

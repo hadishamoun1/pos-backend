@@ -30,7 +30,7 @@ export class ItemsController {
     return this.itemsService.getAllItemsWithDetails();
   }
 
-  @Get('v1/filtered-items')
+@Get('v1/filtered-items')
 async getSelectedPaginated(
   @Query('page') page?: string,
   @Query('limit') limit?: string,
@@ -44,7 +44,7 @@ async getSelectedPaginated(
     limit: l,
     includeEmpty: ie,
   });
-  }
+}
 // items.controller.ts
 
   @Get('v2/filtered-items')
