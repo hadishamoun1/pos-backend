@@ -57,6 +57,19 @@ async getSelectedPaginated(
     const limitNum = Math.min(500, Math.max(1, limit || 200));
     return this.itemsService.getitemDetails({ page: pageNum, limit: limitNum });
   }
+
+
+
+  @Get('v2/filtered-items-all-batches')
+  async getFilteredItemsAllBatches(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const p = Number.isFinite(Number(page)) && Number(page) ? Number(page) : 1;
+    const l = Number.isFinite(Number(limit)) && Number(limit) ? Number(limit) : 100;
+
+    return this.itemsService.getitemDetailsAllBatches({ page: p, limit: l });
+  }
   // 🔎 Search modal endpoint (must be above :id)
   @Get('pos/search-modal')
   async searchForModal(

@@ -1012,6 +1012,322 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     return results;
   }
 
+
+
+  // items.service.ts
+async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
+  // ---- paginate by *rows* (table lines) ----
+  const page  = Math.max(1, Number(opts?.page ?? 1));
+  const limit = Math.min(500, Math.max(1, Number(opts?.limit ?? 100)));
+  const start = (page - 1) * limit;
+
+  const toNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const convertBalanceFromSqm = (params: {
+    itemType: string | null | undefined;
+    lengthCm: number;
+    widthCm: number;
+    sheetsPerBox: number;
+    balanceSqm: number;
+  }) => {
+    const { itemType, lengthCm, widthCm, sheetsPerBox, balanceSqm } = params;
+    const perSheetSqm =
+      toNum(lengthCm) > 0 && toNum(widthCm) > 0
+        ? (toNum(lengthCm) * toNum(widthCm)) / 10000
+        : 0;
+
+    const type = String(itemType || "").toLowerCase();
+    if (type === "box") {
+      const perBoxSqm = perSheetSqm * Math.max(1, toNum(sheetsPerBox));
+      return perBoxSqm > 0 ? balanceSqm / perBoxSqm : balanceSqm;
+    }
+    if (type === "sheet") {
+      return perSheetSqm > 0 ? balanceSqm / perSheetSqm : balanceSqm;
+    }
+    // sqm / unit → already in target unit
+    return balanceSqm;
+  };
+
+  // -------------------------------------------------------------------
+  // 1) Load minimal graph (stable base order). Final order is in JS.
+  // -------------------------------------------------------------------
+  const entities = await this.itemRepository
+    .createQueryBuilder("item")
+    .leftJoinAndSelect("item.thicknesses", "thickness")
+    .leftJoinAndSelect("thickness.variants", "variant")
+    .leftJoinAndSelect("variant.itemNameDescription", "variantDescription")
+    .leftJoinAndSelect("variant.batches", "batch")
+    .select([
+      // item
+      "item.id",
+      "item.itemName",
+      "item.type",
+      "item.sortIndex",        // entity is camelCase; DB col is sort_index
+      // thickness
+      "thickness.id",
+      "thickness.thickness",
+      "thickness.sort_index",  // entity exposes snake_case
+      // variant
+      "variant.id",
+      "variant.length",
+      "variant.width",
+      "variant.sheetsPerBox",
+      "variant.origin",
+      "variant.itemNameDescriptionId",
+      // description
+      "variantDescription.id",
+      "variantDescription.categoryName",
+      "variantDescription.subCategory",
+      "variantDescription.colorName",
+      "variantDescription.designName",
+      // batches (we will include *all* batches, even <= 0)
+      "batch.id",
+      "batch.condition",
+      "batch.dateReceived",
+      "batch.balanceOFR",
+    ])
+    .orderBy("item.id", "ASC")
+    .addOrderBy("thickness.id", "ASC")
+    .addOrderBy("variant.id", "ASC")
+    .addOrderBy("batch.id", "ASC")
+    .getMany();
+
+  // -------------------------------------------------------------------
+  // 2) Flatten everything (NO stock filtering here)
+  // -------------------------------------------------------------------
+  type Flat = {
+    itemId: number;
+    itemName: string;
+    itemSortIndex: number | null;
+    type: string; // 'box' | 'sheet' | 'sqm' | 'unit'
+    thicknessId: number;
+    thickness: number;
+    thicknessSortIndex: number | null;
+    variantId: number;
+    length: number;
+    width: number;
+    sheetsPerBox: number;
+    origin: string | null;
+    itemNameDescriptionId: number | null;
+    itemNameDescription: any | null;
+    batches: Array<{
+      id: number;
+      condition: string | null;
+      dateReceived: string | Date | null;
+      balanceOFRSqm: number; // original sqm
+      balanceOFR: number;    // converted count (may be 0 or negative)
+    }>;
+  };
+
+  const flat: Flat[] = [];
+
+  for (const item of entities) {
+    for (const th of item.thicknesses || []) {
+      for (const v of th.variants || []) {
+        const lengthNum = toNum(v.length);
+        const widthNum  = toNum(v.width);
+        const spbNum    = Math.max(1, toNum(v.sheetsPerBox));
+
+        // Map every batch (keep even if converted balance <= 0)
+        const mappedBatches = (v.batches || []).map((b) => {
+          const balanceSqm = toNum(b.balanceOFR);
+          const converted  = convertBalanceFromSqm({
+            itemType: item.type,
+            lengthCm: lengthNum,
+            widthCm: widthNum,
+            sheetsPerBox: spbNum,
+            balanceSqm,
+          });
+          return {
+            id: b.id,
+            condition: b.condition ?? null,
+            dateReceived: b.dateReceived ?? null,
+            balanceOFRSqm: Number(balanceSqm.toFixed(2)),
+            balanceOFR: Number(converted.toFixed(2)),
+          };
+        });
+
+        // Only push variants that *have a batch* (require batch presence)
+        if (mappedBatches.length === 0) {
+          continue; // skip variants without batches
+        }
+
+        flat.push({
+          itemId: item.id,
+          itemName: item.itemName,
+          itemSortIndex: (item as any)?.sortIndex ?? null,
+          type: String(item.type || "").toLowerCase(),
+          thicknessId: th.id,
+          thickness: toNum(th.thickness),
+          thicknessSortIndex: (th as any)?.sort_index ?? null,
+          variantId: v.id,
+          length: lengthNum,
+          width: widthNum,
+          sheetsPerBox: spbNum,
+          origin: v.origin || null,
+          itemNameDescriptionId: v.itemNameDescriptionId || null,
+          itemNameDescription: v.itemNameDescription
+            ? {
+                id: v.itemNameDescription.id,
+                categoryName: v.itemNameDescription.categoryName,
+                subCategory: v.itemNameDescription.subCategory,
+                colorName: v.itemNameDescription.colorName,
+                designName: v.itemNameDescription.designName,
+              }
+            : null,
+          batches: mappedBatches, // includes zero/negative
+        });
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // 3) Order (itemName → thickness → dims → type)
+  // -------------------------------------------------------------------
+  const nullLast = (n: any) => (n == null ? Number.POSITIVE_INFINITY : Number(n));
+  const typeRank = (t: string) => (t === "box" ? 0 : t === "sheet" ? 1 : t === "sqm" ? 2 : 3);
+
+  const byName = new Map<string, Flat[]>();
+  for (const r of flat) {
+    if (!byName.has(r.itemName)) byName.set(r.itemName, []);
+    byName.get(r.itemName)!.push(r);
+  }
+
+  // Names: sort_index NULLS LAST, then name ASC
+  const nameKeys = Array.from(byName.keys()).sort((a, b) => {
+    const aMin = Math.min(...byName.get(a)!.map((x) => nullLast(x.itemSortIndex)));
+    const bMin = Math.min(...byName.get(b)!.map((x) => nullLast(x.itemSortIndex)));
+    if (aMin !== bMin) return aMin - bMin;
+    return a.localeCompare(b);
+  });
+
+  const ordered: Flat[] = [];
+
+  for (const name of nameKeys) {
+    const rowsOfName = byName.get(name)!;
+
+    // group by thickness
+    const byTh = new Map<number, Flat[]>();
+    for (const r of rowsOfName) {
+      if (!byTh.has(r.thickness)) byTh.set(r.thickness, []);
+      byTh.get(r.thickness)!.push(r);
+    }
+
+    // Thickness: th.sort_index NULLS LAST, then numeric ASC
+    const thKeys = Array.from(byTh.keys()).sort((ta, tb) => {
+      const aArr = byTh.get(ta)!;
+      const bArr = byTh.get(tb)!;
+      const aMin = Math.min(...aArr.map((x) => nullLast(x.thicknessSortIndex)));
+      const bMin = Math.min(...bArr.map((x) => nullLast(x.thicknessSortIndex)));
+      if (aMin !== bMin) return aMin - bMin;
+      return ta - tb;
+    });
+
+    for (const th of thKeys) {
+      const rowsTh = byTh.get(th)!;
+
+      const dimmed     = rowsTh.filter((r) => r.length > 0 && r.width > 0);
+      const nonDimmed  = rowsTh.filter((r) => !(r.length > 0 && r.width > 0) || r.type === "sqm");
+
+      // group by dims
+      const byDims = new Map<string, Flat[]>();
+      for (const r of dimmed) {
+        const k = `${r.length}|${r.width}`;
+        if (!byDims.has(k)) byDims.set(k, []);
+        byDims.get(k)!.push(r);
+      }
+
+      // dims order: area DESC → length DESC → width DESC
+      const dimKeys = Array.from(byDims.keys()).sort((ka, kb) => {
+        const [aL, aW] = ka.split("|").map(Number);
+        const [bL, bW] = kb.split("|").map(Number);
+        const aArea = aL * aW, bArea = bL * bW;
+        if (aArea !== bArea) return bArea - aArea;
+        if (aL !== bL) return bL - aL;
+        return bW - aW;
+      });
+
+      // Emit box → sheet → sqm for each dims group
+      for (const dk of dimKeys) {
+        const g = byDims.get(dk)!;
+        const boxes  = g.filter((x) => x.type === "box")
+                        .sort((a, b) => (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) || a.variantId - b.variantId);
+        const sheets = g.filter((x) => x.type === "sheet").sort((a, b) => a.variantId - b.variantId);
+        const sqms   = g.filter((x) => x.type === "sqm");
+        ordered.push(...boxes, ...sheets, ...sqms);
+      }
+
+      // then sqm without dims, then any other no-dims
+      const sqmOthers     = nonDimmed.filter((x) => x.type === "sqm").sort((a, b) => a.variantId - b.variantId);
+      const noDimsNonSqm  = nonDimmed.filter((x) => x.type !== "sqm");
+      ordered.push(...sqmOthers, ...noDimsNonSqm);
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // 4) Expand to *rows* (every batch yields a row) and paginate
+  //     NOTE: we KEEP rows even if balanceOFR <= 0
+  // -------------------------------------------------------------------
+  type Row = {
+    itemId: number;
+    itemName: string;
+    type: string;
+    variantId: number;
+    thickness: number;
+    length: number;
+    width: number;
+    sheetsPerBox: number;
+    origin: string | null;
+    itemNameDescriptionId: number | null;
+    itemNameDescription: any | null;
+    batchId: number | null;
+    condition: string | null;
+    dateReceived: string | Date | null;
+    balanceOFR: number | null; // may be 0 or negative by design in this endpoint
+  };
+
+  const allRows: Row[] = [];
+  for (const r of ordered) {
+    // Only variants with batches were pushed earlier, so we can just expand
+    for (const b of r.batches) {
+      allRows.push({
+        itemId: r.itemId,
+        itemName: r.itemName,
+        type: r.type,
+        variantId: r.variantId,
+        thickness: r.thickness,
+        length: r.length,
+        width: r.width,
+        sheetsPerBox: r.sheetsPerBox,
+        origin: r.origin,
+        itemNameDescriptionId: r.itemNameDescriptionId,
+        itemNameDescription: r.itemNameDescription,
+        batchId: b.id,
+        condition: b.condition,
+        dateReceived: b.dateReceived,
+        balanceOFR: b.balanceOFR, // keep 0/negative
+      });
+    }
+  }
+
+  const totalRows  = allRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / limit));
+  const pageRows   = allRows.slice(start, start + limit);
+
+  return {
+    page,
+    limit,
+    totalRows,
+    totalPages,
+    hasMore: page < totalPages,
+    data: pageRows,
+  };
+}
+
+
 }
 
 
