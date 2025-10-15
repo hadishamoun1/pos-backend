@@ -54,7 +54,7 @@ async getSelectedPaginated(
   ) {
     // clamp
     const pageNum = Math.max(1, page || 1);
-    const limitNum = Math.min(500, Math.max(1, limit || 100));
+    const limitNum = Math.min(500, Math.max(1, limit || 200));
     return this.itemsService.getitemDetails({ page: pageNum, limit: limitNum });
   }
   // 🔎 Search modal endpoint (must be above :id)

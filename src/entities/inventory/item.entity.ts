@@ -1,4 +1,4 @@
-import { Entity, Column, PrimaryGeneratedColumn, OneToMany } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, OneToMany, Index } from 'typeorm';
 import { Thickness } from './thickness.entity';
 import { ItemNameDescription } from './itemNameDescription.entity';
 
@@ -12,6 +12,12 @@ export class Item {
 
   @Column({ type: 'enum', enum: ['box', 'sheet', 'sqm','unit'], default: 'box' })
   type: string; // Enum for item type
+
+
+    // NEW: controls display order of items globally
+  @Index()
+  @Column({ type: 'int', nullable: true, name: 'sort_index' })
+  sortIndex: number | null;
 
 
   @OneToMany(() => Thickness, (t) => t.item, { cascade: ['insert', 'update'] })
