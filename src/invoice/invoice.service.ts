@@ -776,7 +776,6 @@ console.log('📄 New invoice number:', invoiceNumber);
 }
 
   // invoices.service.ts
-
 async getBrowsingInvoices(
   customerId: number,
   limitPerGroup = 5,
@@ -792,36 +791,132 @@ async getBrowsingInvoices(
       'items.itemVariant.thickness',
       'items.itemVariant.thickness.item',
       'items.itemVariant.itemNameDescription',
-      // If your dims live elsewhere, add the relation here, e.g.:
-      // 'items.itemVariant.dimensions',
     ],
-    order: { date: 'DESC' },
+    order: { date: 'DESC' }, // recency only affects which invoices we pick from; sorting is done below
   });
 
-  function getPriority(name: string) {
-    const n = name?.toLowerCase() || '';
-    if (n.includes('تريبلكس ابيض')) return 3;
-    if (n.includes('برونز')) return 2;
-    if (n.includes('اسود')) return 1;
-    if (n.includes('ابيض')) return 0;
-    return 99;
+  const toNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const nullLast = (n: any) =>
+    n == null || Number.isNaN(Number(n)) ? Number.POSITIVE_INFINITY : Number(n);
+
+  /**
+   * EXACT ItemsService-style ordering inside a group:
+   * Item (sortIndex -> name) → Thickness (sort_index -> thickness) → Dims (area desc, L desc, W desc) → Type/SPB
+   */
+  function orderLikeItemsService(rows: any[]) {
+    // 1) Group by itemName (outer level)
+    const byItem = new Map<string, any[]>();
+    for (const r of rows) {
+      const key = r.itemName ?? '';
+      if (!byItem.has(key)) byItem.set(key, []);
+      byItem.get(key)!.push(r);
+    }
+
+    // order items: item.sortIndex NULLS LAST, then itemName ASC
+    const itemKeys = Array.from(byItem.keys()).sort((a, b) => {
+      const aArr = byItem.get(a)!;
+      const bArr = byItem.get(b)!;
+      const minSortA = Math.min(...aArr.map((x) => nullLast(x.itemSortIndex)));
+      const minSortB = Math.min(...bArr.map((x) => nullLast(x.itemSortIndex)));
+      if (minSortA !== minSortB) return minSortA - minSortB;
+      return a.localeCompare(b);
+    });
+
+    const orderedAll: any[] = [];
+
+    for (const itemKey of itemKeys) {
+      const rowsOfItem = byItem.get(itemKey)!;
+
+      // 2) Group by thickness value
+      const byTh = new Map<number, any[]>();
+      for (const r of rowsOfItem) {
+        const th = toNum(r.thickness);
+        if (!byTh.has(th)) byTh.set(th, []);
+        byTh.get(th)!.push(r);
+      }
+
+      // order thickness: thickness.sort_index NULLS LAST, then numeric thickness ASC
+      const thKeys = Array.from(byTh.keys()).sort((ta, tb) => {
+        const aArr = byTh.get(ta)!;
+        const bArr = byTh.get(tb)!;
+        const minSortA = Math.min(...aArr.map((x) => nullLast(x.thicknessSortIndex)));
+        const minSortB = Math.min(...bArr.map((x) => nullLast(x.thicknessSortIndex)));
+        if (minSortA !== minSortB) return minSortA - minSortB;
+        return ta - tb;
+      });
+
+      for (const th of thKeys) {
+        const rowsTh = byTh.get(th)!;
+
+        // 3) Dims vs non-dims
+        const hasDims = (r: any) => toNum(r.length) > 0 && toNum(r.width) > 0;
+        const dimmed = rowsTh.filter(hasDims);
+        const nonDimmed = rowsTh.filter((r) => !hasDims(r) || r.type === 'sqm');
+
+        // group dimmed by L|W
+        const byDims = new Map<string, any[]>();
+        for (const r of dimmed) {
+          const k = `${toNum(r.length)}|${toNum(r.width)}`;
+          if (!byDims.has(k)) byDims.set(k, []);
+          byDims.get(k)!.push(r);
+        }
+
+        // dims order: area DESC → L DESC → W DESC
+        const dimKeys = Array.from(byDims.keys()).sort((ka, kb) => {
+          const [aL, aW] = ka.split('|').map(Number);
+          const [bL, bW] = kb.split('|').map(Number);
+          const aArea = aL * aW, bArea = bL * bW;
+          if (aArea !== bArea) return bArea - aArea;
+          if (aL !== bL) return bL - aL;
+          return bW - aW;
+        });
+
+        // emit per dims group: box (SPB DESC, variantId) → sheet (variantId) → sqm
+        for (const dk of dimKeys) {
+          const g = byDims.get(dk)!;
+
+          const boxes = g
+            .filter((x) => x.type === 'box')
+            .sort(
+              (a, b) =>
+                (toNum(b.sheetsPerBox) || 0) - (toNum(a.sheetsPerBox) || 0) ||
+                toNum(a.itemVariantId) - toNum(b.itemVariantId)
+            );
+          const sheets = g
+            .filter((x) => x.type === 'sheet')
+            .sort((a, b) => toNum(a.itemVariantId) - toNum(b.itemVariantId));
+          const sqms = g.filter((x) => x.type === 'sqm');
+
+          orderedAll.push(...boxes, ...sheets, ...sqms);
+        }
+
+        // then sqm without dims (variantId), then no-dims non-sqm
+        const sqmOthers = nonDimmed
+          .filter((x) => x.type === 'sqm')
+          .sort((a, b) => toNum(a.itemVariantId) - toNum(b.itemVariantId));
+        const noDimsNonSqm = nonDimmed.filter((x) => x.type !== 'sqm');
+
+        orderedAll.push(...sqmOthers, ...noDimsNonSqm);
+      }
+    }
+
+    return orderedAll;
   }
 
+  // Flatten invoice items → row objects used by the sorter
   const allItems = invoices.flatMap((invoice) =>
     invoice.items.map((item) => {
       const variant = item.itemVariant;
-      const thicknessEntity = variant?.thickness;
-      const itemData = thicknessEntity?.item;
-      const itemDesc = variant?.itemNameDescription;
-      const itemBatch = item.itemBatch;
+      const th = variant?.thickness;
+      const it = th?.item;
+      const desc = variant?.itemNameDescription;
+      const batch = item.itemBatch;
 
-      const type = itemData?.type || '';
+      const type = it?.type || '';
 
-      // ✅ Pull dimensions from where they live in your model.
-      // Common cases:
-      // - variant.length / variant.width
-      // - variant.dimensions?.length / variant.dimensions?.width
-      // - thicknessEntity?.item?.defaultLength / defaultWidth (fallback)
       const length =
         (variant as any)?.length ??
         (variant as any)?.dimensions?.length ??
@@ -833,24 +928,25 @@ async getBrowsingInvoices(
         null;
 
       return {
-        // grouping identity = itemDescriptionId
-        itemDescriptionId: itemDesc?.id || 0,
+        // grouping identity
+        itemDescriptionId: desc?.id || 0,
 
-        // row display data
+        // display
         invoiceDate: invoice.date,
         invoiceNumber: invoice.invoiceNumber,
-        itemName: itemData?.itemName || '',
-        descriptionName:  itemData?.itemName || '',
+        itemName: it?.itemName || '',
+        descriptionName: it?.itemName || '',
 
-        // existing attrs
-        thickness: thicknessEntity?.thickness ?? '',
+        // sort signals (BOTH captured)
+        itemSortIndex: (it as any)?.sortIndex ?? (it as any)?.sort_index ?? null,
+        thickness: th?.thickness ?? '',
+        thicknessSortIndex: (th as any)?.sort_index ?? (th as any)?.sortIndex ?? null,
+
+        // attributes for dims/type sort
         origin: variant?.origin ?? '',
         type,
-
-        // ✅ NEW: dimensions per variant
-        length,              // e.g., mm or cm—use your unit
-        width,               // e.g., mm or cm—use your unit
-
+        length,
+        width,
         box: type === 'box' ? item.quantity : 0,
         sheet: type === 'sheet' ? item.quantity : 0,
         sheetsPerBox: type === 'box' ? variant?.sheetsPerBox || 0 : null,
@@ -860,14 +956,14 @@ async getBrowsingInvoices(
         vat: item.vat,
         totalAmount: item.totalAmount,
 
-        // refs (not used for grouping)
+        // refs
         itemVariantId: variant?.id || 0,
-        itemBatchId: itemBatch?.id || 0,
+        itemBatchId: batch?.id || 0,
       };
     }),
   );
 
-  // group by itemDescriptionId
+  // Group by itemDescriptionId (what your UI expects)
   const grouped = new Map<string, any[]>();
   for (const row of allItems) {
     const key = String(row.itemDescriptionId);
@@ -875,53 +971,54 @@ async getBrowsingInvoices(
     grouped.get(key)!.push(row);
   }
 
-  if (groupKey) {
-    const items = grouped.get(groupKey) || [];
-    const sorted = items.sort(
-      (a, b) => new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime(),
-    );
-    const start = (pagePerGroup - 1) * limitPerGroup;
-    return {
-      groupKey,
-      descriptionName: items[0]?.descriptionName || '',
-      items: sorted.slice(start, start + limitPerGroup),
-      total: sorted.length,
-      page: pagePerGroup,
-      totalPages: Math.ceil(sorted.length / limitPerGroup),
-    };
-  }
+  // Group slice helper
+  function buildGroupPayload(key: string, items: any[], page = 1) {
+    const ordered = orderLikeItemsService(items);
+    const start = (page - 1) * limitPerGroup;
+    const slice = ordered.slice(start, start + limitPerGroup);
 
-  const paginatedGroups = Array.from(grouped.entries()).map(([key, items]) => {
-    const sorted = items.sort(
-      (a, b) => new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime(),
-    );
     return {
       groupKey: key,
       descriptionName: items[0]?.descriptionName || '',
-      items: sorted.slice(0, limitPerGroup),
-      total: items.length,
-      page: 1,
-      totalPages: Math.ceil(items.length / limitPerGroup),
-      latestInvoiceDate: sorted[0]?.invoiceDate ?? null,
+      items: slice,
+      total: ordered.length,
+      page,
+      totalPages: Math.ceil(ordered.length / limitPerGroup),
     };
+  }
+
+  // If a specific group is requested (pagination for one group)
+  if (groupKey) {
+    const items = grouped.get(groupKey) || [];
+    return buildGroupPayload(groupKey, items, pagePerGroup);
+  }
+
+  // Build all groups (page 1 for each)
+  const groups = Array.from(grouped.entries()).map(([key, items]) =>
+    buildGroupPayload(key, items, 1),
+  );
+
+  // Order groups themselves by Item order (sortIndex NULLS LAST → name ASC).
+  // We take the **first row's** signals from each group's ordered slice,
+  // or compute from the whole group if slice is empty.
+const groupOrderKey = (g: any) => {
+  const fallbackGroup = grouped.get(g.groupKey);
+  const src = (g.items[0] ?? (fallbackGroup ? fallbackGroup[0] : undefined)) ?? {};
+  const sortIdx = nullLast(src.itemSortIndex);
+  const name = src.itemName || '';
+  return { sortIdx, name };
+};
+
+
+  groups.sort((A, B) => {
+    const a = groupOrderKey(A);
+    const b = groupOrderKey(B);
+    if (a.sortIdx !== b.sortIdx) return a.sortIdx - b.sortIdx;
+    return a.name.localeCompare(b.name);
   });
 
-  const safeNum = (x: any) => {
-    const n = parseFloat(String(x));
-    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
-  };
-
-  return paginatedGroups.sort((a, b) => {
-    const priA = getPriority(a.descriptionName);
-    const priB = getPriority(b.descriptionName);
-    if (priA !== priB) return priA - priB;
-
-    const minThA = Math.min(...a.items.map((r: any) => safeNum(r.thickness)));
-    const minThB = Math.min(...b.items.map((r: any) => safeNum(r.thickness)));
-    return minThA - minThB;
-  });
+  return groups;
 }
-
 
 
 
