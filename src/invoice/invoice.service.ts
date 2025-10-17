@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { Invoice } from '../entities/invoice.entity';
@@ -15,6 +15,7 @@ import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
 import { Thickness } from 'src/entities/inventory/thickness.entity';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 
 @Injectable()
 export class InvoiceService {
@@ -40,6 +41,9 @@ export class InvoiceService {
 
     @InjectRepository(Account)
     private readonly accountRepo: Repository<Account>,
+
+       @InjectRepository(ItemBatch)
+    private readonly itemBatchRepository: Repository<ItemBatch>,
   ) {}
   /**
    * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
@@ -773,114 +777,340 @@ console.log('📄 New invoice number:', invoiceNumber);
 
   // invoices.service.ts
 
-  async getBrowsingInvoices(
-    customerId: number,
-    limitPerGroup = 5,
-    pagePerGroup = 1,
-    groupKey?: string,
-  ) {
-    const invoices = await this.invoiceRepository.find({
-      where: { customer: { id: customerId } },
-      relations: [
-        'items',
-        'items.itemBatch',
-        'items.itemVariant',
-        'items.itemVariant.thickness',
-        'items.itemVariant.thickness.item',
-        'items.itemVariant.itemNameDescription',
-      ],
-      order: { date: 'DESC' },
-    });
+async getBrowsingInvoices(
+  customerId: number,
+  limitPerGroup = 5,
+  pagePerGroup = 1,
+  groupKey?: string, // = itemDescriptionId as string
+) {
+  const invoices = await this.invoiceRepository.find({
+    where: { customer: { id: customerId } },
+    relations: [
+      'items',
+      'items.itemBatch',
+      'items.itemVariant',
+      'items.itemVariant.thickness',
+      'items.itemVariant.thickness.item',
+      'items.itemVariant.itemNameDescription',
+      // If your dims live elsewhere, add the relation here, e.g.:
+      // 'items.itemVariant.dimensions',
+    ],
+    order: { date: 'DESC' },
+  });
 
-    function getPriority(name: string) {
-      const n = name?.toLowerCase() || '';
-      if (n.includes('تريبلكس ابيض')) return 3;
-      if (n.includes('برونز')) return 2;
-      if (n.includes('اسود')) return 1;
-      if (n.includes('ابيض')) return 0;
-      return 99;
-    }
+  function getPriority(name: string) {
+    const n = name?.toLowerCase() || '';
+    if (n.includes('تريبلكس ابيض')) return 3;
+    if (n.includes('برونز')) return 2;
+    if (n.includes('اسود')) return 1;
+    if (n.includes('ابيض')) return 0;
+    return 99;
+  }
 
-    const allItems = invoices.flatMap((invoice) =>
-      invoice.items.map((item) => {
+  const allItems = invoices.flatMap((invoice) =>
+    invoice.items.map((item) => {
+      const variant = item.itemVariant;
+      const thicknessEntity = variant?.thickness;
+      const itemData = thicknessEntity?.item;
+      const itemDesc = variant?.itemNameDescription;
+      const itemBatch = item.itemBatch;
+
+      const type = itemData?.type || '';
+
+      // ✅ Pull dimensions from where they live in your model.
+      // Common cases:
+      // - variant.length / variant.width
+      // - variant.dimensions?.length / variant.dimensions?.width
+      // - thicknessEntity?.item?.defaultLength / defaultWidth (fallback)
+      const length =
+        (variant as any)?.length ??
+        (variant as any)?.dimensions?.length ??
+        null;
+
+      const width =
+        (variant as any)?.width ??
+        (variant as any)?.dimensions?.width ??
+        null;
+
+      return {
+        // grouping identity = itemDescriptionId
+        itemDescriptionId: itemDesc?.id || 0,
+
+        // row display data
+        invoiceDate: invoice.date,
+        invoiceNumber: invoice.invoiceNumber,
+        itemName: itemData?.itemName || '',
+        descriptionName:  itemData?.itemName || '',
+
+        // existing attrs
+        thickness: thicknessEntity?.thickness ?? '',
+        origin: variant?.origin ?? '',
+        type,
+
+        // ✅ NEW: dimensions per variant
+        length,              // e.g., mm or cm—use your unit
+        width,               // e.g., mm or cm—use your unit
+
+        box: type === 'box' ? item.quantity : 0,
+        sheet: type === 'sheet' ? item.quantity : 0,
+        sheetsPerBox: type === 'box' ? variant?.sheetsPerBox || 0 : null,
+
+        sqm: item.sqm,
+        unitPrice: item.unitPrice,
+        vat: item.vat,
+        totalAmount: item.totalAmount,
+
+        // refs (not used for grouping)
+        itemVariantId: variant?.id || 0,
+        itemBatchId: itemBatch?.id || 0,
+      };
+    }),
+  );
+
+  // group by itemDescriptionId
+  const grouped = new Map<string, any[]>();
+  for (const row of allItems) {
+    const key = String(row.itemDescriptionId);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(row);
+  }
+
+  if (groupKey) {
+    const items = grouped.get(groupKey) || [];
+    const sorted = items.sort(
+      (a, b) => new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime(),
+    );
+    const start = (pagePerGroup - 1) * limitPerGroup;
+    return {
+      groupKey,
+      descriptionName: items[0]?.descriptionName || '',
+      items: sorted.slice(start, start + limitPerGroup),
+      total: sorted.length,
+      page: pagePerGroup,
+      totalPages: Math.ceil(sorted.length / limitPerGroup),
+    };
+  }
+
+  const paginatedGroups = Array.from(grouped.entries()).map(([key, items]) => {
+    const sorted = items.sort(
+      (a, b) => new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime(),
+    );
+    return {
+      groupKey: key,
+      descriptionName: items[0]?.descriptionName || '',
+      items: sorted.slice(0, limitPerGroup),
+      total: items.length,
+      page: 1,
+      totalPages: Math.ceil(items.length / limitPerGroup),
+      latestInvoiceDate: sorted[0]?.invoiceDate ?? null,
+    };
+  });
+
+  const safeNum = (x: any) => {
+    const n = parseFloat(String(x));
+    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+  };
+
+  return paginatedGroups.sort((a, b) => {
+    const priA = getPriority(a.descriptionName);
+    const priB = getPriority(b.descriptionName);
+    if (priA !== priB) return priA - priB;
+
+    const minThA = Math.min(...a.items.map((r: any) => safeNum(r.thickness)));
+    const minThB = Math.min(...b.items.map((r: any) => safeNum(r.thickness)));
+    return minThA - minThB;
+  });
+}
+
+
+
+
+
+
+async getBrowsingInvoicesByItemBatches(
+  customerId: number,
+  itemBatchIds: number[],
+  limitPerGroup = 5,
+  pagePerGroup = 1,
+  groupKey?: string, // itemDescriptionId as string
+) {
+  // 1) Resolve selected batches -> their itemDescriptionIds
+  const batches = await this.itemBatchRepository.find({
+    where: { id: In(itemBatchIds) },
+    relations: [
+      'itemVariant',
+      'itemVariant.itemNameDescription',
+      'itemVariant.thickness',
+      'itemVariant.thickness.item',
+    ],
+  });
+
+  const descriptionIds = Array.from(
+    new Set(
+      batches
+        .map(b => b.itemVariant?.itemNameDescription?.id)
+        .filter((id): id is number => !!id)
+    )
+  );
+
+  if (descriptionIds.length === 0) {
+    // nothing maps -> empty result
+    return groupKey ? {
+      groupKey,
+      descriptionName: '',
+      items: [],
+      total: 0,
+      page: pagePerGroup,
+      totalPages: 0,
+    } : [];
+  }
+
+  // 2) Fetch invoices for this customer, but only items whose description is in that set
+  const invoices = await this.invoiceRepository.find({
+    where: { customer: { id: customerId } },
+    relations: [
+      'items',
+      'items.itemBatch',
+      'items.itemVariant',
+      'items.itemVariant.thickness',
+      'items.itemVariant.thickness.item',
+      'items.itemVariant.itemNameDescription',
+    ],
+    order: { date: 'DESC' },
+  });
+
+  // 3) Flatten and filter rows by descriptionIds
+  function getPriority(name: string) {
+    const n = name?.toLowerCase() || '';
+    if (n.includes('تريبلكس ابيض')) return 3;
+    if (n.includes('برونز')) return 2;
+    if (n.includes('اسود')) return 1;
+    if (n.includes('ابيض')) return 0;
+    return 99;
+  }
+  const safeNum = (x: any) => {
+    const n = parseFloat(String(x));
+    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+  };
+
+  const allItems = invoices.flatMap((invoice) =>
+    invoice.items
+      .filter((it) => {
+        const descId = it.itemVariant?.itemNameDescription?.id;
+        return descId && descriptionIds.includes(descId);
+      })
+      .map((item) => {
         const variant = item.itemVariant;
         const thicknessEntity = variant?.thickness;
         const itemData = thicknessEntity?.item;
         const itemDesc = variant?.itemNameDescription;
-        const itemBatch = item.itemBatch;
+        const type = itemData?.type || '';
+
+        // pull dimensions (adjust if your schema stores them elsewhere)
+        const length =
+          (variant as any)?.length ??
+          (variant as any)?.dimensions?.length ??
+          null;
+        const width =
+          (variant as any)?.width ??
+          (variant as any)?.dimensions?.width ??
+          null;
 
         return {
+          // grouping identity
+          itemDescriptionId: itemDesc?.id || 0,
+
+          // row fields
           invoiceDate: invoice.date,
           invoiceNumber: invoice.invoiceNumber,
           itemName: itemData?.itemName || '',
-          thickness: thicknessEntity?.thickness || '',
-          origin: variant?.origin || '',
-          type: itemData?.type || '',
-          box: itemData?.type === 'box' ? item.quantity : 0,
-          sheet: itemData?.type === 'sheet' ? item.quantity : 0,
-          sheetsPerBox:
-            itemData?.type === 'box' ? variant?.sheetsPerBox || 0 : null,
+          descriptionName: itemData?.itemName || '',
+
+          thickness: thicknessEntity?.thickness ?? '',
+          origin: variant?.origin ?? '',
+          type,
+
+          // quantity modes
+          box: type === 'box' ? item.quantity : 0,
+          sheet: type === 'sheet' ? item.quantity : 0,
+          sheetsPerBox: type === 'box' ? variant?.sheetsPerBox || 0 : null,
           sqm: item.sqm,
+
+          // prices
           unitPrice: item.unitPrice,
           vat: item.vat,
           totalAmount: item.totalAmount,
-          itemDescriptionId: itemDesc?.id || 0,
+
+          // dimensions
+          length,
+          width,
+
+          // references
           itemVariantId: variant?.id || 0,
-          itemBatchId: itemBatch?.id || 0,
+          itemBatchId: item.itemBatch?.id || 0,
         };
-      }),
-    );
+      })
+  );
 
-    const grouped = new Map<string, any[]>();
-    for (const item of allItems) {
-      const key = `${item.itemName}_${item.thickness}_${item.origin}_${item.type}_${item.itemDescriptionId}_${item.itemVariantId}_${item.itemBatchId}`;
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key).push(item);
-    }
-
-    if (groupKey) {
-      const items = grouped.get(groupKey) || [];
-      const sortedItems = items.sort(
-        (a, b) =>
-          new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime(),
-      );
-      const start = (pagePerGroup - 1) * limitPerGroup;
-      return {
-        groupKey,
-        items: sortedItems.slice(start, start + limitPerGroup),
-        total: sortedItems.length,
-        page: pagePerGroup,
-        totalPages: Math.ceil(sortedItems.length / limitPerGroup),
-      };
-    }
-
-    const paginatedGroups = Array.from(grouped.entries()).map(
-      ([key, items]) => {
-        const sortedItems = items.sort(
-          (a, b) =>
-            new Date(b.invoiceDate).getTime() -
-            new Date(a.invoiceDate).getTime(),
-        );
-        return {
-          groupKey: key,
-          items: sortedItems.slice(0, limitPerGroup),
-          total: items.length,
-          page: 1,
-          totalPages: Math.ceil(items.length / limitPerGroup),
-        };
-      },
-    );
-
-    return paginatedGroups.sort((a, b) => {
-      const priA = getPriority(a.items[0]?.itemName);
-      const priB = getPriority(b.items[0]?.itemName);
-      if (priA !== priB) return priA - priB;
-      return (
-        parseFloat(String(a.items[0]?.thickness)) -
-        parseFloat(String(b.items[0]?.thickness))
-      );
-    });
+  // 4) Group by itemDescriptionId ONLY
+  const grouped = new Map<string, any[]>();
+  for (const row of allItems) {
+    const key = String(row.itemDescriptionId);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(row);
   }
+
+  // Helper to build a single page response for one group
+  const pageGroup = (key: string, items: any[]) => {
+    const sorted = items.sort(
+      (a, b) => new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime()
+    );
+    const start = (pagePerGroup - 1) * limitPerGroup;
+    return {
+      groupKey: key,
+      descriptionName: items[0]?.descriptionName || '',
+      items: sorted.slice(start, start + limitPerGroup),
+      total: sorted.length,
+      page: pagePerGroup,
+      totalPages: Math.ceil(sorted.length / limitPerGroup),
+    };
+  };
+
+  if (groupKey) {
+    const items = grouped.get(groupKey) || [];
+    return pageGroup(groupKey, items);
+  }
+
+  // 5) Build first page per group
+  const groups = Array.from(grouped.entries()).map(([key, items]) => {
+    const sorted = items.sort(
+      (a, b) => new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime()
+    );
+    return {
+      groupKey: key,
+      descriptionName: items[0]?.descriptionName || '',
+      items: sorted.slice(0, limitPerGroup),
+      total: items.length,
+      page: 1,
+      totalPages: Math.ceil(items.length / limitPerGroup),
+      latestInvoiceDate: sorted[0]?.invoiceDate ?? null,
+    };
+  });
+
+  // 6) Sort groups by priority then min thickness ASC
+  return groups.sort((a, b) => {
+    const priA = getPriority(a.descriptionName);
+    const priB = getPriority(b.descriptionName);
+    if (priA !== priB) return priA - priB;
+
+    const minThA = Math.min(...a.items.map((r: any) => safeNum(r.thickness)));
+    const minThB = Math.min(...b.items.map((r: any) => safeNum(r.thickness)));
+    return minThA - minThB;
+  });
+}
+
+
+
 }
 // async editInvoice(
 //   invoiceId: number,

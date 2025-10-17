@@ -805,11 +805,11 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     const roundUnitsToInt = !!opts?.roundUnitsToInt;
 
     const q2 = qb.clone().skip((page - 1) * limit).take(limit);
-    console.log('[SRV] SQL:', q2.getSql());
-    console.log('[SRV] SQL params:', q2.getParameters());
-    console.time('[SRV] getMany');
+
+
+
     const results = await q2.getMany();
-    console.timeEnd('[SRV] getMany');
+
 
     let before = 0,
         after = 0,
@@ -864,14 +864,6 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       }
     }
 
-    console.log('[SRV] filter-summary:', {
-      items,
-      thicknesses: thCount,
-      variantsBefore: before,
-      variantsAfter: after,
-      totalBatches: batches,
-      includeEmpty,
-    });
 
     return results;
   }
@@ -902,8 +894,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     includeEmpty?: boolean;
     roundUnitsToInt?: boolean;
   }) {
-    console.log('========================================================');
-    console.log('[SRV] searchForModalPOS params:', params);
+  
 
     const { q, dims, includeEmpty, roundUnitsToInt } = params;
 
@@ -915,17 +906,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     const spb    = params.spb    ?? parsedDims.spb;
     const type   = params.type   ?? parsedDims.type;
 
-    console.log('[SRV] parsed tokens:', {
-      thickness,
-      cleanName,
-      nmNorm,
-      length,
-      width,
-      spb,
-      type,
-      page: params.page,
-      limit: params.limit,
-    });
+
 
     const qb = this.baseQBForModal();
 
@@ -992,7 +973,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       appliedFilters.push(`width ~ ${width} tol ${tol}`);
     }
     if (typeof spb === 'number') appliedFilters.push(`variant.sheetsPerBox = ${spb}`);
-    console.log('[SRV] appliedFilters:', appliedFilters);
+
 
     const pageNum  = Number.isFinite(Number(params.page))  ? Math.max(1, Number(params.page))  : 1;
     const limitNum = Number.isFinite(Number(params.limit)) ? Math.min(500, Math.max(1, Number(params.limit))) : 50;
@@ -1007,7 +988,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         '• Check spelling/normalization (أبيض vs ابيض).',
       ]);
     }
-    console.log('========================================================');
+
 
     return results;
   }
@@ -1325,6 +1306,136 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
     hasMore: page < totalPages,
     data: pageRows,
   };
+}
+
+
+// Add this next to searchForModalPOS
+async searchForModalPOSInStock(params: {
+  q: string;
+  dims?: string;
+  length?: number;
+  width?: number;
+  spb?: number;
+  type?: 'box' | 'sheet' | 'sqm' | 'unit';
+  page: number;
+  limit: number;
+  roundUnitsToInt?: boolean;
+}) {
+
+
+  const { q } = params;
+
+  // Parse tokens exactly like your original
+  const { thickness, cleanName, nmNorm } = this.parseThicknessFromQ(q || '');
+  const parsedDims = this.parseDims(params.dims);
+  const length = params.length ?? parsedDims.length;
+  const width  = params.width  ?? parsedDims.width;
+  const spb    = params.spb    ?? parsedDims.spb;
+  const type   = params.type   ?? parsedDims.type;
+
+
+  const qb = this.baseQBForModal();
+
+  // Name filter (Arabic normalization OR raw)
+  if (cleanName && cleanName.length > 0) {
+    qb.andWhere(
+      `(
+        REPLACE(REPLACE(REPLACE(item.itemName, 'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm
+        OR item.itemName LIKE :nmRaw
+      )`,
+      { nm: `%${nmNorm || cleanName}%`, nmRaw: `%${cleanName}%` }
+    );
+  }
+
+  // Optional item.type
+  if (type) qb.andWhere('item.type = :tp', { tp: type });
+
+  // Thickness tolerance
+  if (typeof thickness === 'number' && !Number.isNaN(thickness)) {
+    qb.andWhere('ABS(thickness.thickness - :th) < :thTol', { th: thickness, thTol: 0.011 });
+  }
+
+  // Dimensions tolerance + swap
+  const tol = 0.51;
+  const hasLen = typeof length === 'number' && !Number.isNaN(length);
+  const hasWid = typeof width  === 'number' && !Number.isNaN(width);
+
+  if (hasLen && hasWid) {
+    qb.andWhere(
+      `(
+        (ABS(variant.length - :len) < :tol AND ABS(variant.width - :wid) < :tol)
+        OR
+        (ABS(variant.length - :wid) < :tol AND ABS(variant.width - :len) < :tol)
+      )`,
+      { len: length!, wid: width!, tol }
+    );
+  } else if (hasLen) {
+    qb.andWhere('ABS(variant.length - :len) < :tol', { len: length!, tol });
+  } else if (hasWid) {
+    qb.andWhere('ABS(variant.width - :wid) < :tol', { wid: width!, tol });
+  }
+
+  // Sheets/box exact match if provided
+  if (typeof spb === 'number' && !Number.isNaN(spb)) {
+    qb.andWhere('variant.sheetsPerBox = :spb', { spb });
+  }
+
+  qb
+    .orderBy('item.id', 'DESC')
+    .addOrderBy('thickness.thickness', 'ASC')
+    .addOrderBy('variant.id', 'ASC');
+
+  const appliedFilters: string[] = [];
+  if (cleanName) appliedFilters.push(`normalized(item.itemName) LIKE %${nmNorm || cleanName}% OR raw LIKE %${cleanName}%`);
+  if (type) appliedFilters.push(`item.type = ${type}`);
+  if (typeof thickness === 'number') appliedFilters.push(`ABS(thickness.thickness - ${thickness}) < 0.011`);
+  if (hasLen && hasWid) {
+    appliedFilters.push(`dims ~ (${length}×${width}) with swap & tol ${tol}`);
+  } else if (hasLen) {
+    appliedFilters.push(`length ~ ${length} tol ${tol}`);
+  } else if (hasWid) {
+    appliedFilters.push(`width ~ ${width} tol ${tol}`);
+  }
+  if (typeof spb === 'number') appliedFilters.push(`variant.sheetsPerBox = ${spb}`);
+
+
+  const pageNum  = Number.isFinite(Number(params.page))  ? Math.max(1, Number(params.page))  : 1;
+  const limitNum = Number.isFinite(Number(params.limit)) ? Math.min(500, Math.max(1, Number(params.limit))) : 50;
+
+  // ⬇️ Force includeEmpty = false so runAndFilter prefers only in-stock
+  const results = await this.runAndFilter(qb, pageNum, limitNum, {
+    includeEmpty: false,
+    roundUnitsToInt: params.roundUnitsToInt,
+  });
+
+  // Safety trim: drop batches with balance <= 0 (in case rounding/conversion left any)
+  // and drop empty variants/thicknesses/items after trimming.
+  const filtered = (results || [])
+    .map((item: any) => ({
+      ...item,
+      thicknesses: (item.thicknesses || [])
+        .map((th: any) => ({
+          ...th,
+          variants: (th.variants || [])
+            .map((v: any) => ({
+              ...v,
+              batches: (v.batches || []).filter((b: any) => Number(b.balanceOFR) > 0),
+            }))
+            .filter((v: any) => Array.isArray(v.batches) && v.batches.length > 0),
+        }))
+        .filter((th: any) => Array.isArray(th.variants) && th.variants.length > 0),
+    }))
+    .filter((item: any) => Array.isArray(item.thicknesses) && item.thicknesses.length > 0);
+
+  if (!filtered.length) {
+    console.log('[SRV] No in-stock records matched. Tips:', [
+      '• Remove SPB or dims to broaden.',
+      '• Check spelling/normalization (أبيض vs ابيض).',
+    ]);
+  }
+
+
+  return filtered;
 }
 
 

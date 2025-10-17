@@ -98,6 +98,36 @@ async getSelectedPaginated(
     });
   }
 
+  // Add a new route for the in-stock search
+@Get('pos/search-modal-instock')
+async searchModalInStock(
+  @Query('q') q: string,
+  @Query('dims') dims?: string,
+  @Query('length') length?: string,
+  @Query('width') width?: string,
+  @Query('spb') spb?: string,
+  @Query('type') type?: 'box' | 'sheet' | 'sqm' | 'unit',
+  @Query('page') page?: string,
+  @Query('limit') limit?: string,
+  @Query('roundUnitsToInt') roundUnitsToInt?: string,
+) {
+  const p = Number.isFinite(Number(page)) ? Math.max(1, Number(page)) : 1;
+  const l = Number.isFinite(Number(limit)) ? Math.min(500, Math.max(1, Number(limit))) : 50;
+
+  return this.itemsService.searchForModalPOSInStock({
+    q: q ?? '',
+    dims,
+    length: Number.isFinite(Number(length)) ? Number(length) : undefined,
+    width:  Number.isFinite(Number(width))  ? Number(width)  : undefined,
+    spb:    Number.isFinite(Number(spb))    ? Number(spb)    : undefined,
+    type,
+    page: p,
+    limit: l,
+    roundUnitsToInt: ['1', 'true', 'yes'].includes(String(roundUnitsToInt || '').toLowerCase()),
+  });
+}
+
+
   @Post(':itemId/thicknesses')
   async createThickness(
     @Param('itemId', ParseIntPipe) itemId: number,

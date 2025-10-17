@@ -8,6 +8,7 @@ import {
   Put,
   ParseIntPipe,
   DefaultValuePipe,
+  BadRequestException,
 } from '@nestjs/common';
 import { InvoiceService } from './invoice.service';
 import { Invoice } from '../entities/invoice.entity';
@@ -39,6 +40,52 @@ export class InvoiceController {
       groupKey,
     );
   }
+
+    @Get('v1/browsing/by-item-batches/:customerId')
+  async getBrowsingByItemBatchesGet(
+    @Param('customerId') customerIdParam: string,
+    @Query('itemBatchIds') itemBatchIdsQuery: string | string[],
+    @Query('groupKey') groupKey?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const customerId = Number(customerIdParam);
+    if (!customerId || Number.isNaN(customerId)) {
+      throw new BadRequestException('customerId must be a number');
+    }
+
+    // Support both repeated params (?itemBatchIds=1&itemBatchIds=2) and a single comma-separated string
+    let itemBatchIds: number[] = [];
+    if (Array.isArray(itemBatchIdsQuery)) {
+      itemBatchIds = itemBatchIdsQuery.map((v) => Number(v)).filter((n) => Number.isFinite(n));
+    } else if (typeof itemBatchIdsQuery === 'string') {
+      itemBatchIds = itemBatchIdsQuery
+        .split(',')
+        .map((v) => Number(v.trim()))
+        .filter((n) => Number.isFinite(n));
+    }
+    if (itemBatchIds.length === 0) {
+      throw new BadRequestException('itemBatchIds is required (one or more IDs).');
+    }
+
+    const pageNum = page ? Number(page) : 1;
+    const limitNum = limit ? Number(limit) : 5;
+    if (!Number.isFinite(pageNum) || pageNum < 1) {
+      throw new BadRequestException('page must be a positive integer');
+    }
+    if (!Number.isFinite(limitNum) || limitNum < 1) {
+      throw new BadRequestException('limit must be a positive integer');
+    }
+
+    return this.invoiceService.getBrowsingInvoicesByItemBatches(
+      customerId,
+      itemBatchIds,
+      limitNum,
+      pageNum,
+      groupKey,
+    );
+  }
+
 
   @Get('v1/:id')
   async getInvoiceById(@Param('id') id: number): Promise<Invoice> {
