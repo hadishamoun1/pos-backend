@@ -41,6 +41,29 @@ export class InvoiceController {
     );
   }
 
+
+  // ✅ NEW: browsing search 
+  @Get('v1/browsing/:customerId/search')
+  async searchBrowsingForCustomer(
+    @Param('customerId') customerId: string,
+    @Query('q') q: string,
+    @Query('limitPerGroup') limitPerGroup = '5',
+    @Query('pagePerGroup') pagePerGroup = '1',
+    @Query('groupKey') groupKey?: string,
+  ) {
+    const limit = Number(limitPerGroup) || 5;
+    const page = Number(pagePerGroup) || 1;
+    return this.invoiceService.searchBrowsingInvoices(
+      Number(customerId),
+      q || '',
+      limit,
+      page,
+      groupKey,
+    );
+  }
+
+
+
     @Get('v1/browsing/by-item-batches/:customerId')
   async getBrowsingByItemBatchesGet(
     @Param('customerId') customerIdParam: string,

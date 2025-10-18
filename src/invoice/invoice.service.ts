@@ -1208,6 +1208,370 @@ async getBrowsingInvoicesByItemBatches(
 
 
 
+// search items 
+
+  private toNum(v: any): number {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  private nullLast(n: any): number {
+    return n == null || Number.isNaN(Number(n)) ? Number.POSITIVE_INFINITY : Number(n);
+  }
+
+  /** Convert Arabic-Indic digits to Western so ٥.٥ becomes 5.5, ٠٢٥ => 025 */
+  private normalizeArabicDigits(s: string): string {
+    if (!s) return s;
+    const map: Record<string, string> = {
+      '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+      '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+    };
+    return s.replace(/[٠-٩]/g, (d) => map[d] ?? d);
+  }
+
+  /** Exact same ordering you already use (copy your function here) */
+  private orderLikeItemsService(rows: any[]) {
+    const toNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const nullLast = (n: any) =>
+      n == null || Number.isNaN(Number(n)) ? Number.POSITIVE_INFINITY : Number(n);
+
+    // 1) group by itemName
+    const byItem = new Map<string, any[]>();
+    for (const r of rows) {
+      const key = r.itemName ?? '';
+      if (!byItem.has(key)) byItem.set(key, []);
+      byItem.get(key)!.push(r);
+    }
+
+    // items: item.sortIndex NULLS LAST, then name ASC
+    const itemKeys = Array.from(byItem.keys()).sort((a, b) => {
+      const aArr = byItem.get(a)!;
+      const bArr = byItem.get(b)!;
+      const minSortA = Math.min(...aArr.map((x) => nullLast(x.itemSortIndex)));
+      const minSortB = Math.min(...bArr.map((x) => nullLast(x.itemSortIndex)));
+      if (minSortA !== minSortB) return minSortA - minSortB;
+      return a.localeCompare(b);
+    });
+
+    const orderedAll: any[] = [];
+
+    for (const itemKey of itemKeys) {
+      const rowsOfItem = byItem.get(itemKey)!;
+
+      // 2) group by thickness value
+      const byTh = new Map<number, any[]>();
+      for (const r of rowsOfItem) {
+        const th = toNum(r.thickness);
+        if (!byTh.has(th)) byTh.set(th, []);
+        byTh.get(th)!.push(r);
+      }
+
+      // thickness: thickness.sort_index NULLS LAST, then numeric thickness ASC
+      const thKeys = Array.from(byTh.keys()).sort((ta, tb) => {
+        const aArr = byTh.get(ta)!;
+        const bArr = byTh.get(tb)!;
+        const minSortA = Math.min(...aArr.map((x) => nullLast(x.thicknessSortIndex)));
+        const minSortB = Math.min(...bArr.map((x) => nullLast(x.thicknessSortIndex)));
+        if (minSortA !== minSortB) return minSortA - minSortB;
+        return ta - tb;
+      });
+
+      for (const th of thKeys) {
+        const rowsTh = byTh.get(th)!;
+
+        // 3) dims vs non-dims
+        const hasDims = (r: any) => toNum(r.length) > 0 && toNum(r.width) > 0;
+        const dimmed = rowsTh.filter(hasDims);
+        const nonDimmed = rowsTh.filter((r) => !hasDims(r) || r.type === 'sqm');
+
+        // group dimmed by L|W
+        const byDims = new Map<string, any[]>();
+        for (const r of dimmed) {
+          const k = `${toNum(r.length)}|${toNum(r.width)}`;
+          if (!byDims.has(k)) byDims.set(k, []);
+          byDims.get(k)!.push(r);
+        }
+
+        // dims order: area DESC → L DESC → W DESC
+        const dimKeys = Array.from(byDims.keys()).sort((ka, kb) => {
+          const [aL, aW] = ka.split('|').map(Number);
+          const [bL, bW] = kb.split('|').map(Number);
+          const aArea = aL * aW, bArea = bL * bW;
+          if (aArea !== bArea) return bArea - aArea;
+          if (aL !== bL) return bL - aL;
+          return bW - aW;
+        });
+
+        // per dims group: box (SPB DESC) → sheet → sqm
+        for (const dk of dimKeys) {
+          const g = byDims.get(dk)!;
+
+          const boxes = g
+            .filter((x) => x.type === 'box')
+            .sort(
+              (a, b) =>
+                (toNum(b.sheetsPerBox) || 0) - (toNum(a.sheetsPerBox) || 0) ||
+                toNum(a.itemVariantId) - toNum(b.itemVariantId),
+            );
+          const sheets = g
+            .filter((x) => x.type === 'sheet')
+            .sort((a, b) => toNum(a.itemVariantId) - toNum(b.itemVariantId));
+          const sqms = g.filter((x) => x.type === 'sqm');
+
+          orderedAll.push(...boxes, ...sheets, ...sqms);
+        }
+
+        // then sqm without dims (variantId), then no-dims non-sqm
+        const sqmOthers = nonDimmed
+          .filter((x) => x.type === 'sqm')
+          .sort((a, b) => toNum(a.itemVariantId) - toNum(b.itemVariantId));
+        const noDimsNonSqm = nonDimmed.filter((x) => x.type !== 'sqm');
+
+        orderedAll.push(...sqmOthers, ...noDimsNonSqm);
+      }
+    }
+
+    return orderedAll;
+  }
+
+  /**
+   * Parse the free-text query.
+   * Supports:
+   *  - words for name (e.g., "ابيض")
+   *  - thickness: "5.5ملم" or "5ملم"
+   *  - dims: "225*321" and optional box SPB "225*321-025" (=> type=box, sheetsPerBox=25)
+   */
+  private parseSearchQuery(qRaw: string) {
+    const q = this.normalizeArabicDigits((qRaw || '').trim());
+    const out: {
+      nameTokens: string[];
+      thickness?: number;
+      dims?: { length: number; width: number; spb?: number };
+      impliedType?: 'box' | 'sheet' | 'sqm';
+    } = { nameTokens: [] };
+
+    if (!q) return out;
+
+    // thickness: e.g., "5.5ملم" or "5ملم"
+    const thMatch = q.match(/(\d+(?:\.\d+)?)\s*ملم/);
+    if (thMatch) {
+      out.thickness = Number(thMatch[1]);
+    }
+
+    // dims: "L*W" optionally "-SPB"
+    // L/W 2-4 digits, SPB 2-3 digits commonly like 025
+    const dimMatch = q.match(/(\d{2,4})\s*\*\s*(\d{2,4})(?:-(\d{2,3}))?/);
+    if (dimMatch) {
+      const L = Number(dimMatch[1]);
+      const W = Number(dimMatch[2]);
+      const spb = dimMatch[3] ? Number(dimMatch[3]) : undefined;
+      out.dims = { length: L, width: W, spb };
+      if (spb != null) out.impliedType = 'box';
+    }
+
+    // crude tokenization for name-ish words:
+    // remove recognized parts (ملم + dims) then split remaining
+    let remainder = q;
+    remainder = remainder.replace(/(\d+(?:\.\d+)?)\s*ملم/g, ' ');
+    remainder = remainder.replace(/(\d{2,4})\s*\*\s*(\d{2,4})(?:-(\d{2,3}))?/g, ' ');
+    const tokens = remainder
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    out.nameTokens = tokens;
+
+    // Optional: infer 'sheet' if they literally type "sheet"/"شيت" etc. (not required)
+    // if (/\b(sheet|شيت)\b/i.test(q)) out.impliedType = 'sheet';
+
+    return out;
+  }
+
+  /** Whether a row matches parsed filters */
+  private rowMatchesSearch(row: any, f: ReturnType<typeof this.parseSearchQuery>): boolean {
+    // thickness match (allow tiny float tolerance)
+    if (typeof f.thickness === 'number') {
+      const rowTh = Number(row.thickness);
+      if (!(Math.abs(rowTh - f.thickness) < 0.001)) return false;
+    }
+
+    // dims match
+    if (f.dims) {
+      const L = this.toNum(row.length);
+      const W = this.toNum(row.width);
+      if (!(L === f.dims.length && W === f.dims.width)) return false;
+
+      // SPB only matters for box
+      if (typeof f.dims.spb === 'number') {
+        if (row.type !== 'box') return false;
+        const spb = this.toNum(row.sheetsPerBox);
+        if (!(spb === f.dims.spb)) return false;
+      }
+    }
+
+    // implied type (from -SPB)
+    if (f.impliedType) {
+      if (row.type !== f.impliedType) return false;
+    }
+
+    // name tokens: must all exist in itemName OR descriptionName (case-insensitive)
+    if (f.nameTokens.length) {
+      const hay = `${row.itemName || ''} ${row.descriptionName || ''} ${row.origin || ''}`
+        .toLowerCase();
+      for (const t of f.nameTokens) {
+        if (!hay.includes(t.toLowerCase())) return false;
+      }
+    }
+
+    return true;
+  }
+
+  /** Build group payload (same shape as your browsing API) */
+  private buildGroupPayload(
+    key: string,
+    items: any[],
+    limitPerGroup: number,
+    pagePerGroup: number,
+  ) {
+    const ordered = this.orderLikeItemsService(items);
+    const start = (pagePerGroup - 1) * limitPerGroup;
+    const slice = ordered.slice(start, start + limitPerGroup);
+
+    return {
+      groupKey: key,
+      descriptionName: items[0]?.descriptionName || '',
+      items: slice,
+      total: ordered.length,
+      page: pagePerGroup,
+      totalPages: Math.ceil(ordered.length / limitPerGroup),
+    };
+  }
+
+  /** MAIN: Search within the browsing for a customer */
+  async searchBrowsingInvoices(
+    customerId: number,
+    q: string,
+    limitPerGroup = 5,
+    pagePerGroup = 1,
+    groupKey?: string,
+  ) {
+    // 1) Load same data
+    const invoices = await this.invoiceRepository.find({
+      where: { customer: { id: customerId } },
+      relations: [
+        'items',
+        'items.itemBatch',
+        'items.itemVariant',
+        'items.itemVariant.thickness',
+        'items.itemVariant.thickness.item',
+        'items.itemVariant.itemNameDescription',
+      ],
+      order: { date: 'DESC' },
+    });
+
+    // 2) Flatten to rows (same as your getBrowsingInvoices)
+    const allRows = invoices.flatMap((invoice) =>
+      invoice.items.map((item) => {
+        const variant = item.itemVariant;
+        const th = variant?.thickness;
+        const it = th?.item;
+        const desc = variant?.itemNameDescription;
+        const batch = item.itemBatch;
+
+        const type = it?.type || '';
+
+        const length =
+          (variant as any)?.length ??
+          (variant as any)?.dimensions?.length ??
+          null;
+
+        const width =
+          (variant as any)?.width ??
+          (variant as any)?.dimensions?.width ??
+          null;
+
+        return {
+          itemDescriptionId: desc?.id || 0,
+
+          // display
+          invoiceDate: invoice.date,
+          invoiceNumber: invoice.invoiceNumber,
+          itemName: it?.itemName || '',
+          descriptionName: it?.itemName || '',
+
+          // sort signals
+          itemSortIndex: (it as any)?.sortIndex ?? (it as any)?.sort_index ?? null,
+          thickness: th?.thickness ?? '',
+          thicknessSortIndex: (th as any)?.sort_index ?? (th as any)?.sortIndex ?? null,
+
+          origin: variant?.origin ?? '',
+          type,
+          length,
+          width,
+          box: type === 'box' ? item.quantity : 0,
+          sheet: type === 'sheet' ? item.quantity : 0,
+          sheetsPerBox: type === 'box' ? variant?.sheetsPerBox || 0 : null,
+
+          sqm: item.sqm,
+          unitPrice: item.unitPrice,
+          vat: item.vat,
+          totalAmount: item.totalAmount,
+
+          itemVariantId: variant?.id || 0,
+          itemBatchId: batch?.id || 0,
+        };
+      }),
+    );
+
+    // 3) Parse the query and filter
+    const parsed = this.parseSearchQuery(q);
+    const filtered = parsed.nameTokens.length ||
+      parsed.thickness != null ||
+      parsed.dims != null ||
+      parsed.impliedType
+      ? allRows.filter((r) => this.rowMatchesSearch(r, parsed))
+      : allRows;
+
+    // 4) Group by itemDescriptionId (same as browsing)
+    const grouped = new Map<string, any[]>();
+    for (const row of filtered) {
+      const key = String(row.itemDescriptionId);
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key)!.push(row);
+    }
+
+    // 5) If single group pagination
+    if (groupKey) {
+      const items = grouped.get(groupKey) || [];
+      return this.buildGroupPayload(groupKey, items, limitPerGroup, pagePerGroup);
+    }
+
+    // 6) Build all groups (page 1 for each)
+    const groups = Array.from(grouped.entries()).map(([key, items]) =>
+      this.buildGroupPayload(key, items, limitPerGroup, 1),
+    );
+
+    // 7) Order groups themselves by Item order (sortIndex NULLS LAST → name ASC).
+    const groupOrderKey = (g: any) => {
+      const fallbackGroup = grouped.get(g.groupKey);
+      const src = (g.items[0] ?? (fallbackGroup ? fallbackGroup[0] : undefined)) ?? {};
+      const sortIdx = this.nullLast(src.itemSortIndex);
+      const name = src.itemName || '';
+      return { sortIdx, name };
+    };
+
+    groups.sort((A, B) => {
+      const a = groupOrderKey(A);
+      const b = groupOrderKey(B);
+      if (a.sortIdx !== b.sortIdx) return a.sortIdx - b.sortIdx;
+      return a.name.localeCompare(b.name);
+    });
+
+    return groups;
+  }
+
+
+
+
 }
 // async editInvoice(
 //   invoiceId: number,
