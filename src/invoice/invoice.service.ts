@@ -1572,6 +1572,128 @@ async getBrowsingInvoicesByItemBatches(
 
 
 
+  // search invoice api:
+
+// invoices.service.ts (inside InvoiceService)
+async searchFilteredInvoices(
+  q: string | undefined,
+  page: number,
+  limit: number,
+): Promise<{ data: any[]; total: number; totalPages: number }> {
+  const pageNum = Number.isFinite(page)  && page  > 0 ? page  : 1;
+  const take    = Number.isFinite(limit) && limit > 0 ? limit : 100;
+  const skip    = (pageNum - 1) * take;
+
+  const qb = this.invoiceRepository
+    .createQueryBuilder('inv')
+    .leftJoinAndSelect('inv.customer', 'customer')
+    .orderBy('inv.id', 'DESC')
+    .skip(skip)
+    .take(take);
+
+  // --- helpers ---
+  const norm = (s?: string) => (s ?? '').trim();
+
+  // Normalize "YYYY/MM/DD" or "YYYY-MM-DD" to "YYYY-MM-DD"; return null if invalid
+  const toYMD = (s: string): string | null => {
+    if (!s) return null;
+    const t = s.replace(/\//g, '-');
+    const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    // validate date
+    const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00.000Z`);
+    if (Number.isNaN(d.getTime())) return null;
+    return `${m[1]}-${m[2]}-${m[3]}`;
+  };
+
+  const QQ = norm(q);
+
+  if (!QQ) {
+    // no query -> same as getFilteredInvoices pagination
+    const [invoices, total] = await qb.getManyAndCount();
+    return {
+      data: invoices.map((invoice) => ({
+        id: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        date: invoice.date,
+        totalWithoutVAT: invoice.totalWithoutVAT,
+        totalVAT: invoice.totalVAT,
+        grandTotal: invoice.grandTotal,
+        customerId: invoice.customer?.id,
+        customerName: invoice.customer?.customerName,
+        invoiceType: invoice.invoiceType,
+      })),
+      total,
+      totalPages: Math.ceil(total / take),
+    };
+  }
+
+  // --- decide how to filter based on QQ ---
+  // Date range forms:
+  //   "YYYY-MM-DD..YYYY-MM-DD"
+  //   "YYYY/MM/DD..YYYY/MM/DD"
+  //   also allow "to" or a single "-" between dates
+  const range = QQ.match(
+    /(\d{4}[-/]\d{2}[-/]\d{2})\s*(?:\.\.|to|-)\s*(\d{4}[-/]\d{2}[-/]\d{2})/i
+  );
+  // Single date
+  const single = QQ.match(/^(\d{4}[-/]\d{2}[-/]\d{2})$/);
+  // NEW: digits-only => search by numeric tail after the dash (e.g., "214" → "%-214", "14" → "%-014")
+  const digitsOnly = /^\d+$/.test(QQ);
+  // Looks like an invoice string (has a dash, or prefix+year+dash)
+  const looksLikeInvoiceNumber =
+    /^[A-Za-z]?\d{2}-\d{1,}$/.test(QQ) || QQ.includes('-');
+
+  if (range) {
+    const d1 = toYMD(range[1]);
+    const d2 = toYMD(range[2]);
+    if (d1 && d2) {
+      qb.andWhere('inv.date BETWEEN :d1 AND :d2', { d1, d2 });
+    }
+  } else if (single) {
+    const d = toYMD(single[1]);
+    if (d) qb.andWhere('inv.date = :d', { d });
+  } else if (digitsOnly) {
+    // e.g. "214" => "%-214", "14" => "%-014", "001" => "%-001"
+    const seq = QQ.length <= 3 ? QQ.padStart(3, '0') : QQ;
+    qb.andWhere('inv.invoiceNumber LIKE :tail', { tail: `%-${seq}` });
+  } else if (looksLikeInvoiceNumber) {
+    // MySQL: use LOWER + LIKE (no ILIKE)
+    qb.andWhere('LOWER(inv.invoiceNumber) LIKE :inv', {
+      inv: `%${QQ.toLowerCase()}%`,
+    });
+  } else {
+    // Customer name tokens (AND them together), case-insensitive
+    const tokens = QQ.split(/\s+/).filter(Boolean);
+    tokens.forEach((t, i) => {
+      qb.andWhere(`LOWER(customer.customerName) LIKE :c${i}`, {
+        [`c${i}`]: `%${t.toLowerCase()}%`,
+      });
+    });
+  }
+
+  const [invoices, total] = await qb.getManyAndCount();
+
+  return {
+    data: invoices.map((invoice) => ({
+      id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      date: invoice.date,
+      totalWithoutVAT: invoice.totalWithoutVAT,
+      totalVAT: invoice.totalVAT,
+      grandTotal: invoice.grandTotal,
+      customerId: invoice.customer?.id,
+      customerName: invoice.customer?.customerName,
+      invoiceType: invoice.invoiceType,
+    })),
+    total,
+    totalPages: Math.ceil(total / take),
+  };
+}
+
+
+
+
 }
 // async editInvoice(
 //   invoiceId: number,

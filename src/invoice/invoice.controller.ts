@@ -61,7 +61,16 @@ export class InvoiceController {
       groupKey,
     );
   }
-
+@Get('v1/filtered/search')
+async searchFiltered(
+  @Query('q') q?: string,
+  @Query('page') page = '1',
+  @Query('limit') limit = '100',
+) {
+  const p = Number(page) || 1;
+  const l = Number(limit) || 100;
+  return this.invoiceService.searchFilteredInvoices(q, p, l);
+}
 
 
     @Get('v1/browsing/by-item-batches/:customerId')
