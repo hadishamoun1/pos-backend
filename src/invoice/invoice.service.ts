@@ -775,13 +775,14 @@ console.log('📄 New invoice number:', invoiceNumber);
   }
 }
 
-  // invoices.service.ts
+// invoices.service.ts
 async getBrowsingInvoices(
   customerId: number,
   limitPerGroup = 5,
   pagePerGroup = 1,
   groupKey?: string, // = itemDescriptionId as string
 ) {
+  // 1) Pull invoices & relations
   const invoices = await this.invoiceRepository.find({
     where: { customer: { id: customerId } },
     relations: [
@@ -792,132 +793,30 @@ async getBrowsingInvoices(
       'items.itemVariant.thickness.item',
       'items.itemVariant.itemNameDescription',
     ],
-    order: { date: 'DESC' }, // recency only affects which invoices we pick from; sorting is done below
+    // DB order doesn't matter for our final order, but keeps fetch deterministic
+    order: { date: 'DESC' },
   });
 
+  // helpers
   const toNum = (v: any) => {
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
   };
-  const nullLast = (n: any) =>
-    n == null || Number.isNaN(Number(n)) ? Number.POSITIVE_INFINITY : Number(n);
+  const nullLast = (v: any) =>
+    v == null || Number.isNaN(Number(v)) ? Number.POSITIVE_INFINITY : Number(v);
+  const toTime = (d: any) => {
+    const t = new Date(d as any).getTime();
+    return Number.isFinite(t) ? t : -Infinity;
+  };
 
-  /**
-   * EXACT ItemsService-style ordering inside a group:
-   * Item (sortIndex -> name) → Thickness (sort_index -> thickness) → Dims (area desc, L desc, W desc) → Type/SPB
-   */
-  function orderLikeItemsService(rows: any[]) {
-    // 1) Group by itemName (outer level)
-    const byItem = new Map<string, any[]>();
-    for (const r of rows) {
-      const key = r.itemName ?? '';
-      if (!byItem.has(key)) byItem.set(key, []);
-      byItem.get(key)!.push(r);
-    }
-
-    // order items: item.sortIndex NULLS LAST, then itemName ASC
-    const itemKeys = Array.from(byItem.keys()).sort((a, b) => {
-      const aArr = byItem.get(a)!;
-      const bArr = byItem.get(b)!;
-      const minSortA = Math.min(...aArr.map((x) => nullLast(x.itemSortIndex)));
-      const minSortB = Math.min(...bArr.map((x) => nullLast(x.itemSortIndex)));
-      if (minSortA !== minSortB) return minSortA - minSortB;
-      return a.localeCompare(b);
-    });
-
-    const orderedAll: any[] = [];
-
-    for (const itemKey of itemKeys) {
-      const rowsOfItem = byItem.get(itemKey)!;
-
-      // 2) Group by thickness value
-      const byTh = new Map<number, any[]>();
-      for (const r of rowsOfItem) {
-        const th = toNum(r.thickness);
-        if (!byTh.has(th)) byTh.set(th, []);
-        byTh.get(th)!.push(r);
-      }
-
-      // order thickness: thickness.sort_index NULLS LAST, then numeric thickness ASC
-      const thKeys = Array.from(byTh.keys()).sort((ta, tb) => {
-        const aArr = byTh.get(ta)!;
-        const bArr = byTh.get(tb)!;
-        const minSortA = Math.min(...aArr.map((x) => nullLast(x.thicknessSortIndex)));
-        const minSortB = Math.min(...bArr.map((x) => nullLast(x.thicknessSortIndex)));
-        if (minSortA !== minSortB) return minSortA - minSortB;
-        return ta - tb;
-      });
-
-      for (const th of thKeys) {
-        const rowsTh = byTh.get(th)!;
-
-        // 3) Dims vs non-dims
-        const hasDims = (r: any) => toNum(r.length) > 0 && toNum(r.width) > 0;
-        const dimmed = rowsTh.filter(hasDims);
-        const nonDimmed = rowsTh.filter((r) => !hasDims(r) || r.type === 'sqm');
-
-        // group dimmed by L|W
-        const byDims = new Map<string, any[]>();
-        for (const r of dimmed) {
-          const k = `${toNum(r.length)}|${toNum(r.width)}`;
-          if (!byDims.has(k)) byDims.set(k, []);
-          byDims.get(k)!.push(r);
-        }
-
-        // dims order: area DESC → L DESC → W DESC
-        const dimKeys = Array.from(byDims.keys()).sort((ka, kb) => {
-          const [aL, aW] = ka.split('|').map(Number);
-          const [bL, bW] = kb.split('|').map(Number);
-          const aArea = aL * aW, bArea = bL * bW;
-          if (aArea !== bArea) return bArea - aArea;
-          if (aL !== bL) return bL - aL;
-          return bW - aW;
-        });
-
-        // emit per dims group: box (SPB DESC, variantId) → sheet (variantId) → sqm
-        for (const dk of dimKeys) {
-          const g = byDims.get(dk)!;
-
-          const boxes = g
-            .filter((x) => x.type === 'box')
-            .sort(
-              (a, b) =>
-                (toNum(b.sheetsPerBox) || 0) - (toNum(a.sheetsPerBox) || 0) ||
-                toNum(a.itemVariantId) - toNum(b.itemVariantId)
-            );
-          const sheets = g
-            .filter((x) => x.type === 'sheet')
-            .sort((a, b) => toNum(a.itemVariantId) - toNum(b.itemVariantId));
-          const sqms = g.filter((x) => x.type === 'sqm');
-
-          orderedAll.push(...boxes, ...sheets, ...sqms);
-        }
-
-        // then sqm without dims (variantId), then no-dims non-sqm
-        const sqmOthers = nonDimmed
-          .filter((x) => x.type === 'sqm')
-          .sort((a, b) => toNum(a.itemVariantId) - toNum(b.itemVariantId));
-        const noDimsNonSqm = nonDimmed.filter((x) => x.type !== 'sqm');
-
-        orderedAll.push(...sqmOthers, ...noDimsNonSqm);
-      }
-    }
-
-    return orderedAll;
-  }
-
-  // Flatten invoice items → row objects used by the sorter
-  const allItems = invoices.flatMap((invoice) =>
-    invoice.items.map((item) => {
-      const variant = item.itemVariant;
+  // 2) Flatten rows
+  const rows = invoices.flatMap((inv) =>
+    (inv.items || []).map((it) => {
+      const variant = it.itemVariant;
       const th = variant?.thickness;
-      const it = th?.item;
+      const item = th?.item;
       const desc = variant?.itemNameDescription;
-      const batch = item.itemBatch;
-
-      const type = it?.type || '';
-
-      const length =
+            const length =
         (variant as any)?.length ??
         (variant as any)?.dimensions?.length ??
         null;
@@ -932,50 +831,85 @@ async getBrowsingInvoices(
         itemDescriptionId: desc?.id || 0,
 
         // display
-        invoiceDate: invoice.date,
-        invoiceNumber: invoice.invoiceNumber,
-        itemName: it?.itemName || '',
-        descriptionName: it?.itemName || '',
+        invoiceDate: inv.date,                 // string "YYYY-MM-DD" (assumed)
+        invoiceNumber: inv.invoiceNumber,
+        itemName: item?.itemName || '',
+        descriptionName: item?.itemName || '',
+        
 
-        // sort signals (BOTH captured)
-        itemSortIndex: (it as any)?.sortIndex ?? (it as any)?.sort_index ?? null,
+        // ordering signals
+        itemSortIndex: (item as any)?.sortIndex ?? (item as any)?.sort_index ?? null,
         thickness: th?.thickness ?? '',
         thicknessSortIndex: (th as any)?.sort_index ?? (th as any)?.sortIndex ?? null,
 
-        // attributes for dims/type sort
+        // passthrough fields that UI renders
         origin: variant?.origin ?? '',
-        type,
         length,
         width,
-        box: type === 'box' ? item.quantity : 0,
-        sheet: type === 'sheet' ? item.quantity : 0,
-        sheetsPerBox: type === 'box' ? variant?.sheetsPerBox || 0 : null,
-
-        sqm: item.sqm,
-        unitPrice: item.unitPrice,
-        vat: item.vat,
-        totalAmount: item.totalAmount,
+        type: item?.type || '',
+        box: item?.type === 'box' ? it.quantity : 0,
+        sheet: item?.type === 'sheet' ? it.quantity : 0,
+        sheetsPerBox: item?.type === 'box' ? variant?.sheetsPerBox || 0 : null,
+        sqm: it.sqm,
+        unitPrice: it.unitPrice,
+        vat: it.vat,
+        totalAmount: it.totalAmount,
 
         // refs
         itemVariantId: variant?.id || 0,
-        itemBatchId: batch?.id || 0,
+        itemBatchId: it.itemBatch?.id || 0,
       };
-    }),
+    })
   );
 
-  // Group by itemDescriptionId (what your UI expects)
+  // 3) Group by description id
   const grouped = new Map<string, any[]>();
-  for (const row of allItems) {
-    const key = String(row.itemDescriptionId);
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push(row);
+  for (const r of rows) {
+    const k = String(r.itemDescriptionId);
+    if (!grouped.has(k)) grouped.set(k, []);
+    grouped.get(k)!.push(r);
   }
 
-  // Group slice helper
-  function buildGroupPayload(key: string, items: any[], page = 1) {
-    const ordered = orderLikeItemsService(items);
+  // 4) Comparator: Item → Thickness → Date DESC
+  const cmpWithinGroup = (a: any, b: any) => {
+    // Item level
+    const aItemIdx = nullLast(a.itemSortIndex);
+    const bItemIdx = nullLast(b.itemSortIndex);
+    if (aItemIdx !== bItemIdx) return aItemIdx - bItemIdx;
+
+    const nameCmp = String(a.itemName || '').localeCompare(String(b.itemName || ''));
+    if (nameCmp !== 0) return nameCmp;
+
+    // Thickness level
+    const aThIdx = nullLast(a.thicknessSortIndex);
+    const bThIdx = nullLast(b.thicknessSortIndex);
+    if (aThIdx !== bThIdx) return aThIdx - bThIdx;
+
+    const aTh = toNum(a.thickness);
+    const bTh = toNum(b.thickness);
+    if (aTh !== bTh) return aTh - bTh;
+
+    // Date (newest first)
+    const bt = toTime(b.invoiceDate);
+    const at = toTime(a.invoiceDate);
+    if (bt !== at) return bt - at;
+
+    // final stable tiebreaker (optional)
+    return String(a.invoiceNumber || '').localeCompare(String(b.invoiceNumber || ''));
+  };
+
+  // 5) Build payload for one group (ordered + paginated)
+  const buildGroup = (key: string, items: any[], page = 1) => {
+    // IMPORTANT: clone before sort to avoid mutating shared arrays
+    const ordered = [...items].sort(cmpWithinGroup);
+
     const start = (page - 1) * limitPerGroup;
     const slice = ordered.slice(start, start + limitPerGroup);
+
+    // latest date in the WHOLE group (for group sorting later)
+    const latestInvoiceDate = ordered.length
+      ? ordered.reduce((max, r) => (toTime(r.invoiceDate) > toTime(max) ? r.invoiceDate : max), ordered[0].invoiceDate)
+      : null;
 
     return {
       groupKey: key,
@@ -984,46 +918,29 @@ async getBrowsingInvoices(
       total: ordered.length,
       page,
       totalPages: Math.ceil(ordered.length / limitPerGroup),
+      latestInvoiceDate,
     };
-  }
+  };
 
-  // If a specific group is requested (pagination for one group)
+  // 6) If a single group is requested (paging that group)
   if (groupKey) {
     const items = grouped.get(groupKey) || [];
-    return buildGroupPayload(groupKey, items, pagePerGroup);
+    return buildGroup(groupKey, items, pagePerGroup);
   }
 
-  // Build all groups (page 1 for each)
+  // 7) Build all groups (page 1 each)
   const groups = Array.from(grouped.entries()).map(([key, items]) =>
-    buildGroupPayload(key, items, 1),
+    buildGroup(key, items, 1),
   );
 
-  // Order groups themselves by Item order (sortIndex NULLS LAST → name ASC).
-  // We take the **first row's** signals from each group's ordered slice,
-  // or compute from the whole group if slice is empty.
-const groupOrderKey = (g: any) => {
-  const fallbackGroup = grouped.get(g.groupKey);
-  const src = (g.items[0] ?? (fallbackGroup ? fallbackGroup[0] : undefined)) ?? {};
-  const sortIdx = nullLast(src.itemSortIndex);
-  const name = src.itemName || '';
-  return { sortIdx, name };
-};
+  // 8) Sort groups themselves by latest date DESC (newest groups first)
+  groups.sort((A, B) => toTime(B.latestInvoiceDate) - toTime(A.latestInvoiceDate));
 
-
-  groups.sort((A, B) => {
-    const a = groupOrderKey(A);
-    const b = groupOrderKey(B);
-    if (a.sortIdx !== b.sortIdx) return a.sortIdx - b.sortIdx;
-    return a.name.localeCompare(b.name);
-  });
-
-  return groups;
+  // Remove helper field before returning (if you don’t need it on the client)
+  return groups.map(({ latestInvoiceDate, ...rest }) => rest);
 }
 
-
-
-
-
+  
 async getBrowsingInvoicesByItemBatches(
   customerId: number,
   itemBatchIds: number[],
@@ -1051,18 +968,19 @@ async getBrowsingInvoicesByItemBatches(
   );
 
   if (descriptionIds.length === 0) {
-    // nothing maps -> empty result
-    return groupKey ? {
-      groupKey,
-      descriptionName: '',
-      items: [],
-      total: 0,
-      page: pagePerGroup,
-      totalPages: 0,
-    } : [];
+    return groupKey
+      ? {
+          groupKey,
+          descriptionName: '',
+          items: [],
+          total: 0,
+          page: pagePerGroup,
+          totalPages: 0,
+        }
+      : [];
   }
 
-  // 2) Fetch invoices for this customer, but only items whose description is in that set
+  // 2) Fetch invoices for this customer
   const invoices = await this.invoiceRepository.find({
     where: { customer: { id: customerId } },
     relations: [
@@ -1073,23 +991,16 @@ async getBrowsingInvoicesByItemBatches(
       'items.itemVariant.thickness.item',
       'items.itemVariant.itemNameDescription',
     ],
-    order: { date: 'DESC' },
+    order: { date: 'DESC' }, // DB-level ordering of invoices; we’ll still sort per-group below
   });
 
-  // 3) Flatten and filter rows by descriptionIds
-  function getPriority(name: string) {
-    const n = name?.toLowerCase() || '';
-    if (n.includes('تريبلكس ابيض')) return 3;
-    if (n.includes('برونز')) return 2;
-    if (n.includes('اسود')) return 1;
-    if (n.includes('ابيض')) return 0;
-    return 99;
-  }
-  const safeNum = (x: any) => {
-    const n = parseFloat(String(x));
-    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+  // helper to parse date consistently
+  const toMs = (d: any) => {
+    const ms = Date.parse(typeof d === 'string' ? d : String(d));
+    return Number.isFinite(ms) ? ms : -Infinity;
   };
 
+  // 3) Flatten & filter
   const allItems = invoices.flatMap((invoice) =>
     invoice.items
       .filter((it) => {
@@ -1103,11 +1014,11 @@ async getBrowsingInvoicesByItemBatches(
         const itemDesc = variant?.itemNameDescription;
         const type = itemData?.type || '';
 
-        // pull dimensions (adjust if your schema stores them elsewhere)
         const length =
           (variant as any)?.length ??
           (variant as any)?.dimensions?.length ??
           null;
+
         const width =
           (variant as any)?.width ??
           (variant as any)?.dimensions?.width ??
@@ -1117,39 +1028,31 @@ async getBrowsingInvoicesByItemBatches(
           // grouping identity
           itemDescriptionId: itemDesc?.id || 0,
 
-          // row fields
-          invoiceDate: invoice.date,
+          // fields used in UI
+          invoiceDate: invoice.date,                // e.g. "2025-10-18"
+          invoiceDateMs: toMs(invoice.date),        // for robust sorting
           invoiceNumber: invoice.invoiceNumber,
           itemName: itemData?.itemName || '',
           descriptionName: itemData?.itemName || '',
-
           thickness: thicknessEntity?.thickness ?? '',
           origin: variant?.origin ?? '',
           type,
-
-          // quantity modes
           box: type === 'box' ? item.quantity : 0,
           sheet: type === 'sheet' ? item.quantity : 0,
           sheetsPerBox: type === 'box' ? variant?.sheetsPerBox || 0 : null,
           sqm: item.sqm,
-
-          // prices
           unitPrice: item.unitPrice,
           vat: item.vat,
           totalAmount: item.totalAmount,
-
-          // dimensions
           length,
           width,
-
-          // references
           itemVariantId: variant?.id || 0,
           itemBatchId: item.itemBatch?.id || 0,
         };
       })
   );
 
-  // 4) Group by itemDescriptionId ONLY
+  // 4) Group by itemDescriptionId
   const grouped = new Map<string, any[]>();
   for (const row of allItems) {
     const key = String(row.itemDescriptionId);
@@ -1157,54 +1060,45 @@ async getBrowsingInvoicesByItemBatches(
     grouped.get(key)!.push(row);
   }
 
-  // Helper to build a single page response for one group
+  // Helper: build one group page with items sorted by date DESC
   const pageGroup = (key: string, items: any[]) => {
-    const sorted = items.sort(
-      (a, b) => new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime()
-    );
+    // ✅ sort newest → oldest BEFORE slicing
+    const sortedByDateDesc = items
+      .slice()
+      .sort((a, b) => b.invoiceDateMs - a.invoiceDateMs);
+
     const start = (pagePerGroup - 1) * limitPerGroup;
     return {
       groupKey: key,
-      descriptionName: items[0]?.descriptionName || '',
-      items: sorted.slice(start, start + limitPerGroup),
-      total: sorted.length,
+      descriptionName: sortedByDateDesc[0]?.descriptionName || '',
+      items: sortedByDateDesc.slice(start, start + limitPerGroup),
+      total: sortedByDateDesc.length,
       page: pagePerGroup,
-      totalPages: Math.ceil(sorted.length / limitPerGroup),
+      totalPages: Math.ceil(sortedByDateDesc.length / limitPerGroup),
+      // expose the latest date to let callers order groups if they want
+      latestInvoiceDate: sortedByDateDesc[0]?.invoiceDate ?? null,
+      latestInvoiceMs: sortedByDateDesc[0]?.invoiceDateMs ?? -Infinity,
     };
-  };
+    };
 
+  // Single-group pagination request
   if (groupKey) {
     const items = grouped.get(groupKey) || [];
     return pageGroup(groupKey, items);
   }
 
-  // 5) Build first page per group
-  const groups = Array.from(grouped.entries()).map(([key, items]) => {
-    const sorted = items.sort(
-      (a, b) => new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime()
-    );
-    return {
-      groupKey: key,
-      descriptionName: items[0]?.descriptionName || '',
-      items: sorted.slice(0, limitPerGroup),
-      total: items.length,
-      page: 1,
-      totalPages: Math.ceil(items.length / limitPerGroup),
-      latestInvoiceDate: sorted[0]?.invoiceDate ?? null,
-    };
-  });
+  // 5) Build first page per group (each group internally sorted by date desc)
+  const groups = Array.from(grouped.entries()).map(([key, items]) =>
+    pageGroup(key, items)
+  );
 
-  // 6) Sort groups by priority then min thickness ASC
-  return groups.sort((a, b) => {
-    const priA = getPriority(a.descriptionName);
-    const priB = getPriority(b.descriptionName);
-    if (priA !== priB) return priA - priB;
+  // 6) Order groups themselves by their latest item date (newest group first)
+  groups.sort((A, B) => (B.latestInvoiceMs ?? -Infinity) - (A.latestInvoiceMs ?? -Infinity));
 
-    const minThA = Math.min(...a.items.map((r: any) => safeNum(r.thickness)));
-    const minThB = Math.min(...b.items.map((r: any) => safeNum(r.thickness)));
-    return minThA - minThB;
-  });
+  return groups;
 }
+
+
 
 
 
