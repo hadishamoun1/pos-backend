@@ -29,6 +29,17 @@ getFilteredRequests(
   return this.requestService.getFilteredRequests(page, limit);
 }
 
+// requests.controller.ts
+@Get('v1/filtered/search')
+async search(
+  @Query('q') q?: string,
+  @Query('page') page: string = '1',
+  @Query('limit') limit: string = '100',
+) {
+  return this.requestService.searchFilteredRequests(q, Number(page), Number(limit));
+}
+
+
 
   @Put(':id')
   async updateRequest(

@@ -273,4 +273,139 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
     return updatedRequest;
   }
 
+
+
+
+  // requests search list
+
+  async searchFilteredRequests(
+  q: string | undefined,
+  page: number = 1,
+  limit: number = 100,
+): Promise<{
+  data: Array<{
+    id: number;
+    requestNumber: string;
+    requestDate: any;
+    totalAmount: number;
+    vatAmount: number;
+    grandTotal: number;
+    customerName: string | null;
+    invoiceType: string | null;
+  }>;
+  total: number;
+  page: number;
+  totalPages: number;
+}> {
+  // ---- pagination guards ----
+  const pageNum  = Math.max(1, Number(page)  || 1);
+  const take     = Math.min(500, Math.max(1, Number(limit) || 100));
+  const skip     = (pageNum - 1) * take;
+
+  // ---- helpers ----
+  const norm = (s?: string) => (s ?? "").trim();
+  const QQ = norm(q);
+
+  // Accepts 2025-10-19 or 2025/10/19 and returns 'YYYY-MM-DD' or null
+  const asDate = (s: string) => {
+    const t = (s || "").replace(/\//g, "-");
+    const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00.000Z`);
+    return Number.isNaN(d.getTime()) ? null : `${m[1]}-${m[2]}-${m[3]}`;
+  };
+
+  // Detect numeric-only query (e.g., "37") for suffix search
+  const isNumericOnly = (s: string) => /^\d+$/.test(s);
+
+  // Detect "looks like a request number" (any letters/digits with a hyphen or space)
+  // e.g., REQ25-12, REQ25 - 12, REQ-12, etc. We’ll search with LIKE after removing spaces.
+  const looksLikeRequestNo = (s: string) =>
+    /[A-Za-z]/.test(s) || s.includes("-");
+
+  // ---- base query ----
+  const qb = this.requestRepo
+    .createQueryBuilder("req")
+    .leftJoinAndSelect("req.customer", "customer")
+    .orderBy("req.id", "DESC")
+    .skip(skip)
+    .take(take);
+
+  if (!QQ) {
+    // no query => normal pagination
+    const [rows, total] = await qb.getManyAndCount();
+    return {
+      data: rows.map(r => ({
+        id: r.id,
+        requestNumber: r.requestNumber,
+        requestDate: r.requestDate,
+        totalAmount: r.totalAmount,
+        vatAmount: r.vatAmount,
+        grandTotal: r.grandTotal,
+        customerName: r.customer?.customerName ?? null,
+        invoiceType: r.customer?.invoiceType ?? null,
+      })),
+      total,
+      page: pageNum,
+      totalPages: Math.ceil(total / take),
+    };
+  }
+
+  // ---- parse the query ----
+  // 1) Date range: "YYYY-MM-DD..YYYY-MM-DD" (also allows "to" or a single hyphen between)
+  const rangeMatch =
+    QQ.match(/(\d{4}[-/]\d{2}[-/]\d{2})\s*(?:\.\.|to|-)\s*(\d{4}[-/]\d{2}[-/]\d{2})/i);
+  // 2) Single date: "YYYY-MM-DD"
+  const singleDateMatch = QQ.match(/^(\d{4}[-/]\d{2}[-/]\d{2})$/);
+
+  if (rangeMatch) {
+    const d1 = asDate(rangeMatch[1])!;
+    const d2 = asDate(rangeMatch[2])!;
+    if (d1 && d2) {
+      qb.andWhere("req.requestDate BETWEEN :d1 AND :d2", { d1, d2 });
+    }
+  } else if (singleDateMatch) {
+    const d = asDate(singleDateMatch[1])!;
+    if (d) qb.andWhere("req.requestDate = :d", { d });
+  } else if (isNumericOnly(QQ)) {
+    // Numeric-only => match the numeric suffix after " - "
+    // MySQL: CAST(SUBSTRING_INDEX(requestNumber, ' - ', -1) AS UNSIGNED)
+    qb.andWhere(
+      "CAST(SUBSTRING_INDEX(req.requestNumber, ' - ', -1) AS UNSIGNED) = :seq",
+      { seq: Number(QQ) }
+    );
+  } else if (looksLikeRequestNo(QQ)) {
+    // Looks like a request number => be flexible about spaces around hyphen
+    // Compare after removing spaces from DB field:
+    // REPLACE(req.requestNumber, ' ', '') LIKE %REQLike%
+    const pat = `%${QQ.replace(/\s+/g, "")}%`;
+    qb.andWhere("REPLACE(req.requestNumber, ' ', '') LIKE :pat", { pat });
+  } else {
+    // Customer name tokens (AND across tokens)
+    const tokens = QQ.split(/\s+/).filter(Boolean);
+    tokens.forEach((t, i) => {
+      qb.andWhere(`customer.customerName LIKE :c${i}`, { [`c${i}`]: `%${t}%` });
+    });
+  }
+
+  const [rows, total] = await qb.getManyAndCount();
+
+  return {
+    data: rows.map(r => ({
+      id: r.id,
+      requestNumber: r.requestNumber,
+      requestDate: r.requestDate,
+      totalAmount: r.totalAmount,
+      vatAmount: r.vatAmount,
+      grandTotal: r.grandTotal,
+      customerName: r.customer?.customerName ?? null,
+      invoiceType: r.customer?.invoiceType ?? null,
+    })),
+    total,
+    page: pageNum,
+    totalPages: Math.ceil(total / take),
+  };
+}
+
+
 }
