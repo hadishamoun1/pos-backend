@@ -218,6 +218,7 @@ export class JournalVoucherService {
     });
   }
 
+
 async getCustomerStatementOFR(params: {
   customerId: number;
   type?: 'S' | 'G' | 'ALL';
@@ -240,8 +241,17 @@ async getCustomerStatementOFR(params: {
     currencyCode = customer.currencyId === 2 ? 'LL' : 'USD';
   }
 
+  // 🔹 Try common field names for account number; keep null if none found
+  const customerAccountNumber: string | null =
+    (customer as any)?.customerAccountNumber ??
+    (customer as any)?.accountNumber ??
+    null;
+
+  // 🔹 NEW: surface customer's invoice type from the customer table
+  const customerInvoiceType: string | null =
+    (customer as any)?.invoiceType ?? null;
+
   // 2) Column maps
-  // OFR columns (used for G rows)
   const ofrColMap = {
     USD:  { dr: 'drUSDOFR',  cr: 'crUSDOFR'  },
     LL:   { dr: 'drLLOFR',   cr: 'crLLOFR'   },
@@ -249,7 +259,6 @@ async getCustomerStatementOFR(params: {
     BASE: { dr: 'drOFR',     cr: 'crOFR'     },
   } as const;
 
-  // Non-OFR columns (used for S & other rows)
   const baseColMap = {
     USD:  { dr: 'drUSD',  cr: 'crUSD'  },
     LL:   { dr: 'drLL',   cr: 'crLL'   },
@@ -264,12 +273,11 @@ async getCustomerStatementOFR(params: {
       const p = ofrColMap[currencyCode] ?? ofrColMap.USD;
       return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
     }
-    // 'S' = non-OFR
     const p = baseColMap[currencyCode] ?? baseColMap.USD;
     return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
   };
 
-  // 3) Type filter — use JV.jvType primarily; docNbr is a fallback
+  // 3) Type filter
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
@@ -278,12 +286,12 @@ async getCustomerStatementOFR(params: {
     } else if (type === 'G') {
       qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
     } else {
-      // ALL → include everything for this customer (receipts, manual JVs, returns, etc.)
+      // ALL
     }
     return qb;
   };
 
-  // 4) Main period query (all rows for the customer, filtered by date and type)
+  // 4) Main period query
   const qb = this.journalVoucherDetailRepository
     .createQueryBuilder('d')
     .leftJoinAndSelect('d.journalVoucher', 'jv')
@@ -298,7 +306,7 @@ async getCustomerStatementOFR(params: {
 
   const rows = await qb.getMany();
 
-  // 5) Opening balance (same filters; per-row column choice by JV type/docNbr)
+  // 5) Opening balance
   let openingBalance = 0;
   if (from) {
     const beforeQb = this.journalVoucherDetailRepository
@@ -322,7 +330,7 @@ async getCustomerStatementOFR(params: {
     openingBalance = openingDr - openingCr;
   }
 
-  // 6) Items + running balance (per-row column choice by JV type/docNbr)
+  // 6) Items + running balance
   let running = openingBalance;
   const items = rows.map((r) => {
     const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
@@ -339,7 +347,7 @@ async getCustomerStatementOFR(params: {
       jvNumber: r.journalVoucher?.jvNumber,
       description: r.description ?? null,
       docNbr: r.docNbr ?? null,
-      kind: rowKind, // 'S' (non-OFR) or 'G' (OFR)
+      kind: rowKind,
       debit,
       credit,
       balanceAfter: running,
@@ -357,7 +365,7 @@ async getCustomerStatementOFR(params: {
     { totalDebit: 0, totalCredit: 0 }
   );
 
-  // 7) Basis note (for debugging/visibility)
+  // 7) Basis note (debug)
   const exampleCols = getColsFor('S');
   const basis = {
     currency: currencyCode,
@@ -371,6 +379,9 @@ async getCustomerStatementOFR(params: {
 
   return {
     customerId,
+    currencyCode,               
+    customerAccountNumber,     
+    customerInvoiceType,       
     from: from ?? null,
     to: to ?? null,
     openingBalance,

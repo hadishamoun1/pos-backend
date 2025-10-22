@@ -369,74 +369,123 @@ console.log('📄 New invoice number:', invoiceNumber);
     });
   }
   async getInvoiceById(invoiceId: number): Promise<any> {
-    const invoice = await this.invoiceRepository.findOne({
-      where: { id: invoiceId },
-      relations: [
-        'customer',
-        'items',
-        'items.itemVariant',
-        'items.itemVariant.thickness',
-        'items.itemVariant.thickness.item',
-      ],
-    });
+  const invoice = await this.invoiceRepository.findOne({
+    where: { id: invoiceId },
+    relations: [
+      'customer',
+      'customer.currency',
+      'customer.account',
+      'items',
+      'items.itemVariant',
+      'items.itemVariant.thickness',
+      'items.itemVariant.thickness.item',
+    ],
+  });
 
-    if (!invoice) {
-      throw new Error('Invoice not found');
-    }
-
-    // ✅ Format the response to be more user-friendly
-    return {
-      invoiceId: invoice.id,
-      invoiceNumber: invoice.invoiceNumber,
-      date: invoice.date,
-      invoiceType: invoice.invoiceType,
-      documentNumber: invoice.documentNumber || null,
-      totalWithoutVAT: invoice.totalWithoutVAT,
-      totalVAT: invoice.totalVAT,
-      grandTotal: invoice.grandTotal,
-      currencyRate: invoice.currencyRate,
-      vatPercentage: invoice.vatPercentage,
-
-      // ✅ Flattened customer info
-      customerId: invoice.customer?.id,
-      customerName: invoice.customer?.customerName,
-      customerInvoiceType: invoice.customer?.invoiceType,
-
-      // ✅ Reformatted items list for easier frontend use
-      items: invoice.items.map((item) => {
-        const variant = item.itemVariant;
-        const thickness = variant?.thickness;
-        const itemData = thickness?.item;
-
-        return {
-          invoiceItemId: item.id,
-          sqm: item.sqm,
-          unitPrice: item.unitPrice,
-          totalAmount: item.totalAmount,
-          vat: item.vat,
-          quantity: item.quantity, // ✅ Overall quantity (box/sheet)
-
-          // ✅ Item Details
-          itemVariantId: variant?.id,
-          itemName: itemData?.itemName,
-          itemType: itemData?.type, // 'box' or 'sheet'
-          thickness: thickness?.thickness, // e.g., "10mm"
-          length: variant?.length,
-          width: variant?.width,
-          origin: variant?.origin,
-          sheetsPerBox: variant?.sheetsPerBox, // ✅ Sheets per box
-          totalSheets: item.quantity * (variant?.sheetsPerBox || 1), // ✅ Total sheets calculated
-
-          // ✅ Inventory Tracking
-
-          // ✅ Box/Sheet Specific Flags
-          fixBox: variant?.fixBox,
-          fixLength: variant?.fixLength,
-          fixWidth: variant?.fixWidth,
-        };
-      }),
-    };
+  if (!invoice) {
+    throw new Error('Invoice not found');
   }
+
+  const cust = invoice.customer;
+
+  return {
+    // ===== Invoice (top-level) =====
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoiceNumber,
+    date: invoice.date,
+    invoiceType: invoice.invoiceType,
+    documentNumber: invoice.documentNumber || null,
+    totalWithoutVAT: invoice.totalWithoutVAT,
+    totalVAT: invoice.totalVAT,
+    grandTotal: invoice.grandTotal,
+    currencyRate: invoice.currencyRate,
+    vatPercentage: invoice.vatPercentage,
+
+    // ===== Customer (flat fields for preview convenience) =====
+    customerId: cust?.id ?? null,
+    customerName: cust?.customerName ?? null,
+    customerInvoiceType: cust?.invoiceType ?? null,
+    customerAccountNumber: cust?.customerAccountNumber ?? null,
+    customerAddress: cust?.address ?? null,
+    customerPhone: cust?.phoneNumber ?? null,
+    customerTaxNumber: cust?.financialNumber ?? null,
+    customerPaymentTerms: cust?.paymentTerms ?? null,
+    customerArea: cust?.area ?? null,
+    customerCompanyType: cust?.companyType ?? null,
+    customerVatDefault: cust?.vat ?? null,
+    currencyCode: cust?.currency?.currencyCode ?? null,
+
+    // ===== Customer (full nested object) =====
+    customer: cust
+      ? {
+          id: cust.id,
+          customerAccountNumber: cust.customerAccountNumber,
+          customerName: cust.customerName,
+          firstName: (cust as any).firstName ?? null,
+          middleName: (cust as any).middleName ?? null,
+          paymentTerms: cust.paymentTerms ?? null,
+          area: cust.area ?? null,
+          companyType: cust.companyType ?? null,
+          address: cust.address ?? null,
+          phoneNumber: cust.phoneNumber ?? null,
+          financialNumber: cust.financialNumber ?? null,
+          invoiceType: cust.invoiceType ?? null,
+          vat: cust.vat ?? null,
+          currencyId: cust.currencyId ?? cust.currency?.id ?? null,
+          currency: cust.currency
+            ? {
+                id: cust.currency.id,
+                currencyCode: cust.currency.currencyCode,
+                currencyName: cust.currency.currencyName,
+              }
+            : null,
+          account: cust.account
+            ? {
+                id: cust.account.id,
+                accountNumber: cust.account.accountNumber,
+                accountName: cust.account.accountName,
+                parentNumber: cust.account.parentNumber,
+                arabicAccountName: cust.account.arabicAccountName,
+                accessible: cust.account.accessible,
+              }
+            : null,
+        }
+      : null,
+
+    // ===== Items (same structure as before) =====
+    items: invoice.items.map((item) => {
+      const variant = item.itemVariant;
+      const thickness = variant?.thickness;
+      const itemData = thickness?.item;
+
+      return {
+        invoiceItemId: item.id,
+        sqm: item.sqm,
+        unitPrice: item.unitPrice,
+        totalAmount: item.totalAmount,
+        vat: item.vat,
+        quantity: item.quantity, // overall qty (box/sheet/sqm)
+
+        // Item details
+        itemVariantId: variant?.id,
+        itemName: itemData?.itemName,
+        itemType: itemData?.type, // 'box' | 'sheet' | 'sqm'
+        thickness: thickness?.thickness,
+        length: (variant as any)?.length ?? null,
+        width: (variant as any)?.width ?? null,
+        origin: variant?.origin ?? null,
+        sheetsPerBox: variant?.sheetsPerBox ?? null,
+        totalSheets:
+          item.quantity * (variant?.sheetsPerBox ?? 1), // total sheets when type is box
+
+        // Box/Sheet constraints
+        fixBox: (variant as any)?.fixBox ?? null,
+        fixLength: (variant as any)?.fixLength ?? null,
+        fixWidth: (variant as any)?.fixWidth ?? null,
+      };
+    }),
+  };
+}
 
  async getFilteredInvoices(
   page: number,
