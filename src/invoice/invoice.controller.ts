@@ -132,11 +132,13 @@ async searchFiltered(
     return this.invoiceService.getFilteredInvoices(page, limit);
   }
 
+  // UPDATE (full replace semantics; handles deletes/inserts/updates of items)
   @Put(':id')
-  async editInvoice(
-    @Param('id') invoiceId: number,
-    @Body() invoiceData: Partial<Invoice>,
-  ) {
-    return this.invoiceService.editInvoice(invoiceId, invoiceData);
+  async update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ): Promise<Invoice> {
+    // body uses the same shape as create; items may include existing item IDs to update
+    return this.invoiceService.updateInvoice(id, body);
   }
 }

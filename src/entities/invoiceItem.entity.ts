@@ -14,11 +14,13 @@ export class InvoiceItem {
   @PrimaryGeneratedColumn()
   id: number;
 
+
+// invoiceItem.entity.ts
   @ManyToOne(() => Invoice, (invoice) => invoice.items, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'invoiceId' })
   invoice: Invoice;
 
-  @Column({ nullable: true })
+  @Column({ name: 'invoiceId', nullable: false })  // 👈 explicit
   invoiceId: number;
 
   // 🔽 New Foreign Key to Link Item Variants

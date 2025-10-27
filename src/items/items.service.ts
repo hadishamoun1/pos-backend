@@ -84,22 +84,21 @@ export class ItemsService {
   }
 
 // items.service.ts
+// items.service.ts
 async getSelectedItemDetailsPaginated(opts?: {
   page?: number;
   limit?: number;
   includeEmpty?: boolean; // kept for compatibility, ignored
 }) {
-  const page = Math.max(1, Number(opts?.page ?? 1));
+  const page  = Math.max(1, Number(opts?.page ?? 1));
   const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
   const offset = (page - 1) * limit;
 
-  // ✅ paginate on VARIANT for stable pages
   const qb = this.itemVariantRepository
     .createQueryBuilder('variant')
     .innerJoinAndSelect('variant.thickness', 'thickness')
     .innerJoinAndSelect('thickness.item', 'item')
     .leftJoinAndSelect('variant.itemNameDescription', 'variantDescription')
-    // ⛔️ NO batches join — we show all variants regardless of stock/batches
     .select([
       // variant
       'variant.id',
@@ -107,16 +106,15 @@ async getSelectedItemDetailsPaginated(opts?: {
       'variant.width',
       'variant.sheetsPerBox',
       'variant.origin',
-
       // thickness
       'thickness.id',
       'thickness.thickness',
-
+      'thickness.sort_index',
       // item
       'item.id',
       'item.itemName',
       'item.type',
-
+      'item.sortIndex', // property name (maps to DB `sort_index`)
       // description
       'variantDescription.id',
       'variantDescription.itemNumber',
@@ -125,26 +123,40 @@ async getSelectedItemDetailsPaginated(opts?: {
       'variantDescription.colorName',
       'variantDescription.designName',
     ])
-    // stable order used by both pages and regrouping
-    .orderBy('item.id', 'DESC')
+
+    // --- Portable NULLS LAST emulation via computed selects ---
+    // Use DB column names inside the CASE expressions.
+    .addSelect('CASE WHEN item.sort_index IS NULL THEN 1 ELSE 0 END', 'item_sort_nulls')
+    .addSelect('CASE WHEN thickness.sort_index IS NULL THEN 1 ELSE 0 END', 'th_sort_nulls')
+
+    // Items: non-null sort_index first -> sortIndex ASC -> itemName ASC
+    .orderBy('item_sort_nulls', 'ASC')
+    .addOrderBy('item.sortIndex', 'ASC') // property name
+    .addOrderBy('item.itemName', 'ASC')
+
+    // Thickness: non-null sort_index first -> sort_index ASC -> thickness ASC
+    .addOrderBy('th_sort_nulls', 'ASC')
+    .addOrderBy('thickness.sort_index', 'ASC') // property is snake_case here
     .addOrderBy('thickness.thickness', 'ASC')
+
+    // Variants stable inside thickness
     .addOrderBy('variant.id', 'ASC')
+
     .skip(offset)
-    .take(limit + 1); // fetch one extra to know if more pages exist
+    .take(limit + 1);
 
   const variants = await qb.getMany();
 
   const hasMore = variants.length > limit;
   const pageSlice = hasMore ? variants.slice(0, limit) : variants;
 
-  // 🔁 regroup into { items: [{ thicknesses: [{ variants: [...] }]}] }
+  // regroup into items -> thicknesses -> variants, preserving SQL order
   const itemMap = new Map<number, any>();
 
   for (const v of pageSlice) {
     const th = v.thickness;
     const it = th.item;
 
-    // ensure item bucket
     let itemBucket = itemMap.get(it.id);
     if (!itemBucket) {
       itemBucket = {
@@ -156,27 +168,24 @@ async getSelectedItemDetailsPaginated(opts?: {
       itemMap.set(it.id, itemBucket);
     }
 
-    // ensure thickness bucket
     let thBucket = itemBucket.thicknesses.find((t: any) => t.id === th.id);
     if (!thBucket) {
       thBucket = { id: th.id, thickness: th.thickness, variants: [] };
       itemBucket.thicknesses.push(thBucket);
     }
 
-    // strip circular refs before pushing variant
-    const { thickness, ...variantPlain } = v as any;
+    const { thickness, ...variantPlain } = v as any; // strip circular ref
     thBucket.variants.push(variantPlain);
   }
-
-  const data = Array.from(itemMap.values());
 
   return {
     page,
     limit,
     hasMore,
-    data,
+    data: Array.from(itemMap.values()),
   };
 }
+
 
 
 
@@ -1437,6 +1446,173 @@ async searchForModalPOSInStock(params: {
 
   return filtered;
 }
+
+
+
+
+
+
+
+// ========= Helpers (add/replace these) =========
+
+// Arabic normalize (keep yours or use this identical version)
+
+
+/** Your existing parseDims(dims?: string) can stay as-is. */
+
+/** NEW: extract dims/SPB from *any free text* (e.g. `q`).
+ * Supports: "225*321", "225×321", "225 * 321", optional "-025"/"-25" → SPB → type:'box'
+ */
+private parseDimsFromAny(input?: string) {
+  if (!input) return {};
+  const norm = String(input).trim().replace(/[×xX]/g, '*');
+  const m = norm.match(/(\d+(?:\.\d+)?)\s*\*\s*(\d+(?:\.\d+)?)(?:\s*-\s*0*?(\d+))?/);
+  if (!m) return {};
+  const length = Number(m[1]);
+  const width  = Number(m[2]);
+  let spb: number | undefined;
+  if (m[3] != null) {
+    const v = Number(m[3]);
+    if (Number.isFinite(v) && v > 0) spb = v;
+  }
+  return spb ? { length, width, spb, type: 'box' as const } : { length, width };
+}
+
+// ========= Flat search QB (variant → thickness → item) =========
+private baseQBForVariantModal() {
+  return this.itemVariantRepository
+    .createQueryBuilder('variant')
+    .innerJoinAndSelect('variant.thickness', 'thickness')
+    .innerJoinAndSelect('thickness.item', 'item')
+    .leftJoin('variant.itemNameDescription', 'variantDescription')
+    .select([
+      'variant.id',
+      'variant.length',
+      'variant.width',
+      'variant.sheetsPerBox',
+      'variant.origin',
+      'variant.itemNameDescriptionId',
+      'thickness.id',
+      'thickness.thickness',
+      'item.id',
+      'item.itemName',
+      'item.type',
+    ]);
+}
+
+/** ========== FLAT SEARCH API for /variant-search ========== */
+async searchVariantsForModalPOS(params: {
+  q?: string;
+  dims?: string;
+  length?: number;
+  width?: number;
+  spb?: number;
+  type?: 'box' | 'sheet' | 'sqm' | 'unit';
+  page?: number;
+  limit?: number;
+}) {
+  const page  = Math.max(1, Number(params.page ?? 1));
+  const limit = Math.min(500, Math.max(1, Number(params.limit ?? 100)));
+  const skip  = (page - 1) * limit;
+
+  // Thickness + name from q (order-agnostic)
+  const { thickness, cleanName, nmNorm } = this.parseThicknessFromQ(params.q || '');
+
+  // Dims from explicit param OR q text
+  const fromDimsParam = this.parseDims(params.dims);
+  const fromQ         = this.parseDimsFromAny(params.q);
+
+  // Precedence: explicit params > dims param > q-derived
+  const length = params.length ?? fromDimsParam.length ?? (fromQ as any).length;
+  const width  = params.width  ?? fromDimsParam.width  ?? (fromQ as any).width;
+  const spb    = params.spb    ?? fromDimsParam.spb    ?? (fromQ as any).spb;
+  let   type   = params.type   ?? (fromDimsParam as any).type ?? (fromQ as any).type;
+
+  // If SPB exists and no type provided, infer box
+  if (spb != null && !type) type = 'box';
+
+  const qb = this.baseQBForVariantModal();
+
+  // name (Arabic-normalized OR raw)
+  if (cleanName && cleanName.length > 0) {
+    qb.andWhere(
+      `(
+        REPLACE(REPLACE(REPLACE(item.itemName, 'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm
+        OR item.itemName LIKE :nmRaw
+      )`,
+      { nm: `%${nmNorm || cleanName}%`, nmRaw: `%${cleanName}%` }
+    );
+  }
+
+  // Optional type
+  if (type) qb.andWhere('item.type = :tp', { tp: type });
+
+  // Thickness tolerance ±0.011
+  if (typeof thickness === 'number' && !Number.isNaN(thickness)) {
+    qb.andWhere('ABS(CAST(thickness.thickness AS DECIMAL(10,3)) - :th) < :thTol', {
+      th: thickness, thTol: 0.011,
+    });
+  }
+
+  // Dims tolerance ±0.51 with swap
+  const tol = 0.51;
+  const hasLen = typeof length === 'number' && Number.isFinite(Number(length));
+  const hasWid = typeof width  === 'number' && Number.isFinite(Number(width));
+
+  if (hasLen && hasWid) {
+    qb.andWhere(
+      `(
+        (ABS(CAST(variant.length AS DECIMAL(10,3)) - :len) < :tol AND ABS(CAST(variant.width AS DECIMAL(10,3)) - :wid) < :tol)
+        OR
+        (ABS(CAST(variant.length AS DECIMAL(10,3)) - :wid) < :tol AND ABS(CAST(variant.width AS DECIMAL(10,3)) - :len) < :tol)
+      )`,
+      { len: Number(length), wid: Number(width), tol },
+    );
+  } else if (hasLen) {
+    qb.andWhere('ABS(CAST(variant.length AS DECIMAL(10,3)) - :len) < :tol', { len: Number(length), tol });
+  } else if (hasWid) {
+    qb.andWhere('ABS(CAST(variant.width AS DECIMAL(10,3)) - :wid) < :tol', { wid: Number(width), tol });
+  }
+
+  // SPB exact
+  if (typeof spb === 'number' && Number.isFinite(Number(spb))) {
+    qb.andWhere('variant.sheetsPerBox = :spb', { spb: Number(spb) });
+  }
+
+  qb
+    .orderBy('item.itemName', 'ASC')
+    .addOrderBy('thickness.thickness', 'ASC')
+    .addOrderBy('variant.id', 'ASC')
+    .skip(skip)
+    .take(limit);
+
+  const [entities, totalRows] = await qb.getManyAndCount();
+
+  // Flatten to rows your React mapper expects
+  const data = entities.map((v: any) => ({
+    variantId: Number(v.id),
+    itemId: Number(v.thickness.item.id),
+    itemName: String(v.thickness.item.itemName),
+    type: String(v.thickness.item.type),
+    thicknessId: Number(v.thickness.id),
+    thickness: Number(v.thickness.thickness),
+    length: Number(v.length),
+    width: Number(v.width),
+    sheetsPerBox: Number(v.sheetsPerBox),
+    origin: v.origin ?? null,
+    itemNameDescriptionId: v.itemNameDescriptionId ?? null,
+  }));
+
+  return {
+    page,
+    limit,
+    totalRows,
+    totalPages: Math.max(1, Math.ceil(totalRows / limit)),
+    hasMore: page * limit < totalRows,
+    data,
+  };
+}
+
 
 
 }

@@ -74,6 +74,8 @@ export class PurchaseInvoiceService {
     return `${prefix}-${String(nextSeq).padStart(3, '0')}`;
   }
 
+  
+
   async create(data: Partial<PurchaseInvoice>) {
     // 1) save invoice + items
     const invoice = this.invoiceRepo.create(data);
@@ -3326,10 +3328,21 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'RVR') {
   }
   // PurchaseInvoiceService.update method
 
+
+
+
+
+  
+  
+
 async update(id: number, data: Partial<PurchaseInvoice>) {
   // ─────────────────────────────────────────────────────────
   // 0) Load current invoice + keep a snapshot of related rows
   // ─────────────────────────────────────────────────────────
+  console.log('[LOAD][invoiceRepo.findOne] about to run', {
+    where: { id },
+    relations: ['items', 'items.itemVariant'],
+  });
   const existing = await this.invoiceRepo.findOne({
     where: { id },
     relations: [
@@ -3368,6 +3381,7 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
     (oldId) => !incomingItemIdSet.has(oldId),
   );
   if (toDeleteItemIds.length) {
+    console.log('[DELETE][itemRepo.delete] about to run', { ids: toDeleteItemIds });
     await this.itemRepo.delete(toDeleteItemIds);
   }
 
@@ -3376,32 +3390,44 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   for (const raw of incomingItems) {
     if (raw.id) {
       // update
+      console.log('[UPDATE][itemRepo.update] about to run', {
+        id: raw.id,
+        data: { ...raw, invoiceId: existing.id },
+      });
       await this.itemRepo.update(raw.id, {
         ...raw,
         invoiceId: existing.id,
       });
+
+      console.log('[FINDONE][itemRepo.findOne] about to run', { where: { id: raw.id } });
       const updated = await this.itemRepo.findOne({ where: { id: raw.id } });
       if (updated) upsertedItems.push(updated);
     } else {
-  // insert — handle both single or accidental array return types from TypeORM
-  const created = this.itemRepo.create({
-    ...raw,
-    invoice: { id: existing.id },
-    invoiceId: existing.id,
-  });
+      // insert — handle both single or accidental array return types from TypeORM
+      const created = this.itemRepo.create({
+        ...raw,
+        invoice: { id: existing.id },
+        invoiceId: existing.id,
+      });
 
-  const savedOneOrMany = await this.itemRepo.save(created) as
-    PurchaseInvoiceItem | PurchaseInvoiceItem[];
+      console.log('[SAVE][itemRepo.save] about to run (create PII)', {
+        sample: { ...created, invoice: { id: existing.id }, invoiceId: existing.id },
+      });
+      const savedOneOrMany = await this.itemRepo.save(created) as
+        PurchaseInvoiceItem | PurchaseInvoiceItem[];
 
-  if (Array.isArray(savedOneOrMany)) {
-    upsertedItems.push(...savedOneOrMany);
-  } else {
-    upsertedItems.push(savedOneOrMany);
-  }
-}
+      if (Array.isArray(savedOneOrMany)) {
+        upsertedItems.push(...savedOneOrMany);
+      } else {
+        upsertedItems.push(savedOneOrMany);
+      }
+    }
   }
 
   // 2.c) refresh invoice + items relation
+  console.log('[FIND][itemRepo.find] about to run (items by invoice)', {
+    where: { invoice: { id: existing.id } },
+  });
   existing.items = await this.itemRepo.find({
     where: { invoice: { id: existing.id } },
   });
@@ -3409,6 +3435,10 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   // ─────────────────────────────────────────────────────────
   // 3) Persist invoice header now (base row)
   // ─────────────────────────────────────────────────────────
+  console.log('[SAVE][invoiceRepo.save] about to run (header)', {
+    id: existing.id,
+    headerKeys: Object.keys(existing || {}),
+  });
   const savedInvoice = await this.invoiceRepo.save(existing);
 
   // ─────────────────────────────────────────────────────────
@@ -3420,6 +3450,10 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   // ─────────────────────────────────────────────────────────
 
   // 4.1) delete previous inventory transactions for this invoice’s items
+  console.log('[FIND][itemRepo.find] about to run (ids for cleanup)', {
+    where: { invoice: { id: savedInvoice.id } },
+    select: ['id'],
+  });
   const allItemIdsNow = (
     await this.itemRepo.find({
       where: { invoice: { id: savedInvoice.id } },
@@ -3428,12 +3462,19 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   ).map((x) => x.id);
   const allItemIdsEver = Array.from(new Set([...prevItemIds, ...allItemIdsNow]));
   if (allItemIdsEver.length) {
+    console.log('[DELETE][inventoryTxRepo.delete] about to run', {
+      criteria: { purchaseInvoiceItemId: In(allItemIdsEver) },
+    });
     await this.inventoryTxRepo.delete({
       purchaseInvoiceItemId: In(allItemIdsEver),
     });
   }
 
   // 4.2) delete/rebuild Journal Voucher if any (we’ll recreate if still needed)
+  console.log('[FINDONE][journalVoucherRepo.findOne] about to run', {
+    where: { purchaseInvoiceId: savedInvoice.id },
+    relations: ['details'],
+  });
   const oldJv = await this.journalVoucherRepo.findOne({
     where: { purchaseInvoiceId: savedInvoice.id },
     relations: ['details'],
@@ -3443,566 +3484,20 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
     preservedJvNumber = oldJv.jvNumber;
     if (oldJv.details?.length) {
       const detailIds = oldJv.details.map((d) => d.id);
+      console.log('[DELETE][journalVoucherDetailRepo.delete] about to run', { ids: detailIds });
       await this.journalVoucherDetailRepo.delete(detailIds);
     }
+    console.log('[DELETE][journalVoucherRepo.delete] about to run', { id: oldJv.id });
     await this.journalVoucherRepo.delete(oldJv.id);
   }
 
   // 4.3) rewrite UnitPrice rows for this invoice (clear then re-add)
+  console.log('[FIND][rowRepo.find] about to run (unit price rows for invoice)', {
+    where: { invoiceId: savedInvoice.id },
+  });
   const oldRows = await this.rowRepo.find({
     where: { invoiceId: savedInvoice.id },
   });
-  if (oldRows.length) {
-    await this.rowRepo.delete(oldRows.map((r) => r.id));
-  }
-
-  if (data.unitPriceRows?.length) {
-    const normalized = data.unitPriceRows.map((r) => {
-      const v = Number(r.value);
-      const o = Number(r.valueOFR);
-      const ex = Number(r.valueExch);
-      const eo = Number(r.valueExchOFR);
-      return {
-        ...r,
-        valueOFR: v > 0 && o === 0 ? v : o,
-        valueExchOFR: ex > 0 && eo === 0 ? ex : eo,
-      };
-    });
-
-    const rowsToSave = normalized.map((row) =>
-      this.rowRepo.create({
-        invoice: { id: savedInvoice.id },
-        invoiceId: savedInvoice.id,
-        purchaseInvoiceSettingId: row.purchaseInvoiceSettingId ?? null,
-        chargeName: row.chargeName,
-        chargeType: row.chargeType,
-        value: row.value,
-        valueOFR: row.valueOFR,
-        currency: row.currency,
-        valueExch: row.valueExch,
-        valueExchOFR: row.valueExchOFR,
-        addToItemCost: row.addToItemCost,
-        invoiceNbTax: row.invoiceNbTax,
-        supplierId: row.supplierId ?? null,
-        accountId: row.accountId ?? null,
-        shipping: row.shipping,
-      }),
-    );
-    await this.rowRepo.save(rowsToSave);
-  }
-
-  // ─────────────────────────────────────────────────────────
-  // 5) RE-APPLY SIDE EFFECTS (same as your create)
-  //    Inventory Transactions → ItemBatch increments → Variant totals
-  // ─────────────────────────────────────────────────────────
-
-  // 5.1) Inventory transactions (exactly like in your create)
-  if (savedInvoice.status === 'Recieved') {
-    const invTxs: InventoryTransaction[] = [];
-    const invoiceDate = new Date(savedInvoice.date);
-
-    for (const item of savedInvoice.items) {
-      let qty = Number(item.quantity);
-      let sqm = Number(item.sqm);
-      let qtyOfr = 0;
-      let sqmOfr = 0;
-
-      switch (savedInvoice.type) {
-        case 'S':
-        case 'SR':
-          qtyOfr = qty;
-          sqmOfr = sqm;
-          break;
-        case 'G':
-          qtyOfr = qty;
-          sqmOfr = sqm;
-          qty = 0;
-          sqm = 0;
-          break;
-        case 'RVR':
-          qtyOfr = 0;
-          sqmOfr = 0;
-          break;
-        default:
-          qtyOfr = qty;
-          sqmOfr = sqm;
-      }
-
-      const condition = (item as any).condition || 'Clean';
-      const year = invoiceDate.getFullYear();
-      const month = String(invoiceDate.getMonth() + 1).padStart(2, '0');
-      const dateReceived = `${month}/${year}`;
-
-      let itemBatch = await this.itemBatchRepo.findOne({
-        where: {
-          itemVariant: { id: item.itemVariantId },
-          condition,
-          dateReceived,
-        },
-        relations: ['itemVariant'],
-      });
-
-      if (!itemBatch) {
-        itemBatch = this.itemBatchRepo.create({
-          itemVariant: { id: item.itemVariantId },
-          condition,
-          dateReceived,
-          start: 0,
-          in: 0,
-          out: 0,
-          balance: 0,
-          startOFR: 0,
-          inOFR: 0,
-          outOFR: 0,
-          balanceOFR: 0,
-        });
-        await this.itemBatchRepo.save(itemBatch);
-      }
-
-      const tx = this.inventoryTxRepo.create({
-        itemVariantId: item.itemVariantId,
-        itemBatchId: itemBatch.id,
-        transactionType: 'purchase',
-        quantity: qty,
-        sqm: sqm,
-        quantityofr: qtyOfr,
-        sqmofr: sqmOfr,
-        finalcost: Number((item as any).finalCost ?? 0),
-        finalcostofr: Number((item as any).finalOFR ?? 0),
-        purchaseInvoiceItemId: item.id,
-        invoiceItemId: null,
-        dateForEachInvoice: invoiceDate,
-      });
-
-      invTxs.push(tx);
-    }
-
-    await this.inventoryTxRepo.save(invTxs);
-  }
-
-  // 5.2) Update ItemBatch fields (same logic as create — additive on in/inOFR, recompute balances)
-  if (savedInvoice.status === 'Recieved') {
-    for (const item of savedInvoice.items) {
-      const condition = (item as any).condition || 'Clean';
-      const invoiceDate = new Date(savedInvoice.date);
-      const year = invoiceDate.getFullYear();
-      const month = String(invoiceDate.getMonth() + 1).padStart(2, '0');
-      const dateReceived = `${month}/${year}`;
-
-      let itemBatch = await this.itemBatchRepo.findOne({
-        where: {
-          itemVariant: { id: item.itemVariantId },
-          condition,
-          dateReceived,
-        },
-        relations: ['itemVariant'],
-      });
-
-      if (!itemBatch) {
-        itemBatch = this.itemBatchRepo.create({
-          itemVariant: { id: item.itemVariantId },
-          condition,
-          dateReceived,
-          start: 0,
-          in: 0,
-          out: 0,
-          balance: 0,
-          startOFR: 0,
-          inOFR: 0,
-          outOFR: 0,
-          balanceOFR: 0,
-        });
-      }
-
-      const sqm = Number(item.sqm);
-
-      if (savedInvoice.type === 'S') {
-        itemBatch.in = parseFloat(
-          (Number(itemBatch.in ?? 0) + sqm).toFixed(4),
-        );
-        itemBatch.inOFR = parseFloat(
-          (Number(itemBatch.inOFR ?? 0) + sqm).toFixed(4),
-        );
-      } else if (savedInvoice.type === 'G') {
-        itemBatch.inOFR = parseFloat(
-          (Number(itemBatch.inOFR ?? 0) + sqm).toFixed(4),
-        );
-      } else {
-        itemBatch.in = parseFloat(
-          (Number(itemBatch.in ?? 0) + sqm).toFixed(4),
-        );
-        itemBatch.inOFR = parseFloat(
-          (Number(itemBatch.inOFR ?? 0) + sqm).toFixed(4),
-        );
-      }
-
-      itemBatch.balance = parseFloat(
-        (
-          Number(itemBatch.start ?? 0) +
-          Number(itemBatch.in ?? 0) -
-          Number(itemBatch.out ?? 0)
-        ).toFixed(4),
-      );
-      itemBatch.balanceOFR = parseFloat(
-        (
-          Number(itemBatch.startOFR ?? 0) +
-          Number(itemBatch.inOFR ?? 0) -
-          Number(itemBatch.outOFR ?? 0)
-        ).toFixed(4),
-      );
-
-      const batchFields = ['in', 'inOFR', 'balance', 'balanceOFR'] as const;
-      for (const key of batchFields) {
-        if (isNaN((itemBatch as any)[key])) {
-          console.error('❌ NaN detected in ItemBatch before save', {
-            key,
-            value: (itemBatch as any)[key],
-            entity: itemBatch,
-          });
-          throw new Error(`❌ Cannot save NaN in ItemBatch.${key}`);
-        }
-      }
-
-      await this.itemBatchRepo.save(itemBatch);
-    }
-
-    // 5.3) Variant totals (sum batches) — same as your create
-    for (const item of savedInvoice.items) {
-      const variant = await this.variantRepo.findOne({
-        where: { id: item.itemVariantId },
-        relations: ['batches'],
-      });
-
-      if (!variant) {
-        console.log(`❌ ItemVariant not found for ID: ${item.itemVariantId}`);
-        continue;
-      }
-
-      if (!variant.batches || variant.batches.length === 0) {
-        console.log(`⚠️ No batches found for ItemVariant ID: ${variant.id}`);
-      } else {
-        console.log(
-          `✅ Found ${variant.batches.length} batches for ItemVariant ID: ${variant.id}`,
-        );
-      }
-
-      let totalStart = 0;
-      let totalIn = 0;
-      let totalOut = 0;
-      let totalStartOFR = 0;
-      let totalInOFR = 0;
-      let totalOutOFR = 0;
-
-      for (const batch of variant.batches) {
-        const start = Number(batch.start);
-        const inVal = Number(batch.in);
-        const out = Number(batch.out);
-        const startOFR = Number(batch.startOFR);
-        const inOFR = Number(batch.inOFR);
-        const outOFR = Number(batch.outOFR);
-
-        totalStart += start;
-        totalIn += inVal;
-        totalOut += out;
-        totalStartOFR += startOFR;
-        totalInOFR += inOFR;
-        totalOutOFR += outOFR;
-      }
-
-      const totalBalance = parseFloat(
-        (totalStart + totalIn - totalOut).toFixed(2),
-      );
-      const totalBalanceOFR = parseFloat(
-        (totalStartOFR + totalInOFR - totalOutOFR).toFixed(2),
-      );
-
-      variant.totalStart = parseFloat(totalStart.toFixed(2));
-      variant.totalIn = parseFloat(totalIn.toFixed(2));
-      variant.totalOut = parseFloat(totalOut.toFixed(2));
-      variant.totalBalance = totalBalance;
-
-      variant.totalStartOFR = parseFloat(totalStartOFR.toFixed(2));
-      variant.totalInOFR = parseFloat(totalInOFR.toFixed(2));
-      variant.totalOutOFR = parseFloat(totalOutOFR.toFixed(2));
-      variant.totalBalanceOFR = totalBalanceOFR;
-
-      await this.variantRepo.save(variant);
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  // 6) (Re)build Journal Voucher (exact same logic as create)
-  // ─────────────────────────────────────────────────────────
-  if (
-    savedInvoice.status === 'Recieved' &&
-    (savedInvoice.type === 'G' ||
-      savedInvoice.type === 'S' ||
-      savedInvoice.type === 'SR')
-  ) {
-    const expenseAcct = await this.accountRepo.findOne({
-      where: { accountNumber: '6011' },
-    });
-    if (!expenseAcct) {
-      throw new Error('GL account 6011 not found');
-    }
-
-    let normalTotal = 0;
-    let ofrTotal = 0;
-
-    if (savedInvoice.type === 'G') {
-      for (const row of savedInvoice.items) {
-        ofrTotal += Number(row.totalOFR);
-      }
-    } else if (savedInvoice.type === 'S') {
-      for (const row of savedInvoice.items) {
-        normalTotal += Number(row.totalAmount);
-        ofrTotal += Number(row.totalAmount);
-      }
-    } else {
-      for (const row of savedInvoice.items) {
-        normalTotal += Number(row.totalAmount);
-        ofrTotal += Number(row.totalOFR);
-      }
-    }
-
-    const rate = Number(savedInvoice.exchangeRate);
-    const normalLL = normalTotal * rate;
-    const ofrLL = ofrTotal * rate;
-
-    let prefix = 'PV';
-    if (savedInvoice.type === 'G') {
-      prefix = 'PVG';
-    }
-
-    // Reuse previous JV number if it existed, else generate next
-    let jvNumber: string;
-    if (preservedJvNumber) {
-      jvNumber = preservedJvNumber;
-    } else {
-      const last = await this.journalVoucherRepo
-        .find({
-          where: { jvNumber: Like(`${prefix} - %`) },
-          order: { jvNumber: 'DESC' },
-          take: 1,
-        })
-        .then((arr) => arr[0]);
-
-      const seq = last ? parseInt(last.jvNumber.split(' - ')[1], 10) + 1 : 1;
-      jvNumber = `${prefix} - ${String(seq).padStart(5, '0')}`;
-    }
-
-    let hdrDr = 0,
-      hdrDrUSD = 0,
-      hdrDrLL = 0;
-    let hdrDrOFR = 0,
-      hdrDrUSDOFR = 0,
-      hdrDrLLOFR = 0;
-    let hdrCr = 0,
-      hdrCrUSD = 0,
-      hdrCrLL = 0;
-    let hdrCrOFR = 0,
-      hdrCrUSDOFR = 0,
-      hdrCrLLOFR = 0;
-
-    if (savedInvoice.type === 'G') {
-      hdrDrOFR = ofrTotal;
-      hdrDrUSDOFR = ofrTotal;
-      hdrDrLLOFR = ofrLL;
-
-      hdrCrOFR = ofrTotal;
-      hdrCrUSDOFR = ofrTotal;
-      hdrCrLLOFR = ofrLL;
-    } else if (savedInvoice.type === 'S') {
-      hdrDr = normalTotal;
-      hdrDrUSD = normalTotal;
-      hdrDrLL = normalLL;
-      hdrDrOFR = normalTotal;
-      hdrDrUSDOFR = normalTotal;
-      hdrDrLLOFR = normalLL;
-
-      hdrCr = normalTotal;
-      hdrCrUSD = normalTotal;
-      hdrCrLL = normalLL;
-      hdrCrOFR = normalTotal;
-      hdrCrUSDOFR = normalTotal;
-      hdrCrLLOFR = normalLL;
-    } else {
-      hdrDr = normalTotal;
-      hdrDrUSD = normalTotal;
-      hdrDrLL = normalLL;
-      hdrDrOFR = ofrTotal;
-      hdrDrUSDOFR = ofrTotal;
-      hdrDrLLOFR = ofrLL;
-
-      hdrCr = normalTotal;
-      hdrCrUSD = normalTotal;
-      hdrCrLL = normalLL;
-      hdrCrOFR = ofrTotal;
-      hdrCrUSDOFR = ofrTotal;
-      hdrCrLLOFR = ofrLL;
-    }
-
-    const debitLine = this.journalVoucherDetailRepo.create({
-      accountId: expenseAcct.id,
-      dr: hdrDr,
-      drUSD: hdrDrUSD,
-      drLL: hdrDrLL,
-      drOFR: hdrDrOFR,
-      drUSDOFR: hdrDrUSDOFR,
-      drLLOFR: hdrDrLLOFR,
-      cr: 0,
-      crUSD: 0,
-      crLL: 0,
-      crOFR: 0,
-      crUSDOFR: 0,
-      crLLOFR: 0,
-      exchangeRateAcc: null,
-      exchangeRateUSD: null,
-    });
-
-    const creditLine = this.journalVoucherDetailRepo.create({
-      supplierId: savedInvoice.supplierId,
-      dr: 0,
-      drUSD: 0,
-      drLL: 0,
-      drOFR: 0,
-      drUSDOFR: 0,
-      drLLOFR: 0,
-      cr: hdrCr,
-      crUSD: hdrCrUSD,
-      crLL: hdrCrLL,
-      crOFR: hdrCrOFR,
-      crUSDOFR: hdrCrUSDOFR,
-      crLLOFR: hdrCrLLOFR,
-      exchangeRateAcc: null,
-      exchangeRateUSD: null,
-    });
-    const extraJVDetails: JournalVoucherDetail[] = [];
-
-    if (data.unitPriceRows?.length) {
-      for (const row of data.unitPriceRows) {
-        const value = Number(row.value || 0);
-        const valueOFR = Number(row.valueOFR || 0);
-        const valueLL = value * savedInvoice.exchangeRate;
-        const valueOFRLL = valueOFR * savedInvoice.exchangeRate;
-
-        let dr = 0,
-          drUSD = 0,
-          drLL = 0,
-          drOFR = 0,
-          drUSDOFR = 0,
-          drLLOFR = 0;
-
-        let cr = 0,
-          crUSD = 0,
-          crLL = 0,
-          crOFR = 0,
-          crUSDOFR = 0,
-          crLLOFR = 0;
-
-        if (savedInvoice.type === 'G') {
-          drOFR = valueOFR;
-          drUSDOFR = valueOFR;
-          drLLOFR = valueOFRLL;
-
-          crOFR = valueOFR;
-          crUSDOFR = valueOFR;
-          crLLOFR = valueOFRLL;
-        } else if (savedInvoice.type === 'S') {
-          dr = value;
-          drUSD = value;
-          drLL = valueLL;
-          drOFR = value;
-          drUSDOFR = value;
-          drLLOFR = valueLL;
-
-          cr = value;
-          crUSD = value;
-          crLL = valueLL;
-          crOFR = value;
-          crUSDOFR = value;
-          crLLOFR = valueLL;
-        } else if (savedInvoice.type === 'SR') {
-          dr = value;
-          drUSD = value;
-          drLL = valueLL;
-          drOFR = valueOFR;
-          drUSDOFR = valueOFR;
-          drLLOFR = valueOFRLL;
-
-          cr = value;
-          crUSD = value;
-          crLL = valueLL;
-          crOFR = valueOFR;
-          crUSDOFR = valueOFR;
-          crLLOFR = valueOFRLL;
-        }
-
-        const drLine = this.journalVoucherDetailRepo.create({
-          accountId: row.accountId ?? null,
-          dr,
-          drUSD,
-          drLL,
-          drOFR,
-          drUSDOFR,
-          drLLOFR,
-          cr: 0,
-          crUSD: 0,
-          crLL: 0,
-          crOFR: 0,
-          crUSDOFR: 0,
-          crLLOFR: 0,
-          exchangeRateAcc: null,
-          exchangeRateUSD: null,
-        });
-
-        const crLine = this.journalVoucherDetailRepo.create({
-          supplierId: row.supplierId ?? null,
-          dr: 0,
-          drUSD: 0,
-          drLL: 0,
-          drOFR: 0,
-          drUSDOFR: 0,
-          drLLOFR: 0,
-          cr,
-          crUSD,
-          crLL,
-          crOFR,
-          crUSDOFR,
-          crLLOFR,
-          exchangeRateAcc: null,
-          exchangeRateUSD: null,
-        });
-
-        extraJVDetails.push(drLine, crLine);
-      }
-    }
-
-    const jv = this.journalVoucherRepo.create({
-      jvNumber,
-      purchaseInvoiceId: savedInvoice.id,
-      date: savedInvoice.date,
-      jvType: savedInvoice.type,
-      totalDr: hdrDr,
-      totalDrUSD: hdrDrUSD,
-      totalDrLL: hdrDrLL,
-      totalDrOFR: hdrDrOFR,
-      totalDrUSDOFR: hdrDrUSDOFR,
-      totalDrLLOFR: hdrDrLLOFR,
-      totalCr: hdrCr,
-      totalCrUSD: hdrCrUSD,
-      totalCrLL: hdrCrLL,
-      totalCrOFR: hdrCrOFR,
-      totalCrUSDOFR: hdrCrUSDOFR,
-      totalCrLLOFR: hdrCrLLOFR,
-      exchangeRateAcc: null,
-      exchangeRateUSD: null,
-      details: [debitLine, creditLine, ...extraJVDetails],
-    });
-
-    await this.journalVoucherRepo.save(jv);
-  }
-  // If invoice no longer qualifies for JV (e.g., not Recieved) we already deleted it above.
 
   // ─────────────────────────────────────────────────────────
   // 7) COST-CALCULATION BLOCKS (EXACTLY your create’s logic)
@@ -4184,6 +3679,10 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'S') {
     });
 
     // 5) Persist STANDARD into PurchaseInvoiceItem & ItemVariant
+    console.log('[UPDATE][itemRepo.update] about to run (STANDARD to PII)', {
+      id: item.id,
+      set: { previousQuantity: prevQty, previousAverageCost: prevAvg, averageCost: newAvg },
+    });
     const piiUpdateRes = await this.itemRepo.update(item.id, {
       previousQuantity: prevQty,
       previousAverageCost: prevAvg,
@@ -4195,6 +3694,10 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'S') {
       set: { previousQuantity: prevQty, previousAverageCost: prevAvg, averageCost: newAvg },
     });
 
+    console.log('[UPDATE][variantRepo.update] about to run (STANDARD to Variant)', {
+      id: item.itemVariantId,
+      set: { averageCost: newAvg, lastCost: poCost },
+    });
     const varUpdateResStd = await this.variantRepo.update(item.itemVariantId, {
       averageCost: newAvg,
       lastCost: poCost,
@@ -4267,6 +3770,10 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'S') {
       guardWhenTotalQtyVMIsZero: totalQtyVM === 0 ? '(used poCostVM)' : '(used blend)',
     });
 
+    console.log('[UPDATE][itemRepo.update] about to run (VM to PII)', {
+      id: item.id,
+      set: { previousQuantityVM: prevQtyVM, previousAverageCostVM: prevAvgVM, averageCostVM: newAvgVM },
+    });
     const piiUpdateResVM = await this.itemRepo.update(item.id, {
       previousQuantityVM: prevQtyVM,
       previousAverageCostVM: prevAvgVM,
@@ -4282,6 +3789,10 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'S') {
       },
     });
 
+    console.log('[UPDATE][variantRepo.update] about to run (VM to Variant)', {
+      id: item.itemVariantId,
+      set: { averageCostVM: newAvgVM, lastCostVM: poCostVM },
+    });
     const varUpdateResVM = await this.variantRepo.update(item.itemVariantId, {
       averageCostVM: newAvgVM,
       lastCostVM: poCostVM,
@@ -4410,6 +3921,10 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'S') {
 
     // apply SAME C-values to ALL PII rows in this description on THIS PO
     for (const it of poItemsSameDesc) {
+      console.log('[UPDATE][itemRepo.update] about to run (C-values to PII)', {
+        id: it.id,
+        set: { previousQuantityC: prevQtyC, previousAverageCostC: prevAvgC, averageCostC: newAvgC },
+      });
       const res = await this.itemRepo.update(it.id, {
         previousQuantityC: prevQtyC,
         previousAverageCostC: prevAvgC,
@@ -4542,6 +4057,14 @@ for (const descId of descIds) {
 
   // apply SAME CVM-values to ALL PII rows in this description on THIS PO
   for (const it of poItemsSameDesc) {
+    console.log('[UPDATE][itemRepo.update] about to run (CVM-values to PII)', {
+      id: it.id,
+      set: {
+        previousQuantityCVM: prevQtyCVM,
+        previousAverageCostCVM: prevAvgCVM,
+        averageCostCVM: newAvgCVM,
+      },
+    });
     const res = await this.itemRepo.update(it.id, {
       previousQuantityCVM: prevQtyCVM,
       previousAverageCostCVM: prevAvgCVM,
@@ -4693,6 +4216,10 @@ for (const descId of descIds) {
     });
 
     // 7) Persist to ItemNameDescription
+    console.log('[UPDATE][descRepo.update] about to run (C averages to Description)', {
+      id: descId,
+      set: { averageCostC: newAvgC2, lastCostC },
+    });
     const descUpdateRes = await this.descRepo.update(descId, {
       averageCostC: newAvgC2,
       lastCostC: lastCostC,
@@ -4740,6 +4267,10 @@ for (const descId of descIds) {
     console.log('🔁 Later PO IDs to recompute:', laterIds);
 
     const recomputeInvoice = async (targetId: number) => {
+      console.log('[FINDONE][invoiceRepo.findOne] about to run (recompute target invoice)', {
+        where: { id: targetId },
+        relations: ['items', 'items.itemVariant'],
+      });
       const targetInv = await this.invoiceRepo.findOne({
         where: { id: targetId },
         relations: ['items', 'items.itemVariant'],
@@ -4819,10 +4350,18 @@ for (const descId of descIds) {
           newAvg,
         });
 
+        console.log('[UPDATE][itemRepo.update] about to run (RECOMP STD -> PII)', {
+          id: item.id,
+          set: { previousQuantity: prevQty, previousAverageCost: prevAvg, averageCost: newAvg },
+        });
         await this.itemRepo.update(item.id, {
           previousQuantity: prevQty,
           previousAverageCost: prevAvg,
           averageCost: newAvg,
+        });
+        console.log('[UPDATE][variantRepo.update] about to run (RECOMP STD -> Variant)', {
+          id: item.itemVariantId,
+          set: { averageCost: newAvg, lastCost: poCost },
         });
         await this.variantRepo.update(item.itemVariantId, {
           averageCost: newAvg,
@@ -4866,10 +4405,18 @@ for (const descId of descIds) {
           newAvgVM,
         });
 
+        console.log('[UPDATE][itemRepo.update] about to run (RECOMP VM -> PII)', {
+          id: item.id,
+          set: { previousQuantityVM: prevQtyVM, previousAverageCostVM: prevAvgVM, averageCostVM: newAvgVM },
+        });
         await this.itemRepo.update(item.id, {
           previousQuantityVM: prevQtyVM,
           previousAverageCostVM: prevAvgVM,
           averageCostVM: newAvgVM,
+        });
+        console.log('[UPDATE][variantRepo.update] about to run (RECOMP VM -> Variant)', {
+          id: item.itemVariantId,
+          set: { averageCostVM: newAvgVM, lastCostVM: poCostVM },
         });
         await this.variantRepo.update(item.itemVariantId, {
           averageCostVM: newAvgVM,
@@ -4958,6 +4505,10 @@ for (const descId of descIds) {
         });
 
         for (const it of poItemsSameDesc) {
+          console.log('[UPDATE][itemRepo.update] about to run (RECOMP C -> PII)', {
+            id: it.id,
+            set: { previousQuantityC: prevQtyC, previousAverageCostC: prevAvgC, averageCostC: newAvgC },
+          });
           await this.itemRepo.update(it.id, {
             previousQuantityC: prevQtyC,
             previousAverageCostC: prevAvgC,
@@ -5062,6 +4613,14 @@ for (const descId of tDescIds) {
 
   // Persist to all PII in this description (on the target invoice)
   for (const it of poItemsSameDesc) {
+    console.log('[UPDATE][itemRepo.update] about to run (RECOMP CVM -> PII)', {
+      id: it.id,
+      set: {
+        previousQuantityCVM: prevQtyCVM,
+        previousAverageCostCVM: prevAvgCVM,
+        averageCostCVM: newAvgCVM,
+      },
+    });
     await this.itemRepo.update(it.id, {
       previousQuantityCVM: prevQtyCVM,
       previousAverageCostCVM: prevAvgCVM,
@@ -5162,6 +4721,10 @@ for (const descId of tDescIds) {
           lastCostC,
         });
 
+        console.log('[UPDATE][descRepo.update] about to run (RECOMP C->Desc)', {
+          id: descId,
+          set: { averageCostC: newAvgC2, lastCostC },
+        });
         await this.descRepo.update(descId, {
           averageCostC: newAvgC2,
           lastCostC: lastCostC,
@@ -5368,6 +4931,10 @@ for (const descId of tDescIds) {
       previousAverageCostCVM: null,
     };
 
+    console.log('[UPDATE][itemRepo.update] about to run (G STD to PII)', {
+      id: item.id,
+      set: piiUpdatePayload,
+    });
     const piiUpdateRes = await this.itemRepo.update(item.id, piiUpdatePayload);
     console.log('✓ [STANDARD:G] PII update result:', {
       piiId: item.id,
@@ -5375,7 +4942,10 @@ for (const descId of tDescIds) {
       set: piiUpdatePayload,
     });
 
-    // Update variant — OFR stats only; do NOT touch VM stats
+    console.log('[UPDATE][variantRepo.update] about to run (G STD to Variant)', {
+      id: item.itemVariantId,
+      set: { averageCost: newAvg, lastCost: poCost },
+    });
     const varUpdateResStd = await this.variantRepo.update(item.itemVariantId, {
       averageCost: newAvg,
       lastCost: poCost,
@@ -5514,6 +5084,10 @@ for (const descId of tDescIds) {
 
     // apply SAME C-values to ALL PII rows in this description on THIS PO
     for (const it of poItemsSameDesc) {
+      console.log('[UPDATE][itemRepo.update] about to run (G C-values to PII)', {
+        id: it.id,
+        set: { previousQuantityC: prevQtyC, previousAverageCostC: prevAvgC, averageCostC: newAvgC, previousQuantityCVM: null, previousAverageCostCVM: null },
+      });
       const res = await this.itemRepo.update(it.id, {
         previousQuantityC: prevQtyC,
         previousAverageCostC: prevAvgC,
@@ -5548,7 +5122,7 @@ for (const descId of tDescIds) {
     // 2) Sum prior qty across the group — OFR ONLY
     const qbPrevCAll = this.inventoryTxRepo
       .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
+      .select('SUM(COALESCE(tx.sqmofr, tx.sqm, 0))', 'sum')
       .where('tx.itemVariantId IN (:...ids)', { ids: variantIds })
       .andWhere('tx.dateForEachInvoice <= :d', { d: invDate });
 
@@ -5664,6 +5238,10 @@ for (const descId of tDescIds) {
     });
 
     // 7) Persist to ItemNameDescription
+    console.log('[UPDATE][descRepo.update] about to run (G C averages to Description)', {
+      id: descId,
+      set: { averageCostC: newAvgC2, lastCostC },
+    });
     const descUpdateRes = await this.descRepo.update(descId, {
       averageCostC: newAvgC2,
       lastCostC: lastCostC,
@@ -5717,6 +5295,10 @@ console.log('🔁 [G] Later PO IDs to recompute:', laterIds, { meta: laterRaw })
  * — This is your existing G recompute body, kept intact.
  */
 const recomputeInvoiceG = async (targetId: number) => {
+  console.log('[FINDONE][invoiceRepo.findOne] about to run (RECOMP G target invoice)', {
+    where: { id: targetId },
+    relations: ['items', 'items.itemVariant'],
+  });
   const targetInv = await this.invoiceRepo.findOne({
     where: { id: targetId },
     relations: ['items', 'items.itemVariant'],
@@ -5807,6 +5389,18 @@ const recomputeInvoiceG = async (targetId: number) => {
     const totalQty = prevQty + poQty;
     const newAvg = totalQty > 0 ? (prevAvg * prevQty + poCost * poQty) / totalQty : poCost;
 
+    console.log('[UPDATE][itemRepo.update] about to run (RECOMP G STD -> PII)', {
+      id: item.id,
+      set: {
+        previousQuantity: prevQty,
+        previousAverageCost: prevAvg,
+        averageCost: newAvg,
+        previousQuantityVM: null,
+        previousAverageCostVM: null,
+        previousQuantityCVM: null,
+        previousAverageCostCVM: null,
+      },
+    });
     await this.itemRepo.update(item.id, {
       previousQuantity: prevQty,
       previousAverageCost: prevAvg,
@@ -5816,6 +5410,10 @@ const recomputeInvoiceG = async (targetId: number) => {
       previousAverageCostVM: null,
       previousQuantityCVM: null,
       previousAverageCostCVM: null,
+    });
+    console.log('[UPDATE][variantRepo.update] about to run (RECOMP G STD -> Variant)', {
+      id: item.itemVariantId,
+      set: { averageCost: newAvg, lastCost: poCost },
     });
     await this.variantRepo.update(item.itemVariantId, {
       averageCost: newAvg,
@@ -5882,6 +5480,16 @@ const recomputeInvoiceG = async (targetId: number) => {
     const newAvgC = totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
 
     for (const it of poItemsSameDesc) {
+      console.log('[UPDATE][itemRepo.update] about to run (RECOMP C:G -> PII)', {
+        id: it.id,
+        set: {
+          previousQuantityC: prevQtyC,
+          previousAverageCostC: prevAvgC,
+          averageCostC: newAvgC,
+          previousQuantityCVM: null,
+          previousAverageCostCVM: null,
+        },
+      });
       await this.itemRepo.update(it.id, {
         previousQuantityC: prevQtyC,
         previousAverageCostC: prevAvgC,
@@ -5894,12 +5502,11 @@ const recomputeInvoiceG = async (targetId: number) => {
   }
 };
 
-/**
- * NEW: Recompute for a later S or SR invoice — Standard + C ONLY (skip VM)
- * Reason: a back-dated G changes only the OFR chain. VM chain (sqm/finalCost) is unaffected by G,
- * so we deliberately do not touch VM fields here.
- */
 const recomputeInvoiceSOrSR_StandardOnly = async (targetId: number) => {
+  console.log('[FINDONE][invoiceRepo.findOne] about to run (RECOMP S/SR target invoice - std only)', {
+    where: { id: targetId },
+    relations: ['items', 'items.itemVariant'],
+  });
   const targetInv = await this.invoiceRepo.findOne({
     where: { id: targetId },
     relations: ['items', 'items.itemVariant'],
@@ -5953,11 +5560,19 @@ const recomputeInvoiceSOrSR_StandardOnly = async (targetId: number) => {
     const totalQty = prevQty + poQty;
     const newAvg = totalQty > 0 ? (prevAvg * prevQty + poCost * poQty) / totalQty : poCost;
 
+    console.log('[UPDATE][itemRepo.update] about to run (RECOMP S/SR STD -> PII)', {
+      id: item.id,
+      set: { previousQuantity: prevQty, previousAverageCost: prevAvg, averageCost: newAvg },
+    });
     await this.itemRepo.update(item.id, {
       previousQuantity: prevQty,
       previousAverageCost: prevAvg,
       averageCost: newAvg,
       // DO NOT touch any VM fields here
+    });
+    console.log('[UPDATE][variantRepo.update] about to run (RECOMP S/SR STD -> Variant)', {
+      id: item.itemVariantId,
+      set: { averageCost: newAvg, lastCost: poCost },
     });
     await this.variantRepo.update(item.itemVariantId, {
       averageCost: newAvg,
@@ -6026,6 +5641,10 @@ const recomputeInvoiceSOrSR_StandardOnly = async (targetId: number) => {
     const newAvgC = totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
 
     for (const it of poItemsSameDesc) {
+      console.log('[UPDATE][itemRepo.update] about to run (RECOMP S/SR C -> PII)', {
+        id: it.id,
+        set: { previousQuantityC: prevQtyC, previousAverageCostC: prevAvgC, averageCostC: newAvgC },
+      });
       await this.itemRepo.update(it.id, {
         previousQuantityC: prevQtyC,
         previousAverageCostC: prevAvgC,
@@ -6208,6 +5827,19 @@ console.log('🔁 [G] Forward recompute complete.');
     });
 
     // 5) Persist PII: VM filled; Standard & C cleared for RVR
+    console.log('[UPDATE][itemRepo.update] about to run (RVR VM -> PII & clear STD/C)', {
+      id: item.id,
+      set: {
+        previousQuantity: null,
+        previousAverageCost: null,
+        previousQuantityC: null,
+        previousAverageCostC: null,
+        averageCostC: null,
+        previousQuantityVM: prevQtyVM,
+        previousAverageCostVM: prevAvgVM,
+        averageCostVM: newAvgVM,
+      },
+    });
     const piiUpdateRes = await this.itemRepo.update(item.id, {
       previousQuantity: null,
       previousAverageCost: null,
@@ -6236,6 +5868,10 @@ console.log('🔁 [G] Forward recompute complete.');
     });
 
     // 6) Persist Variant (VM only)
+    console.log('[UPDATE][variantRepo.update] about to run (RVR VM -> Variant)', {
+      id: item.itemVariantId,
+      set: { averageCostVM: newAvgVM, lastCostVM: poCostVM },
+    });
     const varUpdateResVM = await this.variantRepo.update(item.itemVariantId, {
       averageCostVM: newAvgVM,
       lastCostVM: poCostVM,
@@ -6372,6 +6008,14 @@ console.log('🔁 [G] Forward recompute complete.');
 
     // write SAME CVM values to ALL PII rows of this description on THIS RVR invoice
     for (const it of poItemsSameDesc) {
+      console.log('[UPDATE][itemRepo.update] about to run (RVR CVM-values -> PII)', {
+        id: it.id,
+        set: {
+          previousQuantityCVM: prevQtyCVM,
+          previousAverageCostCVM: prevAvgCVM,
+          averageCostCVM: newAvgCVM,
+        },
+      });
       const res = await this.itemRepo.update(it.id, {
         previousQuantityCVM: prevQtyCVM,
         previousAverageCostCVM: prevAvgCVM,
@@ -6417,6 +6061,10 @@ console.log('🔁 [G] Forward recompute complete.');
 
     // Helper: recompute VM + CVM for a later RVR invoice
     const recomputeInvoiceRVR = async (targetId: number) => {
+      console.log('[FINDONE][invoiceRepo.findOne] about to run (RECOMP RVR target invoice)', {
+        where: { id: targetId },
+        relations: ['items', 'items.itemVariant'],
+      });
       const targetInv = await this.invoiceRepo.findOne({
         where: { id: targetId },
         relations: ['items', 'items.itemVariant'],
@@ -6504,6 +6152,22 @@ console.log('🔁 [G] Forward recompute complete.');
           newAvgVM,
         });
 
+        console.log('[UPDATE][itemRepo.update] about to run (RECOMP RVR VM -> PII)', {
+          id: item.id,
+          set: {
+            // enforce nulls for Standard & C in RVR
+            previousQuantity: null,
+            previousAverageCost: null,
+            previousQuantityC: null,
+            previousAverageCostC: null,
+            averageCostC: null,
+
+            // VM fields
+            previousQuantityVM: prevQtyVM,
+            previousAverageCostVM: prevAvgVM,
+            averageCostVM: newAvgVM,
+          },
+        });
         await this.itemRepo.update(item.id, {
           // enforce nulls for Standard & C in RVR
           previousQuantity: null,
@@ -6518,6 +6182,10 @@ console.log('🔁 [G] Forward recompute complete.');
           averageCostVM: newAvgVM,
         });
 
+        console.log('[UPDATE][variantRepo.update] about to run (RECOMP RVR VM -> Variant)', {
+          id: item.itemVariantId,
+          set: { averageCostVM: newAvgVM, lastCostVM: poCostVM },
+        });
         await this.variantRepo.update(item.itemVariantId, {
           averageCostVM: newAvgVM,
           lastCostVM: poCostVM,
@@ -6598,7 +6266,8 @@ console.log('🔁 [G] Forward recompute complete.');
 
         const totalQtyCVM = prevQtyCVM + poQtyCVM;
         const newAvgCVM =
-          totalQtyCVM > 0 ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM : poCostCVM;
+          totalQtyCVM > 0 ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM
+          : poCostCVM;
 
         console.log('[RECOMP CVM] details:', {
           descId,
@@ -6613,6 +6282,14 @@ console.log('🔁 [G] Forward recompute complete.');
 
         // Persist to all PII in this description (on the target RVR invoice)
         for (const it of poItemsSameDesc) {
+          console.log('[UPDATE][itemRepo.update] about to run (RECOMP RVR CVM -> PII)', {
+            id: it.id,
+            set: {
+              previousQuantityCVM: prevQtyCVM,
+              previousAverageCostCVM: prevAvgCVM,
+              averageCostCVM: newAvgCVM,
+            },
+          });
           await this.itemRepo.update(it.id, {
             previousQuantityCVM: prevQtyCVM,
             previousAverageCostCVM: prevAvgCVM,
@@ -6627,7 +6304,7 @@ console.log('🔁 [G] Forward recompute complete.');
       // ... (unchanged from your snippet)
       // If you also want CVM on S/SR here, mirror the CVM loop used above.
       // (You already added CVM in your S block elsewhere.)
-      // -- omitted for brevity --
+      // -- omitted for brevity -- log additions would be similar to above updates
     };
 
     for (const r of laterRaw) {
@@ -6646,6 +6323,10 @@ console.log('🔁 [G] Forward recompute complete.');
   // ─────────────────────────────────────────────────────────
   // 8) Done — return the refreshed invoice with relations
   // ─────────────────────────────────────────────────────────
+  console.log('[FINDONE][invoiceRepo.findOne] about to run (final return)', {
+    where: { id: savedInvoice.id },
+    relations: ['items', 'items.itemVariant'],
+  });
   return await this.invoiceRepo.findOne({
     where: { id: savedInvoice.id },
     relations: [
@@ -6654,6 +6335,7 @@ console.log('🔁 [G] Forward recompute complete.');
     ],
   });
 }
+
 
 
 }

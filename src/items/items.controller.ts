@@ -60,6 +60,33 @@ async getSelectedPaginated(
 
 
 
+
+ @Get('v1/variant-search')
+  async variantSearch(
+    @Query('q') q?: string,
+    @Query('dims') dims?: string,
+    @Query('length') length?: string,
+    @Query('width') width?: string,
+    @Query('spb') spb?: string,
+    @Query('type') type?: 'box'|'sheet'|'sqm'|'unit',
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.itemsService.searchVariantsForModalPOS({
+      q,
+      dims,
+      length: length != null ? Number(length) : undefined,
+      width:  width  != null ? Number(width)  : undefined,
+      spb:    spb    != null ? Number(spb)    : undefined,
+      type,
+      page: Number(page ?? 1),
+      limit: Number(limit ?? 100),
+    });
+  }
+
+
+
+
   @Get('v2/filtered-items-all-batches')
   async getFilteredItemsAllBatches(
     @Query('page') page?: string,
