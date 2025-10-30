@@ -70,6 +70,32 @@ export class JournalVoucherController {
     }
   }
 
+  
+@Get('v1/list')
+async getSummary(
+  @Query('page') page = '1',
+  @Query('limit') limit = '100',
+  @Query('q') q = ''
+) {
+  const p = Math.max(1, parseInt(page as string, 10) || 1);
+  const l = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 100));
+  return this.journalVoucherService.getVoucherSummary({ page: p, limit: l, q });
+}
+
+ @Get('v1/search-by-seq')
+  async searchBySeq(
+    @Query('seq') seq: string,          // required
+    @Query('page') page?: string,       // optional
+    @Query('limit') limit?: string,     // optional
+  ) {
+    return this.journalVoucherService.searchBySeq({
+      seq,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+
   // Get a single Journal Voucher by ID
   @Get(':id')
   async getJournalVoucherById(@Param('id') id: number) {
@@ -81,17 +107,7 @@ export class JournalVoucherController {
   }
 
   // Update a Journal Voucher by ID
-  @Put(':id')
-  async updateJournalVoucher(
-    @Param('id') id: number,
-    @Body() data: Partial<JournalVoucher>,
-  ) {
-    try {
-      return await this.journalVoucherService.updateJournalVoucher(id, data);
-    } catch (error) {
-      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
-    }
-  }
+
 
   // Delete a Journal Voucher by ID
   @Delete(':id')
@@ -101,11 +117,6 @@ export class JournalVoucherController {
     } catch (error) {
       throw new HttpException(error.message, HttpStatus.NOT_FOUND);
     }
-  }
-
-  @Get('v1/list')
-  async getVoucherSummary() {
-    return this.journalVoucherService.getVoucherSummary();
   }
 
 
@@ -143,5 +154,15 @@ async getCustomerStmt(
       to,
     });
   }
+
+
+
+  @Put(':id')
+async updateJV(
+  @Param('id') id: string,
+  @Body() body: any
+) {
+  return this.journalVoucherService.updateJournalVoucherFull(Number(id), body);
+}
 
 }
