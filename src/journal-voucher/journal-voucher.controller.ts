@@ -155,6 +155,19 @@ async getCustomerStmt(
     });
   }
 
+    @Get('v1/jv/search')
+  async searchByCustomerOrJv(
+    @Query('q') q?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.journalVoucherService.searchByCustomerOrJv({
+      q,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
 
 
   @Put(':id')

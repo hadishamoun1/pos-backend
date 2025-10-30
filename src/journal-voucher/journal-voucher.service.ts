@@ -956,4 +956,128 @@ async searchBySeq(params?: { seq?: string; page?: number; limit?: number }) {
   }
 
 
+
+
+  // search api for jv in reciept page
+
+
+  // journalVoucher.service.ts
+async searchByCustomerOrJv(params?: {
+  q?: string;
+  page?: number;
+  limit?: number; // hard-cap 100
+}): Promise<{
+  data: { id: number; date: Date; jvNumber: string; jvType: string; description: string }[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasMore: boolean;
+}> {
+  const page = Math.max(1, Number(params?.page ?? 1));
+  const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 50)));
+  const rawQ = (params?.q ?? "").trim();
+
+  if (!rawQ) {
+    // fallback to your summary when no query is provided
+    return this.getVoucherSummary({ page, limit });
+  }
+
+  // Case-insensitive LIKE that works on both MySQL and Postgres
+  // We'll compare LOWER(column) LIKE LOWER(:like)
+  const like = `%${rawQ.toLowerCase()}%`;
+
+  // -------- 1) COUNT DISTINCT JV IDs --------
+  const countQb = this.journalVoucherRepository
+    .createQueryBuilder("jv")
+    .leftJoin("jv.details", "d")
+    .leftJoin("d.customer", "c")
+    .where(
+      new Brackets((w) => {
+        w.where("LOWER(jv.jvNumber) LIKE :like", { like })
+         .orWhere("LOWER(c.customerName) LIKE :like", { like });
+      }),
+    );
+
+  const { cnt } = await countQb
+    .select("COUNT(DISTINCT jv.id)", "cnt")
+    .getRawOne<{ cnt: string }>();
+
+  const total = Number(cnt || 0);
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const hasMore = page < totalPages;
+
+  if (total === 0) {
+    return { data: [], page, limit, total, totalPages, hasMore: false };
+  }
+
+  // -------- 2) PAGE OF JV IDs --------
+  const idQb = this.journalVoucherRepository
+    .createQueryBuilder("jv")
+    .leftJoin("jv.details", "d")
+    .leftJoin("d.customer", "c")
+    .select("jv.id", "id")
+    .where(
+      new Brackets((w) => {
+        w.where("LOWER(jv.jvNumber) LIKE :like", { like })
+         .orWhere("LOWER(c.customerName) LIKE :like", { like });
+      }),
+    );
+
+  const idRows = await idQb
+    .groupBy("jv.id")
+    .orderBy("jv.date", "DESC")
+    .addOrderBy("jv.id", "DESC")
+    .offset((page - 1) * limit)
+    .limit(limit)
+    .getRawMany<{ id: number }>();
+
+  const ids = idRows.map((r) => Number(r.id));
+  if (ids.length === 0) {
+    return { data: [], page, limit, total, totalPages, hasMore };
+  }
+
+  // -------- 3) HYDRATE FIELDS FOR THOSE IDS --------
+  const rows = await this.journalVoucherRepository
+    .createQueryBuilder("jv")
+    .leftJoin("jv.details", "d")
+    .leftJoin("d.customer", "c")
+    .select([
+      "jv.id AS id",
+      "jv.date AS date",
+      'jv.jvNumber AS "jvNumber"',
+      'jv.jvType AS "jvType"',
+    ])
+    // Pick any description where DR > 0 (same as your summary)
+    .addSelect(
+      "MIN(CASE WHEN d.dr > 0 THEN d.description END)",
+      "description",
+    )
+    .where("jv.id IN (:...ids)", { ids })
+    .groupBy("jv.id")
+    .addGroupBy("jv.date")
+    .addGroupBy("jv.jvNumber")
+    .addGroupBy("jv.jvType")
+    .orderBy("jv.date", "DESC")
+    .addOrderBy("jv.id", "DESC")
+    .getRawMany<{
+      id: number;
+      date: Date;
+      jvNumber: string;
+      jvType: string;
+      description: string | null;
+    }>();
+
+  const data = rows.map((r) => ({
+    id: Number(r.id),
+    date: r.date,
+    jvNumber: r.jvNumber,
+    jvType: r.jvType,
+    description: r.description ?? "No Description",
+  }));
+
+  return { data, page, limit, total, totalPages, hasMore };
+}
+
+
 }

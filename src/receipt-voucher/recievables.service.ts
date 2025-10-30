@@ -1,5 +1,5 @@
 // src/receipt-voucher/recievables.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like } from 'typeorm';
 import { ReceiptEntry } from '../entities/recievables.entities';
@@ -10,6 +10,7 @@ import { Account } from '../entities/account.entity';
 import { Settings } from '../entities/settings.entity';
 import { RecievablesGateway } from './recievables.broadcast';
 import { Sequence } from 'mysql2/typings/mysql/lib/protocol/sequences/Sequence';
+import { Currency } from 'src/entities/currency.entity';
 
 type ReceiptType = 'G' | 'S' | 'RVR';
 
@@ -33,9 +34,21 @@ export class RecievablesService {
 
     @InjectRepository(Settings)
     private readonly settingsRepo: Repository<Settings>,
+     @InjectRepository(Currency)
+  private readonly currencyRepo: Repository<Currency>,
 
     private readonly gateway: RecievablesGateway,
   ) {}
+
+
+private normalizeCurrencyCode(raw: string): 'USD' | 'LL' | 'EURO' | string {
+  const s = (raw || '').trim().toUpperCase();
+  if (s === 'US$' || s === '$') return 'USD';
+  if (s === 'LBP' || s === 'LIRA' || s === 'L.L' || s === 'L£') return 'LL';
+  if (s === 'EUR') return 'EURO';
+  return s; // already USD / LL / EURO, or any other code you allow
+}
+
 
 async create(data: {
   customerId: number;
@@ -159,10 +172,14 @@ async create(data: {
       : undefined;
   const descriptionText = autoDesc ?? data.comments ?? null;
   // <<<
+  const currencyCode = this.normalizeCurrencyCode(data.currency);
+const exRateUSD = Number(data.exchangeRate);                        
+const exRateEUROToUSD = currencyCode === 'EURO' ? exRateUSD : 0;
 
   const drLine = this.jvDetailRepo.create({
     journalVoucherId: jv.id,
     accountId: cashAcct.id,
+    currency: currencyCode, 
     dr: hdrDr,
     drUSD: hdrDrUSD,
     drLL: hdrDrLL,
@@ -175,6 +192,8 @@ async create(data: {
     crOFR: 0,
     crUSDOFR: 0,
     crLLOFR: 0,
+       exRateUSD,
+    exRateEUROToUSD,
     description: descriptionText, // <-- use requested text
     docNbr: jvNumber,
   });
@@ -182,6 +201,7 @@ async create(data: {
   const crLine = this.jvDetailRepo.create({
     journalVoucherId: jv.id,
     customerId: data.customerId,
+   currency: currencyCode,
     dr: 0,
     drUSD: 0,
     drLL: 0,
@@ -194,6 +214,8 @@ async create(data: {
     crOFR: hdrCrOFR,
     crUSDOFR: hdrCrUSDOFR,
     crLLOFR: hdrCrLLOFR,
+       exRateUSD,
+    exRateEUROToUSD,
     description: descriptionText, // <-- use requested text
     docNbr: jvNumber,
   });
@@ -303,6 +325,16 @@ async create(data: {
     const llPart =
       data.currency === 'LL' ? data.cashNumber : data.amountExchanged;
 
+        const normalizedCode = this.normalizeCurrencyCode(data.currency);
+        const autoDesc =
+  data.pmtType === 'Cash'
+    ? (normalizedCode === 'USD' ? 'دفعة نقدا $$' : 'دفعة نقدا LL')
+    : undefined;
+const exRateUSD = Number(data.exchangeRate);
+const exRateEUROToUSD = normalizedCode === 'EURO' ? exRateUSD : 0;
+const descriptionText = autoDesc ?? data.comments ?? null;
+
+
     let hdrDr = 0,
       hdrDrUSD = 0,
       hdrDrLL = 0;
@@ -371,29 +403,35 @@ async create(data: {
 
     const cashAcct = await this.accountRepo.findOneBy({
       accountNumber: data.currency === 'USD' ? '5301' : '5302',
+
+      
     });
     if (!cashAcct) throw new NotFoundException('Cash account not found');
 
     const drLine = this.jvDetailRepo.create({
       journalVoucherId: jv.id,
       accountId: cashAcct.id,
+      currency: normalizedCode,
       dr: hdrDr,
       drUSD: hdrDrUSD,
       drLL: hdrDrLL,
       drOFR: hdrDrOFR,
       drUSDOFR: hdrDrUSDOFR,
       drLLOFR: hdrDrLLOFR,
+        exRateUSD,                       
+  exRateEUROToUSD, 
       cr: 0,
       crUSD: 0,
       crLL: 0,
       crOFR: 0,
       crUSDOFR: 0,
       crLLOFR: 0,
-      description: data.comments ?? null,
-    });
+  description: descriptionText,         
+  docNbr: jv.jvNumber,    });
     const crLine = this.jvDetailRepo.create({
       journalVoucherId: jv.id,
       customerId: data.customerId,
+       currency: normalizedCode,
       dr: 0,
       drUSD: 0,
       drLL: 0,
@@ -406,7 +444,10 @@ async create(data: {
       crOFR: hdrCrOFR,
       crUSDOFR: hdrCrUSDOFR,
       crLLOFR: hdrCrLLOFR,
-      description: data.comments ?? null,
+      description: descriptionText,        
+  docNbr: jv.jvNumber,
+    exRateUSD,                     
+  exRateEUROToUSD, 
     });
     await this.jvDetailRepo.save([drLine, crLine]);
 
