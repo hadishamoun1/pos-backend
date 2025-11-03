@@ -1,10 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import { Item } from '../entities/inventory/item.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+import { DataSource, In } from 'typeorm';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 
 
 
@@ -27,9 +29,13 @@ export class ItemsService {
     private readonly thicknessRepository: Repository<Thickness>,
     @InjectRepository(ItemVariant)
     private readonly itemVariantRepository: Repository<ItemVariant>,
+    @InjectRepository(ItemBatch)
+    private readonly itemBatchRepository: Repository<ItemBatch>,
 
     @InjectRepository(ItemNameDescription)
     private readonly itemNameDescriptionRepository: Repository<ItemNameDescription>,
+private readonly dataSource: DataSource
+    
   ) {}
 
   // CRUD for Items
@@ -189,7 +195,7 @@ async getSelectedItemDetailsPaginated(opts?: {
 
 
 
- async createFullItem(data: {
+async createFullItem(data: {
   itemName: string;
   type: 'box' | 'sheet' | 'sqm';
   descriptions?: Array<{
@@ -214,124 +220,243 @@ async getSelectedItemDetailsPaginated(opts?: {
 }): Promise<Item> {
   const { itemName, type, thicknesses: rawTh, descriptions = [] } = data;
 
-  // 1) Normalize thickness & variant numeric fields
-  const incoming = (rawTh ?? []).map((th) => ({
-    thickness: Number(th.thickness),
-    variants: Array.isArray(th.variants)
-      ? th.variants.map((v: any) => ({
-          length: type === 'sqm' ? 0 : Number(v?.length ?? 0),
-          width: type === 'sqm' ? 0 : Number(v?.width ?? 0),
-          sheetsPerBox:
-            type === 'sheet' ? 1 : type === 'sqm' ? 0 : Number(v?.sheetsPerBox ?? 0),
-          origin: v?.origin ?? '',
-          fixBox: !!v?.fixBox,
-          fixLength: !!v?.fixLength,
-          fixWidth: !!v?.fixWidth,
-        }))
-      : [],
-  }));
+  // ──────────────────────────────────────────────
+  // Normalization helpers
+  // ──────────────────────────────────────────────
+  const normalizeDigits = (s: string) => {
+    if (!s) return '';
+    const map: Record<string, string> = {
+      // Arabic-Indic
+      '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+      '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+      // Extended Arabic-Indic (Persian/Urdu)
+      '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+      '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+    };
+    return String(s).replace(/[٠-٩۰-۹]/g, (d) => map[d] ?? d);
+  };
 
-  // 2) Find or create global description entities (NO itemId)
+  const normalizeText = (s: string) => {
+    if (s == null) return '';
+    // unify spaces (incl NBSP) → normal spaces, unify en/em dash to '-', collapse internal spaces, trim, normalize digits
+    const unified = String(s)
+      .replace(/\u00A0/g, ' ')
+      .replace(/[\u2013\u2014]/g, '-')
+      .replace(/\s+/g, ' ');
+    const trimmed = unified.trim();
+    return normalizeDigits(trimmed);
+  };
+
+  // ──────────────────────────────────────────────
+  // Utilities
+  // ──────────────────────────────────────────────
+  const toNum = (v: any, d = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+
+  const fpOf = (args: {
+    thickness: number;
+    length: number;
+    width: number;
+    sheetsPerBox: number;
+    origin: string;
+    descId: number | null;
+  }) =>
+    [
+      args.thickness,
+      args.length,
+      args.width,
+      args.sheetsPerBox,
+      (args.origin ?? '').trim(),
+      args.descId ?? 'null',
+    ].join('|');
+
+  // Normalize incoming thickness/variants for target type
+  const normalizeForType = (targetType: 'box' | 'sheet' | 'sqm') => {
+    return (rawTh ?? []).map((th) => ({
+      thickness: toNum(th.thickness),
+      variants: Array.isArray(th.variants)
+        ? th.variants.map((v: any) => {
+            const baseLen = toNum(v?.length);
+            const baseWid = toNum(v?.width);
+            const baseSheets =
+              targetType === 'sheet'
+                ? 1
+                : targetType === 'sqm'
+                ? 0
+                : toNum(v?.sheetsPerBox);
+
+            return {
+              length: targetType === 'sqm' ? 0 : baseLen,
+              width:  targetType === 'sqm' ? 0 : baseWid,
+              sheetsPerBox: baseSheets,
+              origin: targetType === 'sqm' ? '' : String(v?.origin ?? ''),
+              fixBox: !!v?.fixBox,
+              fixLength: !!v?.fixLength,
+              fixWidth: !!v?.fixWidth,
+            };
+          })
+        : [],
+    }));
+  };
+
+  // Resolve or create a description entity 1:1 by normalized fields
   const resolveOrCreateDesc = async (desc: {
     itemNumber: string;
     categoryName: string;
     subCategory: string;
     colorName: string;
     designName: string;
-  }) => {
+  }): Promise<{ ent: any; isNew: boolean }> => {
     const where = {
-      itemNumber: desc.itemNumber ?? '',
-      categoryName: desc.categoryName ?? '',
-      subCategory: desc.subCategory ?? '',
-      colorName: desc.colorName ?? '',
-      designName: desc.designName ?? '',
+      itemNumber:  normalizeText(desc.itemNumber ?? ''),
+      categoryName: normalizeText(desc.categoryName ?? ''),
+      subCategory:  normalizeText(desc.subCategory ?? ''),
+      colorName:    normalizeText(desc.colorName ?? ''),
+      designName:   normalizeText(desc.designName ?? ''),
     };
     let ent = await this.itemNameDescriptionRepository.findOne({ where });
     if (!ent) {
       ent = this.itemNameDescriptionRepository.create(where);
       ent = await this.itemNameDescriptionRepository.save(ent);
+      return { ent, isNew: true };
     }
-    return ent;
+    return { ent, isNew: false };
   };
 
-  const descEntities = [];
-  for (const d of descriptions) {
-    descEntities.push(await resolveOrCreateDesc(d));
-  }
+  /**
+   * Upsert item of a specific type.
+   * Returns: the item + a map of thickness -> newly created variant fingerprints.
+   */
+  const upsertItemWith = async (
+    targetType: 'box' | 'sheet' | 'sqm',
+    incoming: Array<{
+      thickness: number;
+      variants: Array<{
+        length: number;
+        width: number;
+        sheetsPerBox: number;
+        origin: string;
+        fixBox: boolean;
+        fixLength: boolean;
+        fixWidth: boolean;
+        descId?: number | null;
+      }>;
+    }>,
+    descEntities: any[],
+  ): Promise<{
+    item: Item;
+    createdByThickness: Map<number, string[]>;
+  }> => {
+    let item = await this.itemRepository.findOne({
+      where: { itemName, type: targetType },
+      relations: [
+        'thicknesses',
+        'thicknesses.variants',
+        'thicknesses.variants.itemNameDescription',
+      ],
+    });
 
-  // 3) Load (or create) the item; DO NOT rely on item.descriptions (relation removed)
-  let item = await this.itemRepository.findOne({
-    where: { itemName, type },
-    relations: ['thicknesses', 'thicknesses.variants'], // no 'descriptions' here anymore
-  });
+    const createdByThickness = new Map<number, string[]>();
 
-  const isNewItem = !item;
+    if (!item) {
+      item = this.itemRepository.create({ itemName, type: targetType });
+      item = await this.itemRepository.save(item);
+      item.thicknesses = [];
 
-  if (isNewItem) {
-    // 4) Create new item
-    item = this.itemRepository.create({ itemName, type });
-    item = await this.itemRepository.save(item);
+      for (const thDto of incoming) {
+        const thEnt = this.thicknessRepository.create({
+          thickness: thDto.thickness,
+          item,
+        });
 
-    // 5) Create thicknesses + variants (attach description to variant by index if present)
-    item.thicknesses = [];
+        thEnt.variants = thDto.variants.map((vDto, idx) => {
+          const desc = (Number.isFinite(thDto.variants[idx]?.descId)
+            ? { id: thDto.variants[idx].descId }
+            : descEntities[idx]) ?? null;
+
+          return this.itemVariantRepository.create({
+            length: vDto.length,
+            width: vDto.width,
+            sheetsPerBox: vDto.sheetsPerBox,
+            origin: vDto.origin,
+            fixBox: vDto.fixBox,
+            fixLength: vDto.fixLength,
+            fixWidth: vDto.fixWidth,
+            itemNameDescription: desc ?? undefined,
+          });
+        });
+
+        const savedTh = await this.thicknessRepository.save(thEnt);
+        item.thicknesses.push(savedTh);
+
+        const fps = thDto.variants.map((vDto, idx) =>
+          fpOf({
+            thickness: thDto.thickness,
+            length: vDto.length,
+            width: vDto.width,
+            sheetsPerBox: vDto.sheetsPerBox,
+            origin: vDto.origin,
+            descId: Number.isFinite(thDto.variants[idx]?.descId)
+              ? Number(thDto.variants[idx].descId)
+              : descEntities[idx]?.id ?? null,
+          }),
+        );
+        createdByThickness.set(thDto.thickness, fps);
+      }
+
+      return { item, createdByThickness };
+    }
+
+    // Existing item → idempotent upsert
     for (const thDto of incoming) {
-      const thEnt = this.thicknessRepository.create({
-        thickness: thDto.thickness,
-        item,
-      });
+      let thEnt =
+        item.thicknesses?.find(
+          (t) => Number(t.thickness) === Number(thDto.thickness),
+        ) ?? null;
 
-      thEnt.variants = thDto.variants.map((vDto, idx) =>
-        this.itemVariantRepository.create({
-          length: vDto.length,
-          width: vDto.width,
-          sheetsPerBox: vDto.sheetsPerBox,
-          origin: vDto.origin,
-          fixBox: vDto.fixBox,
-          fixLength: vDto.fixLength,
-          fixWidth: vDto.fixWidth,
-          itemNameDescription: descEntities[idx] ?? null, // link global description
-        }),
+      if (!thEnt) {
+        thEnt = this.thicknessRepository.create({
+          thickness: thDto.thickness,
+          item,
+        });
+        thEnt = await this.thicknessRepository.save(thEnt);
+        item.thicknesses.push(thEnt);
+      }
+
+      thEnt.variants = thEnt.variants || [];
+      const existing = new Set(
+        (thEnt.variants || []).map((v) =>
+          fpOf({
+            thickness: Number(thDto.thickness),
+            length: Number(v.length),
+            width: Number(v.width),
+            sheetsPerBox: Number(v.sheetsPerBox),
+            origin: v.origin ?? '',
+            descId: v.itemNameDescription?.id ?? null,
+          }),
+        ),
       );
 
-      item.thicknesses.push(thEnt);
-    }
+      const createdFps: string[] = [];
 
-    return this.itemRepository.save(item);
-  }
+      for (let i = 0; i < thDto.variants.length; i++) {
+        const vDto = thDto.variants[i];
+        const mappedDesc =
+          (Number.isFinite(vDto?.descId) ? { id: vDto.descId } : descEntities[i]) ?? null;
 
-  // 6) Existing item: ensure thicknesses and variants exist; link descriptions globally
-  //    Reuse existing thickness if same value; create if missing
-  for (const thDto of incoming) {
-    let thEnt = item.thicknesses?.find(
-      (t) => Number(t.thickness) === Number(thDto.thickness),
-    );
+        const fp = fpOf({
+          thickness: Number(thDto.thickness),
+          length: Number(vDto.length),
+          width: Number(vDto.width),
+          sheetsPerBox: Number(vDto.sheetsPerBox),
+          origin: vDto.origin ?? '',
+          descId: mappedDesc?.id ?? null,
+        });
 
-    if (!thEnt) {
-      thEnt = this.thicknessRepository.create({
-        thickness: thDto.thickness,
-        item,
-      });
-      thEnt = await this.thicknessRepository.save(thEnt);
-      item.thicknesses.push(thEnt);
-    }
+        if (existing.has(fp)) continue;
 
-    // Make sure variants array is present
-    thEnt.variants = thEnt.variants || [];
-
-    // For each incoming variant, check if it already exists (including description id match)
-    for (const [i, vDto] of thDto.variants.entries()) {
-      const matchingDesc = descEntities[i] ?? null; // global desc by index if provided
-
-      const already = thEnt.variants.find(
-        (v) =>
-          Number(v.length) === Number(vDto.length) &&
-          Number(v.width) === Number(vDto.width) &&
-          Number(v.sheetsPerBox) === Number(vDto.sheetsPerBox) &&
-          (v.origin ?? '') === (vDto.origin ?? '') &&
-          (v.itemNameDescription?.id ?? null) === (matchingDesc?.id ?? null),
-      );
-
-      if (!already) {
         const newVar = this.itemVariantRepository.create({
           length: vDto.length,
           width: vDto.width,
@@ -341,15 +466,426 @@ async getSelectedItemDetailsPaginated(opts?: {
           fixLength: vDto.fixLength,
           fixWidth: vDto.fixWidth,
           thickness: thEnt,
-          itemNameDescription: matchingDesc ?? undefined, // link global desc
+          itemNameDescription: mappedDesc ?? undefined,
         });
+
         await this.itemVariantRepository.save(newVar);
         thEnt.variants.push(newVar);
+        existing.add(fp);
+        createdFps.push(fp);
+      }
+
+      if (createdFps.length > 0) {
+        createdByThickness.set(Number(thDto.thickness), createdFps);
+      }
+    }
+
+    return { item, createdByThickness };
+  };
+
+  // Build SQM incoming for ONE description only (one 0x0 variant per thickness)
+  const buildSQMIncomingForOneDesc = (thicknessValues: number[], singleDescId: number | null) => {
+    return thicknessValues.map((th) => ({
+      thickness: th,
+      variants: [
+        {
+          length: 0,
+          width: 0,
+          sheetsPerBox: 0,
+          origin: '',
+          fixBox: false,
+          fixLength: false,
+          fixWidth: false,
+          descId: singleDescId ?? null,
+        },
+      ],
+    }));
+  };
+
+  // ──────────────────────────────────────────────
+  // 1) Resolve descriptions & track NEW ones (normalized)
+  // ──────────────────────────────────────────────
+  const descEntities: any[] = [];
+  const newDescEntities: any[] = [];
+  for (const d of descriptions) {
+    const { ent, isNew } = await resolveOrCreateDesc(d);
+    descEntities.push(ent);
+    if (isNew) newDescEntities.push(ent);
+  }
+
+  // collect unique thickness values from payload
+  const uniqueThicknesses = Array.from(
+    new Set((rawTh ?? []).map((t) => toNum(t.thickness))).values(),
+  ).filter((n) => Number.isFinite(n));
+
+  // ──────────────────────────────────────────────
+  // 2) Upsert the requested item TYPE (main)
+  // ──────────────────────────────────────────────
+  const incomingForRequested = normalizeForType(type);
+  const { item: mainItem, createdByThickness } = await upsertItemWith(
+    type,
+    incomingForRequested,
+    descEntities,
+  );
+
+  // ──────────────────────────────────────────────
+  // 3) If 'box' → mirror ONLY the newly created variants to 'sheet'
+  // ──────────────────────────────────────────────
+  if (type === 'box') {
+    type MirrorVariant = {
+      length: number;
+      width: number;
+      sheetsPerBox: number;
+      origin: string;
+      fixBox: boolean;
+      fixLength: boolean;
+      fixWidth: boolean;
+      descId: number | null;
+    };
+    type MirrorPayload = Array<{
+      thickness: number;
+      variants: MirrorVariant[];
+    }>;
+
+    const createdOnlyForSheet: MirrorPayload = incomingForRequested
+      .map((th) => {
+        const createdFps = createdByThickness.get(Number(th.thickness)) || [];
+        if (createdFps.length === 0) return null;
+
+        const keyWithoutSpb = (s: string) =>
+          s
+            .split('|')
+            .map((x, i) => (i === 4 ? x.trim() : x))
+            .filter((_, i) => i !== 3)
+            .join('|');
+
+        const createdNoSpb = new Set(createdFps.map(keyWithoutSpb));
+
+        const filteredVariants: MirrorVariant[] = th.variants
+          .map((v, idx) => {
+            const mappedDesc =
+              (Number.isFinite((v as any)?.descId) ? { id: (v as any).descId } : descEntities[idx]) ?? null;
+
+            const candidateNoSpb = keyWithoutSpb(
+              [
+                th.thickness,
+                v.length,
+                v.width,
+                0,                  // placeholder (dropped)
+                v.origin ?? '',
+                mappedDesc?.id ?? 'null',
+              ].join('|'),
+            );
+
+            if (!createdNoSpb.has(candidateNoSpb)) return null;
+
+            return {
+              length: Number(v.length),
+              width: Number(v.width),
+              sheetsPerBox: 1,     // SHEET uses 1
+              origin: v.origin ?? '',
+              fixBox: !!v.fixBox,
+              fixLength: !!v.fixLength,
+              fixWidth: !!v.fixWidth,
+              descId: mappedDesc?.id ?? null,
+            } as MirrorVariant;
+          })
+          .filter((x): x is MirrorVariant => Boolean(x));
+
+        if (filteredVariants.length === 0) return null;
+
+        return {
+          thickness: Number(th.thickness),
+          variants: filteredVariants,
+        };
+      })
+      .filter((x): x is MirrorPayload[number] => Boolean(x));
+
+    if (createdOnlyForSheet.length > 0) {
+      await upsertItemWith('sheet', createdOnlyForSheet, descEntities);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // 4) SQM for NEW descriptions (unchanged logic)
+  // ──────────────────────────────────────────────
+  if (newDescEntities.length > 0 && uniqueThicknesses.length > 0) {
+    for (const newDesc of newDescEntities) {
+      const sqmIncoming = buildSQMIncomingForOneDesc(uniqueThicknesses, newDesc.id ?? null);
+      await upsertItemWith('sqm', sqmIncoming, [newDesc]);
+    }
+  }
+
+  return mainItem;
+}
+
+
+
+
+
+
+// items.service.ts (inside ItemsService)
+
+private safeJson(obj: any, max = 4000) {
+  try {
+    const s = JSON.stringify(
+      obj,
+      (_k, v) => {
+        if (Array.isArray(v)) return v.length > 50 ? `[Array(${v.length})]` : v;
+        return v;
+      }
+    );
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  } catch {
+    return '[unserializable]';
+  }
+}
+
+// items.service.ts
+async editFullItem(editDto: {
+  itemId?: number;
+  itemName?: string;
+  type?: 'box'|'sheet'|'sqm';
+  thicknesses: Array<{
+    thicknessId?: number;
+    thickness?: number | string;
+    variants: Array<{
+      id: number; // REQUIRED to edit in place
+      length?: number | string;
+      width?: number | string;
+      sheetsPerBox?: number | string;
+      origin?: string;
+      fixBox?: boolean;
+      fixLength?: boolean;
+      fixWidth?: boolean;
+      // Optional re-link (no creation): only id is honored
+      description?: { id?: number } | null;
+    }>;
+  }>;
+}): Promise<Item> {
+  const toNum = (v: any, def = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : def;
+  };
+  const normType = (t?: string) =>
+    (t === 'box' || t === 'sheet' || t === 'sqm') ? t : 'box';
+
+  const tag = (s: string) => `[editFullItem] ${s}`;
+  const j = (o: any) => JSON.stringify(o);
+
+  console.log(tag('Incoming DTO:'), j(editDto));
+
+  const { itemId, itemName, type } = editDto;
+  const tType = normType(type);
+
+  // 1) Load item with relations (thicknesses + variants)
+  let item: Item | null = null;
+  if (itemId) {
+    console.log(tag(`Loading item by id=${itemId} with relations...`));
+    item = await this.itemRepository.findOne({
+      where: { id: itemId },
+      relations: [
+        'thicknesses',
+        'thicknesses.variants',
+        'thicknesses.variants.itemNameDescription',
+      ],
+    });
+  } else if (itemName && tType) {
+    console.log(tag(`Loading item by (itemName,type)=(${itemName},${tType}) with relations...`));
+    item = await this.itemRepository.findOne({
+      where: { itemName, type: tType },
+      relations: [
+        'thicknesses',
+        'thicknesses.variants',
+        'thicknesses.variants.itemNameDescription',
+      ],
+    });
+  }
+
+  if (!item) {
+    console.log(tag('ERROR: Item not found for editing'));
+    throw new Error('Item to edit not found (provide itemId or (itemName,type)).');
+  }
+
+  console.log(
+    tag('Loaded item:'),
+    j({
+      itemId: item.id,
+      type: item.type,
+      thicknessCount: item.thicknesses?.length ?? 0,
+      thicknessIds: (item.thicknesses ?? []).map(t => t.id),
+    })
+  );
+
+  const isSQM = item.type === 'sqm';
+
+  // 2) Build quick lookups for thickness
+  const thicknessById = new Map<number, Thickness>();
+  const thicknessByVal = new Map<number, Thickness>();
+  for (const th of item.thicknesses ?? []) {
+    thicknessById.set(th.id, th);
+    thicknessByVal.set(Number(th.thickness), th);
+    th.variants = th.variants ?? [];
+  }
+
+  const findThicknessStrict = (incoming: { thicknessId?: number; thickness?: any }) => {
+    const fromId = incoming?.thicknessId;
+    const fromValNum = toNum(incoming?.thickness);
+    console.log(tag('Resolving thickness from incoming:'), j({ fromId, fromVal: fromValNum }));
+
+    if (fromId && thicknessById.has(fromId)) {
+      console.log(tag(`Resolved thickness by id=${fromId}`));
+      return thicknessById.get(fromId)!;
+    }
+    if (Number.isFinite(fromValNum) && thicknessByVal.has(fromValNum)) {
+      console.log(tag(`Resolved thickness by value=${fromValNum}`));
+      return thicknessByVal.get(fromValNum)!;
+    }
+    console.log(tag('ERROR: Thickness not found on this item'));
+    throw new Error(
+      `Thickness not found on this item. Provide a valid thicknessId or an existing numeric thickness.`
+    );
+  };
+
+  // Optional: cache for description entities
+  const descCache = new Map<number, any>();
+  const getDescById = async (id?: number | null) => {
+    if (!id) return null;
+    if (descCache.has(id)) return descCache.get(id);
+    const ent = await this.itemNameDescriptionRepository.findOne({ where: { id } });
+    if (!ent) {
+      console.log(tag(`ERROR: Description id ${id} not found.`));
+      throw new Error(`Description id ${id} not found.`);
+    }
+    descCache.set(id, ent);
+    return ent;
+  };
+
+  // 3) Apply edits per thickness/variant
+  for (const thDto of editDto.thicknesses ?? []) {
+    console.log(tag('Incoming thickness DTO:'), j(thDto));
+    const thEnt = findThicknessStrict(thDto);
+    console.log(
+      tag('Editing within thickness:'),
+      j({ thEntId: thEnt.id, thValue: String(thEnt.thickness) })
+    );
+
+    for (const vDto of thDto.variants ?? []) {
+      console.log(tag('Incoming variant DTO:'), j(vDto));
+
+      const variantId = Number(vDto.id);
+      if (!Number.isFinite(variantId)) {
+        console.log(tag('ERROR: invalid variant id'), vDto.id);
+        throw new Error(`Each edited variant must include a valid 'id'.`);
+      }
+
+      // 🔴 Always DB-load variant WITH relations so thickness.item is present
+      const targetVariant = await this.itemVariantRepository.findOne({
+        where: { id: variantId },
+        relations: ['thickness', 'thickness.item', 'itemNameDescription'],
+      });
+
+      console.log(
+        tag('Variant lookup (DB) result:'),
+        j({
+          requestedVariantId: variantId,
+          found: !!targetVariant,
+          foundThicknessId: targetVariant?.thickness?.id ?? null,
+          foundItemId: targetVariant?.thickness?.item?.id ?? null,
+          editingItemId: item.id,
+        })
+      );
+
+      if (!targetVariant) {
+        throw new Error(`Variant id ${variantId} not found.`);
+      }
+
+      // ✅ Ownership check now reliable
+      if (targetVariant.thickness?.item?.id !== item.id) {
+        console.log(
+          tag('ERROR: Variant does not belong to this item'),
+          j({
+            variantId: targetVariant.id,
+            variantItemId: targetVariant.thickness?.item?.id,
+            expectedItemId: item.id,
+            incomingThicknessId: thEnt.id,
+            itemThicknessIds: (item.thicknesses ?? []).map(t => t.id),
+          })
+        );
+        throw new Error(`Variant id ${variantId} does not belong to the specified item.`);
+      }
+
+      // If variant is currently on a different thickness within the SAME item, move it
+      if (targetVariant.thickness?.id !== thEnt.id) {
+        console.log(
+          tag('Moving variant to target thickness'),
+          j({
+            variantId: targetVariant.id,
+            fromThicknessId: targetVariant.thickness?.id,
+            toThicknessId: thEnt.id,
+          })
+        );
+        targetVariant.thickness = thEnt;
+      }
+
+      // Compute next field values, enforcing SQM invariants
+      const next = {
+        length: isSQM ? 0 : toNum(vDto.length, Number(targetVariant.length)),
+        width: isSQM ? 0 : toNum(vDto.width, Number(targetVariant.width)),
+        sheetsPerBox: isSQM ? 0 : toNum(vDto.sheetsPerBox, Number(targetVariant.sheetsPerBox)),
+        origin: isSQM ? '' : (vDto.origin ?? targetVariant.origin ?? ''),
+        fixBox: vDto.fixBox ?? !!targetVariant.fixBox,
+        fixLength: vDto.fixLength ?? !!targetVariant.fixLength,
+        fixWidth: vDto.fixWidth ?? !!targetVariant.fixWidth,
+      };
+
+      console.log(tag('Computed next fields:'), j(next));
+
+      // Keep current description UNCHANGED unless description.id is explicitly provided.
+      let nextDesc = targetVariant.itemNameDescription ?? null;
+      if (vDto.description && typeof vDto.description === 'object' && 'id' in vDto.description!) {
+        const newDescId = Number(vDto.description!.id);
+        if (Number.isFinite(newDescId)) {
+          nextDesc = await getDescById(newDescId); // will throw if id doesn't exist
+          console.log(tag('Re-linked description to id=' + newDescId));
+        }
+      }
+
+      // Apply updates
+      targetVariant.length = next.length;
+      targetVariant.width = next.width;
+      targetVariant.sheetsPerBox = next.sheetsPerBox;
+      targetVariant.origin = next.origin;
+      targetVariant.fixBox = next.fixBox;
+      targetVariant.fixLength = next.fixLength;
+      targetVariant.fixWidth = next.fixWidth;
+      targetVariant.itemNameDescription = nextDesc;
+
+      await this.itemVariantRepository.save(targetVariant);
+      console.log(tag('Saved variant id=' + targetVariant.id));
+
+      // keep the in-memory thickness list consistent (for subsequent loops)
+      if (!thEnt.variants.some(v => v.id === targetVariant.id)) {
+        thEnt.variants.push(targetVariant);
       }
     }
   }
 
-  return item;
+  // Save thickness containers if needed (mostly no-op)
+  await this.thicknessRepository.save(item.thicknesses);
+
+  // Reload and return updated item
+  const updated = await this.itemRepository.findOne({
+    where: { id: item.id },
+    relations: [
+      'thicknesses',
+      'thicknesses.variants',
+      'thicknesses.variants.itemNameDescription',
+    ],
+  });
+
+  console.log(tag('Done. Returning updated item id=' + item.id));
+  return updated!;
 }
 
 // items.service.ts
@@ -1615,6 +2151,420 @@ async searchVariantsForModalPOS(params: {
 
 
 
+
+//search items api
+
+
+ private normalizeDigits(s: string): string {
+    if (!s) return '';
+    const map: Record<string, string> = {
+      '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+      '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+    };
+    return s.replace(/[٠-٩]/g, (d) => map[d] ?? d);
+  }
+
+  // Extracts: thickness (…ملم), size (225*321 / 225x321 / 225×321), optional -027, and leftover text
+  private parseQuery(raw: string): {
+    thickness?: number;
+    length?: number;
+    width?: number;
+    sheetsPerBox?: number;
+    nameText?: string; // remaining text tokens
+  } {
+    const input = this.normalizeDigits((raw || '').trim());
+    const out: { thickness?: number; length?: number; width?: number; sheetsPerBox?: number; nameText?: string } = {};
+
+    let q = input;
+
+    // thickness: 5ملم or "5 ملم"
+    const thRe = /(\d+(?:\.\d+)?)\s*ملم/gi;
+    const thMatch = thRe.exec(q);
+    if (thMatch) {
+      out.thickness = Number(thMatch[1]);
+      q = q.replace(thMatch[0], ' ').trim();
+    }
+
+    // size: 225*321 or 225x321 or 225×321 (allow spaces)
+    const sizeRe = /(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)/i;
+    const sizeMatch = sizeRe.exec(q);
+    if (sizeMatch) {
+      out.length = Number(sizeMatch[1]);
+      out.width  = Number(sizeMatch[2]);
+      q = q.replace(sizeMatch[0], ' ').trim();
+    }
+
+    // sheets per box: trailing -027 or -27 (allow spaces)
+    const spbRe = /-\s*(\d{1,3})\s*$/;
+    const spbMatch = spbRe.exec(q);
+    if (spbMatch) {
+      out.sheetsPerBox = parseInt(spbMatch[1], 10);
+      q = q.replace(spbMatch[0], ' ').trim();
+    }
+
+    // remaining text tokens → nameText
+    const leftover = q.replace(/\s{2,}/g, ' ').trim();
+    if (leftover) out.nameText = leftover;
+
+    return out;
+  }
+
+async searchSmart(q: string, page = 1, limit = 50) {
+  const parsed = this.parseQuery(q);
+
+  // Base query: we list VARIANTS; thickness & variant must exist
+  const qb = this.itemRepository
+    .createQueryBuilder('item')
+    .innerJoin('item.thicknesses', 'th')
+    .innerJoin('th.variants', 'v')
+    .leftJoin('v.itemNameDescription', 'd')
+    .select([
+      'item.id AS itemId',
+      'item.itemName AS itemName',
+      'item.type AS type',
+      'th.id AS thicknessId',
+      'th.thickness AS thickness',
+      'v.id AS variantId',
+      // COALESCE to avoid undefined in raw rows
+      'COALESCE(v.length, 0) AS length',
+      'COALESCE(v.width, 0) AS width',
+      'COALESCE(v.sheetsPerBox, 0) AS sheetsPerBox',
+      'COALESCE(v.origin, \'\') AS origin',
+      'd.id AS descId',
+      'd.itemNumber AS itemNumber',
+      'd.categoryName AS categoryName',
+      'd.subCategory AS subCategory',
+      'd.colorName AS colorName',
+      'd.designName AS designName',
+    ])
+    .where('1=1');
+
+  // Numeric filters (exact matches)
+  if (parsed.thickness !== undefined) {
+    qb.andWhere('th.thickness = :th', { th: parsed.thickness });
+  }
+  if (parsed.length !== undefined) {
+    qb.andWhere('v.length = :len', { len: parsed.length });
+  }
+  if (parsed.width !== undefined) {
+    qb.andWhere('v.width = :wid', { wid: parsed.width });
+  }
+  if (parsed.sheetsPerBox !== undefined) {
+    qb.andWhere('v.sheetsPerBox = :spb', { spb: parsed.sheetsPerBox });
+  }
+
+  // Text search: AND across tokens, OR across fields
+  if (parsed.nameText) {
+    const tokens = parsed.nameText.split(/\s+/).filter(Boolean);
+    tokens.forEach((t, idx) => {
+      const like = `%${t}%`;
+      qb.andWhere(new Brackets((w) => {
+        w.where(`item.itemName LIKE :like${idx}`, { [`like${idx}`]: like })
+          .orWhere(`d.itemNumber LIKE :like${idx}`, { [`like${idx}`]: like })
+          .orWhere(`d.categoryName LIKE :like${idx}`, { [`like${idx}`]: like })
+          .orWhere(`d.subCategory LIKE :like${idx}`, { [`like${idx}`]: like })
+          .orWhere(`d.colorName LIKE :like${idx}`, { [`like${idx}`]: like })
+          .orWhere(`d.designName LIKE :like${idx}`, { [`like${idx}`]: like });
+      }));
+    });
+  }
+
+  // Relevance / ordering
+  if (parsed.nameText) {
+    qb.addOrderBy(
+      'CASE WHEN item.itemName = :exact THEN 0 WHEN item.itemName LIKE :prefix THEN 1 ELSE 2 END',
+      'ASC',
+    )
+      .setParameter('exact', parsed.nameText)
+      .setParameter('prefix', parsed.nameText + '%');
+  }
+  qb.addOrderBy('item.itemName', 'ASC')
+    .addOrderBy('th.thickness', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.width', 'ASC');
+
+  // GROUP BY to eliminate accidental duplicates from joins
+  qb.groupBy('item.id')
+    .addGroupBy('item.itemName')
+    .addGroupBy('item.type')
+    .addGroupBy('th.id')
+    .addGroupBy('th.thickness')
+    .addGroupBy('v.id')
+    .addGroupBy('v.length')
+    .addGroupBy('v.width')
+    .addGroupBy('v.sheetsPerBox')
+    .addGroupBy('v.origin')
+    .addGroupBy('d.id')
+    .addGroupBy('d.itemNumber')
+    .addGroupBy('d.categoryName')
+    .addGroupBy('d.subCategory')
+    .addGroupBy('d.colorName')
+    .addGroupBy('d.designName');
+
+  // Count distinct variants (avoid TypeORM join count pitfalls)
+  const countQb = qb.clone().select('COUNT(DISTINCT v.id)', 'cnt').orderBy(); // remove order for count
+  const { cnt } = await countQb.getRawOne<{ cnt: string | number }>();
+  const total = Number(cnt ?? 0);
+
+  // Pagination
+  qb.offset((page - 1) * limit).limit(limit);
+
+  // Rows
+  const rows = await qb.getRawMany();
+
+  const data = rows.map((r) => ({
+    itemId: Number(r.itemId),
+    itemName: r.itemName,
+    type: r.type as 'box' | 'sheet' | 'sqm',
+    thicknessId: Number(r.thicknessId),
+    thickness: Number(r.thickness),
+    variantId: Number(r.variantId),
+    length: Number(r.length ?? 0),
+    width: Number(r.width ?? 0),
+    sheetsPerBox: Number(r.sheetsPerBox ?? 0),
+    origin: r.origin ?? null,
+    description: {
+      id: r.descId ? Number(r.descId) : null,
+      itemNumber: r.itemNumber ?? null,
+      categoryName: r.categoryName ?? null,
+      subCategory: r.subCategory ?? null,
+      colorName: r.colorName ?? null,
+      designName: r.designName ?? null,
+    },
+  }));
+
+  return { data, page, limit, total };
 }
+
+
+
+
+
+
+  /**
+   * Delete a whole Item tree (thicknesses + variants), then
+   * delete any ItemNameDescription that became orphaned (unused by any variant).
+   *
+   * IMPORTANT: Descriptions are global. We only remove those that are now unused.
+   */
+  async deleteItemAndDescriptions(itemId: number): Promise<{ deleted: true }> {
+    return this.dataSource.transaction(async (manager) => {
+      // 1) Load the full graph to know which description IDs were referenced
+      const item = await manager.findOne(Item, {
+        where: { id: itemId },
+        relations: [
+          'thicknesses',
+          'thicknesses.variants',
+          'thicknesses.variants.itemNameDescription',
+        ],
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!item) {
+        throw new NotFoundException(`Item ${itemId} not found`);
+      }
+
+      // Collect description IDs referenced by this item (deduped)
+      const descIds = new Set<number>();
+      for (const th of item.thicknesses ?? []) {
+        for (const v of th.variants ?? []) {
+          if (v.itemNameDescription?.id) descIds.add(v.itemNameDescription.id);
+        }
+      }
+
+      // 2) Delete the item tree
+      // If you already have ON DELETE CASCADE on FK(Thickness->Item) and FK(Variant->Thickness),
+      // deleting the Item is enough. If not, do manual deletes shown below.
+
+      // ---- Option A: rely on cascades (recommended if configured) ----
+      await manager.remove(Item, item);
+
+      // ---- Option B: manual (uncomment if you do not have FK cascades) ----
+      // const thicknessIds = item.thicknesses?.map((t) => t.id) ?? [];
+      // if (thicknessIds.length) {
+      //   await manager.delete(ItemVariant, { thickness: In(thicknessIds) });
+      //   await manager.delete(Thickness, { id: In(thicknessIds) });
+      // }
+      // await manager.delete(Item, { id: itemId });
+
+      // 3) Clean up orphan descriptions (only those we collected from this item)
+      if (descIds.size > 0) {
+        const ids = Array.from(descIds);
+        // For each candidate description, check if any variant still references it
+        // If none, delete the description.
+        // (Do this in batches to keep it efficient.)
+
+        // Check left joins count for each id
+        const stillUsed = await manager
+          .createQueryBuilder(ItemVariant, 'v')
+          .select('v.itemNameDescriptionId', 'id')
+          .addSelect('COUNT(*)', 'cnt')
+          .where('v.itemNameDescriptionId IN (:...ids)', { ids })
+          .groupBy('v.itemNameDescriptionId')
+          .getRawMany<{ id: number; cnt: string }>();
+
+        const usedMap = new Map<number, number>();
+        for (const row of stillUsed) {
+          usedMap.set(Number(row.id), Number(row.cnt));
+        }
+
+        const toDelete: number[] = [];
+        for (const id of ids) {
+          const cnt = usedMap.get(id) ?? 0;
+          if (cnt === 0) toDelete.push(id);
+        }
+
+        if (toDelete.length > 0) {
+          await manager.delete(ItemNameDescription, { id: In(toDelete) });
+        }
+      }
+
+      return { deleted: true };
+    });
+  }
+
+
+
+
+
+
+
+
+  /** Create one "Clean" batch with empty date for the given variantId. Idempotent unless force=true. */
+async createCleanBatchForVariant(variantId: number, opts?: { force?: boolean }) {
+  const force = !!opts?.force;
+
+  const variant = await this.itemVariantRepository.findOne({
+    where: { id: variantId },
+    select: ['id'],
+  });
+  if (!variant) {
+    throw new NotFoundException(`ItemVariant ${variantId} not found`);
+  }
+
+  if (!force) {
+    const exists = await this.itemBatchRepository.findOne({
+      where: {
+        itemVariant: { id: variantId } as any,
+        condition: 'Clean',
+        dateReceived: null as any,
+      },
+      select: ['id'],
+    });
+    if (exists) {
+      return { created: false, batchId: exists.id, variantId };
+    }
+  }
+
+  const batch = this.itemBatchRepository.create({
+    itemVariant: { id: variantId } as any,
+    condition: 'Clean',
+    dateReceived: null,        // empty
+    start: 0,
+    in: 0,
+    out: 0,
+    balance: 0,
+    startOFR: 0,
+    inOFR: 0,
+    outOFR: 0,
+    balanceOFR: 0,
+  });
+
+  const saved = await this.itemBatchRepository.save(batch);
+  return { created: true, batchId: saved.id, variantId };
+}
+
+/** Bulk create "Clean" batches for multiple variantIds (idempotent unless force=true). */
+async createCleanBatchesForVariants(variantIds: number[], opts?: { force?: boolean }) {
+  const force = !!opts?.force;
+  const uniq = Array.from(new Set((variantIds || []).map(Number).filter(Number.isFinite)));
+  if (uniq.length === 0) {
+    return { created: 0, skipped: 0, results: [] as Array<{ variantId:number; batchId:number|null; created:boolean }> };
+  }
+
+  // Validate existence
+  const existingVariants = await this.itemVariantRepository.find({
+    where: { id: In(uniq) },
+    select: ['id'],
+  });
+  const existingSet = new Set(existingVariants.map(v => v.id));
+  const missing = uniq.filter(id => !existingSet.has(id));
+  if (missing.length) {
+    throw new NotFoundException(`These variantIds do not exist: ${missing.join(', ')}`);
+  }
+
+  // If not forcing, find ones that already have a Clean/null-date batch
+  let skipSet = new Set<number>();
+  if (!force) {
+    const already = await this.itemBatchRepository.find({
+      where: {
+        itemVariant: In(uniq) as any,
+        condition: 'Clean',
+        dateReceived: null as any,
+      },
+      relations: ['itemVariant'],
+      select: ['id', 'itemVariant'],
+    });
+    skipSet = new Set(already.map(r => (r as any).itemVariant.id));
+  }
+
+  const toCreate = uniq.filter(id => force || !skipSet.has(id));
+  const creations = toCreate.map(variantId =>
+    this.itemBatchRepository.create({
+      itemVariant: { id: variantId } as any,
+      condition: 'Clean',
+      dateReceived: null,
+      start: 0, in: 0, out: 0, balance: 0,
+      startOFR: 0, inOFR: 0, outOFR: 0, balanceOFR: 0,
+    })
+  );
+
+  const saved = creations.length ? await this.itemBatchRepository.save(creations) : [];
+
+  // Build result map
+  const savedByVariant = new Map<number, number>();
+  saved.forEach(b => savedByVariant.set((b as any).itemVariant.id, b.id));
+
+  const results = uniq.map(variantId => ({
+    variantId,
+    created: savedByVariant.has(variantId),
+    batchId: savedByVariant.get(variantId) ?? null,
+  }));
+
+  const created = results.filter(r => r.created).length;
+  const skipped = results.length - created;
+
+  return { created, skipped, results };
+}
+
+/** Create Clean batch for every variant of one Item (by itemId). */
+async createCleanBatchesForItem(itemId: number, opts?: { force?: boolean }) {
+  // get all variant IDs under this item
+  const rows = await this.itemVariantRepository.createQueryBuilder('v')
+    .innerJoin('v.thickness', 't')
+    .innerJoin('t.item', 'i')
+    .where('i.id = :itemId', { itemId })
+    .select(['v.id AS id'])
+    .getRawMany<{ id: number }>();
+
+  if (!rows.length) {
+    throw new NotFoundException(`Item ${itemId} not found or has no variants`);
+  }
+  return this.createCleanBatchesForVariants(rows.map(r => Number(r.id)), opts);
+}
+
+/** Create Clean batch for **all** item variants in the system. */
+async createCleanBatchesForAll(opts?: { force?: boolean }) {
+  const rows = await this.itemVariantRepository.createQueryBuilder('v')
+    .select(['v.id AS id'])
+    .getRawMany<{ id: number }>();
+  if (!rows.length) return { created: 0, skipped: 0, results: [] as any[] };
+  return this.createCleanBatchesForVariants(rows.map(r => Number(r.id)), opts);
+}
+
+}
+
+
+
 
 

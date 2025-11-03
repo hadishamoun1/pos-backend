@@ -6,6 +6,7 @@ import {
   Delete,
   Param,
   Body,
+  Query,
 } from '@nestjs/common';
 import { AccountsService } from './accounts.service';
 import { Account } from '../entities/account.entity';
@@ -53,4 +54,43 @@ export class AccountsController {
   async getFlatSimplifiedAccounts(): Promise<any[]> {
     return this.accountsService.getFlatSimplifiedAccounts();
   }
+
+  // accounts.controller.ts
+ @Get('v1/jv/search')
+  async search(
+    @Query('q') q: string,
+    @Query('type') type?: 'account' | 'customer' | 'supplier',
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<{
+    data: Array<{
+      id: number;
+      accountNumber: string;
+      accountName: string;
+      kind: 'account' | 'customer' | 'supplier';
+      parentAccountNumber?: string;
+    }>;
+    page: number;
+    limit: number;
+    total: number;
+  }> {
+    const pg = Math.max(1, Number(page) || 1);
+    const lm = Math.max(1, Math.min(200, Number(limit) || 50));
+    const res = await this.accountsService.searchCombinedAccounts(q || '', type as any, pg, lm);
+
+    // Return a plain structural type (no UnifiedRow)
+    return {
+      data: res.data.map(r => ({
+        id: r.id,
+        accountNumber: r.accountNumber,
+        accountName: r.accountName,
+        kind: r.kind,
+        parentAccountNumber: r.parentAccountNumber,
+      })),
+      page: res.page,
+      limit: res.limit,
+      total: res.total,
+    };
+  }
+
 }

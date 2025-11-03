@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Delete, Query, ParseIntPipe, DefaultValuePipe } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, Query, ParseIntPipe, DefaultValuePipe, Put } from '@nestjs/common';
 import { ItemsService } from './items.service';
 import { Item } from '../entities/inventory/item.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
@@ -154,6 +154,43 @@ async searchModalInStock(
   });
 }
 
+ @Get('v1/search')
+  async searchItems(
+    @Query('q') q: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<{
+    data: Array<{
+      itemId: number;
+      itemName: string;
+      type: 'box' | 'sheet' | 'sqm';
+      thicknessId: number;
+      thickness: number;
+      variantId: number;
+      length: number;
+      width: number;
+      sheetsPerBox: number;
+      origin: string | null;
+      description?: {
+        id: number | null;
+        itemNumber: string | null;
+        categoryName: string | null;
+        subCategory: string | null;
+        colorName: string | null;
+        designName: string | null;
+      };
+    }>;
+    page: number;
+    limit: number;
+    total: number;
+  }> {
+    const pg = Math.max(1, Number(page) || 1);
+    const lm = Math.max(1, Math.min(200, Number(limit) || 50));
+    return this.itemsService.searchSmart(q || '', pg, lm);
+  }
+
+  
+
 
   @Post(':itemId/thicknesses')
   async createThickness(
@@ -163,7 +200,39 @@ async searchModalInStock(
     createThicknessDto.item = { id: itemId } as Item;
     return this.itemsService.createThickness(createThicknessDto);
   }
+  
 
+
+  @Post('batches/seed-clean')
+  async seedCleanBatches(@Body() body: {
+    variantIds?: number[];
+    itemId?: number;
+    all?: boolean;
+    force?: boolean;
+  }) {
+    const { variantIds, itemId, all, force } = body || {};
+
+    if (Array.isArray(variantIds) && variantIds.length > 0) {
+      return this.itemsService.createCleanBatchesForVariants(variantIds, { force });
+    }
+    if (typeof itemId === 'number') {
+      return this.itemsService.createCleanBatchesForItem(itemId, { force });
+    }
+    if (all) {
+      return this.itemsService.createCleanBatchesForAll({ force });
+    }
+
+    // If the client passes a single variantId as number
+    if (typeof (body as any)?.variantId === 'number') {
+      const r = await this.itemsService.createCleanBatchForVariant((body as any).variantId, { force });
+      return { created: r.created ? 1 : 0, skipped: r.created ? 0 : 1, results: [r] };
+    }
+
+    throw new Error('Provide one of: { variantIds: number[] } | { itemId: number } | { all: true } | { variantId: number }');
+  }
+
+
+  
   @Post(':itemId/thicknesses/:thicknessId/variants')
   async createItemVariant(
     @Param('thicknessId', ParseIntPipe) thicknessId: number,
@@ -190,8 +259,15 @@ async searchModalInStock(
     return this.itemsService.getItemById(id);
   }
 
-  @Delete(':id')
-  async deleteItem(@Param('id', ParseIntPipe) id: number): Promise<void> {
-    return this.itemsService.deleteItem(id);
+  @Put('v1/full')
+  async editFullItem(@Body() editFullItemDto: any): Promise<Item> {
+    return this.itemsService.editFullItem(editFullItemDto);
   }
+
+  @Delete(':id')
+  async deleteItem(@Param('id', ParseIntPipe) id: number) {
+    return this.itemsService.deleteItemAndDescriptions(id);
+  }
+
+
 }

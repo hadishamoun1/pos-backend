@@ -44,7 +44,7 @@ import { ConfigModule } from '@nestjs/config';
         port: Number(process.env.DB_PORT || 3306),
         username: process.env.DB_USER || 'root',
         password: process.env.DB_PASS || '70631859HADI',
-        database: process.env.DB_NAME || 'new_schema2',
+        database: process.env.DB_NAME || 'pos_v1',
         autoLoadEntities: true,
         synchronize: true,
         
