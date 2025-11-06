@@ -1,3 +1,4 @@
+// itemVariant.entity.ts
 import {
   Entity,
   Column,
@@ -5,11 +6,13 @@ import {
   ManyToOne,
   JoinColumn,
   OneToMany,
+  Index,
 } from 'typeorm';
 import { Thickness } from './thickness.entity';
 import { InventoryCount } from './count.entity';
 import { ItemBatch } from './itemBatch.entity';
 import { ItemNameDescription } from './itemNameDescription.entity';
+import { RealDescription } from './itemNameRealDescription.entity'; 
 
 @Entity()
 export class ItemVariant {
@@ -20,48 +23,50 @@ export class ItemVariant {
     onDelete: 'CASCADE',
   })
   @JoinColumn()
-  thickness: Thickness; // Reference to the parent Thickness
+  thickness: Thickness;
 
   @Column('decimal', { precision: 20, scale: 2, nullable: false })
-  length: number; // Length of the item
+  length: number;
 
   @Column('decimal', { precision: 20, scale: 2, nullable: false })
-  width: number; // Width of the item
+  width: number;
 
   @Column({ type: 'int', nullable: false })
-  sheetsPerBox: number; // Number of sheets per box
+  sheetsPerBox: number;
 
   @Column({ length: 50, nullable: false })
-  origin: string; // Origin of the item
+  origin: string;
 
   @Column({ type: 'boolean', default: false })
-  fixBox: boolean; // Whether the box size is fixed
+  fixBox: boolean;
 
   @Column({ type: 'boolean', default: false })
-  fixLength: boolean; // Whether the length is fixed
+  fixLength: boolean;
 
   @Column({ type: 'boolean', default: false })
-  fixWidth: boolean; // Whether the width is fixed
-  // 🔽 Inventory Tracking (TOTALS)
+  fixWidth: boolean;
+
+  // Totals
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
-  totalStart: number; // Initial balance
+  totalStart: number;
 
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
-  totalIn: number; // Total purchases
+  totalIn: number;
 
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
-  totalOut: number; // Total sales
+  totalOut: number;
 
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
-  totalBalance: number; // Calculated as (start + in - out)
+  totalBalance: number;
 
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
-  totalStartOFR: number; // Initial balance
-  @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
-  totalInOFR: number; // Total purchases
+  totalStartOFR: number;
 
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
-  totalOutOFR: number; // Total sales
+  totalInOFR: number;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
+  totalOutOFR: number;
 
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
   totalBalanceOFR: number;
@@ -72,6 +77,7 @@ export class ItemVariant {
   @OneToMany(() => InventoryCount, (cnt) => cnt.itemVariant)
   inventoryCounts: InventoryCount[];
 
+  // Legacy/primary description (kept)
   @ManyToOne(() => ItemNameDescription, { eager: false, nullable: true })
   @JoinColumn()
   itemNameDescription: ItemNameDescription;
@@ -79,6 +85,19 @@ export class ItemVariant {
   @Column({ nullable: true })
   itemNameDescriptionId: number;
 
+  @ManyToOne(() => RealDescription, {
+    eager: false,
+    nullable: true,
+   
+  })
+  @JoinColumn({ name: 'realDescriptionId', referencedColumnName: 'id' })
+  realDescription: RealDescription | null;
+
+  @Index()
+  @Column({ type: 'int', nullable: true })
+  realDescriptionId: number | null;
+
+  // Costs (already present in your entity)
   @Column('decimal', { precision: 12, scale: 2, nullable: true })
   averageCost: number;
 

@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { Item } from './item.entity';
 import { ItemVariant } from './itemVariant.entity';
@@ -39,6 +40,11 @@ export class ItemNameDescription {
 
   @Column('decimal', { precision: 12, scale: 2, nullable: true })
   lastCostCVM: number;
+  
+  @Index()
+  @Column({ type: 'int', nullable: true, name: 'sort_index_description' })
+  sort_index_description: number | null;
+
 
 
 }

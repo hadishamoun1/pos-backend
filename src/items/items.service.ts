@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, Repository } from 'typeorm';
 import { Item } from '../entities/inventory/item.entity';
@@ -7,6 +7,8 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 import { DataSource, In } from 'typeorm';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+  // items.service.ts (add these imports at top if missing)
+import { RealDescription } from '../entities/inventory/itemNameRealDescription.entity';
 
 
 
@@ -31,7 +33,7 @@ export class ItemsService {
     private readonly itemVariantRepository: Repository<ItemVariant>,
     @InjectRepository(ItemBatch)
     private readonly itemBatchRepository: Repository<ItemBatch>,
-
+private readonly ds: DataSource,
     @InjectRepository(ItemNameDescription)
     private readonly itemNameDescriptionRepository: Repository<ItemNameDescription>,
 private readonly dataSource: DataSource
@@ -94,103 +96,132 @@ private readonly dataSource: DataSource
 async getSelectedItemDetailsPaginated(opts?: {
   page?: number;
   limit?: number;
-  includeEmpty?: boolean; // kept for compatibility, ignored
+  includeEmpty?: boolean; // ignored
 }) {
   const page  = Math.max(1, Number(opts?.page ?? 1));
   const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
-  const offset = (page - 1) * limit;
 
+  // --- Pull everything we need: variant + thickness + item + realDescription
   const qb = this.itemVariantRepository
-    .createQueryBuilder('variant')
-    .innerJoinAndSelect('variant.thickness', 'thickness')
-    .innerJoinAndSelect('thickness.item', 'item')
-    .leftJoinAndSelect('variant.itemNameDescription', 'variantDescription')
+    .createQueryBuilder('v')
+    .innerJoinAndSelect('v.thickness', 't')
+    .innerJoinAndSelect('t.item', 'i')
+    .leftJoinAndSelect('v.realDescription', 'rd')
     .select([
-      // variant
-      'variant.id',
-      'variant.length',
-      'variant.width',
-      'variant.sheetsPerBox',
-      'variant.origin',
-      // thickness
-      'thickness.id',
-      'thickness.thickness',
-      'thickness.sort_index',
-      // item
-      'item.id',
-      'item.itemName',
-      'item.type',
-      'item.sortIndex', // property name (maps to DB `sort_index`)
-      // description
-      'variantDescription.id',
-      'variantDescription.itemNumber',
-      'variantDescription.categoryName',
-      'variantDescription.subCategory',
-      'variantDescription.colorName',
-      'variantDescription.designName',
+      // Variant
+      'v.id',
+      'v.length',
+      'v.width',
+      'v.sheetsPerBox',
+      'v.origin',
+
+      // Thickness (for ordering)
+      't.id',
+      't.thickness',
+
+      // Item (useful for UI labels; not used for ordering)
+      'i.id',
+      'i.itemName',
+      'i.type',
+
+      // RealDescription (group key + labels + sort index)
+      'rd.id',
+      'rd.itemNumber',
+      'rd.categoryName',
+      'rd.subCategory',
+      'rd.colorName',
+      'rd.designName',
+      'rd.sort_index_real_description',
     ])
 
-    // --- Portable NULLS LAST emulation via computed selects ---
-    // Use DB column names inside the CASE expressions.
-    .addSelect('CASE WHEN item.sort_index IS NULL THEN 1 ELSE 0 END', 'item_sort_nulls')
-    .addSelect('CASE WHEN thickness.sort_index IS NULL THEN 1 ELSE 0 END', 'th_sort_nulls')
+    // ---- Order at SQL so groups and their variants come pre-sorted ----
+    // 1) RealDescription groups by sort_index_real_description ASC, NULLS LAST
+    .addSelect('CASE WHEN rd.sort_index_real_description IS NULL THEN 1 ELSE 0 END', 'rd_nulls')
+    .orderBy('rd_nulls', 'ASC')
+    .addOrderBy('rd.sort_index_real_description', 'ASC')
+    .addOrderBy('rd.id', 'ASC') // stable
 
-    // Items: non-null sort_index first -> sortIndex ASC -> itemName ASC
-    .orderBy('item_sort_nulls', 'ASC')
-    .addOrderBy('item.sortIndex', 'ASC') // property name
-    .addOrderBy('item.itemName', 'ASC')
+    // 2) Inside each description group: by thickness ASC then length ASC
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.id', 'ASC'); // stable tie-breaker
 
-    // Thickness: non-null sort_index first -> sort_index ASC -> thickness ASC
-    .addOrderBy('th_sort_nulls', 'ASC')
-    .addOrderBy('thickness.sort_index', 'ASC') // property is snake_case here
-    .addOrderBy('thickness.thickness', 'ASC')
+  const rows = await qb.getMany();
 
-    // Variants stable inside thickness
-    .addOrderBy('variant.id', 'ASC')
+  // ---- Group rows by RealDescription ----
+  type RDKey = number | 'null';
+  const groupsMap = new Map<RDKey, {
+    realDescription: {
+      id: number | null,
+      itemNumber: string | null,
+      categoryName: string | null,
+      subCategory: string | null,
+      colorName: string | null,
+      designName: string | null,
+      sortIndexRealDescription: number | null,
+    },
+    variants: any[],
+  }>();
 
-    .skip(offset)
-    .take(limit + 1);
+  for (const v of rows) {
+    const rd = (v as any).realDescription || null;
+    const key: RDKey = rd?.id ?? 'null';
 
-  const variants = await qb.getMany();
-
-  const hasMore = variants.length > limit;
-  const pageSlice = hasMore ? variants.slice(0, limit) : variants;
-
-  // regroup into items -> thicknesses -> variants, preserving SQL order
-  const itemMap = new Map<number, any>();
-
-  for (const v of pageSlice) {
-    const th = v.thickness;
-    const it = th.item;
-
-    let itemBucket = itemMap.get(it.id);
-    if (!itemBucket) {
-      itemBucket = {
-        id: it.id,
-        itemName: it.itemName,
-        type: it.type,
-        thicknesses: [],
-      };
-      itemMap.set(it.id, itemBucket);
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        realDescription: {
+          id: rd?.id ?? null,
+          itemNumber: rd?.itemNumber ?? null,
+          categoryName: rd?.categoryName ?? null,
+          subCategory: rd?.subCategory ?? null,
+          colorName: rd?.colorName ?? null,
+          designName: rd?.designName ?? null,
+          sortIndexRealDescription: rd?.sort_index_real_description ?? null,
+        },
+        variants: [],
+      });
     }
 
-    let thBucket = itemBucket.thicknesses.find((t: any) => t.id === th.id);
-    if (!thBucket) {
-      thBucket = { id: th.id, thickness: th.thickness, variants: [] };
-      itemBucket.thicknesses.push(thBucket);
-    }
+    const grp = groupsMap.get(key)!;
 
-    const { thickness, ...variantPlain } = v as any; // strip circular ref
-    thBucket.variants.push(variantPlain);
+    grp.variants.push({
+      variantId: v.id,
+      length: v.length,
+      width: v.width,
+      sheetsPerBox: v.sheetsPerBox,
+      origin: v.origin,
+
+      thicknessId: v.thickness.id,
+      thickness: v.thickness.thickness,
+
+      itemId: v.thickness.item.id,
+      itemName: v.thickness.item.itemName,
+      type: v.thickness.item.type,
+    });
   }
+
+  // ---- Materialize, keep SQL order (already ordered by RD then thickness then length) ----
+  // Convert Map to array preserving insertion order
+  const allGroups = Array.from(groupsMap.values());
+
+  // ---- Pagination over description groups ----
+  const totalGroups = allGroups.length;
+  const start = (page - 1) * limit;
+  const end   = start + limit;
+  const pageGroups = allGroups.slice(start, end);
 
   return {
     page,
     limit,
-    hasMore,
-    data: Array.from(itemMap.values()),
+    hasMore: end < totalGroups,
+    totalGroups,
+    data: pageGroups,
   };
 }
+
+
+
+
 
 
 
@@ -931,7 +962,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     .createQueryBuilder("item")
     .leftJoinAndSelect("item.thicknesses", "thickness")
     .leftJoinAndSelect("thickness.variants", "variant")
-    .leftJoinAndSelect("variant.itemNameDescription", "variantDescription")
+    .leftJoinAndSelect("variant.realDescription", "realDesc") // 🔁 switched here
     .leftJoinAndSelect("variant.batches", "batch")
     .select([
       // item
@@ -949,13 +980,14 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       "variant.width",
       "variant.sheetsPerBox",
       "variant.origin",
-      "variant.itemNameDescriptionId",
-      // desc
-      "variantDescription.id",
-      "variantDescription.categoryName",
-      "variantDescription.subCategory",
-      "variantDescription.colorName",
-      "variantDescription.designName",
+      "variant.realDescriptionId", // 🔁 switched here
+      // real description
+      "realDesc.id",
+      "realDesc.categoryName",
+      "realDesc.subCategory",
+      "realDesc.colorName",
+      "realDesc.designName",
+      "realDesc.sort_index_real_description", // 🔁 switched here
       // batch
       "batch.id",
       "batch.condition",
@@ -969,23 +1001,31 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     .getMany();
 
   // -------------------------------------------------------------------
-  // 2) Flatten (NOW FILTER OUT ZERO/NEGATIVE STOCK)
+  // 2) Flatten (FILTER OUT ZERO/NEGATIVE STOCK)
   // -------------------------------------------------------------------
   type Flat = {
+    // item
     itemId: number;
     itemName: string;
     itemSortIndex: number | null;
     type: string; // 'box' | 'sheet' | 'sqm' | 'unit'
+    // thickness
     thicknessId: number;
     thickness: number;
     thicknessSortIndex: number | null;
+    // variant
     variantId: number;
     length: number;
     width: number;
     sheetsPerBox: number;
     origin: string | null;
-    itemNameDescriptionId: number | null;
-    itemNameDescription: any | null;
+    // real description group
+    realDescId: number | null;
+    realDescSortIndex: number | null;
+    realDescLabel: string;
+    realDescriptionId: number | null;
+    realDescription: any | null;
+    // batches
     batches: Array<{
       id: number;
       condition: string | null;
@@ -1003,7 +1043,6 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         const widthNum  = toNum(v.width);
         const spbNum    = Math.max(1, toNum(v.sheetsPerBox));
 
-        // map → convert → FILTER: keep only batches with positive stock
         const batches = (v.batches || [])
           .map((b) => {
             const balanceSqm = toNum(b.balanceOFR);
@@ -1022,10 +1061,20 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
               balanceOFR: Number(converted.toFixed(2)),
             };
           })
-          .filter((bb) => toNum(bb.balanceOFR) > 0); // <<< filter no-stock batches
+          .filter((bb) => toNum(bb.balanceOFR) > 0);
 
-        // if no batches remain → SKIP this variant entirely
         if (!batches.length) continue;
+
+        const d = (v as any).realDescription || null; // 🔁 switched here
+        const realDescLabel =
+          d
+            ? [
+                d.categoryName ?? "",
+                d.subCategory ?? "",
+                d.colorName ?? "",
+                d.designName ?? "",
+              ].join(" | ")
+            : "ZZZ (No Description)";
 
         flat.push({
           itemId: item.id,
@@ -1040,14 +1089,18 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
           width: widthNum,
           sheetsPerBox: spbNum,
           origin: v.origin || null,
-          itemNameDescriptionId: v.itemNameDescriptionId || null,
-          itemNameDescription: v.itemNameDescription
+          realDescId: (v as any).realDescriptionId ?? null, // 🔁 switched here
+          realDescSortIndex: d?.sort_index_real_description ?? null, // 🔁 switched here
+          realDescLabel,
+          realDescriptionId: (v as any).realDescriptionId || null, // 🔁 switched here
+          realDescription: d
             ? {
-                id: v.itemNameDescription.id,
-                categoryName: v.itemNameDescription.categoryName,
-                subCategory: v.itemNameDescription.subCategory,
-                colorName: v.itemNameDescription.colorName,
-                designName: v.itemNameDescription.designName,
+                id: d.id,
+                categoryName: d.categoryName,
+                subCategory: d.subCategory,
+                colorName: d.colorName,
+                designName: d.designName,
+                sort_index_real_description: d.sort_index_real_description ?? null,
               }
             : null,
           batches,
@@ -1057,31 +1110,36 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
   }
 
   // -------------------------------------------------------------------
-  // 3) Order (box → sheet → sqm per dims, inside thickness, inside itemName)
+  // 3) ORDERING (same logic, keyed by real description)
   // -------------------------------------------------------------------
-  const nullLast = (n: any) => (n == null ? Number.POSITIVE_INFINITY : Number(n));
-  const typeRank = (t: string) => (t === "box" ? 0 : t === "sheet" ? 1 : t === "sqm" ? 2 : 3);
+  const nullLastNum = (n: any) => (n == null ? Number.POSITIVE_INFINITY : Number(n));
+  const byDesc = new Map<number | 'null', Flat[]>();
 
-  const byName = new Map<string, Flat[]>();
   for (const r of flat) {
-    if (!byName.has(r.itemName)) byName.set(r.itemName, []);
-    byName.get(r.itemName)!.push(r);
+    const key = r.realDescId ?? 'null';
+    if (!byDesc.has(key)) byDesc.set(key, []);
+    byDesc.get(key)!.push(r);
   }
 
-  const nameKeys = Array.from(byName.keys()).sort((a, b) => {
-    const aMin = Math.min(...byName.get(a)!.map((x) => nullLast(x.itemSortIndex)));
-    const bMin = Math.min(...byName.get(b)!.map((x) => nullLast(x.itemSortIndex)));
+  const descKeys = Array.from(byDesc.keys()).sort((ka, kb) => {
+    const aArr = byDesc.get(ka)!;
+    const bArr = byDesc.get(kb)!;
+    const aMin = Math.min(...aArr.map((x) => nullLastNum(x.realDescSortIndex)));
+    const bMin = Math.min(...bArr.map((x) => nullLastNum(x.realDescSortIndex)));
     if (aMin !== bMin) return aMin - bMin;
-    return a.localeCompare(b);
+    const aLbl = aArr[0]?.realDescLabel ?? "";
+    const bLbl = bArr[0]?.realDescLabel ?? "";
+    return aLbl.localeCompare(bLbl);
   });
 
   const ordered: Flat[] = [];
 
-  for (const name of nameKeys) {
-    const rowsOfName = byName.get(name)!;
+  for (const dKey of descKeys) {
+    const rowsOfDesc = byDesc.get(dKey)!;
 
+    // group by thickness numeric
     const byTh = new Map<number, Flat[]>();
-    for (const r of rowsOfName) {
+    for (const r of rowsOfDesc) {
       if (!byTh.has(r.thickness)) byTh.set(r.thickness, []);
       byTh.get(r.thickness)!.push(r);
     }
@@ -1089,43 +1147,46 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     const thKeys = Array.from(byTh.keys()).sort((ta, tb) => {
       const aArr = byTh.get(ta)!;
       const bArr = byTh.get(tb)!;
-      const aMin = Math.min(...aArr.map((x) => nullLast(x.thicknessSortIndex)));
-      const bMin = Math.min(...bArr.map((x) => nullLast(x.thicknessSortIndex)));
+      const aMin = Math.min(...aArr.map((x) => nullLastNum(x.thicknessSortIndex)));
+      const bMin = Math.min(...bArr.map((x) => nullLastNum(x.thicknessSortIndex)));
       if (aMin !== bMin) return aMin - bMin;
-      return ta - tb;
+      return ta - tb; // numeric thickness ASC
     });
 
     for (const th of thKeys) {
       const rowsTh = byTh.get(th)!;
 
+      // split dimensioned vs others
       const dimmed    = rowsTh.filter((r) => r.length > 0 && r.width > 0);
       const nonDimmed = rowsTh.filter((r) => !(r.length > 0 && r.width > 0) || r.type === "sqm");
 
-      const byDims = new Map<string, Flat[]>();
+      // group dimmed by **length only**
+      const byLen = new Map<number, Flat[]>();
       for (const r of dimmed) {
-        const k = `${r.length}|${r.width}`;
-        if (!byDims.has(k)) byDims.set(k, []);
-        byDims.get(k)!.push(r);
+        if (!byLen.has(r.length)) byLen.set(r.length, []);
+        byLen.get(r.length)!.push(r);
       }
 
-      const dimKeys = Array.from(byDims.keys()).sort((ka, kb) => {
-        const [aL, aW] = ka.split("|").map(Number);
-        const [bL, bW] = kb.split("|").map(Number);
-        const aArea = aL * aW, bArea = bL * bW;
-        if (aArea !== bArea) return bArea - aArea;
-        if (aL !== bL) return bL - aL;
-        return bW - aW;
-      });
+      // LENGTH ORDER: length ASC (ignore width)
+      const lenKeys = Array.from(byLen.keys()).sort((a, b) => a - b);
 
-      for (const dk of dimKeys) {
-        const g = byDims.get(dk)!;
-        const boxes  = g.filter((x) => x.type === "box")
-                        .sort((a, b) => (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) || a.variantId - b.variantId);
-        const sheets = g.filter((x) => x.type === "sheet").sort((a, b) => a.variantId - b.variantId);
+      for (const lk of lenKeys) {
+        const g = byLen.get(lk)!;
+
+        // keep type order: box → sheet → sqm (no width sort)
+        const boxes  = g
+          .filter((x) => x.type === "box")
+          .sort((a, b) => (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) || a.variantId - b.variantId);
+
+        const sheets = g
+          .filter((x) => x.type === "sheet")
+          .sort((a, b) => a.variantId - b.variantId);
+
         const sqms   = g.filter((x) => x.type === "sqm");
         ordered.push(...boxes, ...sheets, ...sqms);
       }
 
+      // place unspecified dims after (same as before)
       const sqmOthers    = nonDimmed.filter((x) => x.type === "sqm").sort((a, b) => a.variantId - b.variantId);
       const noDimsNonSqm = nonDimmed.filter((x) => x.type !== "sqm");
       ordered.push(...sqmOthers, ...noDimsNonSqm);
@@ -1134,7 +1195,6 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
 
   // -------------------------------------------------------------------
   // 4) Expand to *rows* and paginate AFTER ordering
-  //     (No empty “no-stock” rows will be created)
   // -------------------------------------------------------------------
   type Row = {
     itemId: number;
@@ -1146,8 +1206,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     width: number;
     sheetsPerBox: number;
     origin: string | null;
-    itemNameDescriptionId: number | null;
-    itemNameDescription: any | null;
+    realDescriptionId: number | null; // 🔁 switched here
+    realDescription: any | null;      // 🔁 switched here
     batchId?: number | null;
     condition?: string | null;
     dateReceived?: string | Date | null;
@@ -1156,7 +1216,6 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
 
   const allRows: Row[] = [];
   for (const r of ordered) {
-    // every r has at least one batch (by earlier filter)
     for (const b of r.batches) {
       allRows.push({
         itemId: r.itemId,
@@ -1168,8 +1227,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         width: r.width,
         sheetsPerBox: r.sheetsPerBox,
         origin: r.origin,
-        itemNameDescriptionId: r.itemNameDescriptionId,
-        itemNameDescription: r.itemNameDescription,
+        realDescriptionId: r.realDescriptionId,   // 🔁 switched here
+        realDescription: r.realDescription,       // 🔁 switched here
         batchId: b.id,
         condition: b.condition,
         dateReceived: b.dateReceived,
@@ -1191,6 +1250,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     data: pageRows,
   };
 }
+
+
 
 
 // ========= Helpers =========
@@ -2562,7 +2623,729 @@ async createCleanBatchesForAll(opts?: { force?: boolean }) {
   return this.createCleanBatchesForVariants(rows.map(r => Number(r.id)), opts);
 }
 
+
+
+
+
+
+async getVariantLedger(params?: {
+  q?: string; // free-text query "5.5ملم ابيض 225*321-025"
+  itemName?: string;
+  type?: 'box' | 'sheet' | 'sqm' | 'unit';
+  thickness?: number;
+  length?: number;
+  width?: number;
+  sheetsPerBox?: number;
+  origin?: string;
+  page?: number;
+  limit?: number;
+  variantIds?: number[];
+}) {
+  // ---------- local helpers ----------
+  const toNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const ARABIC_INDIC_MAP: Record<string, string> = {
+    '٠': '0','١': '1','٢': '2','٣': '3','٤': '4','٥': '5','٦': '6','٧': '7','٨': '8','٩': '9',
+    '۰': '0','۱': '1','۲': '2','۳': '3','۴': '4','۵': '5','۶': '6','۷': '7','۸': '8','۹': '9',
+  };
+  const normalizeDigitsAll = (input: string) =>
+    String(input || '').replace(/[٠-٩۰-۹]/g, d => ARABIC_INDIC_MAP[d] ?? d);
+
+  const normalizeArabicAlef = (s: string) =>
+    String(s || '').replace(/أ|إ|آ/g, 'ا');
+
+  const parseVariantQuery = (qRaw: string): {
+    thickness?: number;
+    length?: number;
+    width?: number;
+    sheetsPerBox?: number;
+    nameTokens?: string[];
+  } => {
+    if (!qRaw) return {};
+    let q = normalizeDigitsAll(qRaw).trim().replace(/\s+/g, ' ');
+    let working = q;
+
+    // thickness: 5.5ملم / 5,5 ملم / 5 ملم / 5مم
+    const thMatch = working.match(/(\d+(?:[.,]\d+)?)\s*(?:ملم|مم|م)\b/);
+    let thickness: number | undefined;
+    if (thMatch) {
+      const th = Number((thMatch[1] || '').replace(',', '.'));
+      if (Number.isFinite(th)) thickness = th;
+      working = working.replace(thMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // dimensions + optional sheets per box: 225*321-025 | 225×321 | 225x321-25
+    const dimRe = /(\d{2,5})\s*[xX×*]\s*(\d{2,5})(?:\s*[-/]\s*0?(\d{1,3}))?/;
+    const dimMatch = working.match(dimRe);
+    let lengthN: number | undefined;
+    let widthN: number | undefined;
+    let spb: number | undefined;
+    if (dimMatch) {
+      lengthN = Number(dimMatch[1]);
+      widthN  = Number(dimMatch[2]);
+      if (dimMatch[3] != null) spb = Number(dimMatch[3]);
+      working = working.replace(dimMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // leftover words → item name tokens
+    working = working.replace(/\b(?:ملم|مم|م)\b/g, ' ').replace(/\s+/g, ' ').trim();
+    let nameTokens: string[] | undefined;
+    if (working) {
+      const tokens = working
+        .split(/\s+/)
+        .map(t => t.trim())
+        .filter(t => t.length >= 2);
+      if (tokens.length) nameTokens = tokens;
+    }
+
+    return { thickness, length: lengthN, width: widthN, sheetsPerBox: spb, nameTokens };
+  };
+
+  // sqm → units
+  const convertFromSqm = (args: {
+    itemType: string | null | undefined;
+    lengthCm: number;
+    widthCm: number;
+    sheetsPerBox: number;
+    valueSqm: number;
+  }) => {
+    const { itemType, lengthCm, widthCm, sheetsPerBox, valueSqm } = args;
+    const perSheetSqm =
+      toNum(lengthCm) > 0 && toNum(widthCm) > 0
+        ? (toNum(lengthCm) * toNum(widthCm)) / 10000
+        : 0;
+    const type = String(itemType || '').toLowerCase();
+
+    if (type === 'box') {
+      const perBoxSqm = perSheetSqm * Math.max(1, toNum(sheetsPerBox));
+      return perBoxSqm > 0 ? valueSqm / perBoxSqm : valueSqm;
+    }
+    if (type === 'sheet') {
+      return perSheetSqm > 0 ? valueSqm / perSheetSqm : valueSqm;
+    }
+    return valueSqm; // 'sqm' or 'unit'
+  };
+
+  // ---------- paging ----------
+  const page  = Math.max(1, Number(params?.page ?? 1));
+  const limit = Math.min(200, Math.max(1, Number(params?.limit ?? 50)));
+  const skip  = (page - 1) * limit;
+
+  // ---------- query builder ----------
+  const qb = this.itemVariantRepository
+    .createQueryBuilder('v')
+    .innerJoinAndSelect('v.thickness', 't')
+    .innerJoinAndSelect('t.item', 'i')
+    .leftJoinAndSelect('v.batches', 'b')
+    // 🔁 swap to RealDescription
+    .leftJoinAndSelect('v.realDescription', 'r')
+    .select([
+      // variant
+      'v.id',
+      'v.length',
+      'v.width',
+      'v.sheetsPerBox',
+      'v.origin',
+      'v.totalStart',
+      'v.totalIn',
+      'v.totalOut',
+      'v.totalBalance',
+      'v.totalStartOFR',
+      'v.totalInOFR',
+      'v.totalOutOFR',
+      'v.totalBalanceOFR',
+      // thickness
+      't.id',
+      't.thickness',
+      't.sort_index',
+      // item
+      'i.id',
+      'i.itemName',
+      'i.type',
+      // batches
+      'b.id',
+      'b.condition',
+      'b.dateReceived',
+      'b.start',
+      'b.in',
+      'b.out',
+      'b.balance',
+      'b.startOFR',
+      'b.inOFR',
+      'b.outOFR',
+      'b.balanceOFR',
+      // real description (ordering + labels)
+      'r.id',
+      'r.sort_index_real_description',
+      'r.categoryName',
+      'r.subCategory',
+      'r.colorName',
+      'r.designName',
+      'r.itemNumber',
+    ]);
+
+  // Optional: restrict to specific variant ids
+  if (params?.variantIds && params.variantIds.length > 0) {
+    qb.andWhere('v.id IN (:...vids)', { vids: params.variantIds });
+  }
+
+  // ---------- free-text q parsing ----------
+  if (params?.q) {
+    const parsed = parseVariantQuery(params.q);
+
+    if (Number.isFinite(parsed.thickness)) {
+      qb.andWhere('ABS(t.thickness - :pth) < 0.011', { pth: Number(parsed.thickness) });
+    }
+    if (Number.isFinite(parsed.length)) {
+      qb.andWhere('v.length = :plen', { plen: Number(parsed.length) });
+    }
+    if (Number.isFinite(parsed.width)) {
+      qb.andWhere('v.width = :pwid', { pwid: Number(parsed.width) });
+    }
+    if (Number.isFinite(parsed.sheetsPerBox)) {
+      qb.andWhere('v.sheetsPerBox = :pspb', { pspb: Number(parsed.sheetsPerBox) });
+    }
+    if (parsed.nameTokens?.length) {
+      parsed.nameTokens.forEach((tok, idx) => {
+        const tokenNorm = `%${normalizeArabicAlef(tok)}%`;
+        const tokenRaw  = `%${tok}%`;
+        qb.andWhere(
+          `(REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx} OR i.itemName LIKE :tokR${idx})`,
+          { [`tokN${idx}`]: tokenNorm, [`tokR${idx}`]: tokenRaw }
+        );
+      });
+    }
+  }
+
+  // ---------- explicit filters ----------
+  if (params?.itemName) {
+    const nm = normalizeArabicAlef(params.itemName);
+    qb.andWhere(
+      `(REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm OR i.itemName LIKE :nmRaw)`,
+      { nm: `%${nm}%`, nmRaw: `%${params.itemName}%` }
+    );
+  }
+  if (params?.type) qb.andWhere('i.type = :tp', { tp: params.type });
+  if (Number.isFinite(params?.thickness)) qb.andWhere('ABS(t.thickness - :th) < 0.011', { th: Number(params!.thickness) });
+  if (Number.isFinite(params?.length)) qb.andWhere('v.length = :len', { len: Number(params!.length) });
+  if (Number.isFinite(params?.width)) qb.andWhere('v.width = :wid', { wid: Number(params!.width) });
+  if (Number.isFinite(params?.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :spb', { spb: Number(params!.sheetsPerBox) });
+  if (params?.origin) qb.andWhere('v.origin = :org', { org: params.origin });
+
+  // ---------- ORDERING (by real description, then thickness, then length) ----------
+  qb
+    .addSelect('CASE WHEN r.sort_index_real_description IS NULL THEN 1 ELSE 0 END', 'r_nulls')
+    .addSelect('CASE WHEN t.sort_index IS NULL THEN 1 ELSE 0 END', 't_nulls');
+
+  qb
+    // 1) RealDescription: non-null first, then by sort index
+    .orderBy('r_nulls', 'ASC')
+    .addOrderBy('r.sort_index_real_description', 'ASC')
+    // 2) Thickness: non-null first, then value, then numeric thickness
+    .addOrderBy('t_nulls', 'ASC')
+    .addOrderBy('t.sort_index', 'ASC')
+    .addOrderBy('t.thickness', 'ASC')
+    // 3) Dimensions: length only
+    .addOrderBy('v.length', 'ASC')
+    // Stable tie-breaker
+    .addOrderBy('v.id', 'ASC')
+    .skip(skip)
+    .take(limit);
+
+  // fetch
+  const variants = await qb.getMany();
+
+  // ---------- Response mapping ----------
+  const data = variants.map((v) => {
+    const itemType = v.thickness.item.type;
+    const len = toNum(v.length);
+    const wid = toNum(v.width);
+    const spb = Math.max(1, toNum(v.sheetsPerBox));
+
+    const ofrTotalsUnits = {
+      start: Number(
+        convertFromSqm({
+          itemType,
+          lengthCm: len,
+          widthCm: wid,
+          sheetsPerBox: spb,
+          valueSqm: toNum(v.totalStartOFR ?? 0),
+        }).toFixed(2)
+      ),
+      in: Number(
+        convertFromSqm({
+          itemType,
+          lengthCm: len,
+          widthCm: wid,
+          sheetsPerBox: spb,
+          valueSqm: toNum(v.totalInOFR ?? 0),
+        }).toFixed(2)
+      ),
+      out: Number(
+        convertFromSqm({
+          itemType,
+          lengthCm: len,
+          widthCm: wid,
+          sheetsPerBox: spb,
+          valueSqm: toNum(v.totalOutOFR ?? 0),
+        }).toFixed(2)
+      ),
+      balance: Number(
+        convertFromSqm({
+          itemType,
+          lengthCm: len,
+          widthCm: wid,
+          sheetsPerBox: spb,
+          valueSqm: toNum(v.totalBalanceOFR ?? 0),
+        }).toFixed(2)
+      ),
+    };
+
+    const batches = (v.batches ?? []).map((b) => {
+      const balanceOFRSqm = toNum(b.balanceOFR ?? 0);
+      const convertedUnits = convertFromSqm({
+        itemType,
+        lengthCm: len,
+        widthCm: wid,
+        sheetsPerBox: spb,
+        valueSqm: balanceOFRSqm,
+      });
+
+      return {
+        id: b.id,
+        condition: b.condition ?? null,
+        dateReceived: b.dateReceived ?? null,
+
+        start: toNum(b.start ?? 0),
+        in: toNum(b.in ?? 0),
+        out: toNum(b.out ?? 0),
+        balance: toNum(b.balance ?? 0),
+
+        startOFR: Number(toNum(b.startOFR ?? 0).toFixed(2)),
+        inOFR: Number(toNum(b.inOFR ?? 0).toFixed(2)),
+        outOFR: Number(toNum(b.outOFR ?? 0).toFixed(2)),
+        balanceOFRSqm: Number(balanceOFRSqm.toFixed(2)),
+
+        // converted to unit quantity (box/sheet count or sqm)
+        balanceOFR: Number(convertedUnits.toFixed(2)),
+      };
+    });
+
+    // 🔁 description now from RealDescription (v.realDescription)
+    const rd: any = (v as any).realDescription ?? null;
+
+    return {
+      itemId: v.thickness.item.id,
+      itemName: v.thickness.item.itemName,
+      type: itemType as 'box' | 'sheet' | 'sqm' | 'unit',
+
+      thicknessId: v.thickness.id,
+      thickness: Number(v.thickness.thickness),
+
+      variantId: v.id,
+      length: len,
+      width: wid,
+      sheetsPerBox: spb,
+      origin: v.origin,
+
+      ones: {
+        start: Number(v.totalStart ?? 0),
+        in: Number(v.totalIn ?? 0),
+        out: Number(v.totalOut ?? 0),
+        balance: Number(v.totalBalance ?? 0),
+      },
+
+      ofrTotalsSqm: {
+        startOFR: Number(toNum(v.totalStartOFR ?? 0).toFixed(2)),
+        inOFR: Number(toNum(v.totalInOFR ?? 0).toFixed(2)),
+        outOFR: Number(toNum(v.totalOutOFR ?? 0).toFixed(2)),
+        balanceOFR: Number(toNum(v.totalBalanceOFR ?? 0).toFixed(2)),
+      },
+
+      ofrTotalsUnits,
+
+      // keep the same outward shape
+      description: rd
+        ? {
+            id: rd.id ?? null,
+            categoryName: rd.categoryName ?? null,
+            subCategory:  rd.subCategory ?? null,
+            colorName:    rd.colorName ?? null,
+            designName:   rd.designName ?? null,
+            // expose real description's sort index under the same key name if callers expect it
+            sortIndexDescription: rd.sort_index_real_description ?? null,
+            itemNumber:  rd.itemNumber ?? null,
+          }
+        : null,
+
+      batches,
+    };
+  });
+
+  return {
+    page,
+    limit,
+    totalRows: data.length,
+    hasMore: data.length === limit,
+    data,
+  };
 }
+
+
+
+
+
+
+
+// GET /item-descriptions
+  async listSorted(opts: { q?: string; withCounts?: boolean }) {
+    const qb = this.ds.getRepository(ItemNameDescription)
+      .createQueryBuilder('d')
+      .select([
+        'd.id',
+         'd.itemNumber',  
+        'd.categoryName',
+        'd.subCategory',
+        'd.colorName',
+        'd.designName',
+        'd.sort_index_description',
+      ])
+      // non-null first (0), nulls last (1)
+      .addOrderBy('CASE WHEN d.sort_index_description IS NULL THEN 1 ELSE 0 END', 'ASC')
+      .addOrderBy('d.sort_index_description', 'ASC')
+      // readable tie-breaker
+      .addOrderBy(
+        `CONCAT(
+           COALESCE(d.categoryName,''),'|',
+           COALESCE(d.subCategory,''),'|',
+           COALESCE(d.colorName,''),'|',
+           COALESCE(d.designName,''),'|',
+           COALESCE(d.itemNumber,'')      
+         )`,
+        'ASC',
+      );
+
+    if (opts.q) {
+      qb.andWhere(
+        `CONCAT(
+           COALESCE(d.categoryName,''),' ',
+           COALESCE(d.subCategory,''),' ',
+           COALESCE(d.colorName,''),' ',
+           COALESCE(d.designName,''),' ',
+           COALESCE(d.itemNumber,'')   
+         ) LIKE :q`,
+        { q: `%${opts.q}%` },
+      );
+    }
+
+    const rows = await qb.getMany();
+
+    if (!opts.withCounts) return rows;
+
+    // count variants per description (single grouped query)
+    const counts = await this.ds.getRepository(ItemVariant)
+      .createQueryBuilder('v')
+      .select('v.itemNameDescriptionId', 'descId')
+      .addSelect('COUNT(1)', 'cnt')
+      .where('v.itemNameDescriptionId IS NOT NULL')
+      .groupBy('v.itemNameDescriptionId')
+      .getRawMany<{ descId: number; cnt: string }>();
+
+    const map = new Map<number, number>();
+    for (const r of counts) map.set(Number(r.descId), Number(r.cnt));
+
+    return rows.map((r) => ({
+      ...r,
+      // keep property names as in entity (snake for sort index)
+      variantsCount: map.get(r.id) ?? 0,
+    }));
+  }
+
+  // PUT /item-descriptions/reorder
+  async reorder(order?: any) {
+    if (!Array.isArray(order) || order.length === 0) {
+      throw new BadRequestException('Body must be { order: number[] } with at least one id.');
+    }
+    // sanitize & dedupe
+    const ids = order.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
+    const unique = Array.from(new Set(ids));
+    if (unique.length !== ids.length) {
+      throw new BadRequestException('Order array contains duplicates or invalid values.');
+    }
+
+    const repo = this.ds.getRepository(ItemNameDescription);
+    const existing = await repo.find({ select: ['id'], where: { id: In(unique) } });
+    const existingIds = new Set(existing.map((e) => e.id));
+    const missing = unique.filter((id) => !existingIds.has(id));
+    if (missing.length) {
+      throw new BadRequestException(`These IDs do not exist: ${missing.join(', ')}`);
+    }
+
+    // Transactionally write 1..N using a CASE update
+    await this.ds.transaction(async (manager) => {
+      const cases = unique.map((id, idx) => `WHEN ${id} THEN ${idx + 1}`).join(' ');
+      await manager
+        .createQueryBuilder()
+        .update(ItemNameDescription)
+        .set({
+          // use the exact property name you have in the entity
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          sort_index_description: () => `CASE id ${cases} END` as any,
+        })
+        .where('id IN (:...ids)', { ids: unique })
+        .execute();
+    });
+  }
+
+
+
+   async fetchDescriptionVariants(opts: {
+    descId: number;
+    page?: number;
+    limit?: number;
+    q?: string;
+  }) {
+    const page  = Math.max(1, Number(opts.page ?? 1));
+    const limit = Math.min(1000, Math.max(1, Number(opts.limit ?? 500)));
+    const skip  = (page - 1) * limit;
+
+    const qb = this.itemVariantRepository
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.thickness', 't')
+      .innerJoinAndSelect('t.item', 'i')
+      .leftJoinAndSelect('v.itemNameDescription', 'd')
+      .select([
+        'v.id',
+        'v.length',
+        'v.width',
+        'v.sheetsPerBox',
+        'v.origin',
+        't.id',
+        't.thickness',
+        'i.id',
+        'i.itemName',
+        'd.id',
+      ])
+      .where('v.itemNameDescriptionId = :descId', { descId: opts.descId });
+
+    // optional free-text filter on item name / origin (simple and fast)
+    if (opts.q) {
+      const q = `%${opts.q}%`;
+      qb.andWhere(
+        `(i.itemName LIKE :q OR v.origin LIKE :q)`,
+        { q },
+      );
+    }
+
+    // ORDER: Item → Thickness → Length → Width → Origin → v.id
+    qb
+      .orderBy('i.itemName', 'ASC')
+      .addOrderBy('t.thickness', 'ASC')
+      .addOrderBy('v.length', 'ASC')
+      .addOrderBy('v.width', 'ASC')
+      .addOrderBy('v.origin', 'ASC')
+      .addOrderBy('v.id', 'ASC')
+      .skip(skip)
+      .take(limit);
+
+    // fetch both rows and total for pagination
+    const [rows, total] = await qb.getManyAndCount();
+
+    const data = rows.map((v) => ({
+      variantId: v.id,
+      itemName: v.thickness.item.itemName,
+      thickness: Number(v.thickness.thickness),
+      length: Number(v.length ?? 0),
+      width: Number(v.width ?? 0),
+      sheetsPerBox: Number(v.sheetsPerBox ?? 0),
+      origin: v.origin ?? null,
+      // You can add more fields later (type, ids, etc.)
+    }));
+
+    return {
+      page,
+      limit,
+      total,
+      hasMore: skip + data.length < total,
+      data,
+    };
+  }
+
+
+
+
+
+
+// ================== REAL DESCRIPTIONS ==================
+
+/** GET /items/real-descriptions */
+async listSortedReal(opts: { q?: string; withCounts?: boolean }) {
+  const qb = this.ds.getRepository(RealDescription)
+    .createQueryBuilder('r')
+    .select([
+      'r.id',
+      'r.itemNumber',
+      'r.categoryName',
+      'r.subCategory',
+      'r.colorName',
+      'r.designName',
+      'r.sort_index_real_description',
+    ])
+    // non-null first (0), nulls last (1)
+    .addOrderBy('CASE WHEN r.sort_index_real_description IS NULL THEN 1 ELSE 0 END', 'ASC')
+    .addOrderBy('r.sort_index_real_description', 'ASC')
+    // readable tie-breaker
+    .addOrderBy(
+      `CONCAT(
+         COALESCE(r.categoryName,''),'|',
+         COALESCE(r.subCategory,''),'|',
+         COALESCE(r.colorName,''),'|',
+         COALESCE(r.designName,''),'|',
+         COALESCE(r.itemNumber,'')
+       )`,
+      'ASC',
+    );
+
+  if (opts.q) {
+    qb.andWhere(
+      `CONCAT(
+         COALESCE(r.categoryName,''),' ',
+         COALESCE(r.subCategory,''),' ',
+         COALESCE(r.colorName,''),' ',
+         COALESCE(r.designName,''),' ',
+         COALESCE(r.itemNumber,'')
+       ) LIKE :q`,
+      { q: `%${opts.q}%` },
+    );
+  }
+
+  const rows = await qb.getMany();
+
+  if (!opts.withCounts) return rows;
+
+  // count variants per REAL description (single grouped query)
+  const counts = await this.itemVariantRepository
+    .createQueryBuilder('v')
+    .select('v.realDescriptionId', 'descId')
+    .addSelect('COUNT(1)', 'cnt')
+    .where('v.realDescriptionId IS NOT NULL')
+    .groupBy('v.realDescriptionId')
+    .getRawMany<{ descId: number; cnt: string }>();
+
+  const map = new Map<number, number>();
+  for (const r of counts) map.set(Number(r.descId), Number(r.cnt));
+
+  return rows.map((r) => ({
+    ...r,
+    variantsCount: map.get(r.id) ?? 0,
+  }));
+}
+
+/** PUT /items/real-descriptions/reorder  body: { order: number[] } */
+async reorderReal(order?: any) {
+  if (!Array.isArray(order) || order.length === 0) {
+    throw new BadRequestException('Body must be { order: number[] } with at least one id.');
+  }
+  const ids = order.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
+  const unique = Array.from(new Set(ids));
+  if (unique.length !== ids.length) {
+    throw new BadRequestException('Order array contains duplicates or invalid values.');
+  }
+
+  const repo = this.ds.getRepository(RealDescription);
+  const existing = await repo.find({ select: ['id'], where: { id: In(unique) } });
+  const existingIds = new Set(existing.map((e) => e.id));
+  const missing = unique.filter((id) => !existingIds.has(id));
+  if (missing.length) {
+    throw new BadRequestException(`These IDs do not exist: ${missing.join(', ')}`);
+  }
+
+  await this.ds.transaction(async (manager) => {
+    const cases = unique.map((id, idx) => `WHEN ${id} THEN ${idx + 1}`).join(' ');
+    await manager
+      .createQueryBuilder()
+      .update(RealDescription)
+      .set({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        sort_index_real_description: () => `CASE id ${cases} END` as any,
+      })
+      .where('id IN (:...ids)', { ids: unique })
+      .execute();
+  });
+}
+
+/** GET /items/real-descriptions/:realDescId/variants */
+async fetchRealDescriptionVariants(opts: {
+  realDescId: number;
+  page?: number;
+  limit?: number;
+  q?: string;
+}) {
+  const page  = Math.max(1, Number(opts.page ?? 1));
+  const limit = Math.min(1000, Math.max(1, Number(opts.limit ?? 500)));
+  const skip  = (page - 1) * limit;
+
+  const qb = this.itemVariantRepository
+    .createQueryBuilder('v')
+    .innerJoinAndSelect('v.thickness', 't')
+    .innerJoinAndSelect('t.item', 'i')
+    .leftJoin('v.realDescription', 'rd')
+    .select([
+      'v.id',
+      'v.length',
+      'v.width',
+      'v.sheetsPerBox',
+      'v.origin',
+      't.id',
+      't.thickness',
+      'i.id',
+      'i.itemName',
+      // we don’t actually need columns from rd here, but you can expose if you want
+    ])
+    .where('v.realDescriptionId = :id', { id: opts.realDescId });
+
+  if (opts.q) {
+    const q = `%${opts.q}%`;
+    qb.andWhere(`(i.itemName LIKE :q OR v.origin LIKE :q)`, { q });
+  }
+
+  qb
+    .orderBy('i.itemName', 'ASC')
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.width', 'ASC')
+    .addOrderBy('v.origin', 'ASC')
+    .addOrderBy('v.id', 'ASC')
+    .skip(skip)
+    .take(limit);
+
+  const [rows, total] = await qb.getManyAndCount();
+
+  const data = rows.map((v) => ({
+    variantId: v.id,
+    itemName: v.thickness.item.itemName,
+    thickness: Number(v.thickness.thickness),
+    length: Number(v.length ?? 0),
+    width: Number(v.width ?? 0),
+    sheetsPerBox: Number(v.sheetsPerBox ?? 0),
+    origin: v.origin ?? null,
+  }));
+
+  return {
+    page,
+    limit,
+    total,
+    hasMore: skip + data.length < total,
+    data,
+  };
+}
+
+}
+
+
 
 
 

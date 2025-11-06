@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Delete, Query, ParseIntPipe, DefaultValuePipe, Put } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, Query, ParseIntPipe, DefaultValuePipe, Put, BadRequestException } from '@nestjs/common';
 import { ItemsService } from './items.service';
 import { Item } from '../entities/inventory/item.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
@@ -45,8 +45,24 @@ async getSelectedPaginated(
     includeEmpty: ie,
   });
 }
-// items.controller.ts
 
+
+
+@Get('v1/variant-ledger')
+  getVariantLedger(@Query() q: any) {
+    return this.itemsService.getVariantLedger({
+      itemName: q.itemName,
+      type: q.type,
+      thickness: q.thickness ? Number(q.thickness) : undefined,
+      length: q.length ? Number(q.length) : undefined,
+      width: q.width ? Number(q.width) : undefined,
+      sheetsPerBox: q.sheetsPerBox ? Number(q.sheetsPerBox) : undefined,
+      origin: q.origin,
+      page: q.page ? Number(q.page) : 1,
+      limit: q.limit ? Number(q.limit) : 50,
+    });
+  }
+  
   @Get('v2/filtered-items')
   async getItemColumns(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -188,6 +204,129 @@ async searchModalInStock(
     const lm = Math.max(1, Math.min(200, Number(limit) || 50));
     return this.itemsService.searchSmart(q || '', pg, lm);
   }
+
+
+  // GET /items/item-descriptions/:descId/variants?limit=500&page=1&q=
+  @Get('item-descriptions/:descId/variants')
+  async listVariantsForDescription(
+    @Param('descId') descId: string,
+    @Query('limit') limit?: string,
+    @Query('page') page?: string,
+    @Query('q') q?: string, // optional extra filter on itemName/design/origin
+  ) {
+    const id = Number(descId);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new BadRequestException('descId must be a positive integer.');
+    }
+    const lim = Math.min(1000, Math.max(1, Number(limit ?? 500)));
+    const pg  = Math.max(1, Number(page ?? 1));
+
+    return this.itemsService.fetchDescriptionVariants({
+      descId: id,
+      limit: lim,
+      page: pg,
+      q: q && q.trim() ? q.trim() : undefined,
+    });
+  }
+
+
+
+    // ---------- REAL DESCRIPTIONS ----------
+
+  // GET /items/real-descriptions?q=...&withCounts=1|true|0|false
+  @Get('real-descriptions')
+  async listSortedReal(@Query() query: any) {
+    const q = typeof query.q === 'string' ? query.q : undefined;
+    let withCounts: boolean | undefined;
+    if (query.withCounts !== undefined) {
+      const s = String(query.withCounts).toLowerCase().trim();
+      withCounts = s === '1' || s === 'true' || s === 'yes';
+    }
+    return this.itemsService.listSortedReal({
+      q,
+      withCounts: withCounts ?? false,
+    });
+  }
+
+
+  // GET /items/real-descriptions/:realDescId/variants?limit=500&page=1&q=
+  @Get('real-descriptions/:realDescId/variants')
+  async listVariantsForRealDescription(
+    @Param('realDescId') realDescId: string,
+    @Query('limit') limit?: string,
+    @Query('page') page?: string,
+    @Query('q') q?: string, // optional extra filter on itemName/origin
+  ) {
+    const id = Number(realDescId);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new BadRequestException('realDescId must be a positive integer.');
+    }
+    const lim = Math.min(1000, Math.max(1, Number(limit ?? 500)));
+    const pg  = Math.max(1, Number(page ?? 1));
+
+    return this.itemsService.fetchRealDescriptionVariants({
+      realDescId: id,
+      limit: lim,
+      page: pg,
+      q: q && q.trim() ? q.trim() : undefined,
+    });
+  }
+
+
+  // GET /item-descriptions?q=...&withCounts=true|1|false|0
+  @Get('item-descriptions')
+  async listSorted(@Query() query: any) {
+    const q = typeof query.q === 'string' ? query.q : undefined;
+
+    // accept 1/0/true/false/yes/no (case-insensitive)
+    let withCounts: boolean | undefined;
+    if (query.withCounts !== undefined) {
+      const s = String(query.withCounts).toLowerCase().trim();
+      withCounts = s === '1' || s === 'true' || s === 'yes';
+    }
+
+    return this.itemsService.listSorted({
+      q,
+      withCounts: withCounts ?? false,
+    });
+  }
+
+  // PUT /item-descriptions/reorder  body: { order: number[] }
+  @Put('item-descriptions/reorder')
+  async reorder(@Body() body: any) {
+    if (!body || !Array.isArray(body.order) || body.order.length === 0) {
+      throw new BadRequestException('Body must be { order: number[] } with at least one id.');
+    }
+    // quick sanity: coerce to numbers and ensure positives
+    const order = body.order.map((x: any) => Number(x));
+    const invalid = order.filter((n: number) => !Number.isInteger(n) || n < 1);
+    if (invalid.length) {
+      throw new BadRequestException(
+        `Order must be an array of positive integer IDs. Invalid: [${invalid.join(', ')}]`
+      );
+    }
+
+    await this.itemsService.reorder(order);
+    return { ok: true };
+  }
+
+    // PUT /items/real-descriptions/reorder  body: { order: number[] }
+  @Put('real-descriptions/reorder')
+  async reorderReal(@Body() body: any) {
+    if (!body || !Array.isArray(body.order) || body.order.length === 0) {
+      throw new BadRequestException('Body must be { order: number[] } with at least one id.');
+    }
+    const order = body.order.map((x: any) => Number(x));
+    const invalid = order.filter((n: number) => !Number.isInteger(n) || n < 1);
+    if (invalid.length) {
+      throw new BadRequestException(
+        `Order must be an array of positive integer IDs. Invalid: [${invalid.join(', ')}]`
+      );
+    }
+    await this.itemsService.reorderReal(order);
+    return { ok: true };
+  }
+
 
   
 
