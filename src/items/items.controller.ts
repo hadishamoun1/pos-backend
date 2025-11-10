@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Delete, Query, ParseIntPipe, DefaultValuePipe, Put, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, Query, ParseIntPipe, DefaultValuePipe, Put, BadRequestException, HttpCode, HttpStatus, Patch } from '@nestjs/common';
 import { ItemsService } from './items.service';
 import { Item } from '../entities/inventory/item.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
@@ -18,6 +18,11 @@ export class ItemsController {
   @Post('v1/full')
   async createFullItem(@Body() createFullItemDto: any): Promise<Item> {
     return this.itemsService.createFullItem(createFullItemDto);
+  }
+  @Post('v1/full/real')
+  @HttpCode(HttpStatus.CREATED)
+  async createFullByRealDescription(@Body() body: any): Promise<Item> {
+    return this.itemsService.createFullItemUsingRealDescription(body);
   }
 
   @Post('v1/create-complete-item')
@@ -45,6 +50,46 @@ async getSelectedPaginated(
     includeEmpty: ie,
   });
 }
+   // 1) Variant quick search for the picker
+  @Get('variants/search')
+  async searchVariants(
+    @Query('q') q = '',
+    @Query('page') page = '1',
+    @Query('limit') limit = '30',
+  ) {
+    const p = Math.max(1, parseInt(page, 10) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 30));
+    return this.itemsService.searchVariantsForRelinker(q, p, l);
+  }
+
+@Get('selected-details/by-description')
+  async getSelectedItemDetailsByDescription(
+    @Query('page') pageQ?: string,
+    @Query('limit') limitQ?: string,
+    @Query('includeEmpty') includeEmptyQ?: string,
+  ) {
+    // Parse + clamp numbers
+    const pageNum = Number(pageQ ?? 1);
+    const limitNum = Number(limitQ ?? 50);
+
+    if (!Number.isFinite(pageNum) || !Number.isFinite(limitNum)) {
+      throw new BadRequestException('Invalid pagination parameters.');
+    }
+
+    const page = Math.max(1, Math.trunc(pageNum));
+    const limit = Math.min(200, Math.max(1, Math.trunc(limitNum)));
+
+    // Parse boolean-ish strings
+    const truthy = new Set(['1', 'true', 'yes', 'on']);
+    const includeEmpty = truthy.has(String(includeEmptyQ ?? '').toLowerCase());
+
+    return this.itemsService.getSelectedItemDetailsPaginatedByDescription({
+      page,
+      limit,
+      includeEmpty,
+    });
+  }
+
 
 
 
@@ -205,6 +250,18 @@ async searchModalInStock(
     return this.itemsService.searchSmart(q || '', pg, lm);
   }
 
+  
+  @Get('v1/search-real')
+  async searchReal(
+    @Query('q') q = '',
+    @Query('page') page = '1',
+    @Query('limit') limit = '50',
+  ) {
+    const p = Number(page) || 1;
+    const l = Math.min(Math.max(Number(limit) || 50, 1), 500);
+    return this.itemsService.searchSmartReal(q ?? '', p, l);
+  }
+
 
   // GET /items/item-descriptions/:descId/variants?limit=500&page=1&q=
   @Get('item-descriptions/:descId/variants')
@@ -246,6 +303,19 @@ async searchModalInStock(
       q,
       withCounts: withCounts ?? false,
     });
+  }
+
+  // 3) Optional description search for autocomplete
+  @Get('descriptions/search')
+  async searchDescriptions(
+    @Query('mode') mode: 'real' | 'name' = 'name',
+    @Query('q') q = '',
+    @Query('page') page = '1',
+    @Query('limit') limit = '30',
+  ) {
+    const p = Math.max(1, parseInt(page, 10) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 30));
+    return this.itemsService.searchDescriptions(mode, q, p, l);
   }
 
 
@@ -327,8 +397,50 @@ async searchModalInStock(
     return { ok: true };
   }
 
+@Put('variants/:variantId/description')
+async relinkVariantDescription(
+  @Param('variantId', ParseIntPipe) variantId: number,
+  @Body() dto: {
+    mode: 'real' | 'name';
+    description?: { id?: number } | null; // null means unlink
+    fields?: {
+      itemNumber?: string;
+      categoryName?: string;
+      subCategory?: string;
+      colorName?: string;
+      designName?: string;
+    } | null;
+    alsoSetOtherSide?: boolean;
+  },
+) {
+  if (!dto || (dto.mode !== 'real' && dto.mode !== 'name')) {
+    throw new BadRequestException('mode must be "real" or "name"');
+  }
 
-  
+  // valid if:
+  // - description.id present  (link existing)
+  // - fields present          (create/link by values)
+  // - description === null    (unlink)
+  const hasId = !!dto.description?.id;
+  const hasFields =
+    dto.fields &&
+    (dto.fields.itemNumber ||
+      dto.fields.categoryName ||
+      dto.fields.subCategory ||
+      dto.fields.colorName ||
+      dto.fields.designName);
+
+  const isUnlink = dto.hasOwnProperty('description') && dto.description === null && !dto.fields;
+
+  if (!hasId && !hasFields && !isUnlink) {
+    throw new BadRequestException(
+      'Provide either "description.id", or "fields", or set "description": null (to unlink).'
+    );
+  }
+
+  return this.itemsService.relinkVariantDescription(variantId, dto);
+}
+
 
 
   @Post(':itemId/thicknesses')
@@ -402,6 +514,25 @@ async searchModalInStock(
   async editFullItem(@Body() editFullItemDto: any): Promise<Item> {
     return this.itemsService.editFullItem(editFullItemDto);
   }
+
+  // Edit Item-Name description (NO DTO)
+  @Patch('descriptions/name/:id')
+  async updateItemNameDescriptionRaw(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ) {
+    return this.itemsService.updateItemNameDescriptionRaw(id, body);
+  }
+
+  // Edit Real description (NO DTO)
+  @Patch('descriptions/real/:id')
+  async updateRealDescriptionRaw(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ) {
+    return this.itemsService.updateRealDescriptionRaw(id, body);
+  }
+
 
   @Delete(':id')
   async deleteItem(@Param('id', ParseIntPipe) id: number) {

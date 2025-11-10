@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, Repository } from 'typeorm';
 import { Item } from '../entities/inventory/item.entity';
@@ -36,6 +36,10 @@ export class ItemsService {
 private readonly ds: DataSource,
     @InjectRepository(ItemNameDescription)
     private readonly itemNameDescriptionRepository: Repository<ItemNameDescription>,
+
+
+        @InjectRepository(RealDescription)
+    private readonly realDescriptionRepository: Repository<RealDescription>,
 private readonly dataSource: DataSource
     
   ) {}
@@ -92,7 +96,7 @@ private readonly dataSource: DataSource
   }
 
 // items.service.ts
-// items.service.ts
+// using Real Description
 async getSelectedItemDetailsPaginated(opts?: {
   page?: number;
   limit?: number;
@@ -221,6 +225,147 @@ async getSelectedItemDetailsPaginated(opts?: {
 
 
 
+// using item name description
+
+async getSelectedItemDetailsPaginatedByDescription(opts?: {
+  page?: number;
+  limit?: number;
+  includeEmpty?: boolean; // ignored
+}) {
+  const page  = Math.max(1, Number(opts?.page ?? 1));
+  const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
+
+  // --- Pull everything we need: variant + thickness + item + itemNameDescription
+  const qb = this.itemVariantRepository
+    .createQueryBuilder('v')
+    .innerJoinAndSelect('v.thickness', 't')
+    .innerJoinAndSelect('t.item', 'i')
+    .leftJoinAndSelect('v.itemNameDescription', 'd')
+    .select([
+      // Variant
+      'v.id',
+      'v.length',
+      'v.width',
+      'v.sheetsPerBox',
+      'v.origin',
+
+      // Thickness (for ordering)
+      't.id',
+      't.thickness',
+
+      // Item (for UI labels; not used for ordering)
+      'i.id',
+      'i.itemName',
+      'i.type',
+
+      // ItemNameDescription (group key + labels + sort index)
+      'd.id',
+      'd.itemNumber',
+      'd.categoryName',
+      'd.subCategory',
+      'd.colorName',
+      'd.designName',
+      'd.sort_index_description',
+    ])
+
+    // ---- Order at SQL so groups and their variants come pre-sorted ----
+    // 1) Description groups by sort_index_description ASC, NULLS LAST
+    .addSelect('CASE WHEN d.sort_index_description IS NULL THEN 1 ELSE 0 END', 'd_nulls')
+    .orderBy('d_nulls', 'ASC')
+    .addOrderBy('d.sort_index_description', 'ASC')
+    .addOrderBy('d.id', 'ASC') // stable
+
+    // 2) Inside each description group: by thickness ASC then length ASC
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.id', 'ASC'); // stable tie-breaker
+
+  const rows = await qb.getMany();
+
+  // ---- Group rows by ItemNameDescription ----
+  type DescKey = number | 'null';
+  const groupsMap = new Map<DescKey, {
+    itemNameDescription: {
+      id: number | null,
+      itemNumber: string | null,
+      categoryName: string | null,
+      subCategory: string | null,
+      colorName: string | null,
+      designName: string | null,
+      sortIndexDescription: number | null,
+    },
+    variants: Array<{
+      variantId: number;
+      length: any;
+      width: any;
+      sheetsPerBox: number;
+      origin: string;
+
+      thicknessId: number;
+      thickness: any;
+
+      itemId: number;
+      itemName: string;
+      type: string;
+    }>,
+  }>();
+
+  for (const v of rows) {
+    const d = (v as any).itemNameDescription || null;
+    const key: DescKey = d?.id ?? 'null';
+
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        itemNameDescription: {
+          id: d?.id ?? null,
+          itemNumber: d?.itemNumber ?? null,
+          categoryName: d?.categoryName ?? null,
+          subCategory: d?.subCategory ?? null,
+          colorName: d?.colorName ?? null,
+          designName: d?.designName ?? null,
+          sortIndexDescription: d?.sort_index_description ?? null,
+        },
+        variants: [],
+      });
+    }
+
+    const grp = groupsMap.get(key)!;
+
+    grp.variants.push({
+      variantId: v.id,
+      length: v.length,
+      width: v.width,
+      sheetsPerBox: v.sheetsPerBox,
+      origin: v.origin,
+
+      thicknessId: v.thickness.id,
+      thickness: v.thickness.thickness,
+
+      itemId: v.thickness.item.id,
+      itemName: v.thickness.item.itemName,
+      type: v.thickness.item.type,
+    });
+  }
+
+  // ---- Materialize, keep SQL order (already ordered by desc then thickness then length) ----
+  const allGroups = Array.from(groupsMap.values());
+
+  // ---- Pagination over description groups ----
+  const totalGroups = allGroups.length;
+  const start = (page - 1) * limit;
+  const end   = start + limit;
+  const pageGroups = allGroups.slice(start, end);
+
+  return {
+    page,
+    limit,
+    hasMore: end < totalGroups,
+    totalGroups,
+    data: pageGroups,
+  };
+}
+
+
 
 
 
@@ -260,7 +405,7 @@ async createFullItem(data: {
       // Arabic-Indic
       '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
       '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
-      // Extended Arabic-Indic (Persian/Urdu)
+      // Extended Arabic-Indic
       '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
       '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
     };
@@ -269,7 +414,6 @@ async createFullItem(data: {
 
   const normalizeText = (s: string) => {
     if (s == null) return '';
-    // unify spaces (incl NBSP) → normal spaces, unify en/em dash to '-', collapse internal spaces, trim, normalize digits
     const unified = String(s)
       .replace(/\u00A0/g, ' ')
       .replace(/[\u2013\u2014]/g, '-')
@@ -286,13 +430,14 @@ async createFullItem(data: {
     return Number.isFinite(n) ? n : d;
   };
 
+  // Fingerprint prefers itemNameDescription.id; falls back to realDescription.id
   const fpOf = (args: {
     thickness: number;
     length: number;
     width: number;
     sheetsPerBox: number;
     origin: string;
-    descId: number | null;
+    keyDescId: number | null;
   }) =>
     [
       args.thickness,
@@ -300,7 +445,7 @@ async createFullItem(data: {
       args.width,
       args.sheetsPerBox,
       (args.origin ?? '').trim(),
-      args.descId ?? 'null',
+      args.keyDescId ?? 'null',
     ].join('|');
 
   // Normalize incoming thickness/variants for target type
@@ -332,33 +477,47 @@ async createFullItem(data: {
     }));
   };
 
-  // Resolve or create a description entity 1:1 by normalized fields
-  const resolveOrCreateDesc = async (desc: {
+  // Resolve/create BOTH descriptions from one descriptor
+  const resolveOrCreatePair = async (desc: {
     itemNumber: string;
     categoryName: string;
     subCategory: string;
     colorName: string;
     designName: string;
-  }): Promise<{ ent: any; isNew: boolean }> => {
-    const where = {
+  }): Promise<{ nameDesc: any; realDesc: any; isNewName: boolean; isNewReal: boolean }> => {
+    const whereNorm = {
       itemNumber:  normalizeText(desc.itemNumber ?? ''),
       categoryName: normalizeText(desc.categoryName ?? ''),
       subCategory:  normalizeText(desc.subCategory ?? ''),
       colorName:    normalizeText(desc.colorName ?? ''),
       designName:   normalizeText(desc.designName ?? ''),
     };
-    let ent = await this.itemNameDescriptionRepository.findOne({ where });
-    if (!ent) {
-      ent = this.itemNameDescriptionRepository.create(where);
-      ent = await this.itemNameDescriptionRepository.save(ent);
-      return { ent, isNew: true };
+
+    // Name
+    let nameDesc = await this.itemNameDescriptionRepository.findOne({ where: whereNorm });
+    let isNewName = false;
+    if (!nameDesc) {
+      nameDesc = this.itemNameDescriptionRepository.create(whereNorm);
+      nameDesc = await this.itemNameDescriptionRepository.save(nameDesc);
+      isNewName = true;
     }
-    return { ent, isNew: false };
+
+    // Real
+    let realDesc = await this.realDescriptionRepository.findOne({ where: whereNorm });
+    let isNewReal = false;
+    if (!realDesc) {
+      realDesc = this.realDescriptionRepository.create(whereNorm);
+      realDesc = await this.realDescriptionRepository.save(realDesc);
+      isNewReal = true;
+    }
+
+    return { nameDesc, realDesc, isNewName, isNewReal };
   };
 
   /**
    * Upsert item of a specific type.
    * Returns: the item + a map of thickness -> newly created variant fingerprints.
+   * Each variant is saved with BOTH itemNameDescription and realDescription set.
    */
   const upsertItemWith = async (
     targetType: 'box' | 'sheet' | 'sqm',
@@ -372,10 +531,9 @@ async createFullItem(data: {
         fixBox: boolean;
         fixLength: boolean;
         fixWidth: boolean;
-        descId?: number | null;
       }>;
     }>,
-    descEntities: any[],
+    pairs: Array<{ nameDesc: any; realDesc: any }>
   ): Promise<{
     item: Item;
     createdByThickness: Map<number, string[]>;
@@ -386,6 +544,7 @@ async createFullItem(data: {
         'thicknesses',
         'thicknesses.variants',
         'thicknesses.variants.itemNameDescription',
+        'thicknesses.variants.realDescription',
       ],
     });
 
@@ -397,15 +556,12 @@ async createFullItem(data: {
       item.thicknesses = [];
 
       for (const thDto of incoming) {
-        const thEnt = this.thicknessRepository.create({
-          thickness: thDto.thickness,
-          item,
-        });
+        const thEnt = this.thicknessRepository.create({ thickness: thDto.thickness, item });
 
         thEnt.variants = thDto.variants.map((vDto, idx) => {
-          const desc = (Number.isFinite(thDto.variants[idx]?.descId)
-            ? { id: thDto.variants[idx].descId }
-            : descEntities[idx]) ?? null;
+          const pair = pairs[idx] ?? null;
+          const nameDesc = pair?.nameDesc ?? null;
+          const realDesc = pair?.realDesc ?? null;
 
           return this.itemVariantRepository.create({
             length: vDto.length,
@@ -415,25 +571,26 @@ async createFullItem(data: {
             fixBox: vDto.fixBox,
             fixLength: vDto.fixLength,
             fixWidth: vDto.fixWidth,
-            itemNameDescription: desc ?? undefined,
+            itemNameDescription: nameDesc ?? undefined,
+            realDescription: realDesc ?? undefined,
           });
         });
 
         const savedTh = await this.thicknessRepository.save(thEnt);
         item.thicknesses.push(savedTh);
 
-        const fps = thDto.variants.map((vDto, idx) =>
-          fpOf({
+        const fps = thDto.variants.map((vDto, idx) => {
+          const pair = pairs[idx] ?? null;
+          const keyDescId = pair?.nameDesc?.id ?? pair?.realDesc?.id ?? null;
+          return fpOf({
             thickness: thDto.thickness,
             length: vDto.length,
             width: vDto.width,
             sheetsPerBox: vDto.sheetsPerBox,
             origin: vDto.origin,
-            descId: Number.isFinite(thDto.variants[idx]?.descId)
-              ? Number(thDto.variants[idx].descId)
-              : descEntities[idx]?.id ?? null,
-          }),
-        );
+            keyDescId,
+          });
+        });
         createdByThickness.set(thDto.thickness, fps);
       }
 
@@ -443,47 +600,45 @@ async createFullItem(data: {
     // Existing item → idempotent upsert
     for (const thDto of incoming) {
       let thEnt =
-        item.thicknesses?.find(
-          (t) => Number(t.thickness) === Number(thDto.thickness),
-        ) ?? null;
+        item.thicknesses?.find((t) => Number(t.thickness) === Number(thDto.thickness)) ?? null;
 
       if (!thEnt) {
-        thEnt = this.thicknessRepository.create({
-          thickness: thDto.thickness,
-          item,
-        });
+        thEnt = this.thicknessRepository.create({ thickness: thDto.thickness, item });
         thEnt = await this.thicknessRepository.save(thEnt);
         item.thicknesses.push(thEnt);
       }
 
       thEnt.variants = thEnt.variants || [];
       const existing = new Set(
-        (thEnt.variants || []).map((v) =>
-          fpOf({
+        (thEnt.variants || []).map((v) => {
+          const keyDescId = v.itemNameDescription?.id ?? v.realDescription?.id ?? null;
+          return fpOf({
             thickness: Number(thDto.thickness),
             length: Number(v.length),
             width: Number(v.width),
             sheetsPerBox: Number(v.sheetsPerBox),
             origin: v.origin ?? '',
-            descId: v.itemNameDescription?.id ?? null,
-          }),
-        ),
+            keyDescId,
+          });
+        }),
       );
 
       const createdFps: string[] = [];
 
       for (let i = 0; i < thDto.variants.length; i++) {
         const vDto = thDto.variants[i];
-        const mappedDesc =
-          (Number.isFinite(vDto?.descId) ? { id: vDto.descId } : descEntities[i]) ?? null;
+        const pair = pairs[i] ?? null;
+        const nameDesc = pair?.nameDesc ?? null;
+        const realDesc = pair?.realDesc ?? null;
 
+        const keyDescId = nameDesc?.id ?? realDesc?.id ?? null;
         const fp = fpOf({
           thickness: Number(thDto.thickness),
           length: Number(vDto.length),
           width: Number(vDto.width),
           sheetsPerBox: Number(vDto.sheetsPerBox),
           origin: vDto.origin ?? '',
-          descId: mappedDesc?.id ?? null,
+          keyDescId,
         });
 
         if (existing.has(fp)) continue;
@@ -497,7 +652,8 @@ async createFullItem(data: {
           fixLength: vDto.fixLength,
           fixWidth: vDto.fixWidth,
           thickness: thEnt,
-          itemNameDescription: mappedDesc ?? undefined,
+          itemNameDescription: nameDesc ?? undefined,
+          realDescription: realDesc ?? undefined,
         });
 
         await this.itemVariantRepository.save(newVar);
@@ -514,8 +670,8 @@ async createFullItem(data: {
     return { item, createdByThickness };
   };
 
-  // Build SQM incoming for ONE description only (one 0x0 variant per thickness)
-  const buildSQMIncomingForOneDesc = (thicknessValues: number[], singleDescId: number | null) => {
+  // Build SQM incoming for ONE pair (one 0x0 variant per thickness)
+  const buildSQMIncomingForOnePair = (thicknessValues: number[]) => {
     return thicknessValues.map((th) => ({
       thickness: th,
       variants: [
@@ -527,24 +683,25 @@ async createFullItem(data: {
           fixBox: false,
           fixLength: false,
           fixWidth: false,
-          descId: singleDescId ?? null,
         },
       ],
     }));
   };
 
   // ──────────────────────────────────────────────
-  // 1) Resolve descriptions & track NEW ones (normalized)
+  // 1) Resolve BOTH descriptions for each descriptor
   // ──────────────────────────────────────────────
-  const descEntities: any[] = [];
-  const newDescEntities: any[] = [];
+  const pairs: Array<{ nameDesc: any; realDesc: any }> = [];
+  const newPairsForSQM: Array<{ nameDesc: any; realDesc: any }> = [];
   for (const d of descriptions) {
-    const { ent, isNew } = await resolveOrCreateDesc(d);
-    descEntities.push(ent);
-    if (isNew) newDescEntities.push(ent);
+    const pair = await resolveOrCreatePair(d);
+    pairs.push({ nameDesc: pair.nameDesc, realDesc: pair.realDesc });
+    if (pair.isNewName || pair.isNewReal) {
+      newPairsForSQM.push({ nameDesc: pair.nameDesc, realDesc: pair.realDesc });
+    }
   }
 
-  // collect unique thickness values from payload
+  // unique thickness list
   const uniqueThicknesses = Array.from(
     new Set((rawTh ?? []).map((t) => toNum(t.thickness))).values(),
   ).filter((n) => Number.isFinite(n));
@@ -556,11 +713,12 @@ async createFullItem(data: {
   const { item: mainItem, createdByThickness } = await upsertItemWith(
     type,
     incomingForRequested,
-    descEntities,
+    pairs,
   );
 
   // ──────────────────────────────────────────────
   // 3) If 'box' → mirror ONLY the newly created variants to 'sheet'
+  //    (FIXED: candidate key now keeps the same description id)
   // ──────────────────────────────────────────────
   if (type === 'box') {
     type MirrorVariant = {
@@ -571,12 +729,385 @@ async createFullItem(data: {
       fixBox: boolean;
       fixLength: boolean;
       fixWidth: boolean;
-      descId: number | null;
     };
-    type MirrorPayload = Array<{
-      thickness: number;
-      variants: MirrorVariant[];
+    type MirrorPayload = Array<{ thickness: number; variants: MirrorVariant[] }>;
+
+    const createdOnlyForSheet: MirrorPayload = incomingForRequested
+      .map((th) => {
+        const createdFps = createdByThickness.get(Number(th.thickness)) || [];
+        if (createdFps.length === 0) return null;
+
+        // Drop sheetsPerBox element (index 3) when comparing
+        const keyWithoutSpb = (s: string) =>
+          s
+            .split('|')
+            .map((x, i) => (i === 4 ? x.trim() : x)) // normalize origin space
+            .filter((_, i) => i !== 3)                // drop SPB
+            .join('|');
+
+        const createdNoSpb = new Set(createdFps.map(keyWithoutSpb));
+
+        const filteredVariants: MirrorVariant[] = th.variants
+          .map((v, idx) => {
+            const pair = pairs[idx] ?? null;
+            const keyDescId = pair?.nameDesc?.id ?? pair?.realDesc?.id ?? null;
+
+            const candidateNoSpb = keyWithoutSpb(
+              [
+                th.thickness,
+                v.length,
+                v.width,
+                0,                          // dropped in comparator
+                v.origin ?? '',
+                keyDescId ?? 'null',        // ✅ include same desc id
+              ].join('|'),
+            );
+
+            if (!createdNoSpb.has(candidateNoSpb)) return null;
+
+            return {
+              length: Number(v.length),
+              width: Number(v.width),
+              sheetsPerBox: 1,             // SHEET uses 1
+              origin: v.origin ?? '',
+              fixBox: !!v.fixBox,
+              fixLength: !!v.fixLength,
+              fixWidth: !!v.fixWidth,
+            };
+          })
+          .filter((x): x is MirrorVariant => Boolean(x));
+
+        if (filteredVariants.length === 0) return null;
+
+        return { thickness: Number(th.thickness), variants: filteredVariants };
+      })
+      .filter((x): x is MirrorPayload[number] => Boolean(x));
+
+    if (createdOnlyForSheet.length > 0) {
+      await upsertItemWith('sheet', createdOnlyForSheet, pairs);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // 4) SQM for NEW pairs (one 0x0 variant per thickness)
+  // ──────────────────────────────────────────────
+  if (newPairsForSQM.length > 0 && uniqueThicknesses.length > 0) {
+    const sqmIncoming = buildSQMIncomingForOnePair(uniqueThicknesses);
+    for (const pair of newPairsForSQM) {
+      await upsertItemWith('sqm', sqmIncoming, [pair]);
+    }
+  }
+
+  return mainItem;
+}
+
+
+
+async createFullItemUsingRealDescription(data: {
+  itemName: string;
+  type: 'box' | 'sheet' | 'sqm';
+  descriptions?: Array<{
+    itemNumber: string;
+    categoryName: string;
+    subCategory: string;
+    colorName: string;
+    designName: string;
+  }>;
+  thicknesses: Array<{
+    thickness: number | string;
+    variants: Array<{
+      length?: number | string;
+      width?: number | string;
+      sheetsPerBox?: number | string;
+      origin: string;
+      fixBox?: boolean;
+      fixLength?: boolean;
+      fixWidth?: boolean;
     }>;
+  }>;
+}): Promise<Item> {
+  const { itemName, type, thicknesses: rawTh, descriptions = [] } = data;
+
+  // ── Helpers ─────────────────────────────────────────────────────────
+  const normalizeDigits = (s: string) => {
+    if (!s) return '';
+    const map: Record<string, string> = {
+      '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+      '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+      '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+      '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+    };
+    return String(s).replace(/[٠-٩۰-۹]/g, (d) => map[d] ?? d);
+  };
+
+  const normalizeText = (s: string) => {
+    if (s == null) return '';
+    const unified = String(s)
+      .replace(/\u00A0/g, ' ')
+      .replace(/[\u2013\u2014]/g, '-')
+      .replace(/\s+/g, ' ');
+    const trimmed = unified.trim();
+    return normalizeDigits(trimmed);
+  };
+
+  const toNum = (v: any, d = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+
+  // fingerprint uses ONLY the real side id for this flow
+  const fpOf = (args: {
+    thickness: number;
+    length: number;
+    width: number;
+    sheetsPerBox: number;
+    origin: string;
+    realDescId: number | null;
+  }) =>
+    [
+      args.thickness,
+      args.length,
+      args.width,
+      args.sheetsPerBox,
+      (args.origin ?? '').trim(),
+      args.realDescId ?? 'null',
+    ].join('|');
+
+  const normalizeForType = (targetType: 'box' | 'sheet' | 'sqm') =>
+    (rawTh ?? []).map((th) => ({
+      thickness: toNum(th.thickness),
+      variants: Array.isArray(th.variants)
+        ? th.variants.map((v: any) => {
+            const baseLen = toNum(v?.length);
+            const baseWid = toNum(v?.width);
+            const baseSheets =
+              targetType === 'sheet' ? 1
+              : targetType === 'sqm' ? 0
+              : toNum(v?.sheetsPerBox);
+
+            return {
+              length: targetType === 'sqm' ? 0 : baseLen,
+              width:  targetType === 'sqm' ? 0 : baseWid,
+              sheetsPerBox: baseSheets,
+              origin: targetType === 'sqm' ? '' : String(v?.origin ?? ''),
+              fixBox: !!v?.fixBox,
+              fixLength: !!v?.fixLength,
+              fixWidth: !!v?.fixWidth,
+            };
+          })
+        : [],
+    }));
+
+  // Only REAL description is resolved/created here
+  const resolveOrCreateReal = async (desc: {
+    itemNumber: string;
+    categoryName: string;
+    subCategory: string;
+    colorName: string;
+    designName: string;
+  }): Promise<{ realDesc: RealDescription; isNew: boolean }> => {
+    const where = {
+      itemNumber:  normalizeText(desc.itemNumber ?? ''),
+      categoryName: normalizeText(desc.categoryName ?? ''),
+      subCategory:  normalizeText(desc.subCategory ?? ''),
+      colorName:    normalizeText(desc.colorName ?? ''),
+      designName:   normalizeText(desc.designName ?? ''),
+    };
+    let ent = await this.realDescriptionRepository.findOne({ where });
+    if (!ent) {
+      ent = this.realDescriptionRepository.create(where);
+      ent = await this.realDescriptionRepository.save(ent);
+      return { realDesc: ent, isNew: true };
+    }
+    return { realDesc: ent, isNew: false };
+  };
+
+  // Upsert with ONLY realDescription set; itemNameDescription is NULL
+  const upsertItemWith = async (
+    targetType: 'box' | 'sheet' | 'sqm',
+    incoming: Array<{
+      thickness: number;
+      variants: Array<{
+        length: number;
+        width: number;
+        sheetsPerBox: number;
+        origin: string;
+        fixBox: boolean;
+        fixLength: boolean;
+        fixWidth: boolean;
+      }>;
+    }>,
+    realDescs: RealDescription[]
+  ): Promise<{ item: Item; createdByThickness: Map<number, string[]> }> => {
+    let item = await this.itemRepository.findOne({
+      where: { itemName, type: targetType },
+      relations: [
+        'thicknesses',
+        'thicknesses.variants',
+        'thicknesses.variants.itemNameDescription',
+        'thicknesses.variants.realDescription',
+      ],
+    });
+
+    const createdByThickness = new Map<number, string[]>();
+
+    if (!item) {
+      item = await this.itemRepository.save(this.itemRepository.create({ itemName, type: targetType }));
+      item.thicknesses = [];
+
+      for (const thDto of incoming) {
+        const thEnt = this.thicknessRepository.create({ thickness: thDto.thickness, item });
+
+        thEnt.variants = thDto.variants.map((vDto, idx) =>
+          this.itemVariantRepository.create({
+            length: vDto.length,
+            width: vDto.width,
+            sheetsPerBox: vDto.sheetsPerBox,
+            origin: vDto.origin,
+            fixBox: vDto.fixBox,
+            fixLength: vDto.fixLength,
+            fixWidth: vDto.fixWidth,
+            itemNameDescription: null, // <-- keep item-name side NULL
+            realDescription: realDescs[idx] ?? undefined,
+          })
+        );
+
+        const savedTh = await this.thicknessRepository.save(thEnt);
+        item.thicknesses.push(savedTh);
+
+        const fps = thDto.variants.map((vDto, idx) =>
+          fpOf({
+            thickness: thDto.thickness,
+            length: vDto.length,
+            width: vDto.width,
+            sheetsPerBox: vDto.sheetsPerBox,
+            origin: vDto.origin,
+            realDescId: realDescs[idx]?.id ?? null,
+          })
+        );
+        createdByThickness.set(thDto.thickness, fps);
+      }
+
+      return { item, createdByThickness };
+    }
+
+    // existing item: idempotent upsert
+    for (const thDto of incoming) {
+      let thEnt = item.thicknesses?.find((t) => Number(t.thickness) === Number(thDto.thickness)) ?? null;
+      if (!thEnt) {
+        thEnt = await this.thicknessRepository.save(
+          this.thicknessRepository.create({ thickness: thDto.thickness, item })
+        );
+        item.thicknesses.push(thEnt);
+      }
+
+      thEnt.variants = thEnt.variants || [];
+      const existing = new Set(
+        (thEnt.variants || []).map((v) =>
+          fpOf({
+            thickness: Number(thDto.thickness),
+            length: Number(v.length),
+            width: Number(v.width),
+            sheetsPerBox: Number(v.sheetsPerBox),
+            origin: v.origin ?? '',
+            realDescId: v.realDescription?.id ?? null, // only check real side
+          })
+        )
+      );
+
+      const createdFps: string[] = [];
+
+      for (let i = 0; i < thDto.variants.length; i++) {
+        const vDto = thDto.variants[i];
+        const realDesc = realDescs[i] ?? null;
+
+        const fp = fpOf({
+          thickness: Number(thDto.thickness),
+          length: Number(vDto.length),
+          width: Number(vDto.width),
+          sheetsPerBox: Number(vDto.sheetsPerBox),
+          origin: vDto.origin ?? '',
+          realDescId: realDesc?.id ?? null,
+        });
+
+        if (existing.has(fp)) continue;
+
+        const newVar = this.itemVariantRepository.create({
+          length: vDto.length,
+          width: vDto.width,
+          sheetsPerBox: vDto.sheetsPerBox,
+          origin: vDto.origin,
+          fixBox: vDto.fixBox,
+          fixLength: vDto.fixLength,
+          fixWidth: vDto.fixWidth,
+          thickness: thEnt,
+          itemNameDescription: null, // <-- keep item-name side NULL
+          realDescription: realDesc ?? undefined,
+        });
+
+        await this.itemVariantRepository.save(newVar);
+        thEnt.variants.push(newVar);
+        existing.add(fp);
+        createdFps.push(fp);
+      }
+
+      if (createdFps.length > 0) {
+        createdByThickness.set(Number(thDto.thickness), createdFps);
+      }
+    }
+
+    return { item, createdByThickness };
+  };
+
+  const buildSQMIncoming = (thVals: number[]) =>
+    thVals.map((th) => ({
+      thickness: th,
+      variants: [
+        {
+          length: 0,
+          width: 0,
+          sheetsPerBox: 0,
+          origin: '',
+          fixBox: false,
+          fixLength: false,
+          fixWidth: false,
+        },
+      ],
+    }));
+
+  // ── 1) Resolve ONLY real descriptions ──────────────────────────────
+  const realDescs: RealDescription[] = [];
+  const newRealDescs: RealDescription[] = [];
+  for (const d of descriptions) {
+    const { realDesc, isNew } = await resolveOrCreateReal(d);
+    realDescs.push(realDesc);
+    if (isNew) newRealDescs.push(realDesc);
+  }
+
+  const uniqueThicknesses = Array.from(
+    new Set((rawTh ?? []).map((t) => toNum(t.thickness))).values()
+  ).filter((n) => Number.isFinite(n));
+
+  // ── 2) Upsert main (only real side) ────────────────────────────────
+  const incomingForRequested = normalizeForType(type);
+  const { item: mainItem, createdByThickness } = await upsertItemWith(
+    type,
+    incomingForRequested,
+    realDescs
+  );
+
+  // ── 3) Mirror box → sheet (new only), using REAL desc id in the key ─
+  if (type === 'box') {
+    type MirrorVariant = {
+      length: number;
+      width: number;
+      sheetsPerBox: number;
+      origin: string;
+      fixBox: boolean;
+      fixLength: boolean;
+      fixWidth: boolean;
+    };
+    type MirrorPayload = Array<{ thickness: number; variants: MirrorVariant[] }>;
 
     const createdOnlyForSheet: MirrorPayload = incomingForRequested
       .map((th) => {
@@ -594,63 +1125,52 @@ async createFullItem(data: {
 
         const filteredVariants: MirrorVariant[] = th.variants
           .map((v, idx) => {
-            const mappedDesc =
-              (Number.isFinite((v as any)?.descId) ? { id: (v as any).descId } : descEntities[idx]) ?? null;
-
+            const realDescId = realDescs[idx]?.id ?? null;
             const candidateNoSpb = keyWithoutSpb(
               [
                 th.thickness,
                 v.length,
                 v.width,
-                0,                  // placeholder (dropped)
+                0,
                 v.origin ?? '',
-                mappedDesc?.id ?? 'null',
-              ].join('|'),
+                realDescId ?? 'null',
+              ].join('|')
             );
-
             if (!createdNoSpb.has(candidateNoSpb)) return null;
 
             return {
               length: Number(v.length),
               width: Number(v.width),
-              sheetsPerBox: 1,     // SHEET uses 1
+              sheetsPerBox: 1,
               origin: v.origin ?? '',
               fixBox: !!v.fixBox,
               fixLength: !!v.fixLength,
               fixWidth: !!v.fixWidth,
-              descId: mappedDesc?.id ?? null,
-            } as MirrorVariant;
+            };
           })
-          .filter((x): x is MirrorVariant => Boolean(x));
+          .filter(Boolean) as MirrorVariant[];
 
         if (filteredVariants.length === 0) return null;
 
-        return {
-          thickness: Number(th.thickness),
-          variants: filteredVariants,
-        };
+        return { thickness: Number(th.thickness), variants: filteredVariants };
       })
-      .filter((x): x is MirrorPayload[number] => Boolean(x));
+      .filter(Boolean) as MirrorPayload;
 
     if (createdOnlyForSheet.length > 0) {
-      await upsertItemWith('sheet', createdOnlyForSheet, descEntities);
+      await upsertItemWith('sheet', createdOnlyForSheet, realDescs);
     }
   }
 
-  // ──────────────────────────────────────────────
-  // 4) SQM for NEW descriptions (unchanged logic)
-  // ──────────────────────────────────────────────
-  if (newDescEntities.length > 0 && uniqueThicknesses.length > 0) {
-    for (const newDesc of newDescEntities) {
-      const sqmIncoming = buildSQMIncomingForOneDesc(uniqueThicknesses, newDesc.id ?? null);
-      await upsertItemWith('sqm', sqmIncoming, [newDesc]);
+  // ── 4) SQM for NEW real descriptions ONLY ──────────────────────────
+  if (newRealDescs.length > 0 && uniqueThicknesses.length > 0) {
+    const sqmIncoming = buildSQMIncoming(uniqueThicknesses);
+    for (const rd of newRealDescs) {
+      await upsertItemWith('sqm', sqmIncoming, [rd]);
     }
   }
 
   return mainItem;
 }
-
-
 
 
 
@@ -672,7 +1192,7 @@ private safeJson(obj: any, max = 4000) {
   }
 }
 
-// items.service.ts
+// using item name description
 async editFullItem(editDto: {
   itemId?: number;
   itemName?: string;
@@ -919,7 +1439,259 @@ async editFullItem(editDto: {
   return updated!;
 }
 
-// items.service.ts
+
+
+async editFullItemByRealDescription(editDto: {
+  itemId?: number;
+  itemName?: string;
+  type?: 'box'|'sheet'|'sqm';
+  thicknesses: Array<{
+    thicknessId?: number;
+    thickness?: number | string;
+    variants: Array<{
+      id: number; // REQUIRED to edit in place
+      length?: number | string;
+      width?: number | string;
+      sheetsPerBox?: number | string;
+      origin?: string;
+      fixBox?: boolean;
+      fixLength?: boolean;
+      fixWidth?: boolean;
+      // Optional re-link (no creation): only id is honored
+      realDescription?: { id?: number } | null;
+    }>;
+  }>;
+}): Promise<Item> {
+  const toNum = (v: any, def = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : def;
+  };
+  const normType = (t?: string) =>
+    (t === 'box' || t === 'sheet' || t === 'sqm') ? t : 'box';
+
+  const tag = (s: string) => `[editFullItemByRealDescription] ${s}`;
+  const j = (o: any) => JSON.stringify(o);
+
+  console.log(tag('Incoming DTO:'), j(editDto));
+
+  const { itemId, itemName, type } = editDto;
+  const tType = normType(type);
+
+  // 1) Load item with relations (thicknesses + variants + realDescription)
+  let item: Item | null = null;
+  if (itemId) {
+    console.log(tag(`Loading item by id=${itemId} with relations...`));
+    item = await this.itemRepository.findOne({
+      where: { id: itemId },
+      relations: [
+        'thicknesses',
+        'thicknesses.variants',
+        'thicknesses.variants.realDescription',
+      ],
+    });
+  } else if (itemName && tType) {
+    console.log(tag(`Loading item by (itemName,type)=(${itemName},${tType}) with relations...`));
+    item = await this.itemRepository.findOne({
+      where: { itemName, type: tType },
+      relations: [
+        'thicknesses',
+        'thicknesses.variants',
+        'thicknesses.variants.realDescription',
+      ],
+    });
+  }
+
+  if (!item) {
+    console.log(tag('ERROR: Item not found for editing'));
+    throw new Error('Item to edit not found (provide itemId or (itemName,type)).');
+  }
+
+  console.log(
+    tag('Loaded item:'),
+    j({
+      itemId: item.id,
+      type: item.type,
+      thicknessCount: item.thicknesses?.length ?? 0,
+      thicknessIds: (item.thicknesses ?? []).map(t => t.id),
+    })
+  );
+
+  const isSQM = item.type === 'sqm';
+
+  // 2) Build quick lookups for thickness
+  const thicknessById = new Map<number, Thickness>();
+  const thicknessByVal = new Map<number, Thickness>();
+  for (const th of item.thicknesses ?? []) {
+    thicknessById.set(th.id, th);
+    thicknessByVal.set(Number(th.thickness), th);
+    th.variants = th.variants ?? [];
+  }
+
+  const findThicknessStrict = (incoming: { thicknessId?: number; thickness?: any }) => {
+    const fromId = incoming?.thicknessId;
+    const fromValNum = toNum(incoming?.thickness);
+    console.log(tag('Resolving thickness from incoming:'), j({ fromId, fromVal: fromValNum }));
+
+    if (fromId && thicknessById.has(fromId)) {
+      console.log(tag(`Resolved thickness by id=${fromId}`));
+      return thicknessById.get(fromId)!;
+    }
+    if (Number.isFinite(fromValNum) && thicknessByVal.has(fromValNum)) {
+      console.log(tag(`Resolved thickness by value=${fromValNum}`));
+      return thicknessByVal.get(fromValNum)!;
+    }
+    console.log(tag('ERROR: Thickness not found on this item'));
+    throw new Error(
+      `Thickness not found on this item. Provide a valid thicknessId or an existing numeric thickness.`
+    );
+  };
+
+  // Optional: cache for REAL description entities
+  const realDescCache = new Map<number, any>();
+  const getRealDescById = async (id?: number | null) => {
+    if (!id) return null;
+    if (realDescCache.has(id)) return realDescCache.get(id);
+    const ent = await this.realDescriptionRepository.findOne({ where: { id } });
+    if (!ent) {
+      console.log(tag(`ERROR: RealDescription id ${id} not found.`));
+      throw new Error(`RealDescription id ${id} not found.`);
+    }
+    realDescCache.set(id, ent);
+    return ent;
+  };
+
+  // 3) Apply edits per thickness/variant
+  for (const thDto of editDto.thicknesses ?? []) {
+    console.log(tag('Incoming thickness DTO:'), j(thDto));
+    const thEnt = findThicknessStrict(thDto);
+    console.log(
+      tag('Editing within thickness:'),
+      j({ thEntId: thEnt.id, thValue: String(thEnt.thickness) })
+    );
+
+    for (const vDto of thDto.variants ?? []) {
+      console.log(tag('Incoming variant DTO:'), j(vDto));
+
+      const variantId = Number(vDto.id);
+      if (!Number.isFinite(variantId)) {
+        console.log(tag('ERROR: invalid variant id'), vDto.id);
+        throw new Error(`Each edited variant must include a valid 'id'.`);
+      }
+
+      // 🔴 Always DB-load variant WITH relations so thickness.item is present
+      const targetVariant = await this.itemVariantRepository.findOne({
+        where: { id: variantId },
+        relations: ['thickness', 'thickness.item', 'realDescription'],
+      });
+
+      console.log(
+        tag('Variant lookup (DB) result:'),
+        j({
+          requestedVariantId: variantId,
+          found: !!targetVariant,
+          foundThicknessId: targetVariant?.thickness?.id ?? null,
+          foundItemId: targetVariant?.thickness?.item?.id ?? null,
+          editingItemId: item.id,
+        })
+      );
+
+      if (!targetVariant) {
+        throw new Error(`Variant id ${variantId} not found.`);
+      }
+
+      // ✅ Ownership check now reliable
+      if (targetVariant.thickness?.item?.id !== item.id) {
+        console.log(
+          tag('ERROR: Variant does not belong to this item'),
+          j({
+            variantId: targetVariant.id,
+            variantItemId: targetVariant.thickness?.item?.id,
+            expectedItemId: item.id,
+            incomingThicknessId: thEnt.id,
+            itemThicknessIds: (item.thicknesses ?? []).map(t => t.id),
+          })
+        );
+        throw new Error(`Variant id ${variantId} does not belong to the specified item.`);
+      }
+
+      // If variant is currently on a different thickness within the SAME item, move it
+      if (targetVariant.thickness?.id !== thEnt.id) {
+        console.log(
+          tag('Moving variant to target thickness'),
+          j({
+            variantId: targetVariant.id,
+            fromThicknessId: targetVariant.thickness?.id,
+            toThicknessId: thEnt.id,
+          })
+        );
+        targetVariant.thickness = thEnt;
+      }
+
+      // Compute next field values, enforcing SQM invariants
+      const next = {
+        length: isSQM ? 0 : toNum(vDto.length, Number(targetVariant.length)),
+        width: isSQM ? 0 : toNum(vDto.width, Number(targetVariant.width)),
+        sheetsPerBox: isSQM ? 0 : toNum(vDto.sheetsPerBox, Number(targetVariant.sheetsPerBox)),
+        origin: isSQM ? '' : (vDto.origin ?? targetVariant.origin ?? ''),
+        fixBox: vDto.fixBox ?? !!targetVariant.fixBox,
+        fixLength: vDto.fixLength ?? !!targetVariant.fixLength,
+        fixWidth: vDto.fixWidth ?? !!targetVariant.fixWidth,
+      };
+
+      console.log(tag('Computed next fields:'), j(next));
+
+      // Keep current REAL description UNCHANGED unless realDescription.id is explicitly provided.
+      let nextRealDesc = targetVariant.realDescription ?? null;
+      if (vDto.realDescription && typeof vDto.realDescription === 'object' && 'id' in vDto.realDescription!) {
+        const newRealId = Number(vDto.realDescription!.id);
+        if (Number.isFinite(newRealId)) {
+          nextRealDesc = await getRealDescById(newRealId); // will throw if id doesn't exist
+          console.log(tag('Re-linked REAL description to id=' + newRealId));
+        }
+      } else if (vDto.realDescription === null) {
+        // explicit unlink allowed if you want this behavior
+        nextRealDesc = null;
+        console.log(tag('Unlinked REAL description (set to null)'));
+      }
+
+      // Apply updates
+      targetVariant.length = next.length;
+      targetVariant.width = next.width;
+      targetVariant.sheetsPerBox = next.sheetsPerBox;
+      targetVariant.origin = next.origin;
+      targetVariant.fixBox = next.fixBox;
+      targetVariant.fixLength = next.fixLength;
+      targetVariant.fixWidth = next.fixWidth;
+      targetVariant.realDescription = nextRealDesc;
+
+      await this.itemVariantRepository.save(targetVariant);
+      console.log(tag('Saved variant id=' + targetVariant.id));
+
+      // keep the in-memory thickness list consistent (for subsequent loops)
+      if (!thEnt.variants.some(v => v.id === targetVariant.id)) {
+        thEnt.variants.push(targetVariant);
+      }
+    }
+  }
+
+  // Save thickness containers if needed (mostly no-op)
+  await this.thicknessRepository.save(item.thicknesses);
+
+  // Reload and return updated item (including REAL description on variants)
+  const updated = await this.itemRepository.findOne({
+    where: { id: item.id },
+    relations: [
+      'thicknesses',
+      'thicknesses.variants',
+      'thicknesses.variants.realDescription',
+    ],
+  });
+
+  console.log(tag('Done. Returning updated item id=' + item.id));
+  return updated!;
+}
+
+
 async getitemDetails(opts?: { page?: number; limit?: number }) {
   // ---- paging is by *rows* (table lines), not by item-name groups ----
   const page  = Math.max(1, Number(opts?.page ?? 1));
@@ -2398,6 +3170,139 @@ async searchSmart(q: string, page = 1, limit = 50) {
 }
 
 
+async searchSmartReal(q: string, page = 1, limit = 50) {
+  const parsed = this.parseQuery(q);
+
+  // Base: list VARIANTS; thickness & variant must exist
+  const qb = this.itemRepository
+    .createQueryBuilder('item')
+    .innerJoin('item.thicknesses', 'th')
+    .innerJoin('th.variants', 'v')
+    .leftJoin('v.realDescription', 'rd') // 👈 real description
+    .select([
+      'item.id AS itemId',
+      'item.itemName AS itemName',
+      'item.type AS type',
+      'th.id AS thicknessId',
+      'th.thickness AS thickness',
+      'v.id AS variantId',
+      'COALESCE(v.length, 0) AS length',
+      'COALESCE(v.width, 0) AS width',
+      'COALESCE(v.sheetsPerBox, 0) AS sheetsPerBox',
+      'COALESCE(v.origin, \'\') AS origin',
+      'rd.id AS descId',
+      'rd.itemNumber AS itemNumber',
+      'rd.categoryName AS categoryName',
+      'rd.subCategory AS subCategory',
+      'rd.colorName AS colorName',
+      'rd.designName AS designName',
+      // If you keep a sort index for real descriptions, you can also expose it:
+      // 'rd.sortIndexRealDescription AS sortIndexRealDescription',
+    ])
+    .where('1=1');
+
+  // Numeric filters (exact)
+  if (parsed.thickness !== undefined) {
+    qb.andWhere('th.thickness = :th', { th: parsed.thickness });
+  }
+  if (parsed.length !== undefined) {
+    qb.andWhere('v.length = :len', { len: parsed.length });
+  }
+  if (parsed.width !== undefined) {
+    qb.andWhere('v.width = :wid', { wid: parsed.width });
+  }
+  if (parsed.sheetsPerBox !== undefined) {
+    qb.andWhere('v.sheetsPerBox = :spb', { spb: parsed.sheetsPerBox });
+  }
+
+  // Text search: AND across tokens, OR across fields (use REAL description fields)
+  if (parsed.nameText) {
+    const tokens = parsed.nameText.split(/\s+/).filter(Boolean);
+    tokens.forEach((t, idx) => {
+      const like = `%${t}%`;
+      qb.andWhere(
+        new Brackets((w) => {
+          w.where(`item.itemName LIKE :like${idx}`, { [`like${idx}`]: like })
+            .orWhere(`rd.itemNumber LIKE :like${idx}`, { [`like${idx}`]: like })
+            .orWhere(`rd.categoryName LIKE :like${idx}`, { [`like${idx}`]: like })
+            .orWhere(`rd.subCategory LIKE :like${idx}`, { [`like${idx}`]: like })
+            .orWhere(`rd.colorName LIKE :like${idx}`, { [`like${idx}`]: like })
+            .orWhere(`rd.designName LIKE :like${idx}`, { [`like${idx}`]: like });
+        }),
+      );
+    });
+  }
+
+  // Relevance / ordering (same approach)
+  if (parsed.nameText) {
+    qb.addOrderBy(
+      'CASE WHEN item.itemName = :exact THEN 0 WHEN item.itemName LIKE :prefix THEN 1 ELSE 2 END',
+      'ASC',
+    )
+      .setParameter('exact', parsed.nameText)
+      .setParameter('prefix', parsed.nameText + '%');
+  }
+  qb.addOrderBy('item.itemName', 'ASC')
+    .addOrderBy('th.thickness', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.width', 'ASC');
+
+  // GROUP BY to avoid dupes
+  qb.groupBy('item.id')
+    .addGroupBy('item.itemName')
+    .addGroupBy('item.type')
+    .addGroupBy('th.id')
+    .addGroupBy('th.thickness')
+    .addGroupBy('v.id')
+    .addGroupBy('v.length')
+    .addGroupBy('v.width')
+    .addGroupBy('v.sheetsPerBox')
+    .addGroupBy('v.origin')
+    .addGroupBy('rd.id')
+    .addGroupBy('rd.itemNumber')
+    .addGroupBy('rd.categoryName')
+    .addGroupBy('rd.subCategory')
+    .addGroupBy('rd.colorName')
+    .addGroupBy('rd.designName');
+    // .addGroupBy('rd.sortIndexRealDescription'); // only if selected above
+
+  // Count distinct variants
+  const countQb = qb.clone().select('COUNT(DISTINCT v.id)', 'cnt').orderBy();
+  const { cnt } = await countQb.getRawOne<{ cnt: string | number }>();
+  const total = Number(cnt ?? 0);
+
+  // Pagination
+  qb.offset((page - 1) * limit).limit(limit);
+
+  // Rows
+  const rows = await qb.getRawMany();
+
+  const data = rows.map((r) => ({
+    itemId: Number(r.itemId),
+    itemName: r.itemName,
+    type: r.type as 'box' | 'sheet' | 'sqm',
+    thicknessId: Number(r.thicknessId),
+    thickness: Number(r.thickness),
+    variantId: Number(r.variantId),
+    length: Number(r.length ?? 0),
+    width: Number(r.width ?? 0),
+    sheetsPerBox: Number(r.sheetsPerBox ?? 0),
+    origin: r.origin ?? null,
+    // Keep the frontend-friendly unified key name:
+    description: {
+      id: r.descId ? Number(r.descId) : null,
+      itemNumber: r.itemNumber ?? null,
+      categoryName: r.categoryName ?? null,
+      subCategory: r.subCategory ?? null,
+      colorName: r.colorName ?? null,
+      designName: r.designName ?? null,
+      // sortIndexRealDescription: r.sortIndexRealDescription ?? null, // if selected
+    },
+  }));
+
+  return { data, page, limit, total };
+}
+
 
 
 
@@ -3343,7 +4248,562 @@ async fetchRealDescriptionVariants(opts: {
   };
 }
 
+
+
+
+
+
+  // ============== 1) VARIANT SEARCH (for picker) ==============
+
+
+  // Service.ts
+
+
+
+  /** loose: keep user intention, unify spaces, digits & separators */
+  private normalizeTextLoose(s?: string) {
+    if (s == null) return '';
+    const unified = String(s)
+      .replace(/\u00A0/g, ' ')         // NBSP → space
+      .replace(/[\u2013\u2014]/g, '-') // en/em dash → '-'
+      .replace(/[xX×✕✖︎]/g, 'x')       // unify dimension sep to 'x'
+      .replace(/\s+/g, ' ');
+    const trimmed = unified.trim();
+    return this.normalizeDigits(trimmed);
+  }
+
+  private buildWhereFromFields(fields?: {
+    itemNumber?: string; categoryName?: string; subCategory?: string; colorName?: string; designName?: string;
+  }) {
+    return {
+      itemNumber:  this.normalizeTextLoose(fields?.itemNumber),
+      categoryName:this.normalizeTextLoose(fields?.categoryName),
+      subCategory: this.normalizeTextLoose(fields?.subCategory),
+      colorName:   this.normalizeTextLoose(fields?.colorName),
+      designName:  this.normalizeTextLoose(fields?.designName),
+    };
+  }
+
+  /** Parse query into: thickness (mm), dimensions, and free-text tokens */
+  private parseVariantQuery(raw: string) {
+    const q = this.normalizeTextLoose(raw);
+
+    const thicknesses: number[] = [];
+    const dims: Array<{ L: number; W: number }> = [];
+    const text: string[] = [];
+
+    // Dimensions: 225x321 / 225*321 / 225 × 321 (we normalized ×→x)
+    const dimRe = /(?<!\d)(\d+(?:\.\d+)?)\s*[x\*]\s*(\d+(?:\.\d+)?)(?!\d)/gi;
+    let m: RegExpExecArray | null;
+    let consumed: string[] = [];
+    while ((m = dimRe.exec(q)) !== null) {
+      const L = Number(m[1]);
+      const W = Number(m[2]);
+      if (Number.isFinite(L) && Number.isFinite(W)) {
+        dims.push({ L, W });
+        consumed.push(m[0]);
+      }
+    }
+
+    // Remove the matched dimension chunks so they don't become free tokens
+    let rest = q;
+    for (const c of consumed) rest = rest.replace(c, ' ');
+    const rawTokens = rest.split(/\s+/).filter(Boolean);
+
+    for (const tRaw of rawTokens) {
+      const t = tRaw.toLowerCase();
+
+      // thickness like "5.5ملم", "5ملم", "5mm"
+      const mmRe = /^(\d+(?:\.\d+)?)(?:\s*(?:ملم|mm))$/i;
+      const mmMatch = t.match(mmRe);
+      if (mmMatch) {
+        const th = Number(mmMatch[1]);
+        if (Number.isFinite(th)) {
+          thicknesses.push(th);
+          continue;
+        }
+      }
+
+      // everything else = text token (kept original for LIKE)
+      text.push(tRaw);
+    }
+
+    return { thicknesses, dims, textTokens: text };
+  }
+
+  // ──────────────────────────────────────────────
+  // 1) VARIANT SEARCH (supports tokens + dimensions)
+  // ──────────────────────────────────────────────
+  async searchVariantsForRelinker(q: string, page: number, limit: number) {
+    const parsed = this.parseVariantQuery(q || '');
+
+    const qb = this.itemVariantRepository
+      .createQueryBuilder('v')
+      .innerJoin('v.thickness', 'th')
+      .innerJoin('th.item', 'item')
+      .leftJoin('v.itemNameDescription', 'nd')
+      .leftJoin('v.realDescription', 'rd')
+      .select([
+        'v.id AS variantId',
+        'item.id AS itemId',
+        'item.itemName AS itemName',
+        'item.type AS type',
+        'th.id AS thicknessId',
+        'th.thickness AS thickness',
+        'COALESCE(v.length,0) AS length',
+        'COALESCE(v.width,0) AS width',
+        'COALESCE(v.sheetsPerBox,0) AS sheetsPerBox',
+        'COALESCE(v.origin, \'\') AS origin',
+        'nd.id AS nameId','nd.itemNumber AS nItemNumber','nd.categoryName AS nCategoryName','nd.subCategory AS nSubCategory','nd.colorName AS nColorName','nd.designName AS nDesignName',
+        'rd.id AS realId','rd.itemNumber AS rItemNumber','rd.categoryName AS rCategoryName','rd.subCategory AS rSubCategory','rd.colorName AS rColorName','rd.designName AS rDesignName',
+      ])
+      .where('1=1');
+
+    // Thickness: any of provided
+    if (parsed.thicknesses.length > 0) {
+      qb.andWhere(new Brackets(w => {
+        parsed.thicknesses.forEach((th, idx) => {
+          w[idx === 0 ? 'where' : 'orWhere'](`th.thickness = :th${idx}`, { [`th${idx}`]: th });
+        });
+      }));
+    }
+
+    // Dimensions: accept swapped
+    if (parsed.dims.length > 0) {
+      qb.andWhere(new Brackets(w => {
+        parsed.dims.forEach((d, idx) => {
+          w[idx === 0 ? 'where' : 'orWhere'](new Brackets(sw => {
+            sw.where(`(v.length = :L${idx} AND v.width = :W${idx})`, { [`L${idx}`]: d.L, [`W${idx}`]: d.W })
+              .orWhere(`(v.length = :W${idx} AND v.width = :L${idx})`, { [`L${idx}`]: d.L, [`W${idx}`]: d.W });
+          }));
+        });
+      }));
+    }
+
+    // Text tokens: AND across tokens, OR across fields
+    const tokens = parsed.textTokens.map(s => this.normalizeDigits(s)).filter(Boolean);
+    if (tokens.length > 0) {
+      tokens.forEach((t, i) => {
+        const like = `%${t}%`;
+        qb.andWhere(new Brackets(w => {
+          w.where(`item.itemName LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`nd.itemNumber LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`rd.itemNumber LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`nd.categoryName LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`rd.categoryName LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`nd.subCategory LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`rd.subCategory LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`nd.colorName LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`rd.colorName LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`nd.designName LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`rd.designName LIKE :lk${i}`, { [`lk${i}`]: like })
+           .orWhere(`v.origin LIKE :lk${i}`, { [`lk${i}`]: like });
+        }));
+      });
+    }
+
+    // Order & pagination
+    qb.orderBy('item.itemName', 'ASC')
+      .addOrderBy('th.thickness', 'ASC')
+      .addOrderBy('v.length', 'ASC')
+      .addOrderBy('v.width', 'ASC')
+      .offset((page - 1) * limit)
+      .limit(limit);
+
+    // Exact total (respect filters): clone and count distinct v.id
+    const countQb = qb.clone()
+      .select('COUNT(DISTINCT v.id)', 'cnt')
+      .offset(undefined)
+      .limit(undefined)
+      .orderBy(undefined);
+    const countRow = await countQb.getRawOne<{ cnt: string }>();
+    const total = Number(countRow?.cnt ?? 0);
+
+    const rows = await qb.getRawMany();
+
+    const data = rows.map(r => ({
+      variantId: Number(r.variantId),
+      itemId: Number(r.itemId),
+      itemName: r.itemName,
+      type: r.type as 'box'|'sheet'|'sqm',
+      thicknessId: Number(r.thicknessId),
+      thickness: Number(r.thickness),
+      length: Number(r.length),
+      width: Number(r.width),
+      sheetsPerBox: Number(r.sheetsPerBox),
+      origin: r.origin,
+      itemNameDescription: r.nameId ? {
+        id: Number(r.nameId),
+        itemNumber: r.nItemNumber, categoryName: r.nCategoryName, subCategory: r.nSubCategory, colorName: r.nColorName, designName: r.nDesignName,
+      } : null,
+      realDescription: r.realId ? {
+        id: Number(r.realId),
+        itemNumber: r.rItemNumber, categoryName: r.rCategoryName, subCategory: r.rSubCategory, colorName: r.rColorName, designName: r.rDesignName,
+      } : null,
+    }));
+
+    return { data, page, limit, total };
+  }
+
+  // ──────────────────────────────────────────────
+  // 2) DESCRIPTION SEARCH (autocomplete)
+  // ──────────────────────────────────────────────
+  async searchDescriptions(
+    mode: 'real' | 'name',
+    q: string,
+    page: number,
+    limit: number,
+  ) {
+    const repo = mode === 'real' ? this.realDescriptionRepository : this.itemNameDescriptionRepository;
+    const qb = repo.createQueryBuilder('d').where('1=1');
+
+    const normalized = this.normalizeTextLoose(q || '');
+    if (normalized) {
+      const tokens = normalized.split(/\s+/).filter(Boolean);
+      tokens.forEach((t, i) => {
+        const like = `%${t}%`;
+        qb.andWhere(new Brackets(w => {
+          w.where(`d.itemNumber LIKE :l${i}`, { [`l${i}`]: like })
+           .orWhere(`d.categoryName LIKE :l${i}`, { [`l${i}`]: like })
+           .orWhere(`d.subCategory LIKE :l${i}`, { [`l${i}`]: like })
+           .orWhere(`d.colorName LIKE :l${i}`, { [`l${i}`]: like })
+           .orWhere(`d.designName LIKE :l${i}`, { [`l${i}`]: like });
+        }));
+      });
+    }
+
+    qb.orderBy('d.itemNumber', 'ASC')
+      .offset((page - 1) * limit)
+      .limit(limit);
+
+    const [rows, total] = await qb.getManyAndCount();
+    return { data: rows, page, limit, total };
+  }
+
+  // ──────────────────────────────────────────────
+  // 3) RELINK LOGIC (side-specific creation)
+  // ──────────────────────────────────────────────
+  /** create/link ONLY ItemNameDescription */
+  private async resolveOrCreateName(fields?: {
+    itemNumber?: string; categoryName?: string; subCategory?: string; colorName?: string; designName?: string;
+  }) {
+    const where = this.buildWhereFromFields(fields);
+    let nameDesc = await this.itemNameDescriptionRepository.findOne({ where });
+    if (!nameDesc) {
+      nameDesc = await this.itemNameDescriptionRepository.save(
+        this.itemNameDescriptionRepository.create(where),
+      );
+    }
+    return nameDesc;
+  }
+
+  /** create/link ONLY RealDescription */
+  private async resolveOrCreateReal(fields?: {
+    itemNumber?: string; categoryName?: string; subCategory?: string; colorName?: string; designName?: string;
+  }) {
+    const where = this.buildWhereFromFields(fields);
+    let realDesc = await this.realDescriptionRepository.findOne({ where });
+    if (!realDesc) {
+      realDesc = await this.realDescriptionRepository.save(
+        this.realDescriptionRepository.create(where),
+      );
+    }
+    return realDesc;
+  }
+
+  /** optional: keep pair helper for the BOTH case */
+  private async resolveOrCreatePair(fields?: {
+    itemNumber?: string; categoryName?: string; subCategory?: string; colorName?: string; designName?: string;
+  }) {
+    const where = this.buildWhereFromFields(fields);
+    // Name
+    let nameDesc = await this.itemNameDescriptionRepository.findOne({ where });
+    if (!nameDesc) {
+      nameDesc = await this.itemNameDescriptionRepository.save(
+        this.itemNameDescriptionRepository.create(where),
+      );
+    }
+    // Real
+    let realDesc = await this.realDescriptionRepository.findOne({ where });
+    if (!realDesc) {
+      realDesc = await this.realDescriptionRepository.save(
+        this.realDescriptionRepository.create(where),
+      );
+    }
+    return { nameDesc, realDesc };
+  }
+
+ // ItemsService.ts (only the method below needs replacing)
+
+async relinkVariantDescription(
+  variantId: number,
+  dto: {
+    mode: 'real' | 'name';
+    description?: { id?: number } | null; // ← allow null to unlink
+    fields?: {
+      itemNumber?: string; categoryName?: string; subCategory?: string; colorName?: string; designName?: string;
+    } | null;
+    alsoSetOtherSide?: boolean;
+  }
+) {
+  const variant = await this.itemVariantRepository.findOne({
+    where: { id: variantId },
+    relations: ['thickness', 'thickness.item', 'itemNameDescription', 'realDescription'],
+  });
+  if (!variant) throw new NotFoundException(`Variant ${variantId} not found`);
+
+  const setBoth = !!dto.alsoSetOtherSide;
+
+  // ──────────────────────────────────────────────
+  // A) UNLINK (set FK to null) when description === null and no fields
+  // ──────────────────────────────────────────────
+  if (dto.hasOwnProperty('description') && dto.description === null && !dto.fields) {
+    if (dto.mode === 'name') {
+      variant.itemNameDescription = null;
+      if (setBoth) variant.realDescription = null;
+    } else {
+      variant.realDescription = null;
+      if (setBoth) variant.itemNameDescription = null;
+    }
+
+    await this.itemVariantRepository.save(variant);
+    return {
+      variantId: variant.id,
+      itemId: variant.thickness?.item?.id ?? null,
+      thicknessId: variant.thickness?.id ?? null,
+      itemNameDescription: variant.itemNameDescription ?? null,
+      realDescription: variant.realDescription ?? null,
+    };
+  }
+
+  // ──────────────────────────────────────────────
+  // B) LINK to existing by id
+  // ──────────────────────────────────────────────
+  if (dto?.description?.id) {
+    if (dto.mode === 'name') {
+      const targetName = await this.itemNameDescriptionRepository.findOne({ where: { id: dto.description.id } });
+      if (!targetName) throw new NotFoundException(`ItemNameDescription id=${dto.description.id} not found`);
+      variant.itemNameDescription = targetName;
+
+      if (setBoth) {
+        let targetReal = await this.realDescriptionRepository.findOne({
+          where: {
+            itemNumber: targetName.itemNumber,
+            categoryName: targetName.categoryName,
+            subCategory: targetName.subCategory,
+            colorName: targetName.colorName,
+            designName: targetName.designName,
+          },
+        });
+        if (!targetReal) {
+          targetReal = await this.realDescriptionRepository.save(
+            this.realDescriptionRepository.create({
+              itemNumber: targetName.itemNumber,
+              categoryName: targetName.categoryName,
+              subCategory: targetName.subCategory,
+              colorName: targetName.colorName,
+              designName: targetName.designName,
+            }),
+          );
+        }
+        variant.realDescription = targetReal;
+      }
+    } else {
+      const targetReal = await this.realDescriptionRepository.findOne({ where: { id: dto.description.id } });
+      if (!targetReal) throw new NotFoundException(`RealDescription id=${dto.description.id} not found`);
+      variant.realDescription = targetReal;
+
+      if (setBoth) {
+        let targetName = await this.itemNameDescriptionRepository.findOne({
+          where: {
+            itemNumber: targetReal.itemNumber,
+            categoryName: targetReal.categoryName,
+            subCategory: targetReal.subCategory,
+            colorName: targetReal.colorName,
+            designName: targetReal.designName,
+          },
+        });
+        if (!targetName) {
+          targetName = await this.itemNameDescriptionRepository.save(
+            this.itemNameDescriptionRepository.create({
+              itemNumber: targetReal.itemNumber,
+              categoryName: targetReal.categoryName,
+              subCategory: targetReal.subCategory,
+              colorName: targetReal.colorName,
+              designName: targetReal.designName,
+            }),
+          );
+        }
+        variant.itemNameDescription = targetName;
+      }
+    }
+
+    await this.itemVariantRepository.save(variant);
+    return {
+      variantId: variant.id,
+      itemId: variant.thickness?.item?.id ?? null,
+      thicknessId: variant.thickness?.id ?? null,
+      itemNameDescription: variant.itemNameDescription ?? null,
+      realDescription: variant.realDescription ?? null,
+    };
+  }
+
+  // ──────────────────────────────────────────────
+  // C) Resolve/Create from fields (side-specific)
+  // ──────────────────────────────────────────────
+  if (dto.fields) {
+    if (dto.mode === 'name') {
+      const name = await this.resolveOrCreateName(dto.fields);
+      variant.itemNameDescription = name;
+      if (setBoth) {
+        const real = await this.resolveOrCreateReal(dto.fields);
+        variant.realDescription = real;
+      }
+    } else {
+      const real = await this.resolveOrCreateReal(dto.fields);
+      variant.realDescription = real;
+      if (setBoth) {
+        const name = await this.resolveOrCreateName(dto.fields);
+        variant.itemNameDescription = name;
+      }
+    }
+
+    await this.itemVariantRepository.save(variant);
+    return {
+      variantId: variant.id,
+      itemId: variant.thickness?.item?.id ?? null,
+      thicknessId: variant.thickness?.id ?? null,
+      itemNameDescription: variant.itemNameDescription ?? null,
+      realDescription: variant.realDescription ?? null,
+    };
+  }
+
+  throw new BadRequestException(
+    'Provide either "description.id", or "fields", or set "description": null (to unlink).'
+  );
 }
+
+  private normalizeTextStrict(s?: string) {
+    if (s == null) return '';
+    const unified = String(s)
+      .replace(/\u00A0/g, ' ')
+      .replace(/[\u2013\u2014]/g, '-')
+      .replace(/\s+/g, ' ');
+    const trimmed = unified.trim();
+    return this.normalizeDigits(trimmed);
+  }
+
+
+
+private async editDescriptionRowNoDto(
+    repoName: 'itemNameDescriptionRepository' | 'realDescriptionRepository',
+    linkField: 'itemNameDescription' | 'realDescription',
+    id: number,
+    body: any,
+  ) {
+    if (!id || isNaN(+id)) throw new BadRequestException('Invalid id');
+    if (!body || typeof body !== 'object') throw new BadRequestException('Request body is required');
+
+    // 1) Load row
+    const repo = (this as any)[repoName] as any;
+    const row = await repo.findOne({ where: { id } });
+    if (!row) throw new NotFoundException(`${repoName} id=${id} not found`);
+
+    // 2) Compute next values (partial update, normalize only provided)
+    const next = {
+      itemNumber:   body.itemNumber   !== undefined ? this.normalizeTextStrict(body.itemNumber)   : row.itemNumber,
+      categoryName: body.categoryName !== undefined ? this.normalizeTextStrict(body.categoryName) : row.categoryName,
+      subCategory:  body.subCategory  !== undefined ? this.normalizeTextStrict(body.subCategory)  : row.subCategory,
+      colorName:    body.colorName    !== undefined ? this.normalizeTextStrict(body.colorName)    : row.colorName,
+      designName:   body.designName   !== undefined ? this.normalizeTextStrict(body.designName)   : row.designName,
+    };
+
+    // No-op
+    if (
+      next.itemNumber   === row.itemNumber &&
+      next.categoryName === row.categoryName &&
+      next.subCategory  === row.subCategory &&
+      next.colorName    === row.colorName &&
+      next.designName   === row.designName
+    ) {
+      return row;
+    }
+
+    // 3) Duplicate check
+    const existing = await repo.findOne({
+      where: {
+        itemNumber: next.itemNumber,
+        categoryName: next.categoryName,
+        subCategory: next.subCategory,
+        colorName: next.colorName,
+        designName: next.designName,
+      },
+    });
+
+    const onDuplicate: 'error' | 'merge' =
+      body?.onDuplicate === 'merge' ? 'merge' : 'error';
+
+    if (existing && existing.id !== row.id) {
+      if (onDuplicate === 'error') {
+        throw new ConflictException('A description with these fields already exists.');
+      }
+
+      // MERGE: relink variants from row -> existing, then delete row
+      await this.dataSource.transaction(async (manager) => {
+        // If you have the ItemVariant entity, prefer the typed builder:
+        // await manager
+        //   .createQueryBuilder(ItemVariant, 'v')
+        //   .update(ItemVariant)
+        //   .set({ [linkField]: existing.id })
+        //   .where(`${linkField}Id = :sid`, { sid: row.id })
+        //   .execute();
+
+        // Fallback: use table & column names directly if needed
+        await manager
+          .createQueryBuilder()
+          .update('item_variant') // <- change to your actual table name if different
+          .set({ [`${linkField}`]: existing.id })
+          .where(`${linkField}Id = :sid`, { sid: row.id })
+          .execute();
+
+        await manager.getRepository(repo.metadata.target).delete(row.id);
+      });
+
+      return existing;
+    }
+
+    // 4) Update in place
+    row.itemNumber   = next.itemNumber;
+    row.categoryName = next.categoryName;
+    row.subCategory  = next.subCategory;
+    row.colorName    = next.colorName;
+    row.designName   = next.designName;
+
+    return await repo.save(row);
+  }
+
+  // Public methods (NO DTO)
+  async updateItemNameDescriptionRaw(id: number, body: any) {
+    return this.editDescriptionRowNoDto(
+      'itemNameDescriptionRepository',
+      'itemNameDescription',
+      id,
+      body,
+    );
+  }
+
+  async updateRealDescriptionRaw(id: number, body: any) {
+    return this.editDescriptionRowNoDto(
+      'realDescriptionRepository',
+      'realDescription',
+      id,
+      body,
+    );
+  }
+
+}
+
+
 
 
 
