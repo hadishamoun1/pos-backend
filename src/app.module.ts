@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule } from '@nestjs/config';
+
 import { UserModule } from './user/user.module';
 import { CustomerModule } from './customer/customer.module';
 import { SettingsModule } from './settings/settings.module';
@@ -32,7 +34,6 @@ import { TransfersModule } from './transfers/transfers.module';
 import { RecievablesModule } from './receipt-voucher/recievables.module';
 import { ItemNameDescriptionModule } from './item-name-description/item-name-description.module';
 import { ReportsModule } from './reports/reports.module';
-import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
@@ -47,7 +48,6 @@ import { ConfigModule } from '@nestjs/config';
         database: process.env.DB_NAME || 'pos_v1',
         autoLoadEntities: true,
         synchronize: true,
-        
       }),
     }),
     UserModule,
@@ -85,8 +85,3 @@ import { ConfigModule } from '@nestjs/config';
   ],
 })
 export class AppModule {}
-
-//my_new_database
-//pos_system_db
-
-//new_schema

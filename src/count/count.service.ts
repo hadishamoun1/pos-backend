@@ -8,6 +8,7 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { CountType } from '../entities/inventory/count.entity';
+import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 @Injectable()
 export class InventoryCountService {
   constructor(
@@ -22,6 +23,9 @@ export class InventoryCountService {
 
     @InjectRepository(ItemBatch)
     private readonly itemBatchRepo: Repository<ItemBatch>,
+
+    @InjectRepository(ItemNameDescription)
+    private readonly itemNameDescriptionRepo: Repository<ItemNameDescription>,
   ) {}
 
   async create(
@@ -293,6 +297,272 @@ export class InventoryCountService {
     });
   }
 
+
+
+
+
+
+  private ARABIC_INDIC_MAP: Record<string, string> = {
+    '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
+    '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+  };
+  private normalizeDigitsAll = (input: string) =>
+    String(input || '').replace(/[٠-٩۰-۹]/g, d => this.ARABIC_INDIC_MAP[d] ?? d);
+  private normalizeArabicAlef = (s: string) =>
+    String(s || '').replace(/أ|إ|آ/g, 'ا');
+
+  /**
+   * Parse a free-text query like:
+   *  - "5.5ملم ابيض"
+   *  - "225*321-027" (supports x, ×, *)
+   *  - mixed: "5.5 ملم ابيض 225×321-27"
+   */
+  private parseSearchQuery(qRaw: string): {
+    thickness?: number;
+    length?: number;
+    width?: number;
+    sheetsPerBox?: number;
+    nameTokens?: string[];
+  } {
+    if (!qRaw) return {};
+    let q = this.normalizeDigitsAll(qRaw).trim().replace(/\s+/g, ' ');
+    let working = q;
+
+    // thickness: "10ملم" / "10 مم" / "10مم" / "10 ملم"
+    const thMatch = working.match(/(\d+(?:[.,]\d+)?)\s*(?:ملم|مم|م)(?=$|\s|[-/xX×*])/);
+    let thickness: number | undefined;
+    if (thMatch) {
+      const th = Number((thMatch[1] || '').replace(',', '.'));
+      if (Number.isFinite(th)) thickness = th;
+      working = working.replace(thMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // dims + optional SPB: 225*321-027 | 225×321/27 | 225x321 - 27
+    const dimRe = /(\d{2,5})\s*[xX×*]\s*(\d{2,5})(?:\s*[-/]\s*0?(\d{1,3}))?/;
+    const dimMatch = working.match(dimRe);
+    let lengthN: number | undefined;
+    let widthN: number | undefined;
+    let spb: number | undefined;
+    if (dimMatch) {
+      lengthN = Number(dimMatch[1]);
+      widthN  = Number(dimMatch[2]);
+      if (dimMatch[3] != null) spb = Number(dimMatch[3]);
+      working = working.replace(dimMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // clear unit words
+    working = working
+      .replace(/(?:^|[\s\-_/\\])(?:ملم|مم|م)(?=$|[\s\-_/\\])/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // leftover tokens (item name / color / etc.)
+    let nameTokens: string[] | undefined;
+    if (working) {
+      const tokens = working.split(/\s+/)
+        .map(t => t.trim())
+        .filter(t => t.length >= 2);
+      if (tokens.length) nameTokens = tokens;
+    }
+
+    return {
+      thickness,
+      length: lengthN,
+      width: widthN,
+      sheetsPerBox: spb,
+      nameTokens,
+    };
+  }
+
+ // In your service
+ // in src/count/count.service.ts
+
+// src/count/count.service.ts
+
+async searchVariants(params: {
+  q?: string;
+  mode: 'name' | 'real';                 // kept for parity (not used in latest-count logic)
+  itemName?: string;
+  type?: 'box' | 'sheet' | 'sqm' | 'unit';
+  thickness?: number;
+  length?: number;
+  width?: number;
+  sheetsPerBox?: number;
+  origin?: string;
+  page: number;
+  limit: number;
+}) {
+  const page = Math.max(1, Number(params.page || 1));
+  const limit = Math.min(200, Math.max(1, Number(params.limit || 50)));
+
+  const qb = this.itemVariantRepo
+    .createQueryBuilder('v')
+    .innerJoinAndSelect('v.thickness', 't')
+    .innerJoinAndSelect('t.item', 'i')
+    .leftJoinAndSelect('v.batches', 'b')
+    .select([
+      'v.id',
+      'v.length',
+      'v.width',
+      'v.sheetsPerBox',
+      'v.origin',
+      't.id',
+      't.thickness',
+      'i.id',
+      'i.itemName',
+      'i.type',
+      'b.id',
+      'b.condition',
+      'b.dateReceived',
+    ])
+    .distinct(true);
+
+  // --- ONLY variants that appear in inventory_count ---
+  const existsSub = qb
+    .subQuery()
+    .select('1')
+    .from('inventory_count', 'ic')
+    .where('ic.itemVariantId = v.id')
+    .getQuery();
+  qb.andWhere(`EXISTS ${existsSub}`);
+
+  // helper to add latest inventory_count scalar as raw column
+  const addLatest = (col: string, alias: string) => {
+    const sub = `
+      (
+        SELECT ic.${col}
+        FROM inventory_count ic
+        WHERE ic.itemVariantId = v.id
+        ORDER BY ic.date DESC, ic.id DESC
+        LIMIT 1
+      )
+    `;
+    qb.addSelect(sub, alias);
+  };
+
+  addLatest('id',           'lc_id');
+  addLatest('date',         'lc_date');
+  addLatest('count',        'lc_count');
+  addLatest('sqm',          'lc_sqm');
+  addLatest('type',         'lc_type');
+  addLatest('finalCost',    'lc_finalCost');
+  addLatest('finalCostOfr', 'lc_finalCostOfr');
+
+  // --- parse "q" like: 5.5ملم ابيض 225*321-027
+  const parseSearchQuery = (q: string) => {
+    let src = (q || '').trim();
+    src = src.replace(/[xX×]/g, '*').replace(/\s+/g, ' ');
+    const thkM = src.match(/(\d+(?:\.\d+)?)\s*م?\s*ل?\s*م/);
+    const thickness = thkM ? Number(thkM[1]) : undefined;
+    if (thkM) src = src.replace(thkM[0], ' ');
+    const dimM = src.match(/(\d{2,4})\s*\*\s*(\d{2,4})(?:\s*-\s*(\d{1,3}))?/);
+    const length = dimM ? Number(dimM[1]) : undefined;
+    const width = dimM ? Number(dimM[2]) : undefined;
+    const sheetsPerBox = dimM && dimM[3] != null ? Number(dimM[3]) : undefined;
+    if (dimM) src = src.replace(dimM[0], ' ');
+    const normalizeArabicAlef = (s: string) => String(s || '').replace(/[أإآ]/g, 'ا');
+    const leftover = normalizeArabicAlef(src).trim();
+    const nameTokens = leftover ? leftover.split(/\s+/).filter(Boolean) : [];
+    return { thickness, length, width, sheetsPerBox, nameTokens, normalizeArabicAlef };
+  };
+
+  const parsed = parseSearchQuery(params.q || '');
+
+  // filters from q
+  if (Number.isFinite(parsed.thickness)) {
+    qb.andWhere('ROUND(t.thickness, 1) = ROUND(:pth, 1)', { pth: Number(parsed.thickness) });
+  }
+  if (Number.isFinite(parsed.length)) qb.andWhere('v.length = :plen', { plen: Number(parsed.length) });
+  if (Number.isFinite(parsed.width))  qb.andWhere('v.width  = :pwid', { pwid: Number(parsed.width) });
+  if (Number.isFinite(parsed.sheetsPerBox)) {
+    qb.andWhere('v.sheetsPerBox = :pspb', { pspb: Number(parsed.sheetsPerBox) });
+  }
+  if (parsed.nameTokens?.length) {
+    parsed.nameTokens.forEach((tok, idx) => {
+      const norm = `%${parsed.normalizeArabicAlef(tok)}%`;
+      const raw  = `%${tok}%`;
+      qb.andWhere(
+        `(
+          REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :n${idx}
+          OR i.itemName LIKE :r${idx}
+        )`,
+        { [`n${idx}`]: norm, [`r${idx}`]: raw },
+      );
+    });
+  }
+
+  // explicit filters
+  if (params.itemName) {
+    const normName = String(params.itemName).replace(/[أإآ]/g, 'ا');
+    qb.andWhere(
+      `(REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm OR i.itemName LIKE :nmRaw)`,
+      { nm: `%${normName}%`, nmRaw: `%${params.itemName}%` },
+    );
+  }
+  if (params.type) qb.andWhere('i.type = :tp', { tp: params.type });
+  if (Number.isFinite(params.thickness)) qb.andWhere('ROUND(t.thickness, 1) = ROUND(:th, 1)', { th: Number(params.thickness) });
+  if (Number.isFinite(params.length))    qb.andWhere('v.length = :len', { len: Number(params.length) });
+  if (Number.isFinite(params.width))     qb.andWhere('v.width  = :wid', { wid: Number(params.width) });
+  if (Number.isFinite(params.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :spb', { spb: Number(params.sheetsPerBox) });
+  if (params.origin) qb.andWhere('v.origin = :org', { org: params.origin });
+
+  qb
+    .addOrderBy('i.itemName', 'ASC')
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.width', 'ASC')
+    .addOrderBy('v.id', 'ASC')
+    .skip((page - 1) * limit)
+    .take(limit);
+
+  const { raw, entities } = await qb.getRawAndEntities();
+
+  const data = entities.map((v, idx) => {
+    const r: any = raw[idx];
+    const batches = (v.batches ?? []).map((b: any) => ({
+      id: b.id,
+      condition: b.condition ?? null,
+      dateReceived: b.dateReceived ?? null,
+    }));
+
+    const lcDate = r['lc_date'];
+    const dateISO =
+      lcDate == null
+        ? null
+        : lcDate instanceof Date
+        ? lcDate.toISOString()
+        : String(lcDate);
+
+    return {
+      id: r['lc_id'] != null ? Number(r['lc_id']) : null,
+      itemVariantName: v.thickness.item.itemName,
+      thickness: Number(v.thickness.thickness),
+      length: Number(v.length),
+      width: Number(v.width),
+      sheetsPerBox: Number(v.sheetsPerBox),
+      origin: v.origin,
+      itemVariantType: v.thickness.item.type as 'box' | 'sheet' | 'sqm' | 'unit',
+
+      date: dateISO,
+      count: r['lc_count'] != null ? Number(r['lc_count']) : null,
+      sqm: r['lc_sqm'] != null ? Number(r['lc_sqm']) : null,
+      type: r['lc_type'] ?? null,
+      finalCost: r['lc_finalCost'] != null ? Number(r['lc_finalCost']) : null,
+      finalCostOfr: r['lc_finalCostOfr'] != null ? Number(r['lc_finalCostOfr']) : null,
+
+      itemBatches: batches,
+    };
+  });
+
+  return { page, limit, total: data.length, data };
+}
+
+
+
+
+
+
+
   // Add this new method in your `InventoryCountService`
 
   async getFilteredCountsWithBatchBalance(): Promise<any[]> {
@@ -555,255 +825,277 @@ export class InventoryCountService {
     return countRec;
   }
 
-  async createSingleopening(data: any): Promise<InventoryCount> {
-    const {
-      itemVariantId,
-      date,
-      count,
-      type,
-      unit,
-      countOFR = 0,
-      finalCost = 0,
-      finalCostOfr = 0,
-      dateReceived: rawDateReceived = null, // 👈 new raw input
-      condition = 'Clean', // 👈 default value
-    } = data;
+async createSingleopening(data: any): Promise<InventoryCount> {
+  const {
+    itemVariantId,
+    date,
+    count,
+    type,
+    unit,
+    countOFR = 0,
+    finalCost = 0,
+    finalCostOfr = 0,
+    dateReceived: rawDateReceived = null, // 👈 new raw input
+    condition = 'Clean', // 👈 default value
+  } = data;
 
-    // ✅ Format the dateReceived to MM/YYYY
-    const formatDateReceived = (value: string | null): string | null => {
-      if (!value) return null;
-      const [month, year] = value.split('/');
-      if (!month || !year) return null;
-      return `${month.padStart(2, '0')}/${year}`;
-    };
+  // ✅ Format the dateReceived to MM/YYYY
+  const formatDateReceived = (value: string | null): string | null => {
+    if (!value) return null;
+    const [month, year] = value.split('/');
+    if (!month || !year) return null;
+    return `${month.padStart(2, '0')}/${year}`;
+  };
 
-    const formattedDateReceived = formatDateReceived(rawDateReceived);
+  const formattedDateReceived = formatDateReceived(rawDateReceived);
 
-    // ✅ Step 1: Try to find existing batch
-    let batch = await this.itemBatchRepo.findOne({
-      where: {
-        itemVariant: { id: itemVariantId },
-        dateReceived: formattedDateReceived ? formattedDateReceived : IsNull(),
-      },
-      relations: ['itemVariant'],
+  // ✅ Step 1: Try to find existing batch
+  let batch = await this.itemBatchRepo.findOne({
+    where: {
+      itemVariant: { id: itemVariantId },
+      dateReceived: formattedDateReceived ? formattedDateReceived : IsNull(),
+    },
+    // 👇 ensure we have variant + its itemNameDescription for later
+    relations: ['itemVariant', 'itemVariant.itemNameDescription'],
+  });
+
+  console.log(
+    '✅ Batch search result:',
+    batch?.id,
+    'dateReceived:',
+    batch?.dateReceived,
+  );
+
+  // ✅ Step 2: If no such batch, create one
+  if (!batch) {
+    const variantFound = await this.itemVariantRepo.findOne({
+      where: { id: itemVariantId },
+      relations: ['itemNameDescription'], // 👈 also load description here
     });
+    if (!variantFound)
+      throw new NotFoundException(`ItemVariant #${itemVariantId} not found`);
 
-    console.log(
-      '✅ Batch search result:',
-      batch?.id,
-      'dateReceived:',
-      batch?.dateReceived,
-    );
-
-    // ✅ Step 2: If no such batch, create one
-    if (!batch) {
-      const variant = await this.itemVariantRepo.findOneBy({
-        id: itemVariantId,
-      });
-      if (!variant)
-        throw new NotFoundException(`ItemVariant #${itemVariantId} not found`);
-
-      batch = this.itemBatchRepo.create({
-        itemVariant: variant,
-        dateReceived: formattedDateReceived || null,
-        condition: condition || 'Clean',
-      });
-      await this.itemBatchRepo.save(batch);
-
-      // Attach variant manually
-      batch.itemVariant = variant;
-    }
-
-    const variant = batch.itemVariant;
-
-    // ✅ Step 3: Compute sqm
-    const oneSheetM2 = (Number(variant.length) * Number(variant.width)) / 10000;
-    let rawSqm = 0;
-    let rawSqmofr = 0;
-
-    switch (unit) {
-      case 'box':
-        rawSqm = oneSheetM2 * variant.sheetsPerBox * count;
-        rawSqmofr =
-          type === 'G'
-            ? oneSheetM2 * variant.sheetsPerBox * count
-            : oneSheetM2 * variant.sheetsPerBox * countOFR;
-        break;
-
-      case 'sheet':
-        rawSqm = oneSheetM2 * count;
-        rawSqmofr = type === 'G' ? oneSheetM2 * count : oneSheetM2 * countOFR;
-        break;
-
-      case 'sqm':
-        rawSqm = count;
-        rawSqmofr = type === 'G' ? count : countOFR;
-        break;
-    }
-
-    const sqm = Number(rawSqm.toFixed(2));
-    const sqmofr = Number(rawSqmofr.toFixed(2));
-
-    // ✅ Step 4: Compute cost
-    let fc = 0,
-      fco = 0;
-    if (type === 'S') {
-      fc = finalCost;
-      fco = finalCost;
-    } else if (type === 'G') {
-      fco = finalCostOfr;
-    } else if (type === 'RVR') {
-      fc = finalCost;
-    } else if (type === 'SR') {
-      fc = finalCost;
-      fco = finalCostOfr;
-    }
-
-    // ✅ Step 5: Save inventory count
-    const inventoryCount = this.inventoryCountRepo.create({
-      itemVariant: variant,
-      date,
-      count,
-      type,
-      sqm,
-      finalCost: fc,
-      finalCostOfr: fco,
+    batch = this.itemBatchRepo.create({
+      itemVariant: variantFound,
+      dateReceived: formattedDateReceived || null,
+      condition: condition || 'Clean',
     });
-    const savedCount = await this.inventoryCountRepo.save(inventoryCount);
-
-    // ✅ Step 6: Save inventory transaction
-    let qty = 0;
-    let qtyOFR = 0;
-    let txnSqm = 0;
-    let txnSqmOFR = 0;
-
-    switch (type) {
-      case 'S':
-        qty = count;
-        qtyOFR = count;
-        txnSqm = sqm;
-        txnSqmOFR = sqm;
-        break;
-
-      case 'G':
-        qty = 0;
-        qtyOFR = count;
-        txnSqm = 0;
-        txnSqmOFR = sqmofr;
-        break;
-
-      case 'RVR':
-        qty = count;
-        qtyOFR = 0;
-        txnSqm = sqm;
-        txnSqmOFR = 0;
-        break;
-
-      case 'SR':
-        qty = count;
-        qtyOFR = countOFR;
-        txnSqm = sqm;
-        txnSqmOFR = sqmofr;
-        break;
-    }
-
-    const txn = this.inventoryTxnRepo.create({
-      itemVariant: variant,
-      itemBatchId: batch.id,
-      transactionType: 'Opening Count',
-      sqm: txnSqm,
-      sqmofr: txnSqmOFR,
-      quantity: qty,
-      quantityofr: qtyOFR,
-      inventoryCountId: savedCount.id,
-      finalcost: fc,
-      finalcostofr: fco,
-      dateForEachInvoice: new Date(savedCount.date),
-    });
-    await this.inventoryTxnRepo.save(txn);
-    // ✅ Step 7: Update batch and variant totals
-    switch (type) {
-      case 'RVR':
-        batch.start = Number(batch.start) + sqm;
-        variant.totalStart = Number(variant.totalStart) + sqm;
-        batch.balance =
-          Number(batch.start || 0) +
-          Number(batch.in || 0) -
-          Number(batch.out || 0);
-        variant.totalBalance =
-          Number(variant.totalStart || 0) +
-          Number(variant.totalIn || 0) -
-          Number(variant.totalOut || 0);
-        break;
-
-      case 'S':
-        batch.start = Number(batch.start) + sqm;
-        batch.startOFR = Number(batch.startOFR) + sqm;
-        batch.balance =
-          Number(batch.start || 0) +
-          Number(batch.in || 0) -
-          Number(batch.out || 0);
-        batch.balanceOFR =
-          Number(batch.startOFR || 0) +
-          Number(batch.inOFR || 0) -
-          Number(batch.outOFR || 0);
-        variant.totalStart = Number(variant.totalStart) + sqm;
-        variant.totalStartOFR = Number(variant.totalStartOFR) + sqm;
-
-        variant.totalBalance =
-          Number(variant.totalStart || 0) +
-          Number(variant.totalIn || 0) -
-          Number(variant.totalOut || 0);
-        variant.totalBalanceOFR =
-          Number(variant.totalStartOFR || 0) +
-          Number(variant.totalInOFR || 0) -
-          Number(variant.totalOutOFR || 0);
-        break;
-
-      case 'G':
-        batch.startOFR = Number(batch.startOFR) + sqmofr;
-        variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
-
-        batch.balanceOFR =
-          Number(batch.startOFR || 0) +
-          Number(batch.inOFR || 0) -
-          Number(batch.outOFR || 0);
-
-        variant.totalBalanceOFR =
-          Number(variant.totalStartOFR || 0) +
-          Number(variant.totalInOFR || 0) -
-          Number(variant.totalOutOFR || 0);
-        break;
-
-      case 'SR':
-        batch.start = Number(batch.start) + sqm;
-        batch.startOFR = Number(batch.startOFR) + sqmofr;
-        variant.totalStart = Number(variant.totalStart) + sqm;
-        variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
-        batch.balance =
-          Number(batch.start || 0) +
-          Number(batch.in || 0) -
-          Number(batch.out || 0);
-        batch.balanceOFR =
-          Number(batch.startOFR || 0) +
-          Number(batch.inOFR || 0) -
-          Number(batch.outOFR || 0);
-        variant.totalBalance =
-          Number(variant.totalStart || 0) +
-          Number(variant.totalIn || 0) -
-          Number(variant.totalOut || 0);
-        variant.totalBalanceOFR =
-          Number(variant.totalStartOFR || 0) +
-          Number(variant.totalInOFR || 0) -
-          Number(variant.totalOutOFR || 0);
-        break;
-    }
-
     await this.itemBatchRepo.save(batch);
-    await this.itemVariantRepo.save(variant);
 
-    return savedCount;
+    // Attach variant manually
+    batch.itemVariant = variantFound;
   }
+
+  // this is the variant we will update (totals + costs)
+  const variant = batch.itemVariant;
+
+  // ✅ Step 3: Compute sqm
+  const oneSheetM2 = (Number(variant.length) * Number(variant.width)) / 10000;
+  let rawSqm = 0;
+  let rawSqmofr = 0;
+
+  switch (unit) {
+    case 'box':
+      rawSqm = oneSheetM2 * variant.sheetsPerBox * count;
+      rawSqmofr =
+        type === 'G'
+          ? oneSheetM2 * variant.sheetsPerBox * count
+          : oneSheetM2 * variant.sheetsPerBox * countOFR;
+      break;
+
+    case 'sheet':
+      rawSqm = oneSheetM2 * count;
+      rawSqmofr = type === 'G' ? oneSheetM2 * count : oneSheetM2 * countOFR;
+      break;
+
+    case 'sqm':
+      rawSqm = count;
+      rawSqmofr = type === 'G' ? count : countOFR;
+      break;
+  }
+
+  const sqm = Number(rawSqm.toFixed(2));
+  const sqmofr = Number(rawSqmofr.toFixed(2));
+
+  // ✅ Step 4: Compute cost
+  let fc = 0,
+    fco = 0;
+  if (type === 'S') {
+    fc = finalCost;
+    fco = finalCost;
+  } else if (type === 'G') {
+    fco = finalCostOfr;
+  } else if (type === 'RVR') {
+    fc = finalCost;
+  } else if (type === 'SR') {
+    fc = finalCost;
+    fco = finalCostOfr;
+  }
+
+  // ⭐ Step 4.1 – push opening costs into ItemVariant (averageCost / averageCostVM)
+  // finalCost      -> averageCost
+  // finalCostOfr   -> averageCostVM
+  // We only overwrite if a positive cost is provided.
+  if (fc > 0) {
+    variant.averageCost = Number(fco.toFixed(2));
+  }
+  if (fco > 0) {
+    variant.averageCostVM = Number(fc.toFixed(2));
+  }
+
+  // ✅ Step 5: Save inventory count
+  const inventoryCount = this.inventoryCountRepo.create({
+    itemVariant: variant,
+    date,
+    count,
+    type,
+    sqm,
+    finalCost: fc,
+    finalCostOfr: fco,
+  });
+  const savedCount = await this.inventoryCountRepo.save(inventoryCount);
+
+  // ✅ Step 6: Save inventory transaction
+  let qty = 0;
+  let qtyOFR = 0;
+  let txnSqm = 0;
+  let txnSqmOFR = 0;
+
+  switch (type) {
+    case 'S':
+      qty = count;
+      qtyOFR = count;
+      txnSqm = sqm;
+      txnSqmOFR = sqm;
+      break;
+
+    case 'G':
+      qty = 0;
+      qtyOFR = count;
+      txnSqm = 0;
+      txnSqmOFR = sqmofr;
+      break;
+
+    case 'RVR':
+      qty = count;
+      qtyOFR = 0;
+      txnSqm = sqm;
+      txnSqmOFR = 0;
+
+      // ⭐ NEW: when type = 'RVR', push finalCost into ItemNameDescription.averageCostCVM
+      if (fc > 0 && variant.itemNameDescription) {
+        variant.itemNameDescription.averageCostCVM = Number(fc.toFixed(2));
+        await this.itemNameDescriptionRepo.save(variant.itemNameDescription);
+      }
+      break;
+
+    case 'SR':
+      qty = count;
+      qtyOFR = countOFR;
+      txnSqm = sqm;
+      txnSqmOFR = sqmofr;
+      break;
+  }
+
+  const txn = this.inventoryTxnRepo.create({
+    itemVariant: variant,
+    itemBatchId: batch.id,
+    transactionType: 'Opening Count',
+    sqm: txnSqm,
+    sqmofr: txnSqmOFR,
+    quantity: qty,
+    quantityofr: qtyOFR,
+    inventoryCountId: savedCount.id,
+    finalcost: fc,
+    finalcostofr: fco,
+    dateForEachInvoice: new Date(savedCount.date),
+  });
+  await this.inventoryTxnRepo.save(txn);
+
+  // ✅ Step 7: Update batch and variant totals
+  switch (type) {
+    case 'RVR':
+      batch.start = Number(batch.start) + sqm;
+      variant.totalStart = Number(variant.totalStart) + sqm;
+      batch.balance =
+        Number(batch.start || 0) +
+        Number(batch.in || 0) -
+        Number(batch.out || 0);
+      variant.totalBalance =
+        Number(variant.totalStart || 0) +
+        Number(variant.totalIn || 0) -
+        Number(variant.totalOut || 0);
+      break;
+
+    case 'S':
+      batch.start = Number(batch.start) + sqm;
+      batch.startOFR = Number(batch.startOFR) + sqm;
+      batch.balance =
+        Number(batch.start || 0) +
+        Number(batch.in || 0) -
+        Number(batch.out || 0);
+      batch.balanceOFR =
+        Number(batch.startOFR || 0) +
+        Number(batch.inOFR || 0) -
+        Number(batch.outOFR || 0);
+      variant.totalStart = Number(variant.totalStart) + sqm;
+      variant.totalStartOFR = Number(variant.totalStartOFR) + sqm;
+
+      variant.totalBalance =
+        Number(variant.totalStart || 0) +
+        Number(variant.totalIn || 0) -
+        Number(variant.totalOut || 0);
+      variant.totalBalanceOFR =
+        Number(variant.totalStartOFR || 0) +
+        Number(variant.totalInOFR || 0) -
+        Number(variant.totalOutOFR || 0);
+      break;
+
+    case 'G':
+      batch.startOFR = Number(batch.startOFR) + sqmofr;
+      variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+
+      batch.balanceOFR =
+        Number(batch.startOFR || 0) +
+        Number(batch.inOFR || 0) -
+        Number(batch.outOFR || 0);
+
+      variant.totalBalanceOFR =
+        Number(variant.totalStartOFR || 0) +
+        Number(variant.totalInOFR || 0) -
+        Number(variant.totalOutOFR || 0);
+      break;
+
+    case 'SR':
+      batch.start = Number(batch.start) + sqm;
+      batch.startOFR = Number(batch.startOFR) + sqmofr;
+      variant.totalStart = Number(variant.totalStart) + sqm;
+      variant.totalStartOFR = Number(variant.totalStartOFR) + sqmofr;
+      batch.balance =
+        Number(batch.start || 0) +
+        Number(batch.in || 0) -
+        Number(batch.out || 0);
+      batch.balanceOFR =
+        Number(batch.startOFR || 0) +
+        Number(batch.inOFR || 0) -
+        Number(batch.outOFR || 0);
+      variant.totalBalance =
+        Number(variant.totalStart || 0) +
+        Number(variant.totalIn || 0) -
+        Number(variant.totalOut || 0);
+      variant.totalBalanceOFR =
+        Number(variant.totalStartOFR || 0) +
+        Number(variant.totalInOFR || 0) -
+        Number(variant.totalOutOFR || 0);
+      break;
+  }
+
+  await this.itemBatchRepo.save(batch);
+  await this.itemVariantRepo.save(variant);
+
+  return savedCount;
+}
+
 
   async createInventoryCheck(
     itemBatchId: number,

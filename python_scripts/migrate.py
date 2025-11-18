@@ -28,7 +28,7 @@ def main():
         host="localhost",
         user="root",
         password="70631859HADI",
-        database="new_schema2",
+        database="pos_v1",
     )
     cur = db.cursor()
 

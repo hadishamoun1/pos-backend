@@ -95,7 +95,6 @@ private readonly dataSource: DataSource
     });
   }
 
-// items.service.ts
 // using Real Description
 async getSelectedItemDetailsPaginated(opts?: {
   page?: number;
@@ -137,6 +136,9 @@ async getSelectedItemDetailsPaginated(opts?: {
       'rd.designName',
       'rd.sort_index_real_description',
     ])
+
+    // ✅ Only rows where realDescription exists
+    .andWhere('rd.id IS NOT NULL')
 
     // ---- Order at SQL so groups and their variants come pre-sorted ----
     // 1) RealDescription groups by sort_index_real_description ASC, NULLS LAST
@@ -205,7 +207,156 @@ async getSelectedItemDetailsPaginated(opts?: {
   }
 
   // ---- Materialize, keep SQL order (already ordered by RD then thickness then length) ----
-  // Convert Map to array preserving insertion order
+  const allGroups = Array.from(groupsMap.values());
+
+  // ---- Pagination over description groups ----
+  const totalGroups = allGroups.length;
+  const start = (page - 1) * limit;
+  const end   = start + limit;
+  const pageGroups = allGroups.slice(start, end);
+
+  return {
+    page,
+    limit,
+    hasMore: end < totalGroups,
+    totalGroups,
+    data: pageGroups,
+  };
+}
+
+
+// using item naem description
+
+async getSelectedItemDetailsByNamePaginated(opts?: {
+  page?: number;
+  limit?: number;
+  includeEmpty?: boolean; // currently ignored, like in v1
+}) {
+  const page  = Math.max(1, Number(opts?.page ?? 1));
+  const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
+
+  // --- Pull everything we need: variant + thickness + item + itemNameDescription
+  const qb = this.itemVariantRepository
+    .createQueryBuilder('v')
+    .innerJoinAndSelect('v.thickness', 't')
+    .innerJoinAndSelect('t.item', 'i')
+    .leftJoinAndSelect('v.itemNameDescription', 'd')
+    .select([
+      // Variant
+      'v.id',
+      'v.length',
+      'v.width',
+      'v.sheetsPerBox',
+      'v.origin',
+
+      // Thickness
+      't.id',
+      't.thickness',
+      't.sort_index',
+
+      // Item
+      'i.id',
+      'i.itemName',
+      'i.type',
+      'i.sortIndex',
+
+      // ItemNameDescription (group key + labels + sort index)
+      'd.id',
+      'd.itemNumber',
+      'd.categoryName',
+      'd.subCategory',
+      'd.colorName',
+      'd.designName',
+      'd.sort_index_description',
+    ])
+
+    // ✅ Only rows where ItemNameDescription exists
+    .andWhere('d.id IS NOT NULL')
+
+    // ---- Order in SQL so groups and their variants come pre-sorted ----
+    // 1) Description groups: sort_index_description ASC, NULLS LAST
+    .addSelect(
+      'CASE WHEN d.sort_index_description IS NULL THEN 1 ELSE 0 END',
+      'd_nulls',
+    )
+    .orderBy('d_nulls', 'ASC')
+    .addOrderBy('d.sort_index_description', 'ASC')
+    .addOrderBy('d.id', 'ASC') // stable
+
+    // 2) Inside each description group:
+    //    optionally by Item.sortIndex, then thickness, then length
+    .addOrderBy('i.sortIndex', 'ASC')
+    .addOrderBy('t.sort_index', 'ASC')
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.id', 'ASC'); // stable tie-breaker
+
+  const rows = await qb.getMany();
+
+  // ---- Group rows by ItemNameDescription ----
+  type DescKey = number | 'null';
+
+  const groupsMap = new Map<
+    DescKey,
+    {
+      description: {
+        id: number | null;
+        itemNumber: string | null;
+        categoryName: string | null;
+        subCategory: string | null;
+        colorName: string | null;
+        designName: string | null;
+        sortIndexDescription: number | null;
+      };
+      variants: any[];
+    }
+  >();
+
+  for (const v of rows) {
+    const d = (v as any).itemNameDescription || null;
+    const key: DescKey = d?.id ?? 'null';
+
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        description: {
+          id: d?.id ?? null,
+          itemNumber: d?.itemNumber ?? null,
+          categoryName: d?.categoryName ?? null,
+          subCategory: d?.subCategory ?? null,
+          colorName: d?.colorName ?? null,
+          designName: d?.designName ?? null,
+          sortIndexDescription: d?.sort_index_description ?? null,
+        },
+        variants: [],
+      });
+    }
+
+    const grp = groupsMap.get(key)!;
+
+    grp.variants.push({
+      // Variant basics
+      variantId: v.id,
+      length: v.length,
+      width: v.width,
+      sheetsPerBox: v.sheetsPerBox,
+      origin: v.origin,
+
+      // Thickness
+      thicknessId: v.thickness.id,
+      thickness: v.thickness.thickness,
+
+      // Item
+      itemId: v.thickness.item.id,
+      itemName: v.thickness.item.itemName,
+      type: v.thickness.item.type,
+
+      // 🔹 Extra from ItemNameDescription (per-item, as requested)
+      itemNumber: d?.itemNumber ?? null,
+      subCategory: d?.subCategory ?? null,
+    });
+  }
+
+  // ---- Materialize, keep SQL order ----
   const allGroups = Array.from(groupsMap.values());
 
   // ---- Pagination over description groups ----
@@ -2870,6 +3021,8 @@ private baseQBForVariantModal() {
 }
 
 /** ========== FLAT SEARCH API for /variant-search ========== */
+
+// using real description
 async searchVariantsForModalPOS(params: {
   q?: string;
   dims?: string;
@@ -2901,6 +3054,10 @@ async searchVariantsForModalPOS(params: {
   if (spb != null && !type) type = 'box';
 
   const qb = this.baseQBForVariantModal();
+
+  // 🔒 Exclude variants that don't have a real description
+  //    (use the actual FK column name/alias in your schema)
+  qb.andWhere('variant.realDescriptionId IS NOT NULL');
 
   // name (Arabic-normalized OR raw)
   if (cleanName && cleanName.length > 0) {
@@ -2971,6 +3128,146 @@ async searchVariantsForModalPOS(params: {
     origin: v.origin ?? null,
     itemNameDescriptionId: v.itemNameDescriptionId ?? null,
   }));
+
+  return {
+    page,
+    limit,
+    totalRows,
+    totalPages: Math.max(1, Math.ceil(totalRows / limit)),
+    hasMore: page * limit < totalRows,
+    data,
+  };
+}
+
+// using item name description
+
+async searchVariantsForModalPOSByNameDescription(params: {
+  q?: string;
+  dims?: string;
+  length?: number;
+  width?: number;
+  spb?: number;
+  type?: 'box' | 'sheet' | 'sqm' | 'unit';
+  page?: number;
+  limit?: number;
+}) {
+  const page  = Math.max(1, Number(params.page ?? 1));
+  const limit = Math.min(500, Math.max(1, Number(params.limit ?? 100)));
+  const skip  = (page - 1) * limit;
+
+  // Thickness + name from q (order-agnostic)
+  const { thickness, cleanName, nmNorm } = this.parseThicknessFromQ(params.q || '');
+
+  // Dims from explicit param OR q text
+  const fromDimsParam = this.parseDims(params.dims);
+  const fromQ         = this.parseDimsFromAny(params.q);
+
+  // Precedence: explicit params > dims param > q-derived
+  const length = params.length ?? fromDimsParam.length ?? (fromQ as any).length;
+  const width  = params.width  ?? fromDimsParam.width  ?? (fromQ as any).width;
+  const spb    = params.spb    ?? fromDimsParam.spb    ?? (fromQ as any).spb;
+  let   type   = params.type   ?? (fromDimsParam as any).type ?? (fromQ as any).type;
+
+  // If SPB exists and no type provided, infer box
+  if (spb != null && !type) type = 'box';
+
+  const qb = this.baseQBForVariantModal();
+
+  // 🔗 Make sure ItemNameDescription is joined
+  // (If baseQBForVariantModal already does this, you can remove this line.)
+  qb.leftJoinAndSelect('variant.itemNameDescription', 'ind');
+
+  // 🔒 Exclude variants that don't have an ItemNameDescription
+  qb.andWhere('variant.itemNameDescriptionId IS NOT NULL');
+
+  // name (Arabic-normalized OR raw) – still based on item.itemName
+  if (cleanName && cleanName.length > 0) {
+    qb.andWhere(
+      `(
+        REPLACE(REPLACE(REPLACE(item.itemName, 'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm
+        OR item.itemName LIKE :nmRaw
+      )`,
+      { nm: `%${nmNorm || cleanName}%`, nmRaw: `%${cleanName}%` }
+    );
+  }
+
+  // Optional type
+  if (type) qb.andWhere('item.type = :tp', { tp: type });
+
+  // Thickness tolerance ±0.011
+  if (typeof thickness === 'number' && !Number.isNaN(thickness)) {
+    qb.andWhere('ABS(CAST(thickness.thickness AS DECIMAL(10,3)) - :th) < :thTol', {
+      th: thickness,
+      thTol: 0.011,
+    });
+  }
+
+  // Dims tolerance ±0.51 with swap
+  const tol = 0.51;
+  const hasLen = typeof length === 'number' && Number.isFinite(Number(length));
+  const hasWid = typeof width  === 'number' && Number.isFinite(Number(width));
+
+  if (hasLen && hasWid) {
+    qb.andWhere(
+      `(
+        (ABS(CAST(variant.length AS DECIMAL(10,3)) - :len) < :tol AND ABS(CAST(variant.width AS DECIMAL(10,3)) - :wid) < :tol)
+        OR
+        (ABS(CAST(variant.length AS DECIMAL(10,3)) - :wid) < :tol AND ABS(CAST(variant.width AS DECIMAL(10,3)) - :len) < :tol)
+      )`,
+      { len: Number(length), wid: Number(width), tol },
+    );
+  } else if (hasLen) {
+    qb.andWhere('ABS(CAST(variant.length AS DECIMAL(10,3)) - :len) < :tol', {
+      len: Number(length),
+      tol,
+    });
+  } else if (hasWid) {
+    qb.andWhere('ABS(CAST(variant.width AS DECIMAL(10,3)) - :wid) < :tol', {
+      wid: Number(width),
+      tol,
+    });
+  }
+
+  // SPB exact
+  if (typeof spb === 'number' && Number.isFinite(Number(spb))) {
+    qb.andWhere('variant.sheetsPerBox = :spb', { spb: Number(spb) });
+  }
+
+  qb
+    .orderBy('item.itemName', 'ASC')
+    .addOrderBy('thickness.thickness', 'ASC')
+    .addOrderBy('variant.id', 'ASC')
+    .skip(skip)
+    .take(limit);
+
+  const [entities, totalRows] = await qb.getManyAndCount();
+
+  // Flatten to rows your React mapper expects
+  const data = entities.map((v: any) => {
+    const ind = v.itemNameDescription || null;
+
+    return {
+      variantId: Number(v.id),
+      itemId: Number(v.thickness.item.id),
+      itemName: String(v.thickness.item.itemName),
+      type: String(v.thickness.item.type),
+
+      thicknessId: Number(v.thickness.id),
+      thickness: Number(v.thickness.thickness),
+
+      length: Number(v.length),
+      width: Number(v.width),
+      sheetsPerBox: Number(v.sheetsPerBox),
+      origin: v.origin ?? null,
+
+      // 🔁 Same as before
+      itemNameDescriptionId: v.itemNameDescriptionId ?? null,
+
+      // 🆕 Extra fields from ItemNameDescription
+      itemNumber: ind?.itemNumber ?? null,
+      subCategory: ind?.subCategory ?? null,
+    };
+  });
 
   return {
     page,
@@ -3645,8 +3942,8 @@ async getVariantLedger(params?: {
     .innerJoinAndSelect('v.thickness', 't')
     .innerJoinAndSelect('t.item', 'i')
     .leftJoinAndSelect('v.batches', 'b')
-    // 🔁 swap to RealDescription
-    .leftJoinAndSelect('v.realDescription', 'r')
+    // Require a real description
+    .innerJoinAndSelect('v.realDescription', 'r')
     .select([
       // variant
       'v.id',
@@ -3682,7 +3979,7 @@ async getVariantLedger(params?: {
       'b.inOFR',
       'b.outOFR',
       'b.balanceOFR',
-      // real description (ordering + labels)
+      // real description
       'r.id',
       'r.sort_index_real_description',
       'r.categoryName',
@@ -3740,16 +4037,16 @@ async getVariantLedger(params?: {
   if (Number.isFinite(params?.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :spb', { spb: Number(params!.sheetsPerBox) });
   if (params?.origin) qb.andWhere('v.origin = :org', { org: params.origin });
 
-  // ---------- ORDERING (by real description, then thickness, then length) ----------
+  // ---------- ORDERING ----------
+  // NULLS LAST for r.sort_index_real_description via computed column r_nulls
   qb
     .addSelect('CASE WHEN r.sort_index_real_description IS NULL THEN 1 ELSE 0 END', 'r_nulls')
-    .addSelect('CASE WHEN t.sort_index IS NULL THEN 1 ELSE 0 END', 't_nulls');
-
-  qb
-    // 1) RealDescription: non-null first, then by sort index
+    .addSelect('CASE WHEN t.sort_index IS NULL THEN 1 ELSE 0 END', 't_nulls')
+    // 1) RealDescription: non-null first, sorted by sort_index_real_description, then r.id
     .orderBy('r_nulls', 'ASC')
     .addOrderBy('r.sort_index_real_description', 'ASC')
-    // 2) Thickness: non-null first, then value, then numeric thickness
+    .addOrderBy('r.id', 'ASC')
+    // 2) Thickness: non-null sort_index first, then sort_index, then thickness
     .addOrderBy('t_nulls', 'ASC')
     .addOrderBy('t.sort_index', 'ASC')
     .addOrderBy('t.thickness', 'ASC')
@@ -3839,8 +4136,7 @@ async getVariantLedger(params?: {
       };
     });
 
-    // 🔁 description now from RealDescription (v.realDescription)
-    const rd: any = (v as any).realDescription ?? null;
+    const rd: any = (v as any).realDescription;
 
     return {
       itemId: v.thickness.item.id,
@@ -3872,19 +4168,15 @@ async getVariantLedger(params?: {
 
       ofrTotalsUnits,
 
-      // keep the same outward shape
-      description: rd
-        ? {
-            id: rd.id ?? null,
-            categoryName: rd.categoryName ?? null,
-            subCategory:  rd.subCategory ?? null,
-            colorName:    rd.colorName ?? null,
-            designName:   rd.designName ?? null,
-            // expose real description's sort index under the same key name if callers expect it
-            sortIndexDescription: rd.sort_index_real_description ?? null,
-            itemNumber:  rd.itemNumber ?? null,
-          }
-        : null,
+      description: {
+        id: rd.id ?? null,
+        categoryName: rd.categoryName ?? null,
+        subCategory:  rd.subCategory ?? null,
+        colorName:    rd.colorName ?? null,
+        designName:   rd.designName ?? null,
+        sortIndexDescription: rd.sort_index_real_description ?? null,
+        itemNumber:  rd.itemNumber ?? null,
+      },
 
       batches,
     };
@@ -3898,6 +4190,691 @@ async getVariantLedger(params?: {
     data,
   };
 }
+
+
+
+
+
+async getVariantLedgerByItemNameDesc(params?: {
+  q?: string; // "5.5ملم ابيض 225*321-025"
+  itemName?: string;
+  type?: 'box' | 'sheet' | 'sqm' | 'unit';
+  thickness?: number;
+  length?: number;
+  width?: number;
+  sheetsPerBox?: number;
+  origin?: string;
+  page?: number;
+  limit?: number;
+  variantIds?: number[];
+}) {
+  const toNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const ARABIC_INDIC_MAP: Record<string, string> = {
+    '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
+    '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+  };
+  const normalizeDigitsAll = (input: string) =>
+    String(input || '').replace(/[٠-٩۰-۹]/g, d => ARABIC_INDIC_MAP[d] ?? d);
+
+  const normalizeArabicAlef = (s: string) =>
+    String(s || '').replace(/أ|إ|آ/g, 'ا');
+
+  const parseVariantQuery = (qRaw: string): {
+    thickness?: number;
+    length?: number;
+    width?: number;
+    sheetsPerBox?: number;
+    nameTokens?: string[];
+  } => {
+    if (!qRaw) return {};
+    let q = normalizeDigitsAll(qRaw).trim().replace(/\s+/g, ' ');
+    let working = q;
+
+    const thMatch = working.match(/(\d+(?:[.,]\d+)?)\s*(?:ملم|مم|م)(?=$|\s|[-/xX×*])/);
+    let thickness: number | undefined;
+    if (thMatch) {
+      const th = Number((thMatch[1] || '').replace(',', '.'));
+      if (Number.isFinite(th)) thickness = th;
+      working = working.replace(thMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    const dimRe = /(\d{2,5})\s*[xX×*]\s*(\d{2,5})(?:\s*[-/]\s*0?(\d{1,3}))?/;
+    const dimMatch = working.match(dimRe);
+    let lengthN: number | undefined;
+    let widthN: number | undefined;
+    let spb: number | undefined;
+    if (dimMatch) {
+      lengthN = Number(dimMatch[1]);
+      widthN  = Number(dimMatch[2]);
+      if (dimMatch[3] != null) spb = Number(dimMatch[3]);
+      working = working.replace(dimMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    working = working
+      .replace(/(?:^|[\s\-_/\\])(?:ملم|مم|م)(?=$|[\s\-_/\\])/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    let nameTokens: string[] | undefined;
+    if (working) {
+      const tokens = working.split(/\s+/).map(t => t.trim()).filter(t => t.length >= 2);
+      if (tokens.length) nameTokens = tokens;
+    }
+
+    return { thickness, length: lengthN, width: widthN, sheetsPerBox: spb, nameTokens };
+  };
+
+  const convertFromSqm = (args: {
+    itemType: string | null | undefined;
+    lengthCm: number;
+    widthCm: number;
+    sheetsPerBox: number;
+    valueSqm: number;
+  }) => {
+    const { itemType, lengthCm, widthCm, sheetsPerBox, valueSqm } = args;
+    const perSheetSqm =
+      toNum(lengthCm) > 0 && toNum(widthCm) > 0
+        ? (toNum(lengthCm) * toNum(widthCm)) / 10000
+        : 0;
+    const type = String(itemType || '').toLowerCase();
+
+    if (type === 'box') {
+      const perBoxSqm = perSheetSqm * Math.max(1, toNum(sheetsPerBox));
+      return perBoxSqm > 0 ? valueSqm / perBoxSqm : valueSqm;
+    }
+    if (type === 'sheet') {
+      return perSheetSqm > 0 ? valueSqm / perSheetSqm : valueSqm;
+    }
+    return valueSqm;
+  };
+
+  const page  = Math.max(1, Number(params?.page ?? 1));
+  const limit = Math.min(200, Math.max(1, Number(params?.limit ?? 50)));
+  const skip  = (page - 1) * limit;
+
+  const qb = this.itemVariantRepository
+    .createQueryBuilder('v')
+    .innerJoinAndSelect('v.thickness', 't')
+    .innerJoinAndSelect('t.item', 'i')
+    .leftJoinAndSelect('v.batches', 'b')
+    .leftJoinAndSelect('v.itemNameDescription', 'n')
+    .select([
+      'v.id','v.length','v.width','v.sheetsPerBox','v.origin',
+      'v.totalStart','v.totalIn','v.totalOut','v.totalBalance',
+      'v.totalStartOFR','v.totalInOFR','v.totalOutOFR','v.totalBalanceOFR',
+      't.id','t.thickness','t.sort_index',
+      'i.id','i.itemName','i.type',
+      'b.id','b.condition','b.dateReceived','b.start','b.in','b.out','b.balance',
+      'b.startOFR','b.inOFR','b.outOFR','b.balanceOFR',
+      'n.id','n.categoryName','n.subCategory','n.colorName','n.designName',
+      'n.itemNumber','n.sort_index_description',
+      // 👇 NEW: cost fields on ItemNameDescription
+      'n.averageCostCVM','n.averageCostC','n.lastCostC','n.lastCostCVM',
+    ]);
+
+  // Keep: only rows that *have* Item-Name description appear
+  qb.andWhere('n.id IS NOT NULL');
+
+  if (params?.variantIds?.length) {
+    qb.andWhere('v.id IN (:...vids)', { vids: params.variantIds });
+  }
+
+  if (params?.q) {
+    const parsed = parseVariantQuery(params.q);
+    if (Number.isFinite(parsed.thickness)) {
+      qb.andWhere('ROUND(t.thickness, 1) = ROUND(:pth, 1)', { pth: Number(parsed.thickness) });
+    }
+    if (Number.isFinite(parsed.length)) qb.andWhere('v.length = :plen', { plen: Number(parsed.length) });
+    if (Number.isFinite(parsed.width))  qb.andWhere('v.width  = :pwid', { pwid: Number(parsed.width) });
+    if (Number.isFinite(parsed.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :pspb', { pspb: Number(parsed.sheetsPerBox) });
+
+    if (parsed.nameTokens?.length) {
+      parsed.nameTokens.forEach((tok, idx) => {
+        const tokenNorm = `%${normalizeArabicAlef(tok)}%`;
+        const tokenRaw  = `%${tok}%`;
+        qb.andWhere(
+          `(REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx} OR i.itemName LIKE :tokR${idx})`,
+          { [`tokN${idx}`]: tokenNorm, [`tokR${idx}`]: tokenRaw }
+        );
+      });
+    }
+  }
+
+  if (params?.itemName) {
+    const nm = normalizeArabicAlef(params.itemName);
+    qb.andWhere(
+      `(REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm OR i.itemName LIKE :nmRaw)`,
+      { nm: `%${nm}%`, nmRaw: `%${params.itemName}%` },
+    );
+  }
+  if (params?.type) qb.andWhere('i.type = :tp', { tp: params.type });
+  if (Number.isFinite(params?.thickness)) qb.andWhere('ROUND(t.thickness, 1) = ROUND(:th, 1)', { th: Number(params!.thickness) });
+  if (Number.isFinite(params?.length))    qb.andWhere('v.length = :len', { len: Number(params!.length) });
+  if (Number.isFinite(params?.width))     qb.andWhere('v.width  = :wid', { wid: Number(params!.width) });
+  if (Number.isFinite(params?.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :spb', { spb: Number(params!.sheetsPerBox) });
+  if (params?.origin) qb.andWhere('v.origin = :org', { org: params.origin });
+
+  // 🔽 ORDERING WITH ORIGIN PRIORITY
+  qb
+    .addSelect('CASE WHEN n.sort_index_description IS NULL THEN 1 ELSE 0 END', 'n_nulls')
+    .addSelect(
+      `
+      CASE
+        WHEN UPPER(v.origin) = 'SISECAM' THEN 1
+        WHEN UPPER(v.origin) = 'AGC' THEN 2
+        WHEN UPPER(v.origin) = 'SPHINX' THEN 3
+        WHEN UPPER(v.origin) = 'RIDER' THEN 4
+        WHEN UPPER(v.origin) IN ('S.G','SG','S G') THEN 5
+        ELSE 99
+      END
+      `,
+      'origin_priority',
+    )
+    .orderBy('n_nulls', 'ASC')
+    .addOrderBy('n.sort_index_description', 'ASC')
+    .addOrderBy('i.itemName', 'ASC')
+    .addOrderBy('t.sort_index', 'ASC')
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('origin_priority', 'ASC')
+    .addOrderBy('v.origin', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.id', 'ASC')
+    .skip(skip)
+    .take(limit);
+
+  const variants = await qb.getMany();
+
+  // ---- Enrichment pass: find BOX SPBs for same (thicknessId, length, width, origin) ----
+  const thicknessIds = new Set<number>();
+  const lengths = new Set<number>();
+  const widths = new Set<number>();
+  const origins = new Set<string>();
+
+  for (const v of variants) {
+    thicknessIds.add(v.thickness.id);
+    lengths.add(toNum(v.length));
+    widths.add(toNum(v.width));
+    origins.add(String(v.origin || ''));
+  }
+
+  let spbRows: Array<{ tId: number; len: number; wid: number; org: string; spb: number }> = [];
+  if (thicknessIds.size && lengths.size && widths.size && origins.size) {
+    spbRows = await this.itemVariantRepository
+      .createQueryBuilder('v2')
+      .innerJoin('v2.thickness', 't2')
+      .innerJoin('t2.item', 'i2')
+      .select([
+        't2.id AS tId',
+        'v2.length AS len',
+        'v2.width AS wid',
+        'v2.origin AS org',
+        'v2.sheetsPerBox AS spb',
+      ])
+      .where('i2.type = :tp', { tp: 'box' })
+      .andWhere('t2.id IN (:...tids)', { tids: Array.from(thicknessIds) })
+      .andWhere('v2.length IN (:...lens)', { lens: Array.from(lengths) })
+      .andWhere('v2.width IN (:...wids)', { wids: Array.from(widths) })
+      .andWhere('v2.origin IN (:...orgs)', { orgs: Array.from(origins) })
+      .getRawMany();
+  }
+
+  const spbMap = new Map<string, Set<number>>();
+  for (const r of spbRows) {
+    const k = `${r.tId}|${toNum(r.len)}|${toNum(r.wid)}|${String(r.org || '')}`;
+    const s = Math.max(0, toNum(r.spb));
+    if (s > 0) {
+      if (!spbMap.has(k)) spbMap.set(k, new Set<number>());
+      spbMap.get(k)!.add(s);
+    }
+  }
+
+  const data = variants.map((v) => {
+    const itemType = v.thickness.item.type;
+    const len = toNum(v.length);
+    const wid = toNum(v.width);
+    const spbSelf = Math.max(1, toNum(v.sheetsPerBox));
+    const key = `${v.thickness.id}|${len}|${wid}|${String(v.origin || '')}`;
+    const fromBoxSet = spbMap.get(key);
+    const boxSpbList = fromBoxSet ? Array.from(fromBoxSet).sort((a,b)=>a-b) : [];
+    const resolvedBoxSpb = boxSpbList.length ? boxSpbList[0] : null;
+
+    const ofrTotalsUnits = {
+      start: Number(toNum(v.totalStart).toFixed(2)),
+      in: Number(toNum(v.totalIn).toFixed(2)),
+      out: Number(toNum(v.totalOut).toFixed(2)),
+      balance: Number(toNum(v.totalBalance).toFixed(2)),
+    };
+
+    const ofrTotalsSqm = {
+      startOFR: Number(toNum(v.totalStartOFR).toFixed(2)),
+      inOFR: Number(toNum(v.totalInOFR).toFixed(2)),
+      outOFR: Number(toNum(v.totalOutOFR).toFixed(2)),
+      balanceOFR: Number(toNum(v.totalBalanceOFR).toFixed(2)),
+    };
+
+    const batches = (v.batches ?? []).map((b) => {
+      const balanceOFRSqm = toNum(b.balanceOFR ?? 0);
+      const convertedUnits = convertFromSqm({
+        itemType, lengthCm: len, widthCm: wid, sheetsPerBox: spbSelf, valueSqm: balanceOFRSqm,
+      });
+      return {
+        id: b.id,
+        condition: b.condition ?? null,
+        dateReceived: b.dateReceived ?? null,
+        start: toNum(b.start ?? 0),
+        in: toNum(b.in ?? 0),
+        out: toNum(b.out ?? 0),
+        balance: toNum(b.balance ?? 0),
+        startOFR: Number(toNum(b.startOFR ?? 0).toFixed(2)),
+        inOFR: Number(toNum(b.inOFR ?? 0).toFixed(2)),
+        outOFR: Number(toNum(b.outOFR ?? 0).toFixed(2)),
+        balanceOFRSqm: Number(balanceOFRSqm.toFixed(2)),
+        balanceOFR: Number(convertedUnits.toFixed(2)),
+      };
+    });
+
+    const nd: any = (v as any).itemNameDescription ?? null;
+
+    return {
+      itemId: v.thickness.item.id,
+      itemName: v.thickness.item.itemName,
+      type: itemType as 'box' | 'sheet' | 'sqm' | 'unit',
+      thicknessId: v.thickness.id,
+      thickness: Number(v.thickness.thickness),
+      variantId: v.id,
+      length: len,
+      width: wid,
+      sheetsPerBox: spbSelf,
+      origin: v.origin,
+      ones: ofrTotalsUnits,
+      ofrTotalsSqm,
+      description: nd
+        ? {
+            id: nd.id ?? null,
+            categoryName: nd.categoryName ?? null,
+            subCategory:  nd.subCategory ?? null,
+            colorName:    nd.colorName ?? null,
+            designName:   nd.designName ?? null,
+            sortIndexDescription: nd.sort_index_description ?? null,
+            itemNumber:   nd.itemNumber ?? null,
+            // 👇 NEW cost fields on description payload
+            averageCostCVM: nd.averageCostCVM ?? null,
+            averageCostC:   nd.averageCostC   ?? null,
+            lastCostC:      nd.lastCostC      ?? null,
+            lastCostCVM:    nd.lastCostCVM    ?? null,
+          }
+        : null,
+      batches,
+      boxSpbList,
+      resolvedBoxSpb,
+    };
+  });
+
+  return {
+    page,
+    limit,
+    totalRows: data.length,
+    hasMore: data.length === limit,
+    data,
+  };
+}
+
+
+
+
+
+
+
+async getVariantLedgerByRealDesc(params?: {
+  q?: string; // "5.5ملم ابيض 225*321-025"
+  itemName?: string;
+  type?: 'box' | 'sheet' | 'sqm' | 'unit';
+  thickness?: number;
+  length?: number;
+  width?: number;
+  sheetsPerBox?: number;
+  origin?: string;
+  page?: number;
+  limit?: number;
+  variantIds?: number[];
+}) {
+  const toNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const ARABIC_INDIC_MAP: Record<string, string> = {
+    '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
+    '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+  };
+  const normalizeDigitsAll = (input: string) =>
+    String(input || '').replace(/[٠-٩۰-۹]/g, d => ARABIC_INDIC_MAP[d] ?? d);
+
+  const normalizeArabicAlef = (s: string) =>
+    String(s || '').replace(/أ|إ|آ/g, 'ا');
+
+  const parseVariantQuery = (qRaw: string): {
+    thickness?: number;
+    length?: number;
+    width?: number;
+    sheetsPerBox?: number;
+    nameTokens?: string[];
+  } => {
+    if (!qRaw) return {};
+    let q = normalizeDigitsAll(qRaw).trim().replace(/\s+/g, ' ');
+    let working = q;
+
+    const thMatch = working.match(/(\d+(?:[.,]\d+)?)\s*(?:ملم|مم|م)(?=$|\s|[-/xX×*])/);
+    let thickness: number | undefined;
+    if (thMatch) {
+      const th = Number((thMatch[1] || '').replace(',', '.'));
+      if (Number.isFinite(th)) thickness = th;
+      working = working.replace(thMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    const dimRe = /(\d{2,5})\s*[xX×*]\s*(\d{2,5})(?:\s*[-/]\s*0?(\d{1,3}))?/;
+    const dimMatch = working.match(dimRe);
+    let lengthN: number | undefined;
+    let widthN: number | undefined;
+    let spb: number | undefined;
+    if (dimMatch) {
+      lengthN = Number(dimMatch[1]);
+      widthN  = Number(dimMatch[2]);
+      if (dimMatch[3] != null) spb = Number(dimMatch[3]);
+      working = working.replace(dimMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    working = working
+      .replace(/(?:^|[\s\-_/\\])(?:ملم|مم|م)(?=$|[\s\-_/\\])/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    let nameTokens: string[] | undefined;
+    if (working) {
+      const tokens = working.split(/\s+/).map(t => t.trim()).filter(t => t.length >= 2);
+      if (tokens.length) nameTokens = tokens;
+    }
+
+    return { thickness, length: lengthN, width: widthN, sheetsPerBox: spb, nameTokens };
+  };
+
+  const convertFromSqm = (args: {
+    itemType: string | null | undefined;
+    lengthCm: number;
+    widthCm: number;
+    sheetsPerBox: number;
+    valueSqm: number;
+  }) => {
+    const { itemType, lengthCm, widthCm, sheetsPerBox, valueSqm } = args;
+    const perSheetSqm =
+      toNum(lengthCm) > 0 && toNum(widthCm) > 0
+        ? (toNum(lengthCm) * toNum(widthCm)) / 10000
+        : 0;
+    const type = String(itemType || '').toLowerCase();
+
+    if (type === 'box') {
+      const perBoxSqm = perSheetSqm * Math.max(1, toNum(sheetsPerBox));
+      return perBoxSqm > 0 ? valueSqm / perBoxSqm : valueSqm;
+    }
+    if (type === 'sheet') {
+      return perSheetSqm > 0 ? valueSqm / perSheetSqm : valueSqm;
+    }
+    return valueSqm;
+  };
+
+  const page  = Math.max(1, Number(params?.page ?? 1));
+  const limit = Math.min(200, Math.max(1, Number(params?.limit ?? 50)));
+  const skip  = (page - 1) * limit;
+
+  const qb = this.itemVariantRepository
+    .createQueryBuilder('v')
+    .innerJoinAndSelect('v.thickness', 't')
+    .innerJoinAndSelect('t.item', 'i')
+    .leftJoinAndSelect('v.batches', 'b')
+    .leftJoinAndSelect('v.realDescription', 'r')
+    .select([
+      'v.id','v.length','v.width','v.sheetsPerBox','v.origin',
+      'v.totalStart','v.totalIn','v.totalOut','v.totalBalance',
+      'v.totalStartOFR','v.totalInOFR','v.totalOutOFR','v.totalBalanceOFR',
+      'v.averageCost','v.lastCost',
+      't.id','t.thickness','t.sort_index',
+      'i.id','i.itemName','i.type',
+      'b.id','b.condition','b.dateReceived','b.start','b.in','b.out','b.balance',
+      'b.startOFR','b.inOFR','b.outOFR','b.balanceOFR',
+      'r.id','r.categoryName','r.subCategory','r.colorName','r.designName',
+      'r.itemNumber','r.sort_index_real_description',
+    ]);
+
+  // Keep: only rows that *have* Real description appear
+  qb.andWhere('r.id IS NOT NULL');
+
+  if (params?.variantIds?.length) {
+    qb.andWhere('v.id IN (:...vids)', { vids: params.variantIds });
+  }
+
+  if (params?.q) {
+    const parsed = parseVariantQuery(params.q);
+    if (Number.isFinite(parsed.thickness)) {
+      qb.andWhere('ROUND(t.thickness, 1) = ROUND(:pth, 1)', { pth: Number(parsed.thickness) });
+    }
+    if (Number.isFinite(parsed.length)) qb.andWhere('v.length = :plen', { plen: Number(parsed.length) });
+    if (Number.isFinite(parsed.width))  qb.andWhere('v.width  = :pwid', { pwid: Number(parsed.width) });
+    if (Number.isFinite(parsed.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :pspb', { pspb: Number(parsed.sheetsPerBox) });
+
+    if (parsed.nameTokens?.length) {
+      parsed.nameTokens.forEach((tok, idx) => {
+        const tokenNorm = `%${normalizeArabicAlef(tok)}%`;
+        const tokenRaw  = `%${tok}%`;
+        qb.andWhere(
+          `(
+            REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
+            OR i.itemName LIKE :tokR${idx}
+            OR REPLACE(REPLACE(REPLACE(r.categoryName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
+            OR REPLACE(REPLACE(REPLACE(r.subCategory,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
+            OR REPLACE(REPLACE(REPLACE(r.colorName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
+            OR REPLACE(REPLACE(REPLACE(r.designName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
+            OR r.itemNumber LIKE :tokR${idx}
+          )`,
+          { [`tokN${idx}`]: tokenNorm, [`tokR${idx}`]: tokenRaw }
+        );
+      });
+    }
+  }
+
+  if (params?.itemName) {
+    const nm = normalizeArabicAlef(params.itemName);
+    qb.andWhere(
+      `(REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm OR i.itemName LIKE :nmRaw)`,
+      { nm: `%${nm}%`, nmRaw: `%${params.itemName}%` },
+    );
+  }
+  if (params?.type) qb.andWhere('i.type = :tp', { tp: params.type });
+  if (Number.isFinite(params?.thickness)) qb.andWhere('ROUND(t.thickness, 1) = ROUND(:th, 1)', { th: Number(params!.thickness) });
+  if (Number.isFinite(params?.length))    qb.andWhere('v.length = :len', { len: Number(params!.length) });
+  if (Number.isFinite(params?.width))     qb.andWhere('v.width  = :wid', { wid: Number(params!.width) });
+  if (Number.isFinite(params?.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :spb', { spb: Number(params!.sheetsPerBox) });
+  if (params?.origin) qb.andWhere('v.origin = :org', { org: params.origin });
+
+  // 🔽 ORDERING WITH ORIGIN PRIORITY
+  qb
+    .addSelect('CASE WHEN r.sort_index_real_description IS NULL THEN 1 ELSE 0 END', 'r_nulls')
+    .addSelect(
+      `
+      CASE
+        WHEN UPPER(v.origin) = 'SISECAM' THEN 1
+        WHEN UPPER(v.origin) = 'AGC' THEN 2
+        WHEN UPPER(v.origin) = 'SPHINX' THEN 3
+        WHEN UPPER(v.origin) = 'RIDER' THEN 4
+        WHEN UPPER(v.origin) IN ('S.G','SG','S G') THEN 5
+        ELSE 99
+      END
+      `,
+      'origin_priority',
+    )
+    // 1) Group by RealDescription: nulls last, then sort_index, then itemName
+    .orderBy('r_nulls', 'ASC')
+    .addOrderBy('r.sort_index_real_description', 'ASC')
+    .addOrderBy('i.itemName', 'ASC')
+    // 2) Inside each description group:
+    //    a) thickness order
+    //    b) origin priority (SISECAM → AGC → Sphinx → RIDER → S.G → others)
+    //    c) origin alphabetic (for "others")
+    //    d) length
+    .addOrderBy('t.sort_index', 'ASC')
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('origin_priority', 'ASC')
+    .addOrderBy('v.origin', 'ASC')
+    .addOrderBy('v.length', 'ASC')
+    .addOrderBy('v.id', 'ASC')
+    .skip(skip)
+    .take(limit);
+
+  const variants = await qb.getMany();
+
+  // ---- Enrichment pass identical to Item-Name version ----
+  const thicknessIds = new Set<number>();
+  const lengths = new Set<number>();
+  const widths = new Set<number>();
+  const origins = new Set<string>();
+
+  for (const v of variants) {
+    thicknessIds.add(v.thickness.id);
+    lengths.add(toNum(v.length));
+    widths.add(toNum(v.width));
+    origins.add(String(v.origin || ''));
+  }
+
+  let spbRows: Array<{ tId: number; len: number; wid: number; org: string; spb: number }> = [];
+  if (thicknessIds.size && lengths.size && widths.size && origins.size) {
+    spbRows = await this.itemVariantRepository
+      .createQueryBuilder('v2')
+      .innerJoin('v2.thickness', 't2')
+      .innerJoin('t2.item', 'i2')
+      .select([
+        't2.id AS tId',
+        'v2.length AS len',
+        'v2.width AS wid',
+        'v2.origin AS org',
+        'v2.sheetsPerBox AS spb',
+      ])
+      .where('i2.type = :tp', { tp: 'box' })
+      .andWhere('t2.id IN (:...tids)', { tids: Array.from(thicknessIds) })
+      .andWhere('v2.length IN (:...lens)', { lens: Array.from(lengths) })
+      .andWhere('v2.width IN (:...wids)', { wids: Array.from(widths) })
+      .andWhere('v2.origin IN (:...orgs)', { orgs: Array.from(origins) })
+      .getRawMany();
+  }
+
+  const spbMap = new Map<string, Set<number>>();
+  for (const r of spbRows) {
+    const k = `${r.tId}|${toNum(r.len)}|${toNum(r.wid)}|${String(r.org || '')}`;
+    const s = Math.max(0, toNum(r.spb));
+    if (s > 0) {
+      if (!spbMap.has(k)) spbMap.set(k, new Set<number>());
+      spbMap.get(k)!.add(s);
+    }
+  }
+
+  const data = variants.map((v) => {
+    const itemType = v.thickness.item.type;
+    const len = toNum(v.length);
+    const wid = toNum(v.width);
+    const spbSelf = Math.max(1, toNum(v.sheetsPerBox));
+    const key = `${v.thickness.id}|${len}|${wid}|${String(v.origin || '')}`;
+    const fromBoxSet = spbMap.get(key);
+    const boxSpbList = fromBoxSet ? Array.from(fromBoxSet).sort((a,b)=>a-b) : [];
+    const resolvedBoxSpb = boxSpbList.length ? boxSpbList[0] : null;
+
+    const ofrTotalsUnits = {
+      start: Number(toNum(v.totalStart).toFixed(2)),
+      in: Number(toNum(v.totalIn).toFixed(2)),
+      out: Number(toNum(v.totalOut).toFixed(2)),
+      balance: Number(toNum(v.totalBalance).toFixed(2)),
+    };
+
+    const ofrTotalsSqm = {
+      startOFR: Number(toNum(v.totalStartOFR).toFixed(2)),
+      inOFR: Number(toNum(v.totalInOFR).toFixed(2)),
+      outOFR: Number(toNum(v.totalOutOFR).toFixed(2)),
+      balanceOFR: Number(toNum(v.totalBalanceOFR).toFixed(2)),
+    };
+
+    const batches = (v.batches ?? []).map((b) => {
+      const balanceOFRSqm = toNum(b.balanceOFR ?? 0);
+      const convertedUnits = convertFromSqm({
+        itemType, lengthCm: len, widthCm: wid, sheetsPerBox: spbSelf, valueSqm: balanceOFRSqm,
+      });
+      return {
+        id: b.id,
+        condition: b.condition ?? null,
+        dateReceived: b.dateReceived ?? null,
+        start: toNum(b.start ?? 0),
+        in: toNum(b.in ?? 0),
+        out: toNum(b.out ?? 0),
+        balance: toNum(b.balance ?? 0),
+        startOFR: Number(toNum(b.startOFR ?? 0).toFixed(2)),
+        inOFR: Number(toNum(b.inOFR ?? 0).toFixed(2)),
+        outOFR: Number(toNum(b.outOFR ?? 0).toFixed(2)),
+        balanceOFRSqm: Number(balanceOFRSqm.toFixed(2)),
+        balanceOFR: Number(convertedUnits.toFixed(2)),
+      };
+    });
+
+    const rd: any = (v as any).realDescription ?? null;
+
+    return {
+      itemId: v.thickness.item.id,
+      itemName: v.thickness.item.itemName,
+      type: itemType as 'box' | 'sheet' | 'sqm' | 'unit',
+      thicknessId: v.thickness.id,
+      thickness: Number(v.thickness.thickness),
+      variantId: v.id,
+      length: len,
+      width: wid,
+      sheetsPerBox: spbSelf,
+      origin: v.origin,
+      ones: ofrTotalsUnits,
+      ofrTotalsSqm,
+      description: rd
+        ? {
+            id: rd.id ?? null,
+            categoryName: rd.categoryName ?? null,
+            subCategory:  rd.subCategory ?? null,
+            colorName:    rd.colorName ?? null,
+            designName:   rd.designName ?? null,
+            sortIndexRealDescription: rd.sort_index_real_description ?? null,
+            itemNumber:   rd.itemNumber ?? null,
+          }
+        : null,
+      batches,
+      boxSpbList,
+      resolvedBoxSpb,
+      averageCost: v.averageCost != null
+        ? Number(toNum(v.averageCost).toFixed(2))
+        : null,
+      lastCost: v.lastCost != null
+        ? Number(toNum(v.lastCost).toFixed(2))
+        : null,
+    };
+  });
+
+  return {
+    page,
+    limit,
+    totalRows: data.length,
+    hasMore: data.length === limit,
+    data,
+  };
+}
+
+
+
+
+
 
 
 

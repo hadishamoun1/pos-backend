@@ -15,6 +15,9 @@ import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
+import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
+import { InventoryCount } from 'src/entities/inventory/count.entity';
+
 
 @Module({
   imports: [
@@ -31,6 +34,8 @@ import { Account } from '../entities/account.entity';
       JournalVoucher,
       JournalVoucherDetail,
       Account, 
+        PurchaseInvoiceItem,  
+      InventoryCount, 
     ]),
   ],
   providers: [InvoiceService, InventoryTransaction, InvoiceGateway],

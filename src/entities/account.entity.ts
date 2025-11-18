@@ -3,7 +3,6 @@ import {
   Column,
   PrimaryGeneratedColumn,
   ManyToOne,
-  OneToMany,
   JoinColumn,
 } from 'typeorm';
 import { Currency } from './currency.entity';
@@ -19,21 +18,12 @@ export class Account {
   @Column({ type: 'varchar', length: 255 })
   accountName: string;
 
+  // just a normal column now – no relation
   @Column({ type: 'varchar', length: 50, nullable: true })
-  parentNumber: string;
+  parentNumber: string | null;
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   arabicAccountName: string;
-
-  @ManyToOne(() => Account, (account) => account.children, {
-    onDelete: 'CASCADE',
-    nullable: true,
-  })
-  @JoinColumn({ name: 'parentNumber', referencedColumnName: 'accountNumber' })
-  parent: Account;
-
-  @OneToMany(() => Account, (account) => account.parent)
-  children: Account[];
 
   // Foreign key to Currency table
   @ManyToOne(() => Currency, (currency) => currency.id, { nullable: true })
@@ -43,4 +33,7 @@ export class Account {
   // Accessible column
   @Column({ type: 'boolean', default: true })
   accessible: boolean;
+
+  // Optional: if you still want to attach children in memory only
+  children?: any[];
 }

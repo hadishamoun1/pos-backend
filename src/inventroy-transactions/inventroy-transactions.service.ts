@@ -118,178 +118,181 @@ export class InventoryTransactionService {
   }
 
   // src/inventory-transaction/inventory-transaction.service.ts
-  async getActivity(
-    page: number = 1,
-    pageSize: number = 50,
-  ): Promise<{
-    data: Array<{
-      id: number;
-      transactionType: string;
-      sqm: number;
-      sqmofr: number;
-      quantity: number;
-      quantityofr: number;
-      finalcost: number | null;
-      finalcostofr: number | null;
-      thickness: string;
-      itemName: string;
-      length: number;
-      width: number;
-      sheetsPerBox: number;
-      origin: string;
-      itemType: string;
-      invoiceDate: string;
-      invoiceNumber: string;
-      itemBatch: { id: number; condition: string; dateReceived: string } | null;
-      transfer: { id: number; transferNumber: string; date: string } | null;
-      description: {
-        categoryName: string;
-        subCategory: string;
-        colorName: string;
-        designName: string;
-      } | null;
+async getActivity(
+  page: number = 1,
+  pageSize: number = 50,
+): Promise<{
+  data: Array<{
+    id: number;
+    transactionType: string;
+    sqm: number;
+    sqmofr: number;
+    quantity: number;
+    quantityofr: number;
+    finalcost: number | null;
+    finalcostofr: number | null;
+    thickness: string;
+    itemName: string;
+    length: number;
+    width: number;
+    sheetsPerBox: number;
+    origin: string;
+    itemType: string;
+    invoiceDate: string;
+    invoiceNumber: string;
+    itemBatch: { id: number; condition: string; dateReceived: string } | null;
+    transfer: { id: number; transferNumber: string; date: string } | null;
+    description: {
+      categoryName: string;
+      subCategory: string;
+      colorName: string;
+      designName: string;
+    } | null;
 
-      // ───────── NEW FIELDS FROM PurchaseInvoiceItem ─────────
-      previousQuantity: number | null;
-      previousQuantityC: number | null;
-      previousQuantityVM: number | null;
-      previousAverageCost: number | null;
-      previousAverageCostC: number | null;
-      previousAverageCostVM: number | null;
-      previousAverageCostCVM: number | null;
-      averageCost: number | null;
-      averageCostC: number | null;
-      averageCostCVM: number | null;
-      averageCostVM: number | null;
-    }>;
-    totals: {
-      totalQuantity: number;
-      totalQuantityOFR: number;
-      totalSQM: number;
-      totalSQMOFR: number;
+    // ───────── COST FIELDS (from PurchaseInvoiceItem or InvoiceItem) ─────────
+    previousQuantity: number | null;
+    previousQuantityC: number | null;
+    previousQuantityVM: number | null;
+    previousAverageCost: number | null;
+    previousAverageCostC: number | null;
+    previousAverageCostVM: number | null;
+    previousAverageCostCVM: number | null;
+    averageCost: number | null;
+    averageCostC: number | null;
+    averageCostCVM: number | null;
+    averageCostVM: number | null;
+  }>;
+  totals: {
+    totalQuantity: number;
+    totalQuantityOFR: number;
+    totalSQM: number;
+    totalSQMOFR: number;
+  };
+  totalRecords: number;
+}> {
+  const qb = this.inventoryTransactionRepository
+    .createQueryBuilder('tx')
+    .leftJoinAndSelect('tx.itemVariant', 'itemVariant')
+    .leftJoinAndSelect('itemVariant.thickness', 'thickness')
+    .leftJoinAndSelect('thickness.item', 'item')
+    .leftJoinAndSelect('itemVariant.itemNameDescription', 'itemDesc')
+    .leftJoinAndSelect('tx.purchaseInvoiceItem', 'purchaseInvoiceItem')
+    .leftJoinAndSelect('purchaseInvoiceItem.invoice', 'purchaseInvoice')
+    .leftJoinAndSelect('tx.invoiceItem', 'invoiceItem')
+    .leftJoinAndSelect('invoiceItem.invoice', 'salesInvoice')
+    .leftJoinAndSelect('tx.inventoryCount', 'inventoryCount')
+    .leftJoinAndSelect('tx.itemBatch', 'itemBatch')
+    .leftJoinAndSelect('tx.transfer', 'transfer')
+    .orderBy('tx.id', 'DESC');
+
+  // totals & count
+  const allForTotals = await qb.clone().getMany();
+  const totalRecords = allForTotals.length;
+
+  // paged slice
+  const pageData = await qb
+    .skip((page - 1) * pageSize)
+    .take(pageSize)
+    .getMany();
+
+  const formatTx = (tx: any) => {
+    // pick the correct date & number
+    let dateSrc: Date | string = tx.transactionDate;
+    let numberSrc = '—';
+
+    if (tx.purchaseInvoiceItemId && tx.purchaseInvoiceItem?.invoice) {
+      dateSrc = tx.purchaseInvoiceItem.invoice.date;
+      numberSrc = tx.purchaseInvoiceItem.invoice.invoiceNumber;
+    } else if (tx.invoiceItemId && tx.invoiceItem?.invoice) {
+      dateSrc = tx.invoiceItem.invoice.date;
+      numberSrc = tx.invoiceItem.invoice.invoiceNumber;
+    } else if (tx.inventoryCountId && tx.inventoryCount?.date) {
+      dateSrc = tx.inventoryCount.date;
+    } else if (tx.transferId && tx.transfer) {
+      dateSrc = tx.transfer.date;
+      numberSrc = tx.transfer.transferNumber;
+    }
+
+    const v = tx.itemVariant!;
+    const t = v.thickness!;
+    const i = t.item!;
+    const desc = v.itemNameDescription;
+
+    // 👉 COST SOURCE:
+    // - Prefer PurchaseInvoiceItem (for purchases)
+    // - Fallback to InvoiceItem (for sales)
+    const costSrc: any = tx.purchaseInvoiceItem || tx.invoiceItem || {};
+
+    return {
+      id: tx.id,
+      transactionType: tx.transactionType,
+      sqm: Number(tx.sqm),
+      sqmofr: Number(tx.sqmofr),
+      quantity: tx.quantity != null ? Number(tx.quantity) : 0,
+      quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : 0,
+      finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
+      finalcostofr: tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
+      thickness: t.thickness.toString(),
+      itemName: i.itemName,
+      length: Number(v.length),
+      width: Number(v.width),
+      sheetsPerBox: Number(v.sheetsPerBox),
+      origin: v.origin,
+      itemType: i.type,
+      invoiceDate: new Date(dateSrc).toISOString().split('T')[0],
+      invoiceNumber: numberSrc,
+      itemBatch: tx.itemBatch
+        ? {
+            id: tx.itemBatch.id,
+            condition: tx.itemBatch.condition,
+            dateReceived: tx.itemBatch.dateReceived,
+          }
+        : null,
+      transfer: tx.transfer
+        ? {
+            id: tx.transfer.id,
+            transferNumber: tx.transfer.transferNumber,
+            date: new Date(tx.transfer.date).toISOString().split('T')[0],
+          }
+        : null,
+      description: desc
+        ? {
+            categoryName: desc.categoryName,
+            subCategory: desc.subCategory,
+            colorName: desc.colorName,
+            designName: desc.designName,
+          }
+        : null,
+
+      // ───────── COST FIELDS (from purchase or sales line) ─────────
+      previousQuantity: costSrc.previousQuantity ?? null,
+      previousQuantityC: costSrc.previousQuantityC ?? null,
+      previousQuantityVM: costSrc.previousQuantityVM ?? null,
+      previousAverageCost: costSrc.previousAverageCost ?? null,
+      previousAverageCostC: costSrc.previousAverageCostC ?? null,
+      previousAverageCostVM: costSrc.previousAverageCostVM ?? null,
+      previousAverageCostCVM: costSrc.previousAverageCostCVM ?? null,
+      averageCost: costSrc.averageCost ?? null,
+      averageCostC: costSrc.averageCostC ?? null,
+      averageCostCVM: costSrc.averageCostCVM ?? null,
+      averageCostVM: costSrc.averageCostVM ?? null,
     };
-    totalRecords: number;
-  }> {
-    const qb = this.inventoryTransactionRepository
-      .createQueryBuilder('tx')
-      .leftJoinAndSelect('tx.itemVariant', 'itemVariant')
-      .leftJoinAndSelect('itemVariant.thickness', 'thickness')
-      .leftJoinAndSelect('thickness.item', 'item')
-      .leftJoinAndSelect('itemVariant.itemNameDescription', 'itemDesc')
-      .leftJoinAndSelect('tx.purchaseInvoiceItem', 'purchaseInvoiceItem') // already present
-      .leftJoinAndSelect('purchaseInvoiceItem.invoice', 'purchaseInvoice')
-      .leftJoinAndSelect('tx.invoiceItem', 'invoiceItem')
-      .leftJoinAndSelect('invoiceItem.invoice', 'salesInvoice')
-      .leftJoinAndSelect('tx.inventoryCount', 'inventoryCount')
-      .leftJoinAndSelect('tx.itemBatch', 'itemBatch')
-      .leftJoinAndSelect('tx.transfer', 'transfer')
-      .orderBy('tx.id', 'DESC');
+  };
 
-    // totals & count
-    const allForTotals = await qb.clone().getMany();
-    const totalRecords = allForTotals.length;
+  const data = pageData.map(formatTx);
+  const totals = allForTotals.map(formatTx).reduce(
+    (acc, cur) => ({
+      totalQuantity: acc.totalQuantity + cur.quantity,
+      totalQuantityOFR: acc.totalQuantityOFR + cur.quantityofr,
+      totalSQM: acc.totalSQM + cur.sqm,
+      totalSQMOFR: acc.totalSQMOFR + cur.sqmofr,
+    }),
+    { totalQuantity: 0, totalQuantityOFR: 0, totalSQM: 0, totalSQMOFR: 0 },
+  );
 
-    // paged slice
-    const pageData = await qb
-      .skip((page - 1) * pageSize)
-      .take(pageSize)
-      .getMany();
-
-    const formatTx = (tx: any) => {
-      // pick the correct date & number
-      let dateSrc: Date | string = tx.transactionDate;
-      let numberSrc = '—';
-      if (tx.purchaseInvoiceItemId && tx.purchaseInvoiceItem?.invoice) {
-        dateSrc = tx.purchaseInvoiceItem.invoice.date;
-        numberSrc = tx.purchaseInvoiceItem.invoice.invoiceNumber;
-      } else if (tx.invoiceItemId && tx.invoiceItem?.invoice) {
-        dateSrc = tx.invoiceItem.invoice.date;
-        numberSrc = tx.invoiceItem.invoice.invoiceNumber;
-      } else if (tx.inventoryCountId && tx.inventoryCount?.date) {
-        dateSrc = tx.inventoryCount.date;
-      } else if (tx.transferId && tx.transfer) {
-        dateSrc = tx.transfer.date;
-        numberSrc = tx.transfer.transferNumber;
-      }
-
-      const v = tx.itemVariant!;
-      const t = v.thickness!;
-      const i = t.item!;
-      const desc = v.itemNameDescription;
-
-      // ───────── PII FIELDS ─────────
-      const pii = tx.purchaseInvoiceItem || {};
-
-      return {
-        id: tx.id,
-        transactionType: tx.transactionType,
-        sqm: Number(tx.sqm),
-        sqmofr: Number(tx.sqmofr),
-        quantity: tx.quantity != null ? Number(tx.quantity) : 0,
-        quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : 0,
-        finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
-        finalcostofr: tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
-        thickness: t.thickness.toString(),
-        itemName: i.itemName,
-        length: Number(v.length),
-        width: Number(v.width),
-        sheetsPerBox: Number(v.sheetsPerBox),
-        origin: v.origin,
-        itemType: i.type,
-        invoiceDate: new Date(dateSrc).toISOString().split('T')[0],
-        invoiceNumber: numberSrc,
-        itemBatch: tx.itemBatch
-          ? {
-              id: tx.itemBatch.id,
-              condition: tx.itemBatch.condition,
-              dateReceived: tx.itemBatch.dateReceived,
-            }
-          : null,
-        transfer: tx.transfer
-          ? {
-              id: tx.transfer.id,
-              transferNumber: tx.transfer.transferNumber,
-              date: new Date(tx.transfer.date).toISOString().split('T')[0],
-            }
-          : null,
-        description: desc
-          ? {
-              categoryName: desc.categoryName,
-              subCategory: desc.subCategory,
-              colorName: desc.colorName,
-              designName: desc.designName,
-            }
-          : null,
-
-        // ───────── NEW FIELDS FROM PurchaseInvoiceItem ─────────
-        previousQuantity: pii.previousQuantity ?? null,
-        previousQuantityC: pii.previousQuantityC ?? null,
-        previousQuantityVM: pii.previousQuantityVM ?? null,
-        previousAverageCost: pii.previousAverageCost ?? null,
-        previousAverageCostC: pii.previousAverageCostC ?? null,
-        previousAverageCostVM: pii.previousAverageCostVM ?? null,
-        previousAverageCostCVM: pii.previousAverageCostCVM ?? null,
-        averageCost: pii.averageCost ?? null,
-        averageCostC: pii.averageCostC ?? null,
-        averageCostCVM: pii.averageCostCVM ?? null,
-        averageCostVM: pii.averageCostVM ?? null,
-      };
-    };
-
-    const data = pageData.map(formatTx);
-    const totals = allForTotals.map(formatTx).reduce(
-      (acc, cur) => ({
-        totalQuantity: acc.totalQuantity + cur.quantity,
-        totalQuantityOFR: acc.totalQuantityOFR + cur.quantityofr,
-        totalSQM: acc.totalSQM + cur.sqm,
-        totalSQMOFR: acc.totalSQMOFR + cur.sqmofr,
-      }),
-      { totalQuantity: 0, totalQuantityOFR: 0, totalSQM: 0, totalSQMOFR: 0 },
-    );
-
-    this.gateway.sendActivityUpdate(data);
-    return { data, totals, totalRecords };
-  }
+  this.gateway.sendActivityUpdate(data);
+  return { data, totals, totalRecords };
+}
 
   async getFilteredActivity(query: any): Promise<{
     data: any[];

@@ -14,7 +14,7 @@ DB_HOST = "localhost"
 DB_PORT = 3306
 DB_USER = "root"
 DB_PASS = "70631859HADI"
-DB_NAME = "new_schema2"
+DB_NAME = "pos_v1"
 
 # CSV path: default next to this script; can be overridden by argv[1]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

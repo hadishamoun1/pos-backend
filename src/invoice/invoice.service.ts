@@ -16,6 +16,8 @@ import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails
 import { Account } from '../entities/account.entity';
 import { Thickness } from 'src/entities/inventory/thickness.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { PurchaseInvoiceItem } from '../entities/Purchase-invoice/purchase-invoice-item.entity';
+import { InventoryCount } from '../entities/inventory/count.entity';
 
 @Injectable()
 export class InvoiceService {
@@ -63,8 +65,8 @@ async createInvoice(data: any): Promise<Invoice> {
     const isReturn = data.invoiceType === 'RVR';
     const isG = data.invoiceType === 'G';
 
-    const sequencePrefix = isG ? 'G' : 'S';                 // G for G, S for S/RVR
-    const typesForSeq = isG ? ['G'] : ['S', 'RVR'];         // separate sequences
+    const sequencePrefix = isG ? 'G' : 'S'; // G for G, S for S/RVR
+    const typesForSeq = isG ? ['G'] : ['S', 'RVR']; // separate sequences
 
     const lastInvoice = await this.invoiceRepository
       .createQueryBuilder('invoice')
@@ -81,7 +83,9 @@ async createInvoice(data: any): Promise<Invoice> {
       newNumber = parseInt(parts[1], 10) + 1;
     }
 
-    const invoiceNumber = `${sequencePrefix}${yearSuffix}-${String(newNumber).padStart(3, '0')}`;
+    const invoiceNumber = `${sequencePrefix}${yearSuffix}-${String(
+      newNumber,
+    ).padStart(3, '0')}`;
     console.log('📄 New invoice number:', invoiceNumber);
     const docNbr = invoiceNumber;
 
@@ -134,7 +138,140 @@ async createInvoice(data: any): Promise<Invoice> {
       .save(items);
     console.log('✅ Saved invoice items:', savedItems.map((i) => i.id));
 
-    // -------------- INVENTORY TRANSACTIONS (your existing logic) --------------
+    // -------------- NEW: FILL COST FIELDS ON INVOICE ITEMS --------------
+    // 🔧 HERE IS THE IMPORTANT FIX: use entity name strings
+    const purchaseItemRepo =
+      queryRunner.manager.getRepository<PurchaseInvoiceItem>('PurchaseInvoiceItem');
+    const inventoryCountRepo =
+      queryRunner.manager.getRepository<InventoryCount>('InventoryCount');
+
+    const salesDate = new Date(savedInvoice.date);
+
+    type CostBundle = {
+      averageCost: number | null;
+      averageCostC: number | null;
+      averageCostVM: number | null;
+      averageCostCVM: number | null;
+      lastCost: number | null;
+      lastCostC: number | null;
+      lastCostVM: number | null;
+      lastCostCVM: number | null;
+    };
+
+    const safeNumOrNull = (v: any): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const uniqueVariantIds = new Set<number>();
+    for (const it of savedItems) {
+      if (typeof it.itemVariantId === 'number') {
+        uniqueVariantIds.add(it.itemVariantId);
+      }
+    }
+    const variantIds: number[] = Array.from(uniqueVariantIds);
+    console.log('🔢 Variant IDs in this invoice (for cost lookup):', variantIds);
+
+    const variantCostCache = new Map<number, CostBundle>();
+
+    for (const variantId of variantIds) {
+      let bundle: CostBundle | null = null;
+
+      // 1) Try last PurchaseInvoiceItem for this variant before / on invoice date
+      const lastPurchaseItem = await purchaseItemRepo
+        .createQueryBuilder('pi')
+        .innerJoin('pi.invoice', 'pinv')
+        .where('pi.itemVariantId = :variantId', { variantId })
+        .andWhere('pinv.date <= :invDate', { invDate: salesDate })
+        .andWhere('pinv.type IN (:...types)', { types: ['S', 'G', 'SR'] }) // ignore RVR POs
+        .orderBy('pinv.date', 'DESC')
+        .addOrderBy('pinv.id', 'DESC')
+        .getOne();
+
+      if (lastPurchaseItem) {
+        const avg = safeNumOrNull(lastPurchaseItem.averageCost);
+        const avgC = safeNumOrNull(lastPurchaseItem.averageCostC);
+        const avgVM = safeNumOrNull(lastPurchaseItem.averageCostVM);
+        const avgCVM = safeNumOrNull(lastPurchaseItem.averageCostCVM);
+        const lc = safeNumOrNull(lastPurchaseItem.finalOFR);
+        const lcvm = safeNumOrNull(lastPurchaseItem.finalCost);
+
+        bundle = {
+          averageCost: avg,
+          averageCostC: avgC,
+          averageCostVM: avgVM,
+          averageCostCVM: avgCVM,
+          lastCost: lc,
+          lastCostC: null,
+          lastCostVM: lcvm,
+          lastCostCVM: null,
+        };
+      } else {
+        // 2) Fallback: use latest InventoryCount (opening count) before / on invoice date
+        const lastCount = await inventoryCountRepo
+          .createQueryBuilder('ic')
+          .where('ic.itemVariantId = :variantId', { variantId })
+          .andWhere('ic.date <= :invDate', { invDate: salesDate })
+          .orderBy('ic.date', 'DESC')
+          .addOrderBy('ic.id', 'DESC')
+          .getOne();
+
+        if (lastCount) {
+          const base = safeNumOrNull(lastCount.finalCost);
+          const baseOfr = safeNumOrNull(lastCount.finalCostOfr) ?? base;
+
+          bundle = {
+            averageCost: base,
+            averageCostC: baseOfr,
+            averageCostVM: null,
+            averageCostCVM: null,
+            lastCost: base,
+            lastCostC: baseOfr,
+            lastCostVM: null,
+            lastCostCVM: null,
+          };
+        }
+      }
+
+      if (!bundle) {
+        bundle = {
+          averageCost: null,
+          averageCostC: null,
+          averageCostVM: null,
+          averageCostCVM: null,
+          lastCost: null,
+          lastCostC: null,
+          lastCostVM: null,
+          lastCostCVM: null,
+        };
+      }
+
+      variantCostCache.set(variantId, bundle);
+    }
+
+    const itemsWithCosts = savedItems.map((item) => {
+      const costs = item.itemVariantId
+        ? variantCostCache.get(item.itemVariantId)
+        : undefined;
+
+      if (costs) {
+        item.averageCost = costs.averageCost;
+        item.averageCostC = costs.averageCostC;
+        item.averageCostVM = costs.averageCostVM;
+        item.averageCostCVM = costs.averageCostCVM;
+        item.lastCost = costs.lastCost;
+        item.lastCostC = costs.lastCostC;
+        item.lastCostVM = costs.lastCostVM;
+        item.lastCostCVM = costs.lastCostCVM;
+      }
+
+      return item;
+    });
+
+    await queryRunner.manager.save(InvoiceItem, itemsWithCosts);
+    console.log('✅ Cost fields populated on invoice items');
+
+    // -------------- INVENTORY TRANSACTIONS --------------
     const inventoryTransactions = savedItems.map((item) => {
       let quantity = 0;
       let sqm = 0;
@@ -142,15 +279,12 @@ async createInvoice(data: any): Promise<Invoice> {
       let sqmofr = 0;
 
       if (data.invoiceType === 'RVR') {
-        // Return from customer → stock should go UP (we record negative sale)
         quantity = -item.quantity;
         sqm = -item.sqm;
       } else if (data.invoiceType === 'G') {
-        // OFR chain only
         quantityofr = -item.quantity;
         sqmofr = -item.sqm;
       } else if (data.invoiceType === 'S') {
-        // Standard sale → deduct both chains
         quantity = -item.quantity;
         sqm = -item.sqm;
         quantityofr = -item.quantity;
@@ -168,6 +302,7 @@ async createInvoice(data: any): Promise<Invoice> {
         sqmofr,
         transactionDate: new Date(),
         dateForEachInvoice: new Date(savedInvoice.date),
+        
       });
     });
 
@@ -177,12 +312,8 @@ async createInvoice(data: any): Promise<Invoice> {
     );
     console.log('✅ Inventory transactions saved');
 
-    // -------------- NEW: UPDATE BATCH OUT/OUTOFR (or IN/INOFR for RVR) + BALANCES --------------
-    // We’ll adjust ItemBatch counters to mirror the sale/return effect,
-    // then recompute batch balances.
+    // -------------- UPDATE BATCH OUT/OUTOFR (or IN/INOFR for RVR) + BALANCES --------------
     const batchRepo = queryRunner.manager.getRepository(ItemBatch);
-
-    // optionally track variantIds to recompute totals once
     const affectedVariantIds = new Set<number>();
 
     for (const item of savedItems) {
@@ -200,19 +331,14 @@ async createInvoice(data: any): Promise<Invoice> {
       const qtySqm = Number(item.sqm) || 0;
 
       if (data.invoiceType === 'S') {
-        // Standard sale: OUT both chains
         batch.out = Number(batch.out ?? 0) + qtySqm;
         batch.outOFR = Number(batch.outOFR ?? 0) + qtySqm;
       } else if (data.invoiceType === 'G') {
-        // Gift/Gratis sale: OUT OFR only
         batch.outOFR = Number(batch.outOFR ?? 0) + qtySqm;
       } else if (data.invoiceType === 'RVR') {
-        // Return from customer: stock goes back IN (standard chain only)
         batch.in = Number(batch.in ?? 0) + qtySqm;
-        // keep OFR as-is for RVR in sales context
       }
 
-      // Recompute balances
       const start = Number(batch.start ?? 0);
       const inStd = Number(batch.in ?? 0);
       const outStd = Number(batch.out ?? 0);
@@ -223,11 +349,19 @@ async createInvoice(data: any): Promise<Invoice> {
       batch.balance = Number((start + inStd - outStd).toFixed(2));
       batch.balanceOFR = Number((startOfr + inOfr - outOfr).toFixed(2));
 
-      // Guard against NaN
-      const chk = ['in', 'out', 'balance', 'inOFR', 'outOFR', 'balanceOFR'] as const;
+      const chk = [
+        'in',
+        'out',
+        'balance',
+        'inOFR',
+        'outOFR',
+        'balanceOFR',
+      ] as const;
       for (const key of chk) {
         if (isNaN((batch as any)[key])) {
-          throw new BadRequestException(`Cannot save NaN in ItemBatch.${key} (batchId=${batch.id})`);
+          throw new BadRequestException(
+            `Cannot save NaN in ItemBatch.${key} (batchId=${batch.id})`,
+          );
         }
       }
 
@@ -235,7 +369,7 @@ async createInvoice(data: any): Promise<Invoice> {
     }
     console.log('✅ Batches updated & balances recomputed');
 
-    // -------------- NEW: RECOMPUTE VARIANT TOTALS FROM BATCHES --------------
+    // -------------- RECOMPUTE VARIANT TOTALS FROM BATCHES --------------
     const variantRepo = queryRunner.manager.getRepository(ItemVariant);
     for (const variantId of affectedVariantIds) {
       const variant = await variantRepo.findOne({
@@ -263,12 +397,16 @@ async createInvoice(data: any): Promise<Invoice> {
       variant.totalStart = Number(totalStart.toFixed(2));
       variant.totalIn = Number(totalIn.toFixed(2));
       variant.totalOut = Number(totalOut.toFixed(2));
-      variant.totalBalance = Number((totalStart + totalIn - totalOut).toFixed(2));
+      variant.totalBalance = Number(
+        (totalStart + totalIn - totalOut).toFixed(2),
+      );
 
       variant.totalStartOFR = Number(totalStartOFR.toFixed(2));
       variant.totalInOFR = Number(totalInOFR.toFixed(2));
       variant.totalOutOFR = Number(totalOutOFR.toFixed(2));
-      variant.totalBalanceOFR = Number((totalStartOFR + totalInOFR - totalOutOFR).toFixed(2));
+      variant.totalBalanceOFR = Number(
+        (totalStartOFR + totalInOFR - totalOutOFR).toFixed(2),
+      );
 
       await variantRepo.save(variant);
     }
@@ -288,7 +426,9 @@ async createInvoice(data: any): Promise<Invoice> {
       ? parseInt(lastJV.jvNumber.split('-')[1]) + 1
       : 1;
 
-    const jvNumber = `${jvPrefix}${yearSuffix}-${String(jvSequence).padStart(3, '0')}`;
+    const jvNumber = `${jvPrefix}${yearSuffix}-${String(
+      jvSequence,
+    ).padStart(3, '0')}`;
     const currencyCode = data.currencyId === 2 ? 'LL' : 'USD';
     const useVAT = data.vatPercentage > 0;
     const rate = Number(data.currencyRate);
@@ -334,26 +474,52 @@ async createInvoice(data: any): Promise<Invoice> {
       valLL: number,
     ): Partial<JournalVoucherDetail> => {
       const fields: any = {
-        dr: 0, drUSD: 0, drLL: 0, drOFR: 0, drUSDOFR: 0, drLLOFR: 0,
-        cr: 0, crUSD: 0, crLL: 0, crOFR: 0, crUSDOFR: 0, crLLOFR: 0,
+        dr: 0,
+        drUSD: 0,
+        drLL: 0,
+        drOFR: 0,
+        drUSDOFR: 0,
+        drLLOFR: 0,
+        cr: 0,
+        crUSD: 0,
+        crLL: 0,
+        crOFR: 0,
+        crUSDOFR: 0,
+        crLLOFR: 0,
       };
       if (type === 'dr') {
         if (isG) {
-          fields.drOFR = val; fields.drUSDOFR = val; fields.drLLOFR = valLL;
+          fields.drOFR = val;
+          fields.drUSDOFR = val;
+          fields.drLLOFR = valLL;
         } else if (isReturn) {
-          fields.dr = val; fields.drUSD = val; fields.drLL = valLL;
+          fields.dr = val;
+          fields.drUSD = val;
+          fields.drLL = valLL;
         } else {
-          fields.dr = val; fields.drUSD = val; fields.drLL = valLL;
-          fields.drOFR = val; fields.drUSDOFR = val; fields.drLLOFR = valLL;
+          fields.dr = val;
+          fields.drUSD = val;
+          fields.drLL = valLL;
+          fields.drOFR = val;
+          fields.drUSDOFR = val;
+          fields.drLLOFR = valLL;
         }
       } else {
         if (isG) {
-          fields.crOFR = val; fields.crUSDOFR = val; fields.crLLOFR = valLL;
+          fields.crOFR = val;
+          fields.crUSDOFR = val;
+          fields.crLLOFR = valLL;
         } else if (isReturn) {
-          fields.cr = val; fields.crUSD = val; fields.crLL = valLL;
+          fields.cr = val;
+          fields.crUSD = val;
+          fields.crLL = valLL;
         } else {
-          fields.cr = val; fields.crUSD = val; fields.crLL = valLL;
-          fields.crOFR = val; fields.crUSDOFR = val; fields.crLLOFR = valLL;
+          fields.cr = val;
+          fields.crUSD = val;
+          fields.crLL = valLL;
+          fields.crOFR = val;
+          fields.crUSDOFR = val;
+          fields.crLLOFR = valLL;
         }
       }
       return fields;
@@ -424,7 +590,7 @@ async createInvoice(data: any): Promise<Invoice> {
     await queryRunner.commitTransaction();
     console.log('🎉 Invoice creation complete');
     return savedInvoice;
-  } catch (error) {
+  } catch (error: any) {
     console.error('❌ Invoice creation failed:', error.message);
     await queryRunner.rollbackTransaction();
     throw new BadRequestException(error.message || 'Invoice creation failed');
@@ -432,6 +598,11 @@ async createInvoice(data: any): Promise<Invoice> {
     await queryRunner.release();
   }
 }
+
+
+
+
+
 
 
   async getAllInvoices(): Promise<Invoice[]> {
@@ -1306,7 +1477,7 @@ async searchBrowsingInvoices(
 
 
 
-  // search invoice api:
+// search invoice api:
 
 // invoices.service.ts (inside InvoiceService)
 async searchFilteredInvoices(
@@ -2045,210 +2216,4 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
 
 }
-// async editInvoice(
-//   invoiceId: number,
-//   invoiceData: Partial<Invoice>,
-// ): Promise<Invoice> {
-//   const queryRunner = this.dataSource.createQueryRunner();
-//   await queryRunner.connect();
-//   await queryRunner.startTransaction();
 
-//   try {
-//     console.log('Editing invoice with ID:', invoiceId);
-
-//     // Step 1: Fetch the existing invoice and the sales voucher with its details
-//     const existingInvoice = await queryRunner.manager.findOne(Invoice, {
-//       where: { id: invoiceId },
-//       relations: [
-//         'items',
-//         'customer',
-//         'items.itemVariant',
-//         'salesVouchers',
-//         'salesVouchers.details',
-//         'salesVouchers.details.account',
-//       ],
-//     });
-
-//     if (!existingInvoice) {
-//       throw new NotFoundException(`Invoice ID ${invoiceId} not found`);
-//     }
-
-//     console.log('Existing invoice fetched:', existingInvoice);
-
-//     // Step 2: Reverse the old inventory transactions (to undo the previous sale)
-//     for (const item of existingInvoice.items) {
-//       if (item.itemVariant) {
-//         // Reverse the previous inventory transaction
-//         const inventoryTransaction = await queryRunner.manager.findOne(
-//           InventoryTransaction,
-//           {
-//             where: { invoiceItem: item },
-//           },
-//         );
-
-//         if (inventoryTransaction) {
-//           await queryRunner.manager.update(
-//             ItemVariant,
-//             { id: item.itemVariant.id },
-//             {
-//               out: () => `out - ${inventoryTransaction.sqm}`,
-//               balance: () => `balance + ${inventoryTransaction.sqm}`,
-//             },
-//           );
-
-//           await queryRunner.manager.remove(inventoryTransaction); // Remove the old inventory transaction
-//         } else {
-//           console.warn('No inventory transaction found for item:', item);
-//         }
-//       } else {
-//         console.error('Item Variant is missing for item:', item);
-//       }
-//     }
-
-//     // Step 3: Update the invoice core fields (currencyRate, vatPercentage)
-//     existingInvoice.currencyRate =
-//       invoiceData.currencyRate || existingInvoice.currencyRate;
-//     existingInvoice.vatPercentage =
-//       invoiceData.vatPercentage || existingInvoice.vatPercentage;
-
-//     // Step 4: Update the invoice details with the new data
-//     existingInvoice.items = [];
-//     existingInvoice.totalWithoutVAT = 0;
-//     existingInvoice.totalVAT = 0;
-//     existingInvoice.grandTotal = 0;
-
-//     for (const itemData of invoiceData.items) {
-//       console.log('Item data:', itemData);
-
-//       if (!itemData.itemVariantId) {
-//         throw new NotFoundException(
-//           `Item Variant ID ${itemData.itemVariantId} not found.`,
-//         );
-//       }
-
-//       const itemVariant = await queryRunner.manager.findOne(ItemVariant, {
-//         where: { id: itemData.itemVariantId },
-//       });
-
-//       if (!itemVariant) {
-//         throw new NotFoundException(
-//           `Item Variant ID ${itemData.itemVariantId} not found.`,
-//         );
-//       }
-
-//       // Calculate the totalAmount, vat, and grandTotal
-//       const totalAmount = itemData.sqm * itemData.unitPrice;
-//       const vat = totalAmount * (existingInvoice.vatPercentage / 100);
-//       const grandTotal = totalAmount + vat;
-
-//       const invoiceItem = queryRunner.manager.create(InvoiceItem, {
-//         invoice: existingInvoice,
-//         itemVariant,
-//         sqm: itemData.sqm,
-//         unitPrice: itemData.unitPrice,
-//         totalAmount: totalAmount,
-//         vat: vat,
-//         quantity: itemData.quantity,
-//       });
-
-//       existingInvoice.items.push(invoiceItem);
-//       existingInvoice.totalWithoutVAT += totalAmount;
-//       existingInvoice.totalVAT += vat;
-//       existingInvoice.grandTotal += grandTotal;
-
-//       await queryRunner.manager.save(invoiceItem);
-//     }
-
-//     // Step 5: Update the corresponding SalesVoucher and SalesVoucherDetail for the invoice
-//     const salesVoucher = existingInvoice.salesVouchers[0]; // Assuming only one salesVoucher for each invoice
-
-//     if (!salesVoucher) {
-//       throw new NotFoundException('SalesVoucher not found for this invoice.');
-//     }
-
-//     // Debugging: Check the values before updating the SalesVoucher
-//     console.log('Total Without VAT:', existingInvoice.totalWithoutVAT);
-//     console.log('Total VAT:', existingInvoice.totalVAT);
-//     console.log('Currency Rate:', existingInvoice.currencyRate);
-//     console.log('Vat Percentage', existingInvoice.vatPercentage);
-
-//     // Update SalesVoucher
-//     salesVoucher.totalDr = existingInvoice.grandTotal;
-//     salesVoucher.totalCr = existingInvoice.grandTotal;
-//     salesVoucher.totalDrUSD = existingInvoice.grandTotal;
-//     salesVoucher.totalCrUSD = existingInvoice.grandTotal;
-//     salesVoucher.totalDrLL =
-//       existingInvoice.grandTotal * existingInvoice.currencyRate;
-//     salesVoucher.totalCrLL =
-//       existingInvoice.grandTotal * existingInvoice.currencyRate;
-
-//     // Loop through SalesVoucherDetails and update them
-//     for (const detail of salesVoucher.details) {
-//       if (detail.account) {
-//         const account = detail.account; // Account object
-//         console.log(
-//           `Updating SalesVoucherDetail (ID: ${detail.id}) for account: ${account.accountNumber}`,
-//         );
-
-//         if (account.accountNumber === '7011') {
-//           // For account 7011 (Sales): Set credit to total without VAT, set debit to 0
-//           console.log('Setting values for account 7011 (Sales)');
-//           detail.cr = existingInvoice.totalWithoutVAT;
-//           detail.crUSD = existingInvoice.totalWithoutVAT;
-//           detail.crLL =
-//             existingInvoice.totalWithoutVAT * existingInvoice.currencyRate;
-//           detail.dr = 0;
-//           detail.drUSD = 0;
-//           detail.drLL = 0;
-//         } else if (account.accountNumber === '4431') {
-//           // For account 4431 (VAT): Set credit to total VAT, set debit to 0
-//           console.log('Setting values for account 4431 (VAT)');
-//           detail.cr = existingInvoice.totalVAT;
-//           detail.crUSD = existingInvoice.totalVAT;
-//           detail.crLL =
-//             existingInvoice.totalVAT * existingInvoice.currencyRate;
-//           detail.dr = 0;
-//           detail.drUSD = 0;
-//           detail.drLL = 0;
-//         }
-//       } else {
-//         // If account is null (Customer transaction)
-//         console.log('Setting values for customer transaction');
-//         detail.dr = existingInvoice.grandTotal;
-//         detail.drUSD = existingInvoice.grandTotal;
-//         detail.drLL =
-//           existingInvoice.grandTotal * existingInvoice.currencyRate;
-//         detail.cr = 0;
-//         detail.crUSD = 0;
-//         detail.crLL = 0;
-//       }
-
-//       // Print the updated details to check
-//       console.log('Updated SalesVoucherDetail:', detail);
-
-//       // Save the updated SalesVoucherDetail
-//       await queryRunner.manager.save(detail);
-//     }
-
-//     // Save the updated SalesVoucher
-//     await queryRunner.manager.save(salesVoucher);
-
-//     // Step 6: Commit the transaction
-//     await queryRunner.commitTransaction();
-//     console.log('✅ Invoice and SalesVoucher updated successfully!');
-
-//     return existingInvoice;
-//   } catch (error) {
-//     await queryRunner.rollbackTransaction();
-//     console.error(
-//       '❌ Error updating invoice and sales voucher:',
-//       error.message,
-//       error.stack,
-//     );
-//     throw new Error(
-//       `Invoice and SalesVoucher update failed: ${error.message}`,
-//     );
-//   } finally {
-//     await queryRunner.release();
-//   }
-// }

@@ -27,7 +27,7 @@ DB_HOST = "localhost"
 DB_PORT = 3306
 DB_USER = "root"
 DB_PASS = "70631859HADI"   # ← your MySQL root password
-DB_NAME = "new_schema2"
+DB_NAME = "pos_v1"
 
 # CSV path
 CSV_FILE_PATH = "finalContactsCsv.csv"

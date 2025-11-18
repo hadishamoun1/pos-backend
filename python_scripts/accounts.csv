@@ -1,10 +1,10 @@
-Account Number,Account name,Parent Account Number,Arabic Account Name
+Account number,Account name,Parent Account Number,Arabic Account Name
 1,PERMANENT CAPITAL ACCOUNTS,,حسابات الرساميل الدائمة
 10,CAPITAL,1,رأس المال
 101,Capital (company or personal),10,رأس المال (للشركة او للشخص)
 1011,Subscribed but uncalled capital,101,رأس المال المكتتب غير المستدعي
-1012,"Subscribed, called but unpaid capital",101,رأس المال المكتتب، المستدعي غير المدفوع
-1013,"Subscribed, called and paid up capital",101,رأس المال المكتتب، المستدعي و المدفوع
+1012,"Subscribed, called but unpaid capital",101,رأس المال المكتتب المستدعي غير المدفوع
+1013,"Subscribed, called and paid up capital",101,رأس المال المكتتب المستدعي و المدفوع
 102,Premiums,10,علاوات الاصدار والاندماج والمقدمات
 1021,Premium on issue of capital,102,علاوات الاصدار
 1022,Premium on mergers,102,علاوات الاندماج
@@ -68,7 +68,7 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 197,Results for the year,19,تحديد نتيجة الدورة المالية
 2,FIXED ASSETS ACCOUNT,,حسابات الاصول الثابتة
 21,INTANGIBLE FIXED ASSETS,2,الاصول الثابتة غير المادية
-211,"Keymoney, Goodwill, Clientele, etc ...",21,المؤسسة التجارية (الخلو، الشهرة، الزبائن ...)
+211,"Keymoney, Goodwill, Clientele, etc ...",21,المؤسسة التجارية (الخلو الشهرة الزبائن ...)
 212,Constitution expenses,21,مصاريف التأسيس
 213,Research and development cost,21,مصاريف البحوث والتطوير
 214,"Patents, Licenses, Copy rights and similar items",21,براءات الاختراع-الاجازات-العلامات والقيمة المماثلة
@@ -83,16 +83,16 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 223,Buildings,22,الابنية
 2231,Buildings,223,الابنية
 2232,General improvements on buildings,223,التجهيزات العامة-استصلاح وتنظيم الابنية
-2233,"Building infrastructures (run-way, barrage )",223,انشاءات البنية التحتية (سدود،مدارج ...)
+2233,"Building infrastructures (run-way, barrage )",223,انشاءات البنية التحتية (سدودمدارج ...)
 2234,Construction on third parties buildings,223,انشاءات على اراضي الغير
-224,Technical installations and industrial machinery,22,التجهيزات الفنية ،والالات الصناعية
+224,Technical installations and industrial machinery,22,التجهيزات الفنية والالات الصناعية
 2241,Specialized installations,224,تجهيزات متخصصة
 2242,Special purpose installations,224,تجهيزات ذات طبيعة خاصة
 2243,Industrial equipment,224,المعدات الصناعية
 2244,Industrial tools,224,الادوات الصناعية
 225,Transport-vehicles,22,آليات النقل
 226,Other tangible fixed assets,22,اصول ثابتة مادية اخرى
-2261,General installation and other repairs and maintenance,226,تجهيزات عامة،استصلاحات وتحسينات مختلفة
+2261,General installation and other repairs and maintenance,226,تجهيزات عامةاستصلاحات وتحسينات مختلفة
 2262,Stationery for office and computer,226,ادوات مكتبية ومعلوماتية
 2263,Furniture,226,آثاث
 2264,Agricultural investments,226,استثمارات زراعية
@@ -100,15 +100,15 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 227,Tangible fixed assets under construction,22,اصول ثابتة مادية قيد الصنع
 2271,Land,227,اراضي
 2273,Buildings,227,ابنية
-2274,"Technical, installation & industrial tools and equipment",227,تجهيزات فنية،معدات وادوات صناعية
+2274,"Technical, installation & industrial tools and equipment",227,تجهيزات فنيةمعدات وادوات صناعية
 2276,Other tangible fixed assets,227,اصول ثابتة مادية اخرى
 228,Advances on purchase of tangible fixed assets,22,سلفات ودفعات على حساب شراء اصول ثابتة مادية
 25,FINANCIAL FIXED ASSETS,2,الاصول الثابتة المالية
 251,Participation investments,25,سندات مشاركة
 252,Accounts receivable on participations,25,ذمم مدينة مرتبطة بمشاركات
 253,Other fixed investments,25,سندات اخرى مجمدة
-2531,Investments (shares & parts),253,سندات ملكية (اسهم، حصص شراكة)
-2535,Debentures (bonds & coupons),253,سندات دين (سندات، قسائم)
+2531,Investments (shares & parts),253,سندات ملكية (اسهم حصص شراكة)
+2535,Debentures (bonds & coupons),253,سندات دين (سندات قسائم)
 255,Long and medium terms loans,25,قروض طويلة ومتوسطة الاجل
 2551,Loans to partners/shareholders,255,قروض للشركاء
 2552,Loans to employees,255,قروض للمستخدمين
@@ -122,7 +122,7 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 2813,"Patents, licenses, copy rights & other similar items",281,براءات الاختراع-الاجازات والقيم المماثلة
 2819,Other intangible fixed assets,281,اصول ثابتة مادية اخرى
 282,Depreciation of tangible fixed assets,28,استهلاكات الاصول الثابتة المادية
-2821,Leasehold land for exploration (mines etc),282,اراضي برسم الاستثمار الجوفي (مناجم، مقالع ...)
+2821,Leasehold land for exploration (mines etc),282,اراضي برسم الاستثمار الجوفي (مناجم مقالع ...)
 2823,Buildings,282,الابنية
 2824,Technical installations and industrial machinery,282,التجهيزات الفنية المعدات والادوات  الصناعية
 2825,Transport - vehicles,282,آليات النقل
@@ -208,7 +208,7 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 4497,Other receivables-state and public establishments,449,ذمم مدينة اخرى (الدولة والمؤسسات العامة)
 4498,Income receivable,449,ايرادات مستحقة غير مقبوضة
 45,PARTNERS,4,الشركاء
-451,Partner's current accounts-receivable and payable,45,حسابات الشركاء الجارية المدينة او الدائنة
+451,Partners current accounts-receivable and payable,45,حسابات الشركاء الجارية المدينة او الدائنة
 4511,Related companies,451,شركات شقيقة
 45111,Holding companies,4511,الشركة الام
 45112,Subsidiary companies,4511,الشركة التابعة
@@ -218,7 +218,7 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 4518,Joint Ventures,451,عمليات مشتركة
 453,Dividends payable,45,انصبة ارباح برسم الدفع
 455,Other amounts due to partners,45,ذمم دائنة اخرى للشركاء
-4551,Partners' subscriptions,455,حسابات المقدمات للشركة
+4551,Partners subscriptions,455,حسابات المقدمات للشركة
 4552,Redeemable capital (capital to reimburse),455,رأس المال المقرر استرداده من الشركاء
 4557,Other payables,455,ذمم دائنة اخرى
 459,Amounts receivable from partners,45,ذمم الشركاء المدينة
@@ -263,7 +263,7 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 482,Unearned income (subscriptions),48,حسابات التوزيع الدوري للايرادات (اشتراكات)
 49,PROVISIONS FOR DIMINUTION IN VALUE OF ACCOUNTS RECEIVABLE & PAYABLE,4,مؤونات لمواجهة هبوط قيم حسابات الذمم
 491,Provisions for diminution in value of customers accounts receivable,49,مؤونات هبوط قيم الذمم المدينة-الزبائن
-495,Provisions for diminution in value of partners' accounts,49,مؤونات هبوط قيم حسابات الشركاء
+495,Provisions for diminution in value of partners accounts,49,مؤونات هبوط قيم حسابات الشركاء
 496,Provisions for diminution in value of sundry accounts receivable,49,مؤونات هبوط قيم حسابات الذمم المدينة المختلفة
 4968,Sundry operating debtors,496,مدينون مختلفون - للاستثمار
 4969,Sundry non-operating debtors,496,مدينون مختلفون - خارج الاستثمار
@@ -289,7 +289,7 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 60181,Transport,6018,نقليات
 60182,Commission,6018,سمسرة وعمولات
 60183,Transport insurance,6018,تأمين على شحن
-60184,Clearing agents' fees,6018,اتعاب مخلصي البضاعة
+60184,Clearing agents fees,6018,اتعاب مخلصي البضاعة
 60185,Custom duties,6018,رسوم جمركية
 6019,Discount receivable,601,حسومات مكتسبة
 605,Changes in goods on hand,60,قيمة التغيير في مخزون البضاعة
@@ -314,7 +314,7 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 61181,Transport,6118,نقليات
 61182,Commission,6118,سمسرة وعمولات
 61183,Transport insurance,6118,تأمين على شحن
-61184,Clearing agents' fees,6118,اتعاب مخلصي البضاعة
+61184,Clearing agents fees,6118,اتعاب مخلصي البضاعة
 61185,Custom duties,6118,رسوم جمركية
 6119,Discounts receivable,611,حسومات مكتسبة (بالتفصيل)
 615,Change in raw materials and consumables,61,قيمة التغيير في مخزون المواد الاولية والاستهلاكية
@@ -362,8 +362,8 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 6311,Salaries,631,الرواتب
 6312,Wages,631,الاجور 
 6314,Fixed commission,631,العمولات الثابتة
-6316,Major shareholders' remunerations,631,البدلات المدفوعة للمديرين الذين يتمتعون باغلبية في ملكية المؤسسة
-6317,Board of directors' remunerations,631,البدلات المدفوعة لاعضاء مجلس الادارة
+6316,Major shareholders remunerations,631,البدلات المدفوعة للمديرين الذين يتمتعون باغلبية في ملكية المؤسسة
+6317,Board of directors remunerations,631,البدلات المدفوعة لاعضاء مجلس الادارة
 635,Social security charges,63,اعباء اجتماعية (ضمان اجتماعي)
 64,"TAXES, FEES AND OTHER SIMILAR CHARGES",6,ضرائب ورسوم ومدفوعات مماثلة
 641,"On salaries, wages and fees",64,على الرواتب والاجور وبدلات الاتعاب
@@ -465,9 +465,9 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 753,Release of provision for diminution in value of current assets,75,استردادات من مؤونات هبوط اسعار الاصول المتداولة
 76,OTHER OPERATING INCOME,7,ايرادات اخرى ناتجة عن الاستثمار
 761,Other ordinary operating income,76,ايرادات عادية اخرى
-7611,Royalties etc...,761,اتاوى،امتياز،براءات،اجازة،العلامات والاساليب والحقوق والقيم...
+7611,Royalties etc...,761,اتاوىامتيازبراءاتاجازةالعلامات والاساليب والحقوق والقيم...
 7612,Rental income from non-operating estates,761,ايرادات الابنية غير المخصصة
-7613,Presence fees and directors and managers' fees,761,بدلات حضور وتعويضات اعضاء..
+7613,Presence fees and directors and managers fees,761,بدلات حضور وتعويضات اعضاء..
 7619,Reallocation of operating charges,761,اعباء استثمار محولة الى حسابات اخرى
 765,Share of profits on joint venture,76,حصص ارباح العمليات المشتركة
 7651,Share of expenses,765,حصص الاعباء الصافية التي جرى تحويلها (ادارة العملية)
@@ -521,12 +521,12 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 910,Variable trading charges,91,اعباء تجارية متغيرة
 911,Variable production charges,91,اعباء الانتاج المتغيرة
 912,Non reallocated charges,91,اعباء غير موزعة
-913,     ,91,…………
-914,     ,91,…………
-915,     ,91,…………
-916,     ,91,…………
-917,     ,91,…………
-918,     ,91,…………
+913,     ,91,
+914,     ,91,
+915,     ,91,
+916,     ,91,
+917,     ,91,
+918,     ,91,
 919,Operating revenue,91,ايرادات الاستثمار المعاد تصنيفها
 92,COST CENTERS,9,مراكز التكلفة (مراكز العمل والاقسام)
 920,Administration,92,مراكز الادارة
@@ -548,24 +548,24 @@ Account Number,Account name,Parent Account Number,Arabic Account Name
 94,INVENTORY,9,المخزون
 940,Goods,94,بضائع
 941,Raw materials,94,مواد اولية
-942,Other materials and consumables,94,مواد تموينية اخرى (مواد ولوازم استهلاكية، عبوات تجارية)
+942,Other materials and consumables,94,مواد تموينية اخرى (مواد ولوازم استهلاكية عبوات تجارية)
 943,Investment in progress,94,اموال قيد الصنع
 944,Services in progress,94,خدمات قيد الصنع
 945,Production (Semi-finished and finished),94,منتجات (منتجات وسيطة تامة الصنع)
-946,   ,94,……..
-947,   ,94,……..
-948,  ,94,…..
+946,   ,94,
+947,   ,94,
+948,  ,94,
 949,Provision for diminution in value of goods and work in progress,94,مؤونات هبوط اسعار المخزون وقيد الصنع
 95,COST OF GOODS SOLD,9,تكلفة الانتاج المباع
 951,Finished products,95,منتجات تامة الصنع
 952,Work,95,اشغال
 953,Services,95,تقديم خدمات
-954,   ,95,………
-955,   ,95,………
-956,   ,95,………
-957,   ,95,………
-958,   ,95,………
-959,   ,95,………
+954,   ,95,
+955,   ,95,
+956,   ,95,
+957,   ,95,
+958,   ,95,
+959,   ,95,
 96,VARIANCES ON PREDETERMINED COST,9,الانحرافات عن التكلفة المعيارية
 97,UNDER OR OVER ABSORBED ACCOUNTS,9,فروقات التطبيق المحاسبي
 970,Reallocation differences-Materials,97,فروقات التحميل على المواد

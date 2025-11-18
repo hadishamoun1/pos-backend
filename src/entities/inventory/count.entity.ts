@@ -57,6 +57,10 @@ export class InventoryCount {
 
   @Column('decimal', { precision: 10, scale: 2, nullable: true, default: 0 })
   sqm!: number;
+  
+   @Column('decimal', { precision: 10, scale: 2, nullable: true, default: 0 })
+  sqmOfr!: number;
+
 
   /** final cost for this count */
   @Column('decimal', { precision: 10, scale: 2, nullable: true, default: 0 })

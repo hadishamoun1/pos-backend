@@ -7,6 +7,8 @@ import { InventoryCountService } from './count.service';
 import { InventoryCountController } from './count.controller';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+
 
 @Module({
   imports: [
@@ -15,6 +17,7 @@ import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
       ItemVariant,
       InventoryTransaction,
       ItemBatch,
+      ItemNameDescription
     ]),
   ],
   providers: [InventoryCountService],

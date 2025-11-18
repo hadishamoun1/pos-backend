@@ -56,58 +56,68 @@ export class AccountsService {
   async deleteAccount(id: number): Promise<void> {
     await this.accountRepository.delete(id);
   }
-  async getCombinedAccounts(): Promise<any[]> {
-    // Fetch accounts
-    const accounts = await this.accountRepository.find({
-      relations: ['parent', 'children'],
-    });
+// src/accounts/accounts.service.ts
+async getCombinedAccounts(): Promise<any[]> {
+  // Fetch plain accounts (no relations — because we removed parent/children)
+  const accounts = await this.accountRepository.find();
 
-    // Fetch customer accounts
-    const customers = await this.customerRepository.find({
-      select: ['id', 'customerAccountNumber', 'customerName'],
-    });
+  // Fetch customer accounts
+  const customers = await this.customerRepository.find({
+    select: ['id', 'customerAccountNumber', 'customerName'],
+  });
 
-    // Fetch supplier accounts
-    const suppliers = await this.supplierRepository.find({
-      select: ['id', 'supplierAccountNumber', 'supplierName'],
-    });
+  // Fetch supplier accounts
+  const suppliers = await this.supplierRepository.find({
+    select: ['id', 'supplierAccountNumber', 'supplierName'],
+  });
 
-    // Combine data
-    const combinedData = accounts.map((account) => {
-      const data: any = {
-        ...account,
-        children: account.children ? [...account.children] : [],
-      };
+  // Build flat list, then React will build the hierarchy using parentNumber
+  const combinedData = accounts.map((account) => {
+    const node: any = {
+      id: account.id,
+      accountNumber: account.accountNumber,
+      accountName: account.accountName,
+      arabicAccountName: account.arabicAccountName,
+      parentNumber: account.parentNumber, // this is what you care about
+      accessible: account.accessible,
+      children: [] as any[],              // we fill this only for 4111/4011
+    };
 
-      // Add customers under the parent account '4111'
-      if (account.accountNumber === '4111') {
-        data.children.push(
-          ...customers.map((customer) => ({
-            id: customer.id,
-            accountNumber: customer.customerAccountNumber,
-            accountName: customer.customerName,
-            isCustomer: true, // Add a flag to distinguish customers
-          })),
-        );
-      }
+    // Attach customers under 4111
+    if (account.accountNumber === '4111') {
+      node.children.push(
+        ...customers.map((customer) => ({
+          id: customer.id,
+          accountNumber: customer.customerAccountNumber,
+          accountName: customer.customerName,
+          parentNumber: '4111',
+          isCustomer: true,
+          children: [],
+        })),
+      );
+    }
 
-      // Add suppliers under the parent account '4011'
-      if (account.accountNumber === '4011') {
-        data.children.push(
-          ...suppliers.map((supplier) => ({
-            id: supplier.id,
-            accountNumber: supplier.supplierAccountNumber,
-            accountName: supplier.supplierName,
-            isSupplier: true, // Add a flag to distinguish suppliers
-          })),
-        );
-      }
+    // Attach suppliers under 4011
+    if (account.accountNumber === '4011') {
+      node.children.push(
+        ...suppliers.map((supplier) => ({
+          id: supplier.id,
+          accountNumber: supplier.supplierAccountNumber,
+          accountName: supplier.supplierName,
+          parentNumber: '4011',
+          isSupplier: true,
+          children: [],
+        })),
+      );
+    }
 
-      return data;
-    });
+    return node;
+  });
 
-    return combinedData;
-  }
+  return combinedData;
+}
+
+
   async getAccounts(): Promise<any[]> {
     // Fetch accounts with parent-child relationships
     const accounts = await this.accountRepository.find({
@@ -185,68 +195,76 @@ export class AccountsService {
     return transformAccounts(accounts);
   }
   // ✅ Add this method to your AccountsService
-  async getFlatSimplifiedAccounts(): Promise<any[]> {
-    const accounts = await this.accountRepository.find({
-      relations: ['parent', 'children'],
-    });
+ async getFlatSimplifiedAccounts(): Promise<any[]> {
+  // No relations here – we’re building the hierarchy manually using parentNumber
+  const accounts = await this.accountRepository.find();
 
-    const customers = await this.customerRepository.find({
-      select: ['id', 'customerAccountNumber', 'customerName'],
-    });
+  const customers = await this.customerRepository.find({
+    select: ['id', 'customerAccountNumber', 'customerName'],
+  });
 
-    const suppliers = await this.supplierRepository.find({
-      select: ['id', 'supplierAccountNumber', 'supplierName'],
-    });
+  const suppliers = await this.supplierRepository.find({
+    select: ['id', 'supplierAccountNumber', 'supplierName'],
+  });
 
-    // Recursive transformer
-    const buildHierarchy = (parentNumber: string | null = null): any[] => {
-      return accounts
-        .filter((acc) => (acc.parent?.accountNumber || null) === parentNumber)
-        .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber))
-        .map((acc) => {
-          const node: any = {
-            id: acc.id,
-            accountNumber: acc.accountNumber,
-            accountName: acc.arabicAccountName,
-            parentNumber: acc.parentNumber || null,
-            children: [],
-          };
+  // Helper to normalize parentNumber: treat "" as null
+  const normalizeParent = (v?: string | null): string | null => {
+    if (!v) return null;
+    const trimmed = v.toString().trim();
+    return trimmed === '' ? null : trimmed;
+  };
 
-          // Add customer accounts under 4111
-          if (acc.accountNumber === '4111') {
-            node.children.push(
-              ...customers.map((cust) => ({
-                id: cust.id,
-                accountNumber: cust.customerAccountNumber,
-                accountName: cust.customerName,
-                parentNumber: '4111',
-                children: [],
-              })),
-            );
-          }
+  // Recursive transformer
+  const buildHierarchy = (parentNumber: string | null = null): any[] => {
+    return accounts
+      .filter((acc) => normalizeParent(acc.parentNumber) === parentNumber)
+      .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber))
+      .map((acc) => {
+        const node: any = {
+          id: acc.id,
+          accountNumber: acc.accountNumber,
+          accountName: acc.arabicAccountName, // or acc.accountName if you prefer
+          parentNumber: acc.parentNumber || null,
+          children: [],
+        };
 
-          // Add supplier accounts under 4011
-          if (acc.accountNumber === '4011') {
-            node.children.push(
-              ...suppliers.map((supp) => ({
-                id: supp.id,
-                accountNumber: supp.supplierAccountNumber,
-                accountName: supp.supplierName,
-                parentNumber: '4011',
-                children: [],
-              })),
-            );
-          }
+        // Add customer accounts under 4111
+        if (acc.accountNumber === '4111') {
+          node.children.push(
+            ...customers.map((cust) => ({
+              id: cust.id,
+              accountNumber: cust.customerAccountNumber,
+              accountName: cust.customerName,
+              parentNumber: '4111',
+              children: [],
+            })),
+          );
+        }
 
-          // Recursively build children
-          node.children.push(...buildHierarchy(acc.accountNumber));
-          return node;
-        });
-    };
+        // Add supplier accounts under 4011
+        if (acc.accountNumber === '4011') {
+          node.children.push(
+            ...suppliers.map((supp) => ({
+              id: supp.id,
+              accountNumber: supp.supplierAccountNumber,
+              accountName: supp.supplierName,
+              parentNumber: '4011',
+              children: [],
+            })),
+          );
+        }
 
-    // Start from top-level accounts (no parent)
-    return buildHierarchy(null);
-  }
+        // Recursively build children from accounts table
+        node.children.push(...buildHierarchy(acc.accountNumber));
+
+        return node;
+      });
+  };
+
+  // Start from top-level accounts (no parent)
+  return buildHierarchy(null);
+}
+
 
 
 

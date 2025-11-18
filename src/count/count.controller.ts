@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  Query,
 } from '@nestjs/common';
 import { InventoryCountService } from './count.service';
 
@@ -30,6 +31,34 @@ export class InventoryCountController {
   @Get('v1/filtered')
   getFilteredCounts() {
     return this.svc.getFilteredCounts();
+  }
+  @Get('v1/search')
+  async search(
+    @Query('q') q?: string,
+    @Query('mode') mode: 'name' | 'real' = 'name',
+    @Query('itemName') itemName?: string,
+    @Query('type') type?: 'box' | 'sheet' | 'sqm' | 'unit',
+    @Query('thickness') thickness?: string,
+    @Query('length') length?: string,
+    @Query('width') width?: string,
+    @Query('sheetsPerBox') sheetsPerBox?: string,
+    @Query('origin') origin?: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '50',
+  ) {
+    return this.svc.searchVariants({
+      q,
+      mode,
+      itemName,
+      type,
+      thickness: thickness != null ? Number(thickness) : undefined,
+      length: length != null ? Number(length) : undefined,
+      width: width != null ? Number(width) : undefined,
+      sheetsPerBox: sheetsPerBox != null ? Number(sheetsPerBox) : undefined,
+      origin,
+      page: Number(page),
+      limit: Number(limit),
+    });
   }
   @Get('filtered-with-balance')
   async getFilteredCountsWithBalance() {

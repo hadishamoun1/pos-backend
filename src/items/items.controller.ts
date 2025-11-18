@@ -50,6 +50,18 @@ async getSelectedPaginated(
     includeEmpty: ie,
   });
 }
+
+@Get('v1/filtered-items-by-name')
+getSelectedItemsByName(@Query('page') page?: string, @Query('limit') limit?: string) {
+  return this.itemsService.getSelectedItemDetailsByNamePaginated({
+    page: Number(page ?? 1),
+    limit: Number(limit ?? 50),
+  });
+}
+
+
+
+
    // 1) Variant quick search for the picker
   @Get('variants/search')
   async searchVariants(
@@ -108,6 +120,64 @@ async getSelectedPaginated(
     });
   }
   
+
+@Get('v1/variant-ledger-by-name')
+getVariantLedgerByItemName(@Query() q: any) {
+  return this.itemsService.getVariantLedgerByItemNameDesc({
+    itemName: q.itemName,
+    type: q.type,
+    thickness: q.thickness ? Number(q.thickness) : undefined,
+    length: q.length ? Number(q.length) : undefined,
+    width: q.width ? Number(q.width) : undefined,
+    sheetsPerBox: q.sheetsPerBox ? Number(q.sheetsPerBox) : undefined,
+    origin: q.origin,
+    page: q.page ? Number(q.page) : 1,
+    limit: q.limit ? Number(q.limit) : 50,
+    // keep parity with the original:
+    q: q.q,
+    variantIds: Array.isArray(q.variantIds)
+      ? q.variantIds.map((x: any) => Number(x)).filter((n: any) => Number.isFinite(n))
+      : undefined,
+  });
+}
+
+
+@Get('v1/real-variant-ledger')
+  async getVariantLedgerReal(
+    @Query('q') q?: string,
+    @Query('itemName') itemName?: string,
+    @Query('type') type?: 'box' | 'sheet' | 'sqm' | 'unit',
+    @Query('thickness') thickness?: string,
+    @Query('length') length?: string,
+    @Query('width') width?: string,
+    @Query('sheetsPerBox') sheetsPerBox?: string,
+    @Query('origin') origin?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('variantIds') variantIdsRaw?: string, // "1,2,3"
+  ) {
+    const variantIds = (variantIdsRaw || '')
+      .split(',')
+      .map(s => Number(s.trim()))
+      .filter(n => Number.isFinite(n) && n > 0);
+
+    return this.itemsService.getVariantLedgerByRealDesc({
+      q,
+      itemName,
+      type,
+      thickness: Number(thickness),
+      length: Number(length),
+      width: Number(width),
+      sheetsPerBox: Number(sheetsPerBox),
+      origin,
+      page: Number(page),
+      limit: Number(limit),
+      variantIds: variantIds.length ? variantIds : undefined,
+    });
+  }
+
+
+
   @Get('v2/filtered-items')
   async getItemColumns(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -121,7 +191,7 @@ async getSelectedPaginated(
 
 
 
-
+// using real description
  @Get('v1/variant-search')
   async variantSearch(
     @Query('q') q?: string,
@@ -144,6 +214,14 @@ async getSelectedPaginated(
       limit: Number(limit ?? 100),
     });
   }
+
+// using item name description
+// GET /items/v1/variant-search-by-name
+@Get('v1/variant-search-by-name')
+searchByName(@Query() params: any) {
+  return this.itemsService.searchVariantsForModalPOSByNameDescription(params);
+}
+
 
 
 

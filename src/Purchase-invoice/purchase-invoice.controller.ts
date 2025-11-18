@@ -6,6 +6,7 @@ import {
   Param,
   Put,
   ParseIntPipe,
+  Query,
 } from '@nestjs/common';
 import { PurchaseInvoiceService } from './purchase-invoice.service';
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
@@ -30,6 +31,15 @@ export class PurchaseInvoiceController {
   getMinimalInvoices() {
     return this.service.findMinimalInvoices();
   }
+
+      // GET /cost-analysis/history
+ @Get('cost-analysis/history')
+  async getCostAnalysisHistory(
+    @Query('q') q?: string, // <-- optional search text
+  ) {
+    return this.service.getCostAnalysisHistory(q);
+  }
+
   @Get(':id')
   getOne(@Param('id') id: string) {
     return this.service.findOne(+id);
