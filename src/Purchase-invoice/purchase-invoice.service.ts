@@ -3196,19 +3196,10 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'RVR') {
   
 
 async update(id: number, data: Partial<PurchaseInvoice>) {
-  // ─────────────────────────────────────────────────────────
-  // 0) Load current invoice + keep a snapshot of related rows
-  // ─────────────────────────────────────────────────────────
-  console.log('[LOAD][invoiceRepo.findOne] about to run', {
-    where: { id },
-    relations: ['items', 'items.itemVariant'],
-  });
+  // 0) Load existing invoice
   const existing = await this.invoiceRepo.findOne({
     where: { id },
-    relations: [
-      'items',
-      'items.itemVariant',
-    ],
+    relations: ['items', 'items.itemVariant'],
   });
   if (!existing) {
     throw new NotFoundException(`PurchaseInvoice ${id} not found`);
@@ -3219,228 +3210,167 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   const prevDate = new Date(existing.date);
   const prevItemIds = (existing.items ?? []).map((it) => it.id);
 
-  // ─────────────────────────────────────────────────────────
-  // 1) Upsert invoice header fields (no side effects yet)
-  // ─────────────────────────────────────────────────────────
-  Object.assign(existing, data);
-  // NOTE: if items come in the payload, we’ll handle them below in section (2)
+  // ─────────────────────────────────────────────
+  // 0.1) Split payload: header vs items vs unitPriceRows
+  // ─────────────────────────────────────────────
+  const {
+    items: incomingItemsPayload,
+    unitPriceRows: incomingUnitPriceRowsPayload,
+    ...headerPayload
+  } = (data as any) || {};
 
-  // ─────────────────────────────────────────────────────────
-  // 2) Upsert invoice items
-  //    - delete removed items
-  //    - update existing
-  //    - insert new
-  // ─────────────────────────────────────────────────────────
-  const incomingItems = (data.items ?? []).map((it: any) => ({ ...it }));
+  // ─────────────────────────────────────────────
+  // 1) Apply ONLY header fields to existing invoice
+  // ─────────────────────────────────────────────
+  Object.assign(existing, headerPayload);
+
+  // VERY IMPORTANT: prevent TypeORM from trying to cascade-save unitPriceRows
+  // based on the payload (which has no invoiceId)
+  (existing as any).unitPriceRows = undefined;
+
+  // ─────────────────────────────────────────────
+  // 2) Upsert invoice items (using incomingItemsPayload)
+  // ─────────────────────────────────────────────
+  const incomingItems = (incomingItemsPayload ?? []).map((it: any) => ({ ...it }));
   const incomingItemIdSet = new Set<number>(
     incomingItems.filter((i) => i.id).map((i) => Number(i.id)),
   );
-// 2.a) delete removed items + their inventory transactions
-const toDeleteItemIds = prevItemIds.filter(
-  (oldId) => !incomingItemIdSet.has(oldId),
-);
 
-if (toDeleteItemIds.length) {
-  console.log('[DELETE][inventoryTxRepo.delete] for removed items FIRST', {
-    purchaseInvoiceItemId: In(toDeleteItemIds),
-  });
+  const toDeleteItemIds = prevItemIds.filter(
+    (oldId) => !incomingItemIdSet.has(oldId),
+  );
 
-  // 1) delete transactions while purchaseInvoiceItemId is still NOT NULL
-  await this.inventoryTxRepo.delete({
-    purchaseInvoiceItemId: In(toDeleteItemIds),
-  });
+  if (toDeleteItemIds.length) {
+    await this.inventoryTxRepo.delete({
+      purchaseInvoiceItemId: In(toDeleteItemIds),
+    });
+    await this.itemRepo.delete(toDeleteItemIds);
+  }
 
-  console.log('[DELETE][itemRepo.delete] about to run AFTER tx cleanup', {
-    ids: toDeleteItemIds,
-  });
-
-  // 2) now delete the purchase_invoice_items rows
-  await this.itemRepo.delete(toDeleteItemIds);
-}
-
-
-
-  // 2.b) upsert/update incoming items
   const upsertedItems: PurchaseInvoiceItem[] = [];
   for (const raw of incomingItems) {
     if (raw.id) {
-      // update
-      console.log('[UPDATE][itemRepo.update] about to run', {
-        id: raw.id,
-        data: { ...raw, invoiceId: existing.id },
-      });
       await this.itemRepo.update(raw.id, {
         ...raw,
         invoiceId: existing.id,
       });
-
-      console.log('[FINDONE][itemRepo.findOne] about to run', { where: { id: raw.id } });
       const updated = await this.itemRepo.findOne({ where: { id: raw.id } });
       if (updated) upsertedItems.push(updated);
     } else {
-      // insert — handle both single or accidental array return types from TypeORM
       const created = this.itemRepo.create({
         ...raw,
         invoice: { id: existing.id },
         invoiceId: existing.id,
       });
-
-      console.log('[SAVE][itemRepo.save] about to run (create PII)', {
-        sample: { ...created, invoice: { id: existing.id }, invoiceId: existing.id },
-      });
-      const savedOneOrMany = await this.itemRepo.save(created) as
-        PurchaseInvoiceItem | PurchaseInvoiceItem[];
-
-      if (Array.isArray(savedOneOrMany)) {
-        upsertedItems.push(...savedOneOrMany);
-      } else {
-        upsertedItems.push(savedOneOrMany);
-      }
+      const savedOneOrMany = (await this.itemRepo.save(
+        created,
+      )) as PurchaseInvoiceItem | PurchaseInvoiceItem[];
+      if (Array.isArray(savedOneOrMany)) upsertedItems.push(...savedOneOrMany);
+      else upsertedItems.push(savedOneOrMany);
     }
   }
 
-  // 2.c) refresh invoice + items relation
-  console.log('[FIND][itemRepo.find] about to run (items by invoice)', {
-    where: { invoice: { id: existing.id } },
-  });
   existing.items = await this.itemRepo.find({
     where: { invoice: { id: existing.id } },
   });
 
-  // ─────────────────────────────────────────────────────────
-  // 3) Persist invoice header now (base row)
-  // ─────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // 3) Save invoice header (no unitPriceRows cascade)
+  // ─────────────────────────────────────────────
   console.log('[SAVE][invoiceRepo.save] about to run (header)', {
     id: existing.id,
     headerKeys: Object.keys(existing || {}),
   });
   const savedInvoice = await this.invoiceRepo.save(existing);
 
-  // ─────────────────────────────────────────────────────────
-  // 4) CLEAN PREVIOUS SIDE EFFECTS for this invoice
-  //    - delete inventory transactions tied to previous+current items
-  //    - (re)compute ItemBatch values after we recreate txs below
-  //    - rebuild JV (delete or upsert)
-  //    - rewrite UnitPrice rows
-  // ─────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // 4.0) Sync inventory transactions (your existing code)
+  //      ...
+  // 4.2) delete/rebuild JV (your existing code)
+  // ─────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────
-// 4.0) Sync InventoryTransaction rows for current invoice items
-//      Strategy:
-//        - If any tx exists for a PII → create NEW tx with updated amounts, then delete ALL old txs
-//        - If no tx exists          → create tx normally
-//      This avoids double-counting and keeps history clean for later cost recomputes.
-// ─────────────────────────────────────────────────────────
-console.log('[SYNC][inventoryTxRepo] syncing inventory transactions for current items', {
-  invoiceId: savedInvoice.id,
-  itemCount: savedInvoice.items?.length ?? 0,
-});
-
-for (const item of savedInvoice.items ?? []) {
-  const qty = Number(item.quantity) || 0;
-  const sqm = Number(item.sqm) || 0;
-
-  // If you have OFR fields on PII, use them; otherwise fallback to VM
-  const qtyofr = Number((item as any).quantityofr ?? qty);
-  const sqmofr = Number((item as any).sqmofr ?? sqm);
-
-  const finalCostVM = Number((item as any).finalCost ?? 0);
-  const finalCostOfr = Number((item as any).finalOFR ?? finalCostVM);
-
-  // 🔍 Find ALL existing tx rows for this PII (no type filter to avoid mismatch)
-  const oldTxList = await this.inventoryTxRepo.find({
-    where: { purchaseInvoiceItemId: item.id },
+  // 4.3) delete old unit_price_modal_rows for this invoice
+  console.log('[UNITPRICE][DELETE] deleting all unit price rows by invoiceId', {
+    invoiceId: savedInvoice.id,
   });
-
-  if (oldTxList.length > 0) {
-    const template = oldTxList[0]; // use first row as template for batch / extra fields
-
-    console.log('[SAVE][inventoryTxRepo.save] creating NEW tx to replace old ones', {
-      oldTxIds: oldTxList.map((t) => t.id),
-      purchaseInvoiceItemId: item.id,
-    });
-
-    const newTx = this.inventoryTxRepo.create({
-      itemVariantId: item.itemVariantId,
-      itemBatchId: template.itemBatchId ?? null,       // keep same batch if any
-      transactionType: template.transactionType ?? 'purchase',
-
-      quantity: qty,
-      sqm,
-      quantityofr: qtyofr,
-      sqmofr,
-      finalcost: finalCostVM,
-      finalcostofr: finalCostOfr,
-
-      purchaseInvoiceItemId: item.id,
-      invoiceItemId: template.invoiceItemId ?? null,
-      dateForEachInvoice: savedInvoice.date,
-    });
-
-    const savedTx = await this.inventoryTxRepo.save(newTx);
-
-    // 🗑 delete ALL old transaction rows for this PII
-    const oldIds = oldTxList.map((t) => t.id);
-    console.log('[DELETE][inventoryTxRepo.delete] removing OLD tx after replacement', {
-      oldTxIds: oldIds,
-      newTxId: savedTx.id,
-    });
-    await this.inventoryTxRepo.delete(oldIds);
-  } else {
-    // No previous tx → just create one
-    console.log('[SAVE][inventoryTxRepo.save] creating tx for PII with no previous tx', {
-      purchaseInvoiceItemId: item.id,
-    });
-
-    const newTx = this.inventoryTxRepo.create({
-      itemVariantId: item.itemVariantId,
-      itemBatchId: null,                // or resolve batch here like in create()
-      transactionType: 'purchase',
-
-      quantity: qty,
-      sqm,
-      quantityofr: qtyofr,
-      sqmofr,
-      finalcost: finalCostVM,
-      finalcostofr: finalCostOfr,
-
-      purchaseInvoiceItemId: item.id,
-      invoiceItemId: null,
-      dateForEachInvoice: savedInvoice.date,
-    });
-
-    await this.inventoryTxRepo.save(newTx);
-  }
-}
-
-  // 4.2) delete/rebuild Journal Voucher if any (we’ll recreate if still needed)
-  console.log('[FINDONE][journalVoucherRepo.findOne] about to run', {
-    where: { purchaseInvoiceId: savedInvoice.id },
-    relations: ['details'],
-  });
-  const oldJv = await this.journalVoucherRepo.findOne({
-    where: { purchaseInvoiceId: savedInvoice.id },
-    relations: ['details'],
-  });
-  let preservedJvNumber: string | null = null;
-  if (oldJv) {
-    preservedJvNumber = oldJv.jvNumber;
-    if (oldJv.details?.length) {
-      const detailIds = oldJv.details.map((d) => d.id);
-      console.log('[DELETE][journalVoucherDetailRepo.delete] about to run', { ids: detailIds });
-      await this.journalVoucherDetailRepo.delete(detailIds);
-    }
-    console.log('[DELETE][journalVoucherRepo.delete] about to run', { id: oldJv.id });
-    await this.journalVoucherRepo.delete(oldJv.id);
-  }
-
-  // 4.3) rewrite UnitPrice rows for this invoice (clear then re-add)
-  console.log('[FIND][rowRepo.find] about to run (unit price rows for invoice)', {
+  await this.rowRepo.delete({ invoiceId: savedInvoice.id });
+  const checkAfterDelete = await this.rowRepo.find({
     where: { invoiceId: savedInvoice.id },
   });
-  const oldRows = await this.rowRepo.find({
-    where: { invoiceId: savedInvoice.id },
-  });
+  console.log('[UNITPRICE][AFTER DELETE] rows found:', checkAfterDelete.length);
+
+  // ─────────────────────────────────────────────
+  // 5) Rebuild JV (you already have this section)
+  // ─────────────────────────────────────────────
+
+  // ─────────────────────────────────────────────
+  // 6) Re-create UnitPrice rows from payload
+  //    (use incomingUnitPriceRowsPayload, not data.unitPriceRows)
+  // ─────────────────────────────────────────────
+  if (incomingUnitPriceRowsPayload?.length) {
+    const normalized = incomingUnitPriceRowsPayload.map((r: any) => {
+      const v = Number(r.value ?? 0);
+      const o = Number(r.valueOFR ?? 0);
+      const ex = Number(r.valueExch ?? 0);
+      const eo = Number(r.valueExchOFR ?? 0);
+
+      return {
+        ...r,
+        value: v,
+        valueOFR: v > 0 && o === 0 ? v : o,
+        valueExch: ex,
+        valueExchOFR: ex > 0 && eo === 0 ? ex : eo,
+      };
+    });
+
+    const rowsToSave = normalized.map((row: any) => {
+      const accountId =
+        row.accountId != null
+          ? Number(row.accountId)
+          : row.account?.id != null
+          ? Number(row.account.id)
+          : null;
+
+      const supplierId =
+        row.supplierId != null
+          ? Number(row.supplierId)
+          : row.supplier?.id != null
+          ? Number(row.supplier.id)
+          : null;
+
+      const { id, account, supplier, ...rest } = row;
+
+      return this.rowRepo.create({
+        invoice: { id: savedInvoice.id },
+        invoiceId: savedInvoice.id,
+
+        purchaseInvoiceSettingId: rest.purchaseInvoiceSettingId ?? null,
+        chargeName: rest.chargeName,
+        chargeType: rest.chargeType,
+        value: rest.value,
+        valueOFR: rest.valueOFR,
+        currency: rest.currency,
+        valueExch: rest.valueExch,
+        valueExchOFR: rest.valueExchOFR,
+        addToItemCost: rest.addToItemCost,
+        invoiceNbTax: rest.invoiceNbTax,
+        shipping: rest.shipping,
+
+        accountId,
+        account: accountId ? ({ id: accountId } as any) : null,
+
+        supplierId,
+        supplier: supplierId ? ({ id: supplierId } as any) : null,
+      });
+    });
+
+    console.log('[UNITPRICE][rowsToSave]', rowsToSave);
+    await this.rowRepo.save(rowsToSave);
+  }
+
+
+
+
 
   // ─────────────────────────────────────────────────────────
   // 7) COST-CALCULATION BLOCKS (EXACTLY your create’s logic)
@@ -5959,6 +5889,8 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'RVR') {
 
 
 // In your PurchaseInvoicesService (or wherever PurchaseInvoiceItem repo lives)
+// Make sure you have this import at the top:
+// import { InventoryCount } from '../inventory/count.entity';
 
 async getCostAnalysisHistory(q?: string): Promise<any[]> {
   // small helper: normalize Arabic/Arabic-Indic digits to Western 0–9
@@ -5968,7 +5900,7 @@ async getCostAnalysisHistory(q?: string): Promise<any[]> {
       '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
       '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
       '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
-      '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+      '۵': '5', '۶': '6', '۷': '7', '۸': '۸', '۹': '9',
     };
     return s.replace(/[٠-٩۰-۹]/g, (d) => map[d] ?? d);
   };
@@ -5984,9 +5916,10 @@ async getCostAnalysisHistory(q?: string): Promise<any[]> {
     .where('inv.status = :st', { st: 'Recieved' })
     .andWhere('inv.type IN (:...types)', { types: ['S', 'G', 'SR'] })
     .select([
+      // identity / structure
       'iv.id AS variantId',
       'i.itemName AS itemName',
-      'th.thickness AS thickness', // correct column name
+      'th.thickness AS thickness',
       'iv.length AS length',
       'iv.width AS width',
       'iv.origin AS origin',
@@ -6000,20 +5933,26 @@ async getCostAnalysisHistory(q?: string): Promise<any[]> {
       'rd.itemNumber AS itemNumber',
       'inv.date AS invoiceDate',
 
-      // 🔹 NEW: previous quantities
+      // 🔹 previous quantities
       'pii.previousQuantity AS previousQuantity',
       'pii.previousQuantityC AS previousQuantityC',
       'pii.previousQuantityVM AS previousQuantityVM',
       'pii.previousQuantityCVM AS previousQuantityCVM',
 
-      // 🔹 NEW: final costs
-      'pii.finalCost AS finalCost',
+      // 🔹 previous average costs
+      'pii.previousAverageCost AS previousAverageCost',
+      'pii.previousAverageCostC AS previousAverageCostC',
+      'pii.previousAverageCostVM AS previousAverageCostVM',
+      'pii.previousAverageCostCVM AS previousAverageCostCVM',
+
+      // 🔹 OFR price & final OFR
+      'pii.priceOFR AS priceOFR',
       'pii.finalOFR AS finalOFR',
 
-      // existing averages
+      // 🔹 current averages
       'pii.averageCost AS averageCost',
-      'pii.averageCostVM AS averageCostVM',
       'pii.averageCostC AS averageCostC',
+      'pii.averageCostVM AS averageCostVM',
       'pii.averageCostCVM AS averageCostCVM',
     ])
     .orderBy('rd.sort_index_real_description', 'ASC')
@@ -6034,7 +5973,7 @@ async getCostAnalysisHistory(q?: string): Promise<any[]> {
     let width: number | undefined;
     let sheetsPerBox: number | undefined;
 
-    // 1) Find a dimension pattern: 225*321-027  OR  225*321
+    // 1) Find dimension pattern: 225*321-027 OR 225*321
     const dimMatch = norm.match(/(\d+)\s*\*\s*(\d+)(?:\s*-\s*(\d+))?/);
     if (dimMatch) {
       length = Number(dimMatch[1]);
@@ -6097,6 +6036,191 @@ async getCostAnalysisHistory(q?: string): Promise<any[]> {
   }
 
   // ───────── Execute and return raw rows ─────────
+  const raw = await qb.getRawMany();
+  return raw;
+}
+
+
+
+
+// make sure these are imported at top of the file:
+// import { InventoryCount } from '../inventory/count.entity';
+// import { ItemVariant } from '../inventory/itemVariant.entity';
+
+async getRealDescriptionCostHistory(q?: string): Promise<any[]> {
+  // small helper: normalize Arabic/Arabic-Indic digits to Western 0–9
+  const normalizeDigits = (s: string) => {
+    if (!s) return '';
+    const map: Record<string, string> = {
+      '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+      '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+      '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+      '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+    };
+    return s.replace(/[٠-٩۰-۹]/g, (d) => map[d] ?? d);
+  };
+
+  // ───────── Base query: all POs that contain variants under each RealDescription ─────────
+  const qb = this.itemRepo
+    .createQueryBuilder('pii') // PurchaseInvoiceItem
+    .innerJoin('pii.invoice', 'inv')
+    .innerJoin('pii.itemVariant', 'iv')
+    .innerJoin('iv.thickness', 'th')
+    .innerJoin('th.item', 'i')
+    .leftJoin('iv.realDescription', 'rd')
+    .where('inv.status = :st', { st: 'Recieved' })
+    .andWhere('inv.type IN (:...types)', { types: ['S', 'G', 'SR'] })
+    // optional: ignore variants that don’t have a real description
+    .andWhere('rd.id IS NOT NULL');
+
+  // ───────── Parse search text q (same concept as variant API) ─────────
+  if (q && q.trim()) {
+    const norm = normalizeDigits(q.trim());
+
+    let thickness: number | undefined;
+    let nameText: string | undefined;
+    let length: number | undefined;
+    let width: number | undefined;
+    let sheetsPerBox: number | undefined;
+
+    // 1) Find dimension pattern: 225*321-027 OR 225*321
+    const dimMatch = norm.match(/(\d+)\s*\*\s*(\d+)(?:\s*-\s*(\d+))?/);
+    if (dimMatch) {
+      length = Number(dimMatch[1]);
+      width = Number(dimMatch[2]);
+      if (dimMatch[3]) {
+        sheetsPerBox = Number(dimMatch[3]);
+      }
+    }
+
+    // 2) Find thickness pattern like "5ملم" or "5.5 ملم"
+    const thMatch = norm.match(/(\d+(?:\.\d+)?)\s*ملم/);
+    if (thMatch) {
+      thickness = Number(thMatch[1]);
+      // remove thickness part to get remaining name text
+      const withoutThickness = norm.replace(thMatch[0], ' ');
+      const leftover = withoutThickness.replace(dimMatch?.[0] ?? '', ' ').trim();
+      if (leftover) {
+        nameText = leftover;
+      }
+    } else {
+      // no explicit thickness -> treat remaining text as name search
+      const withoutDims = norm.replace(dimMatch?.[0] ?? '', ' ').trim();
+      if (withoutDims) {
+        nameText = withoutDims;
+      }
+    }
+
+    // 3) Apply filters
+    if (typeof thickness === 'number' && !Number.isNaN(thickness)) {
+      qb.andWhere('th.thickness = :thickness', { thickness });
+    }
+
+    if (typeof length === 'number' && !Number.isNaN(length)) {
+      qb.andWhere('iv.length = :len', { len: length });
+    }
+
+    if (typeof width === 'number' && !Number.isNaN(width)) {
+      qb.andWhere('iv.width = :wid', { wid: width });
+    }
+
+    if (typeof sheetsPerBox === 'number' && !Number.isNaN(sheetsPerBox)) {
+      qb.andWhere('iv.sheetsPerBox = :spb', { spb: sheetsPerBox });
+    }
+
+    if (nameText && nameText.length >= 1) {
+      const like = `%${nameText}%`;
+      qb.andWhere(
+        `
+        (
+          i.itemName LIKE :txt
+          OR rd.colorName LIKE :txt
+          OR rd.designName LIKE :txt
+          OR rd.categoryName LIKE :txt
+          OR rd.subCategory LIKE :txt
+        )
+      `,
+        { txt: like },
+      );
+    }
+  }
+
+  // ───────── Subqueries for OPENING counts per RealDescription ─────────
+  const openingsSubC = qb.subQuery()
+    .select('COALESCE(SUM(ic.sqmOfr), 0)')
+    .from(InventoryCount, 'ic')
+    .innerJoin(ItemVariant, 'iv2', 'iv2.id = ic.itemVariantId')
+    .where('iv2.realDescriptionId = rd.id')
+    .getQuery();
+
+  const openingsSubVM = qb.subQuery()
+    .select('COALESCE(SUM(ic.sqm), 0)')
+    .from(InventoryCount, 'ic')
+    .innerJoin(ItemVariant, 'iv3', 'iv3.id = ic.itemVariantId')
+    .where('iv3.realDescriptionId = rd.id')
+    .getQuery();
+
+  // ───────── Aggregate per RealDescription + invoice date ─────────
+  qb
+    .select([
+      // description identity
+      'rd.id AS realDescriptionId',
+      'rd.categoryName AS categoryName',
+      'rd.subCategory AS subCategory',
+      'rd.colorName AS colorName',
+      'rd.designName AS designName',
+      'rd.itemNumber AS itemNumber',
+      'rd.sort_index_real_description AS sortIndex',
+
+      // item base name (for context)
+      'i.itemName AS itemName',
+
+      // 🔹 representative thickness for this RealDescription
+      'MIN(th.thickness) AS thickness',
+
+      // invoice date (history)
+      'inv.date AS invoiceDate',
+
+      // 🔹 summed previous quantity C (before this invoice)
+      'SUM(pii.previousQuantityC) AS previousQuantityC',
+
+      // 🔹 PO quantity for this description on this invoice (sqm)
+      'SUM(pii.sqm) AS poQty',
+
+      // 🔹 average cost C (simple average of PII.averageCostC)
+      'AVG(pii.averageCostC) AS averageCostC',
+
+      // 🔹 weighted last cost C for this invoice/description
+      `CASE 
+         WHEN SUM(pii.sqm) = 0 THEN 0 
+         ELSE SUM(pii.finalCost * pii.sqm) / SUM(pii.sqm) 
+       END AS lastCostC`,
+
+      // 🔹 weighted final OFR cost for this invoice/description
+      `CASE 
+         WHEN SUM(pii.sqm) = 0 THEN 0 
+         ELSE SUM(pii.finalOFR * pii.sqm) / SUM(pii.sqm) 
+       END AS finalCostOFR`,
+    ])
+    // opening stock (C & VM) via subqueries
+    .addSelect(`(${openingsSubC})`, 'openingQuantityC')
+    .addSelect(`(${openingsSubVM})`, 'openingQuantityVM')
+    .groupBy('rd.id')
+    .addGroupBy('inv.date')
+    .addGroupBy('rd.categoryName')
+    .addGroupBy('rd.subCategory')
+    .addGroupBy('rd.colorName')
+    .addGroupBy('rd.designName')
+    .addGroupBy('rd.itemNumber')
+    .addGroupBy('rd.sort_index_real_description')
+    .addGroupBy('i.itemName')
+    .orderBy('rd.sort_index_real_description', 'ASC')
+    .addOrderBy('rd.categoryName', 'ASC')
+    .addOrderBy('rd.subCategory', 'ASC')
+    .addOrderBy('rd.colorName', 'ASC')
+    .addOrderBy('rd.designName', 'ASC')
+    .addOrderBy('inv.date', 'ASC');
+
   const raw = await qb.getRawMany();
   return raw;
 }

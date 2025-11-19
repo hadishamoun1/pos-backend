@@ -40,6 +40,12 @@ export class PurchaseInvoiceController {
     return this.service.getCostAnalysisHistory(q);
   }
 
+@Get('cost-analysis/real-description-history')
+getRealDescHistory(@Query('q') q?: string) {
+  return this.service.getRealDescriptionCostHistory(q);
+}
+
+
   @Get(':id')
   getOne(@Param('id') id: string) {
     return this.service.findOne(+id);
