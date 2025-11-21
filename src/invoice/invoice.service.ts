@@ -106,32 +106,34 @@ async createInvoice(data: any): Promise<Invoice> {
 
     const savedInvoice = await queryRunner.manager.save(invoice);
     console.log('✅ Invoice saved with ID:', savedInvoice.id);
+const items = data.items.map((item, index) => {
+  console.log(`📦 Preparing item[${index}]`, item);
+  if (
+    item.sqm === undefined ||
+    item.quantity === undefined ||
+    item.itemVariantId === undefined ||
+    item.itemBatchId === undefined
+  ) {
+    console.error(`❌ Missing required field in item[${index}]`, item);
+    throw new BadRequestException(
+      `Missing required fields in item[${index}]`,
+    );
+  }
+return this.invoiceItemRepo.create({
+  invoiceId: savedInvoice.id,
+  itemVariantId: item.itemVariantId,
+  itemBatchId: item.itemBatchId,
+  length: item.length ?? null,
+  width: item.width ?? null,
+  sheetsPerBox: item.sheetsPerBox ?? null,
+  sqm: item.sqm,
+  unitPrice: item.unitPrice,
+  totalAmount: item.totalAmount,
+  vat: item.vat,
+  quantity: item.quantity,
+});
 
-    const items = data.items.map((item, index) => {
-      console.log(`📦 Preparing item[${index}]`, item);
-      if (
-        item.sqm === undefined ||
-        item.quantity === undefined ||
-        item.itemVariantId === undefined ||
-        item.itemBatchId === undefined
-      ) {
-        console.error(`❌ Missing required field in item[${index}]`, item);
-        throw new BadRequestException(
-          `Missing required fields in item[${index}]`,
-        );
-      }
-
-      return this.invoiceItemRepo.create({
-        invoiceId: savedInvoice.id,
-        itemVariantId: item.itemVariantId,
-        itemBatchId: item.itemBatchId,
-        sqm: item.sqm,
-        unitPrice: item.unitPrice,
-        totalAmount: item.totalAmount,
-        vat: item.vat,
-        quantity: item.quantity,
-      });
-    });
+});
 
     const savedItems = await queryRunner.manager
       .getRepository(InvoiceItem)
@@ -696,58 +698,126 @@ async getInvoiceById(invoiceId: number): Promise<any> {
         }
       : null,
 
+   
     // ===== Items =====
-    items: invoice.items.map((item) => {
-      const variant = item.itemVariant;
-      const thickness = variant?.thickness;
-      const itemData = thickness?.item;
-      const batch = (item as any).itemBatch; // only present if you kept 'items.itemBatch' in relations
+// ===== Items =====
+items: invoice.items.map((item) => {
+  const variant   = item.itemVariant;
+  const thickness = variant?.thickness;
+  const itemData  = thickness?.item;
+  const batch     = (item as any).itemBatch;
 
-      return {
-        invoiceItemId: item.id,
-        sqm: item.sqm,
-        unitPrice: item.unitPrice,
-        totalAmount: item.totalAmount,
-        vat: item.vat,
-        quantity: item.quantity, // overall qty (box/sheet/sqm)
+  const itemType = itemData?.type; // 'box' | 'sheet' | 'sqm'
 
-        // 👉 Added: batch id exposed plainly
-        itemBatchId: (item as any).itemBatchId ?? batch?.id ?? null,
+  // 👇 snapshots stored on invoice_items (we ONLY use these)
+  const rawLen = (item as any).length;
+  const rawWid = (item as any).width;
+  const rawSpb = (item as any).sheetsPerBox;
 
-        // Item details
-        itemVariantId: variant?.id,
-        itemName: itemData?.itemName,
-        itemType: itemData?.type, // 'box' | 'sheet' | 'sqm'
-        thickness: thickness?.thickness,
-        length: (variant as any)?.length ?? null,
-        width: (variant as any)?.width ?? null,
-        origin: variant?.origin ?? null,
-        sheetsPerBox: variant?.sheetsPerBox ?? null,
-        totalSheets: item.quantity * (variant?.sheetsPerBox ?? 1),
+  const length =
+    rawLen !== null && rawLen !== undefined && !Number.isNaN(Number(rawLen))
+      ? Number(rawLen)
+      : null;
 
-        // Box/Sheet constraints
-        fixBox: (variant as any)?.fixBox ?? null,
-        fixLength: (variant as any)?.fixLength ?? null,
-        fixWidth: (variant as any)?.fixWidth ?? null,
+  const width =
+    rawWid !== null && rawWid !== undefined && !Number.isNaN(Number(rawWid))
+      ? Number(rawWid)
+      : null;
 
-        // (Optional) expose batch details if helpful in the UI
-        batch: batch
-          ? {
-              id: batch.id,
-              condition: batch.condition ?? null,
-              dateReceived: batch.dateReceived ?? null,
-              start: batch.start ?? null,
-              in: batch.in ?? null,
-              out: batch.out ?? null,
-              balance: batch.balance ?? null,
-              startOFR: batch.startOFR ?? null,
-              inOFR: batch.inOFR ?? null,
-              outOFR: batch.outOFR ?? null,
-              balanceOFR: batch.balanceOFR ?? null,
-            }
-          : null,
-      };
-    }),
+  let sheetsPerBox: number | null = null;
+  if (itemType === 'box') {
+    sheetsPerBox =
+      rawSpb !== null && rawSpb !== undefined && !Number.isNaN(Number(rawSpb))
+        ? Number(rawSpb)
+        : null;
+  }
+    // 👉 ORIGINAL from variant
+  const originalLength =
+    (variant as any)?.length != null
+      ? Number((variant as any).length)
+      : null;
+
+  const originalWidth =
+    (variant as any)?.width != null
+      ? Number((variant as any).width)
+      : null;
+
+  const originalSheetsPerBox =
+    itemType === 'box' && variant?.sheetsPerBox != null
+      ? Number(variant.sheetsPerBox)
+      : null;
+
+  // totalSheets:
+  // - box: qty * sheetsPerBox (from invoice_items)
+  // - sheet: qty
+  // - sqm: null
+  let totalSheets: number | null = null;
+  if (itemType === 'box') {
+    const qty = Number(item.quantity) || 0;
+    const spb = sheetsPerBox || 0;
+    totalSheets = qty * spb;
+  } else if (itemType === 'sheet') {
+    totalSheets = Number(item.quantity) || 0;
+  }
+
+  return {
+    invoiceItemId: item.id,
+    sqm: item.sqm,
+    unitPrice: item.unitPrice,
+    totalAmount: item.totalAmount,
+    vat: item.vat,
+    quantity: item.quantity,
+
+    // 👉 batch id
+    itemBatchId: (item as any).itemBatchId ?? batch?.id ?? null,
+
+    // item / variant info
+    itemVariantId: variant?.id,
+    itemName: itemData?.itemName,
+    itemType, // 'box' | 'sheet' | 'sqm'
+    thickness: thickness?.thickness,
+
+    // 👉 always from invoice_items (cut or not)
+    length,
+    width,
+
+    origin: variant?.origin ?? null,
+
+    // 👉 sheetsPerBox only for box, from invoice_items
+    sheetsPerBox,
+    totalSheets,
+
+
+    // 🔍 original (for info only)
+    originalLength,
+    originalWidth,
+    originalSheetsPerBox,
+
+
+    fixBox:    (variant as any)?.fixBox    ?? null,
+    fixLength: (variant as any)?.fixLength ?? null,
+    fixWidth:  (variant as any)?.fixWidth  ?? null,
+
+    batch: batch
+      ? {
+          id: batch.id,
+          condition: batch.condition ?? null,
+          dateReceived: batch.dateReceived ?? null,
+          start: batch.start ?? null,
+          in: batch.in ?? null,
+          out: batch.out ?? null,
+          balance: batch.balance ?? null,
+          startOFR: batch.startOFR ?? null,
+          inOFR: batch.inOFR ?? null,
+          outOFR: batch.outOFR ?? null,
+          balanceOFR: batch.balanceOFR ?? null,
+        }
+      : null,
+  };
+}),
+
+
+
   };
 }
 

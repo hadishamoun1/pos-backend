@@ -38,6 +38,15 @@ export class InvoiceItem {
   @Column({ nullable: true })
   itemBatchId: number;
 
+    @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  length: number | null;
+
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  width: number | null;
+
+    @Column({ type: 'int', nullable: true })
+  sheetsPerBox: number | null;
+
   // Keep only necessary fields (remove duplicate item info)
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   sqm: number;

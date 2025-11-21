@@ -5,10 +5,12 @@ import {
   Column,
   ManyToOne,
   JoinColumn,
+  OneToMany,
 } from 'typeorm';
 import { Transfer } from './transfer.entity';
 import { ItemVariant } from './itemVariant.entity';
 import { ItemBatch } from './itemBatch.entity';
+import { SqmPiece } from './sqmPiece.entity';
 
 @Entity({ name: 'transfer_items' })
 export class TransferItem {
@@ -41,4 +43,8 @@ export class TransferItem {
 
   @Column({ nullable: true })
   itemBatchId: number;
+
+
+    @OneToMany(() => SqmPiece, (p) => p.transferItem)
+  sqmPieces: SqmPiece[];
 }

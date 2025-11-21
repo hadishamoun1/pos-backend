@@ -1880,12 +1880,13 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
 
   // -------------------------------------------------------------------
   // 1) Load minimal graph; custom ordering done in JS
+  //    ONLY variants that have realDescriptionId
   // -------------------------------------------------------------------
   const entities = await this.itemRepository
     .createQueryBuilder("item")
     .leftJoinAndSelect("item.thicknesses", "thickness")
     .leftJoinAndSelect("thickness.variants", "variant")
-    .leftJoinAndSelect("variant.realDescription", "realDesc") // 🔁 switched here
+    .leftJoinAndSelect("variant.realDescription", "realDesc")
     .leftJoinAndSelect("variant.batches", "batch")
     .select([
       // item
@@ -1903,20 +1904,21 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       "variant.width",
       "variant.sheetsPerBox",
       "variant.origin",
-      "variant.realDescriptionId", // 🔁 switched here
+      "variant.realDescriptionId",
       // real description
       "realDesc.id",
       "realDesc.categoryName",
       "realDesc.subCategory",
       "realDesc.colorName",
       "realDesc.designName",
-      "realDesc.sort_index_real_description", // 🔁 switched here
+      "realDesc.sort_index_real_description",
       // batch
       "batch.id",
       "batch.condition",
       "batch.dateReceived",
       "batch.balanceOFR",
     ])
+    .where("variant.realDescriptionId IS NOT NULL") // ✅ filter ONLY those that have real desc
     .orderBy("item.id", "ASC")
     .addOrderBy("thickness.id", "ASC")
     .addOrderBy("variant.id", "ASC")
@@ -1984,11 +1986,11 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
               balanceOFR: Number(converted.toFixed(2)),
             };
           })
-          .filter((bb) => toNum(bb.balanceOFR) > 0);
+          
 
         if (!batches.length) continue;
 
-        const d = (v as any).realDescription || null; // 🔁 switched here
+        const d = (v as any).realDescription || null;
         const realDescLabel =
           d
             ? [
@@ -2012,10 +2014,10 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
           width: widthNum,
           sheetsPerBox: spbNum,
           origin: v.origin || null,
-          realDescId: (v as any).realDescriptionId ?? null, // 🔁 switched here
-          realDescSortIndex: d?.sort_index_real_description ?? null, // 🔁 switched here
+          realDescId: (v as any).realDescriptionId ?? null,
+          realDescSortIndex: d?.sort_index_real_description ?? null,
           realDescLabel,
-          realDescriptionId: (v as any).realDescriptionId || null, // 🔁 switched here
+          realDescriptionId: (v as any).realDescriptionId || null,
           realDescription: d
             ? {
                 id: d.id,
@@ -2033,13 +2035,13 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
   }
 
   // -------------------------------------------------------------------
-  // 3) ORDERING (same logic, keyed by real description)
+  // 3) ORDERING (keyed by real description)
   // -------------------------------------------------------------------
   const nullLastNum = (n: any) => (n == null ? Number.POSITIVE_INFINITY : Number(n));
-  const byDesc = new Map<number | 'null', Flat[]>();
+  const byDesc = new Map<number | "null", Flat[]>();
 
   for (const r of flat) {
-    const key = r.realDescId ?? 'null';
+    const key = r.realDescId ?? "null";
     if (!byDesc.has(key)) byDesc.set(key, []);
     byDesc.get(key)!.push(r);
   }
@@ -2099,7 +2101,11 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         // keep type order: box → sheet → sqm (no width sort)
         const boxes  = g
           .filter((x) => x.type === "box")
-          .sort((a, b) => (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) || a.variantId - b.variantId);
+          .sort(
+            (a, b) =>
+              (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) ||
+              a.variantId - b.variantId,
+          );
 
         const sheets = g
           .filter((x) => x.type === "sheet")
@@ -2110,7 +2116,9 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       }
 
       // place unspecified dims after (same as before)
-      const sqmOthers    = nonDimmed.filter((x) => x.type === "sqm").sort((a, b) => a.variantId - b.variantId);
+      const sqmOthers    = nonDimmed
+        .filter((x) => x.type === "sqm")
+        .sort((a, b) => a.variantId - b.variantId);
       const noDimsNonSqm = nonDimmed.filter((x) => x.type !== "sqm");
       ordered.push(...sqmOthers, ...noDimsNonSqm);
     }
@@ -2129,8 +2137,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     width: number;
     sheetsPerBox: number;
     origin: string | null;
-    realDescriptionId: number | null; // 🔁 switched here
-    realDescription: any | null;      // 🔁 switched here
+    realDescriptionId: number | null;
+    realDescription: any | null;
     batchId?: number | null;
     condition?: string | null;
     dateReceived?: string | Date | null;
@@ -2150,8 +2158,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         width: r.width,
         sheetsPerBox: r.sheetsPerBox,
         origin: r.origin,
-        realDescriptionId: r.realDescriptionId,   // 🔁 switched here
-        realDescription: r.realDescription,       // 🔁 switched here
+        realDescriptionId: r.realDescriptionId,
+        realDescription: r.realDescription,
         batchId: b.id,
         condition: b.condition,
         dateReceived: b.dateReceived,
@@ -2173,6 +2181,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     data: pageRows,
   };
 }
+
 
 
 
