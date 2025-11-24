@@ -90,6 +90,13 @@ export class SqmPiece {
  @Column('decimal', { precision: 12, scale: 4,default:0 })
   sqmSold: number;
 
+    /**
+   * sqm that was thrown to trash (damaged / unusable).
+   */
+  @Column('decimal', { precision: 12, scale: 4, default: 0 })
+  sqmTrash: number;
+
+
   @Column('decimal', { precision: 12, scale: 4,default:0 })
   sqmRemaining: number;
 

@@ -43,7 +43,9 @@ export class TransferItem {
 
   @Column({ nullable: true })
   itemBatchId: number;
-
+  
+  @Column('decimal', { precision: 12, scale: 4, default: 0 })
+  sqmTrashUnallocated: number;
 
     @OneToMany(() => SqmPiece, (p) => p.transferItem)
   sqmPieces: SqmPiece[];

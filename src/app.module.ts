@@ -48,7 +48,7 @@ import { SqmPiecesModule } from './sqmPiece/sqm-piece.module';
         password: process.env.DB_PASS || '70631859HADI',
         database: process.env.DB_NAME || 'pos_v2',
         autoLoadEntities: true,
-        synchronize: true,
+        synchronize: false,
       }),
     }),
     UserModule,

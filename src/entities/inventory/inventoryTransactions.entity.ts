@@ -23,7 +23,7 @@ export class InventoryTransaction {
   @Column()
   itemVariantId: number;
 
-  @Column({ type: 'varchar', length: 20 })
+  @Column({ type: 'varchar', length: 40 })
   transactionType: string;
 
   // ✅ Track inventory in square meters (sqm)
