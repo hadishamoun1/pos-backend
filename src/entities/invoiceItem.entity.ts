@@ -8,6 +8,7 @@ import {
 import { Invoice } from './invoice.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity'; // Import the ItemVariant entity
 import { ItemBatch } from './inventory/itemBatch.entity';
+import { SqmPiece } from './inventory/sqmPiece.entity';
 
 @Entity('invoice_items')
 export class InvoiceItem {
@@ -37,6 +38,15 @@ export class InvoiceItem {
 
   @Column({ nullable: true })
   itemBatchId: number;
+
+  @ManyToOne(() => SqmPiece, { nullable: true })
+  @JoinColumn({ name: 'sqmPieceId' })
+  sqmPiece: SqmPiece | null;
+
+  @Column({ name: 'sqmPieceId', type: 'int', nullable: true })
+  sqmPieceId: number | null;
+
+
 
     @Column('decimal', { precision: 10, scale: 2, nullable: true })
   length: number | null;

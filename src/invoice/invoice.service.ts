@@ -18,6 +18,7 @@ import { Thickness } from 'src/entities/inventory/thickness.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-invoice/purchase-invoice-item.entity';
 import { InventoryCount } from '../entities/inventory/count.entity';
+import { SqmPiece } from 'src/entities/inventory/sqmPiece.entity';
 
 @Injectable()
 export class InvoiceService {
@@ -46,6 +47,9 @@ export class InvoiceService {
 
        @InjectRepository(ItemBatch)
     private readonly itemBatchRepository: Repository<ItemBatch>,
+
+          @InjectRepository(SqmPiece)
+    private readonly SqmPieceRepository: Repository<SqmPiece>,
   ) {}
   /**
    * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
@@ -106,44 +110,129 @@ async createInvoice(data: any): Promise<Invoice> {
 
     const savedInvoice = await queryRunner.manager.save(invoice);
     console.log('✅ Invoice saved with ID:', savedInvoice.id);
-const items = data.items.map((item, index) => {
-  console.log(`📦 Preparing item[${index}]`, item);
-  if (
-    item.sqm === undefined ||
-    item.quantity === undefined ||
-    item.itemVariantId === undefined ||
-    item.itemBatchId === undefined
-  ) {
-    console.error(`❌ Missing required field in item[${index}]`, item);
-    throw new BadRequestException(
-      `Missing required fields in item[${index}]`,
-    );
-  }
-return this.invoiceItemRepo.create({
-  invoiceId: savedInvoice.id,
-  itemVariantId: item.itemVariantId,
-  itemBatchId: item.itemBatchId,
-  length: item.length ?? null,
-  width: item.width ?? null,
-  sheetsPerBox: item.sheetsPerBox ?? null,
-  sqm: item.sqm,
-  unitPrice: item.unitPrice,
-  totalAmount: item.totalAmount,
-  vat: item.vat,
-  quantity: item.quantity,
-});
 
-});
+    const items = data.items.map((item, index) => {
+      console.log(`📦 Preparing item[${index}]`, item);
+      if (
+        item.sqm === undefined ||
+        item.quantity === undefined ||
+        item.itemVariantId === undefined ||
+        item.itemBatchId === undefined
+      ) {
+        console.error(`❌ Missing required field in item[${index}]`, item);
+        throw new BadRequestException(
+          `Missing required fields in item[${index}]`,
+        );
+      }
+
+      const invItem = this.invoiceItemRepo.create({
+        invoiceId: savedInvoice.id,
+        itemVariantId: item.itemVariantId,
+        itemBatchId: item.itemBatchId,
+        length: item.length ?? null,
+        width: item.width ?? null,
+        sheetsPerBox: item.sheetsPerBox ?? null,
+        sqm: item.sqm,
+        unitPrice: item.unitPrice,
+        totalAmount: item.totalAmount,
+        vat: item.vat,
+        quantity: item.quantity,
+         sqmPieceId:
+          item.sqmPieceId != null
+            ? Number(item.sqmPieceId)
+            : item.sqmPiece && typeof item.sqmPiece.id === 'number'
+            ? Number(item.sqmPiece.id)
+            : null,
+      });
+
+      // (optional) if you added a column on InvoiceItem to track which piece:
+      // invItem.sqmPieceId = item.sqmPieceId ?? null;
+
+      return invItem;
+    });
 
     const savedItems = await queryRunner.manager
       .getRepository(InvoiceItem)
       .save(items);
     console.log('✅ Saved invoice items:', savedItems.map((i) => i.id));
 
+    // -------------- NEW: UPDATE SQM PIECES SOLD / REMAINING --------------
+    // For each invoice line that has `sqmPieceId`, consume sqm from that piece group
+    const sqmPieceRepo = queryRunner.manager.getRepository(SqmPiece);
+
+    if (Array.isArray(data.items) && data.items.length > 0) {
+      for (let index = 0; index < data.items.length; index++) {
+        const src = data.items[index];
+
+        // Accept either direct field or nested object
+        const sqmPieceId: number | undefined =
+          src.sqmPieceId ??
+          (src.sqmPiece && typeof src.sqmPiece.id === 'number'
+            ? src.sqmPiece.id
+            : undefined);
+
+        if (!sqmPieceId) continue; // normal (non-piece) line
+
+        const lineSqm = Number(src.sqm);
+        if (!Number.isFinite(lineSqm) || lineSqm <= 0) {
+          console.warn(
+            `⚠ Invoice item[${index}] has sqmPieceId=${sqmPieceId} but invalid sqm=${src.sqm}`,
+          );
+          continue;
+        }
+
+        const piece = await sqmPieceRepo.findOne({
+          where: { id: sqmPieceId },
+        });
+        if (!piece) {
+          throw new BadRequestException(
+            `SQM piece ${sqmPieceId} not found for item[${index}].`,
+          );
+        }
+
+        const remainingBefore = Number(piece.sqmRemaining ?? 0);
+        const soldBefore = Number(piece.sqmSold ?? 0);
+
+        if (lineSqm > remainingBefore + 0.0001) {
+          // Don’t allow overselling this piece group
+          throw new BadRequestException(
+            `Item[${index + 1}] sqm (${lineSqm.toFixed(
+              4,
+            )}) exceeds remaining sqm (${remainingBefore.toFixed(
+              4,
+            )}) for SQM piece #${sqmPieceId}.`,
+          );
+        }
+
+        const newRemainingRaw = remainingBefore - lineSqm;
+        const newRemaining =
+          newRemainingRaw <= 0.0001 ? 0 : Number(newRemainingRaw.toFixed(4));
+        const newSold = Number((soldBefore + lineSqm).toFixed(4));
+
+        piece.sqmRemaining = newRemaining;
+        piece.sqmSold = newSold;
+
+        // Optionally deactivate when fully consumed
+        if (newRemaining === 0) {
+          piece.isActive = false;
+        }
+
+        await sqmPieceRepo.save(piece);
+        console.log(
+          `🧩 SQM piece #${sqmPieceId}: sold +${lineSqm.toFixed(
+            4,
+          )}, remaining=${newRemaining.toFixed(4)}, soldTotal=${newSold.toFixed(
+            4,
+          )}`,
+        );
+      }
+    }
+
     // -------------- NEW: FILL COST FIELDS ON INVOICE ITEMS --------------
-    // 🔧 HERE IS THE IMPORTANT FIX: use entity name strings
     const purchaseItemRepo =
-      queryRunner.manager.getRepository<PurchaseInvoiceItem>('PurchaseInvoiceItem');
+      queryRunner.manager.getRepository<PurchaseInvoiceItem>(
+        'PurchaseInvoiceItem',
+      );
     const inventoryCountRepo =
       queryRunner.manager.getRepository<InventoryCount>('InventoryCount');
 
@@ -304,7 +393,6 @@ return this.invoiceItemRepo.create({
         sqmofr,
         transactionDate: new Date(),
         dateForEachInvoice: new Date(savedInvoice.date),
-        
       });
     });
 
@@ -607,6 +695,7 @@ return this.invoiceItemRepo.create({
 
 
 
+
   async getAllInvoices(): Promise<Invoice[]> {
     return this.invoiceRepository.find({
       relations: ['customer', 'items'],
@@ -706,6 +795,7 @@ items: invoice.items.map((item) => {
   const thickness = variant?.thickness;
   const itemData  = thickness?.item;
   const batch     = (item as any).itemBatch;
+  const sqmpieceId = item.sqmPieceId;
 
   const itemType = itemData?.type; // 'box' | 'sheet' | 'sqm'
 
@@ -747,6 +837,8 @@ items: invoice.items.map((item) => {
       ? Number(variant.sheetsPerBox)
       : null;
 
+    
+
   // totalSheets:
   // - box: qty * sheetsPerBox (from invoice_items)
   // - sheet: qty
@@ -767,6 +859,7 @@ items: invoice.items.map((item) => {
     totalAmount: item.totalAmount,
     vat: item.vat,
     quantity: item.quantity,
+ 
 
     // 👉 batch id
     itemBatchId: (item as any).itemBatchId ?? batch?.id ?? null,
@@ -782,6 +875,7 @@ items: invoice.items.map((item) => {
     width,
 
     origin: variant?.origin ?? null,
+    sqmpieceId,
 
     // 👉 sheetsPerBox only for box, from invoice_items
     sheetsPerBox,
@@ -1671,616 +1765,840 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
   await queryRunner.connect();
   await queryRunner.startTransaction();
 
-  const isFiniteNum = (v: any) => typeof v === 'number' && Number.isFinite(v);
   const to2 = (n: number) => Number(Number(n || 0).toFixed(2));
-  const log = (...args: any[]) => console.log(...args);
-
-  const dbgNum = (label: string, name: string, raw: any, n: number) => {
-    if (!Number.isFinite(n)) {
-      console.error(`❌ NaN @ ${label}.${name} — raw:`, raw, '→ Number(raw):', n);
-      throw new BadRequestException(`NaN detected in ${label}.${name}`);
-    } else {
-      console.log(`🟢 ${label}.${name} =`, n);
-    }
-  };
-  const dbgObjNums = (label: string, obj: Record<string, any>, keys: string[]) => {
-    for (const k of keys) {
-      const n = Number(obj[k]);
-      if (!Number.isFinite(n)) {
-        console.error(`❌ NaN @ ${label}.${k} — raw:`, obj[k], '→ Number(raw):', n, 'full:', obj);
-        throw new BadRequestException(`NaN detected in ${label}.${k}`);
-      } else {
-        console.log(`🟢 ${label}.${k} =`, n);
-      }
-    }
-  };
+  const num = (v: any) => Number(v || 0);
+  const isFiniteNum = (v: any) => Number.isFinite(Number(v));
 
   try {
     console.log('🟡 Starting invoice update:', invoiceId);
-    if (!Array.isArray(data.items)) {
-      throw new BadRequestException('`items` must be an array');
-    }
+    console.log('📥 Raw update payload:', data);
 
-    // Load existing invoice WITH items (for delete/change calc), but we will NOT save it with items later.
-    const existingInvoice = await this.invoiceRepository.findOne({
+    const invoiceRepo = queryRunner.manager.getRepository(Invoice);
+    const invoiceItemRepo = queryRunner.manager.getRepository(InvoiceItem);
+    const invTxRepo = queryRunner.manager.getRepository(InventoryTransaction);
+    const batchRepo = queryRunner.manager.getRepository(ItemBatch);
+    const variantRepo = queryRunner.manager.getRepository(ItemVariant);
+    const sqmPieceRepo = queryRunner.manager.getRepository(SqmPiece);
+    const jvRepo = queryRunner.manager.getRepository(JournalVoucher);
+    const jvDetailRepo =
+      queryRunner.manager.getRepository(JournalVoucherDetail);
+    const purchaseItemRepo =
+      queryRunner.manager.getRepository<PurchaseInvoiceItem>(
+        'PurchaseInvoiceItem',
+      );
+    const inventoryCountRepo =
+      queryRunner.manager.getRepository<InventoryCount>('InventoryCount');
+
+    const existingInvoice = await invoiceRepo.findOne({
       where: { id: invoiceId },
       relations: ['items'],
     });
-    if (!existingInvoice) throw new NotFoundException('Invoice not found');
 
-    // quick helper repos bound to the TX
-    const invItemRepo = queryRunner.manager.getRepository(InvoiceItem);
-    const batchRepo   = queryRunner.manager.getRepository(ItemBatch);
-    const variantRepo = queryRunner.manager.getRepository(ItemVariant);
-    const invTxnRepo  = queryRunner.manager.getRepository(InventoryTransaction);
-    const jvRepo      = queryRunner.manager.getRepository(JournalVoucher);
-    const jvdRepo     = queryRunner.manager.getRepository(JournalVoucherDetail);
-
-    // Debug: incoming items raw
-    console.log('🧩 Raw incoming items:', data.items);
-
-    type IncomingItem = {
-      id?: number | null;
-      itemVariantId: number;
-      itemBatchId: number;
-      sqm: number;
-      unitPrice: number;
-      totalAmount: number;
-      vat: number;
-      quantity: number;
-      invoiceId?: number;
-    };
-
-    const incoming: IncomingItem[] = (data.items || []).map((x: any, idx: number) => {
-      const itemVariantId = Number(x.itemVariantId);
-      const itemBatchId   = Number(x.itemBatchId);
-      const sqm           = Number(x.sqm);
-      const unitPrice     = Number(x.unitPrice || 0);
-      const totalAmount   = Number(x.totalAmount || 0);
-      const vat           = Number(x.vat || 0);
-      const quantity      = Number(x.quantity);
-      const invId         = Number(x.invoiceId || invoiceId);
-
-      dbgNum(`items[${idx}]`, 'itemVariantId', x.itemVariantId, itemVariantId);
-      dbgNum(`items[${idx}]`, 'itemBatchId',   x.itemBatchId,   itemBatchId);
-      dbgNum(`items[${idx}]`, 'sqm',           x.sqm,           sqm);
-      dbgNum(`items[${idx}]`, 'unitPrice',     x.unitPrice,     unitPrice);
-      dbgNum(`items[${idx}]`, 'totalAmount',   x.totalAmount,   totalAmount);
-      dbgNum(`items[${idx}]`, 'vat',           x.vat,           vat);
-      dbgNum(`items[${idx}]`, 'quantity',      x.quantity,      quantity);
-      if (x.invoiceId != null) dbgNum(`items[${idx}]`, 'invoiceId', x.invoiceId, invId);
-
-      return {
-        id: x.id ?? null,
-        itemVariantId,
-        itemBatchId,
-        sqm,
-        unitPrice,
-        totalAmount,
-        vat,
-        quantity,
-        invoiceId: invId,
-      };
-    });
-
-    const computeEffect = (invoiceType: 'S' | 'RVR' | 'G') => {
-      if (invoiceType === 'RVR') return { std: +1, ofr: 0 };
-      if (invoiceType === 'G')   return { std: 0,  ofr: -1 };
-      return { std: -1, ofr: -1 }; // 'S'
-    };
-    const eff = computeEffect(data.invoiceType as 'S'|'RVR'|'G');
-
-    const guardBatchFields = (b: ItemBatch, label = 'batch') => {
-      const keys = ['in','out','balance','inOFR','outOFR','balanceOFR'] as const;
-      for (const k of keys) {
-        const n = Number((b as any)[k]);
-        if (!Number.isFinite(n)) {
-          console.error(`❌ NaN @ ${label}.${k}`, b);
-          throw new BadRequestException(`Cannot save NaN to ItemBatch.${k} (batchId=${b.id})`);
-        } else {
-          console.log(`🟢 ${label}.${k} =`, n);
-        }
-      }
-    };
-
-    // ========= Pass A: figure out deleted/changed =========
-    const existingItems = await invItemRepo.find({ where: { invoiceId } });
-    const existingMap = new Map<number, InvoiceItem>();
-    for (const it of existingItems) existingMap.set(it.id, it);
-
-    const incomingIds = new Set<number>();
-    for (const it of incoming) if (it.id) incomingIds.add(Number(it.id));
-
-    const deletedItems = existingItems.filter(x => !incomingIds.has(x.id));
-    const to2f = (n: number) => to2(n);
-    const changedItems: Array<{ oldItem: InvoiceItem; newItem: IncomingItem }> = [];
-    for (const inc of incoming) {
-      if (!inc.id) continue;
-      const old = existingMap.get(inc.id);
-      if (!old) continue;
-      const changed =
-        Number(old.itemVariantId) !== Number(inc.itemVariantId) ||
-        Number(old.itemBatchId)   !== Number(inc.itemBatchId)   ||
-        to2f(Number(old.sqm))      !== to2f(Number(inc.sqm))    ||
-        to2f(Number(old.quantity)) !== to2f(Number(inc.quantity))||
-        to2f(Number(old.unitPrice))!== to2f(Number(inc.unitPrice))||
-        to2f(Number(old.totalAmount)) !== to2f(Number(inc.totalAmount)) ||
-        to2f(Number(old.vat))         !== to2f(Number(inc.vat));
-      if (changed) changedItems.push({ oldItem: old, newItem: inc });
+    if (!existingInvoice) {
+      throw new NotFoundException(`Invoice ${invoiceId} not found`);
     }
 
-    console.log('🧹 Deleted items:', deletedItems.map(d => d.id));
-    console.log('♻️ Changed items:', changedItems.map(c => c.oldItem.id));
+    console.log('📄 Existing invoice header:', {
+      id: existingInvoice.id,
+      invoiceNumber: existingInvoice.invoiceNumber,
+      invoiceType: existingInvoice.invoiceType,
+      date: existingInvoice.date,
+    });
+
+    const oldInvoiceType = existingInvoice.invoiceType as 'S' | 'G' | 'RVR';
+    const docNbr = existingInvoice.invoiceNumber;
+
+    // Reload items with batches & variants
+    const existingItems = await invoiceItemRepo.find({
+      where: { invoiceId },
+      relations: ['itemBatch', 'itemBatch.itemVariant'],
+    });
+
+    console.log('📦 Existing invoice items from DB:', existingItems);
 
     const affectedVariantIds = new Set<number>();
 
-    const unapplyOldItem = async (oldItem: InvoiceItem) => {
-      const oldBatch = await batchRepo.findOne({
-        where: { id: oldItem.itemBatchId },
-        relations: ['itemVariant'],
-      });
-      if (!oldBatch) throw new NotFoundException(`ItemBatch ${oldItem.itemBatchId} not found while unapplying`);
-
-      const variantId = oldBatch.itemVariant?.id ?? oldItem.itemVariantId;
-      if (variantId) affectedVariantIds.add(variantId);
-
+    /* -----------------------------------------------------------
+       1) UNAPPLY OLD INVOICE EFFECTS (batches, sqmPieces, invTx)
+       ----------------------------------------------------------- */
+    for (const oldItem of existingItems) {
       const qtySqm = Number(oldItem.sqm) || 0;
-      dbgNum('unapplyOldItem', 'qtySqm', oldItem.sqm, qtySqm);
 
-      if (existingInvoice.invoiceType === 'S') {
-        oldBatch.out    = to2(Number(oldBatch.out || 0) - qtySqm);
-        oldBatch.outOFR = to2(Number(oldBatch.outOFR || 0) - qtySqm);
-      } else if (existingInvoice.invoiceType === 'G') {
-        oldBatch.outOFR = to2(Number(oldBatch.outOFR || 0) - qtySqm);
-      } else if (existingInvoice.invoiceType === 'RVR') {
-        oldBatch.in     = to2(Number(oldBatch.in || 0) - qtySqm);
+      // 🔁 SQM Piece rollback
+      if (oldItem.sqmPieceId) {
+        const piece = await sqmPieceRepo.findOne({
+          where: { id: oldItem.sqmPieceId },
+        });
+        if (piece) {
+          const remainingBefore = num(piece.sqmRemaining);
+          const soldBefore = num(piece.sqmSold);
+
+          const newRemaining = Number(
+            (remainingBefore + qtySqm).toFixed(4),
+          );
+          const newSold = Number((soldBefore - qtySqm).toFixed(4));
+
+          piece.sqmRemaining = newRemaining;
+          piece.sqmSold = newSold;
+          if (newRemaining > 0) {
+            piece.isActive = true;
+          }
+
+          await sqmPieceRepo.save(piece);
+          console.log(
+            `🔙 SQM piece #${piece.id}: rollback +${qtySqm.toFixed(
+              4,
+            )}, remaining=${newRemaining.toFixed(
+              4,
+            )}, soldTotal=${newSold.toFixed(4)}`,
+          );
+        }
       }
 
-      const start   = Number(oldBatch.start || 0);
-      const inStd   = Number(oldBatch.in || 0);
-      const outStd  = Number(oldBatch.out || 0);
-      const startO  = Number(oldBatch.startOFR || 0);
-      const inO     = Number(oldBatch.inOFR || 0);
-      const outO    = Number(oldBatch.outOFR || 0);
-      dbgObjNums('unapplyOldItem.recalc', { start, inStd, outStd, startO, inO, outO }, ['start','inStd','outStd','startO','inO','outO']);
+      // 🔁 BATCH rollback
+      const batch =
+        oldItem.itemBatch ||
+        (await batchRepo.findOne({
+          where: { id: oldItem.itemBatchId },
+          relations: ['itemVariant'],
+        }));
+      if (!batch) {
+        throw new NotFoundException(
+          `ItemBatch ${oldItem.itemBatchId} not found while unapplying`,
+        );
+      }
 
-      oldBatch.balance    = to2(start + inStd - outStd);
-      oldBatch.balanceOFR = to2(startO + inO - outO);
-      guardBatchFields(oldBatch, 'unapplyOldItem.batch');
-      await batchRepo.save(oldBatch);
-
-      await invTxnRepo.delete({ invoiceItemId: oldItem.id });
-    };
-
-    // perform deletes first
-    for (const del of deletedItems) {
-      console.log('🗑️ Unapplying & deleting item:', del.id);
-      await unapplyOldItem(del);
-      await invItemRepo.delete(del.id);
-    }
-
-    // ========= Pass B: changed/new upserts + apply =========
-    const upsertedIds: number[] = [];
-
-    const applyNewItem = async (itemRow: InvoiceItem, invoiceType: 'S'|'RVR'|'G', invoiceDate: string|Date) => {
-      const batch = await batchRepo.findOne({
-        where: { id: itemRow.itemBatchId },
-        relations: ['itemVariant'],
-      });
-      if (!batch) throw new NotFoundException(`ItemBatch ${itemRow.itemBatchId} not found while applying`);
-
-      const variantId = batch.itemVariant?.id ?? itemRow.itemVariantId;
+      const variantId = batch.itemVariant?.id ?? oldItem.itemVariantId;
       if (variantId) affectedVariantIds.add(variantId);
 
-      const qtySqm = Number(itemRow.sqm) || 0;
-      dbgNum('applyNewItem', 'qtySqm', itemRow.sqm, qtySqm);
+      // 🔹 Normalize numeric fields first (FIX for NaN)
+      batch.start = num(batch.start);
+      batch.in = num(batch.in);
+      batch.out = num(batch.out);
+      batch.startOFR = num(batch.startOFR);
+      batch.inOFR = num(batch.inOFR);
+      batch.outOFR = num(batch.outOFR);
 
-      if (invoiceType === 'S') {
-        batch.out    = to2(Number(batch.out || 0)    + qtySqm);
-        batch.outOFR = to2(Number(batch.outOFR || 0) + qtySqm);
-      } else if (invoiceType === 'G') {
-        batch.outOFR = to2(Number(batch.outOFR || 0) + qtySqm);
-      } else { // RVR
-        batch.in     = to2(Number(batch.in || 0)     + qtySqm);
+      if (oldInvoiceType === 'S') {
+        // previously: out++ & outOFR++
+        batch.out = to2(batch.out - qtySqm);
+        batch.outOFR = to2(batch.outOFR - qtySqm);
+      } else if (oldInvoiceType === 'G') {
+        // previously: outOFR++
+        batch.outOFR = to2(batch.outOFR - qtySqm);
+      } else if (oldInvoiceType === 'RVR') {
+        // previously: in++
+        batch.in = to2(batch.in - qtySqm);
       }
 
-      const start   = Number(batch.start || 0);
-      const inStd   = Number(batch.in || 0);
-      const outStd  = Number(batch.out || 0);
-      const startO  = Number(batch.startOFR || 0);
-      const inO     = Number(batch.inOFR || 0);
-      const outO    = Number(batch.outOFR || 0);
-      dbgObjNums('applyNewItem.recalc', { start, inStd, outStd, startO, inO, outO }, ['start','inStd','outStd','startO','inO','outO']);
+      const start = batch.start as number;
+      const inStd = batch.in as number;
+      const outStd = batch.out as number;
+      const startO = batch.startOFR as number;
+      const inO = batch.inOFR as number;
+      const outO = batch.outOFR as number;
 
-      batch.balance    = to2(start + inStd - outStd);
+      batch.balance = to2(start + inStd - outStd);
       batch.balanceOFR = to2(startO + inO - outO);
-      guardBatchFields(batch, 'applyNewItem.batch');
-      await batchRepo.save(batch);
 
-      // Build inventory transaction snapshot
-      let quantity = 0, sqm = 0, quantityofr = 0, sqmofr = 0;
-      if (invoiceType === 'RVR') {
-        quantity = -itemRow.quantity;
-        sqm      = -itemRow.sqm;
-      } else if (invoiceType === 'G') {
-        quantityofr = -itemRow.quantity;
-        sqmofr      = -itemRow.sqm;
-      } else { // S
-        quantity    = -itemRow.quantity;  sqm    = -itemRow.sqm;
-        quantityofr = -itemRow.quantity;  sqmofr = -itemRow.sqm;
+      const chk: (keyof ItemBatch)[] = [
+        'in',
+        'out',
+        'balance',
+        'inOFR',
+        'outOFR',
+        'balanceOFR',
+      ];
+      for (const key of chk) {
+        const val = Number((batch as any)[key]);
+        if (!Number.isFinite(val)) {
+          console.error(`❌ NaN @ unapply.batch.${String(key)}`, batch);
+          throw new BadRequestException(
+            `Cannot save NaN in ItemBatch.${String(
+              key,
+            )} (batchId=${batch.id})`,
+          );
+        }
       }
-      dbgObjNums('applyNewItem.txn', { quantity, sqm, quantityofr, sqmofr }, ['quantity','sqm','quantityofr','sqmofr']);
 
-      const invTxn = this.inventoryTransactionRepo.create({
-        transactionType: 'Sales',
-        itemVariantId: itemRow.itemVariantId,
-        itemBatchId:   itemRow.itemBatchId,
-        invoiceItemId: itemRow.id,
-        quantity, sqm,
-        quantityofr, sqmofr,
-        transactionDate: new Date(),
-        dateForEachInvoice: new Date(invoiceDate),
+      await batchRepo.save(batch);
+      console.log('🔙 Unapplied batch for old item:', oldItem.id);
+    }
+
+    // 🔁 Delete inventory transactions for old items
+    const oldItemIds = existingItems.map((i) => i.id);
+    if (oldItemIds.length > 0) {
+      // make sure you imported In from 'typeorm'
+      await invTxRepo.delete({ invoiceItemId: In(oldItemIds) });
+      console.log('🗑️ Deleted old inventory transactions for items:', oldItemIds);
+    }
+
+    // 🔁 Remove old invoice items
+    if (existingItems.length > 0) {
+      await invoiceItemRepo.remove(existingItems);
+      console.log('🗑️ Deleted old invoice items IDs:', oldItemIds);
+    }
+
+    /* -----------------------------------------------------------
+       2) UPDATE INVOICE HEADER
+       ----------------------------------------------------------- */
+    existingInvoice.customerId = data.customerId;
+    existingInvoice.date = data.date;
+    existingInvoice.invoiceType = data.invoiceType;
+    existingInvoice.documentNumber = data.documentNumber;
+    existingInvoice.branchId = data.branchId;
+    existingInvoice.currencyId = data.currencyId;
+    existingInvoice.totalWithoutVAT = data.totalWithoutVAT;
+    existingInvoice.totalVAT = data.totalVAT;
+    existingInvoice.grandTotal = data.grandTotal;
+    existingInvoice.currencyRate = data.currencyRate;
+    existingInvoice.vatPercentage = data.vatPercentage;
+
+    const savedInvoice = await invoiceRepo.save(existingInvoice);
+    console.log('✅ Invoice header updated, ID:', savedInvoice.id);
+
+    const isReturn = savedInvoice.invoiceType === 'RVR';
+    const isG = savedInvoice.invoiceType === 'G';
+
+    /* -----------------------------------------------------------
+       3) CREATE NEW ITEMS
+       ----------------------------------------------------------- */
+    const incomingItems = (data.items || []).map((item: any, index: number) => {
+      console.log(`🔁 Incoming item[${index}] raw:`, item);
+      if (
+        item.sqm === undefined ||
+        item.quantity === undefined ||
+        item.itemVariantId === undefined ||
+        item.itemBatchId === undefined
+      ) {
+        console.error(`❌ Missing required field in item[${index}]`, item);
+        throw new BadRequestException(
+          `Missing required fields in item[${index}]`,
+        );
+      }
+
+      const parsed = invoiceItemRepo.create({
+        invoiceId: savedInvoice.id,
+        itemVariantId: item.itemVariantId,
+        itemBatchId: item.itemBatchId,
+        length: item.length ?? null,
+        width: item.width ?? null,
+        sheetsPerBox: item.sheetsPerBox ?? null,
+        sqm: item.sqm,
+        unitPrice: item.unitPrice,
+        totalAmount: item.totalAmount,
+        vat: item.vat,
+        quantity: item.quantity,
+        sqmPieceId:
+          item.sqmPieceId != null
+            ? Number(item.sqmPieceId)
+            : item.sqmPiece && typeof item.sqmPiece.id === 'number'
+            ? Number(item.sqmPiece.id)
+            : null,
       });
-      await queryRunner.manager.save(InventoryTransaction, invTxn);
+
+      console.log(`✅ Parsed incoming item[${index}]:`, parsed);
+      return parsed;
+    });
+
+    const savedItems = await invoiceItemRepo.save(incomingItems);
+    console.log('✅ New invoice items saved:', savedItems.map((i) => i.id));
+
+    /* -----------------------------------------------------------
+       4) APPLY SQM PIECES FOR NEW ITEMS
+       ----------------------------------------------------------- */
+    if (Array.isArray(data.items) && data.items.length > 0) {
+      for (let index = 0; index < data.items.length; index++) {
+        const src = data.items[index];
+
+        const sqmPieceId: number | undefined =
+          src.sqmPieceId ??
+          (src.sqmPiece && typeof src.sqmPiece.id === 'number'
+            ? src.sqmPiece.id
+            : undefined);
+
+        if (!sqmPieceId) continue;
+
+        const lineSqm = Number(src.sqm);
+        if (!Number.isFinite(lineSqm) || lineSqm <= 0) {
+          console.warn(
+            `⚠ Invoice item[${index}] has sqmPieceId=${sqmPieceId} but invalid sqm=${src.sqm}`,
+          );
+          continue;
+        }
+
+        const piece = await sqmPieceRepo.findOne({
+          where: { id: sqmPieceId },
+        });
+        if (!piece) {
+          throw new BadRequestException(
+            `SQM piece ${sqmPieceId} not found for item[${index}].`,
+          );
+        }
+
+        const remainingBefore = num(piece.sqmRemaining);
+        const soldBefore = num(piece.sqmSold);
+
+        if (lineSqm > remainingBefore + 0.0001) {
+          throw new BadRequestException(
+            `Item[${index + 1}] sqm (${lineSqm.toFixed(
+              4,
+            )}) exceeds remaining sqm (${remainingBefore.toFixed(
+              4,
+            )}) for SQM piece #${sqmPieceId}.`,
+          );
+        }
+
+        const newRemainingRaw = remainingBefore - lineSqm;
+        const newRemaining =
+          newRemainingRaw <= 0.0001 ? 0 : Number(newRemainingRaw.toFixed(4));
+        const newSold = Number((soldBefore + lineSqm).toFixed(4));
+
+        piece.sqmRemaining = newRemaining;
+        piece.sqmSold = newSold;
+        if (newRemaining === 0) {
+          piece.isActive = false;
+        }
+
+        await sqmPieceRepo.save(piece);
+        console.log(
+          `🧩 SQM piece #${sqmPieceId}: sold +${lineSqm.toFixed(
+            4,
+          )}, remaining=${newRemaining.toFixed(4)}, soldTotal=${newSold.toFixed(
+            4,
+          )}`,
+        );
+      }
+    }
+
+    /* -----------------------------------------------------------
+       5) FILL COST FIELDS ON NEW INVOICE ITEMS
+       ----------------------------------------------------------- */
+    type CostBundle = {
+      averageCost: number | null;
+      averageCostC: number | null;
+      averageCostVM: number | null;
+      averageCostCVM: number | null;
+      lastCost: number | null;
+      lastCostC: number | null;
+      lastCostVM: number | null;
+      lastCostCVM: number | null;
     };
 
-    // 1) Changed items
-    for (const ch of changedItems) {
-      const upd = existingMap.get(ch.oldItem.id)!;
-      upd.invoiceId     = invoiceId; // ✅ keep FK explicit
-      upd.itemVariantId = ch.newItem.itemVariantId;
-      upd.itemBatchId   = ch.newItem.itemBatchId;
-      upd.sqm           = to2(ch.newItem.sqm);
-      upd.unitPrice     = to2(ch.newItem.unitPrice);
-      upd.totalAmount   = to2(ch.newItem.totalAmount);
-      upd.vat           = to2(ch.newItem.vat);
-      upd.quantity      = to2(ch.newItem.quantity);
+    const safeNumOrNull = (v: any): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
 
-      dbgObjNums(`updateItem[${upd.id}]`, {
-        sqm: upd.sqm, unitPrice: upd.unitPrice, totalAmount: upd.totalAmount,
-        vat: upd.vat, quantity: upd.quantity
-      }, ['sqm','unitPrice','totalAmount','vat','quantity']);
+    const salesDate = new Date(savedInvoice.date);
+    const uniqueVariantIds = new Set<number>();
+    for (const it of savedItems) {
+      if (typeof it.itemVariantId === 'number') {
+        uniqueVariantIds.add(it.itemVariantId);
+      }
+    }
+    const variantIds: number[] = Array.from(uniqueVariantIds);
+    console.log('🔢 Variant IDs in this invoice (for cost lookup):', variantIds);
 
-      const saved = await invItemRepo.save(upd);
-      upsertedIds.push(saved.id);
+    const variantCostCache = new Map<number, CostBundle>();
 
-      // sanity hard-set (should be redundant)
-      await invItemRepo.update(saved.id, { invoiceId });
+    for (const variantId of variantIds) {
+      let bundle: CostBundle | null = null;
 
-      // double-check row
-      const rawCheck = await queryRunner.manager.query(
-        `SELECT id, invoiceId FROM invoice_items WHERE id = ?`,
-        [saved.id],
-      );
-      console.log('🔎 RAW check (update path):', rawCheck);
+      const lastPurchaseItem = await purchaseItemRepo
+        .createQueryBuilder('pi')
+        .innerJoin('pi.invoice', 'pinv')
+        .where('pi.itemVariantId = :variantId', { variantId })
+        .andWhere('pinv.date <= :invDate', { invDate: salesDate })
+        .andWhere('pinv.type IN (:...types)', { types: ['S', 'G', 'SR'] }) // ignore RVR POs
+        .orderBy('pinv.date', 'DESC')
+        .addOrderBy('pinv.id', 'DESC')
+        .getOne();
 
-      await applyNewItem(saved, data.invoiceType, data.date);
+      if (lastPurchaseItem) {
+        const avg = safeNumOrNull(lastPurchaseItem.averageCost);
+        const avgC = safeNumOrNull(lastPurchaseItem.averageCostC);
+        const avgVM = safeNumOrNull(lastPurchaseItem.averageCostVM);
+        const avgCVM = safeNumOrNull(lastPurchaseItem.averageCostCVM);
+        const lc = safeNumOrNull(lastPurchaseItem.finalOFR);
+        const lcvm = safeNumOrNull(lastPurchaseItem.finalCost);
+
+        bundle = {
+          averageCost: avg,
+          averageCostC: avgC,
+          averageCostVM: avgVM,
+          averageCostCVM: avgCVM,
+          lastCost: lc,
+          lastCostC: null,
+          lastCostVM: lcvm,
+          lastCostCVM: null,
+        };
+      } else {
+        const lastCount = await inventoryCountRepo
+          .createQueryBuilder('ic')
+          .where('ic.itemVariantId = :variantId', { variantId })
+          .andWhere('ic.date <= :invDate', { invDate: salesDate })
+          .orderBy('ic.date', 'DESC')
+          .addOrderBy('ic.id', 'DESC')
+          .getOne();
+
+        if (lastCount) {
+          const base = safeNumOrNull(lastCount.finalCost);
+          const baseOfr = safeNumOrNull(lastCount.finalCostOfr) ?? base;
+
+          bundle = {
+            averageCost: base,
+            averageCostC: baseOfr,
+            averageCostVM: null,
+            averageCostCVM: null,
+            lastCost: base,
+            lastCostC: baseOfr,
+            lastCostVM: null,
+            lastCostCVM: null,
+          };
+        }
+      }
+
+      if (!bundle) {
+        bundle = {
+          averageCost: null,
+          averageCostC: null,
+          averageCostVM: null,
+          averageCostCVM: null,
+          lastCost: null,
+          lastCostC: null,
+          lastCostVM: null,
+          lastCostCVM: null,
+        };
+      }
+
+      variantCostCache.set(variantId, bundle);
     }
 
-    // 2) New items
-    const newItems = incoming.filter(x => !x.id);
-    for (const ni of newItems) {
-      const row = this.invoiceItemRepo.create({
-        invoiceId,                                     // ✅ explicit
-        itemVariantId: ni.itemVariantId,
-        itemBatchId:   ni.itemBatchId,
-        sqm:           to2(ni.sqm),
-        unitPrice:     to2(ni.unitPrice),
-        totalAmount:   to2(ni.totalAmount),
-        vat:           to2(ni.vat),
-        quantity:      to2(ni.quantity),
+    const itemsWithCosts = savedItems.map((item) => {
+      const costs = item.itemVariantId
+        ? variantCostCache.get(item.itemVariantId)
+        : undefined;
+
+      if (costs) {
+        item.averageCost = costs.averageCost;
+        item.averageCostC = costs.averageCostC;
+        item.averageCostVM = costs.averageCostVM;
+        item.averageCostCVM = costs.averageCostCVM;
+        item.lastCost = costs.lastCost;
+        item.lastCostC = costs.lastCostC;
+        item.lastCostVM = costs.lastCostVM;
+        item.lastCostCVM = costs.lastCostCVM;
+      }
+
+      return item;
+    });
+
+    await invoiceItemRepo.save(itemsWithCosts);
+    console.log('✅ Cost fields populated on invoice items');
+
+    /* -----------------------------------------------------------
+       6) NEW INVENTORY TRANSACTIONS
+       ----------------------------------------------------------- */
+    const newInventoryTransactions = savedItems.map((item) => {
+      let quantity = 0;
+      let sqm = 0;
+      let quantityofr = 0;
+      let sqmofr = 0;
+
+      if (savedInvoice.invoiceType === 'RVR') {
+        quantity = -item.quantity;
+        sqm = -item.sqm;
+      } else if (savedInvoice.invoiceType === 'G') {
+        quantityofr = -item.quantity;
+        sqmofr = -item.sqm;
+      } else if (savedInvoice.invoiceType === 'S') {
+        quantity = -item.quantity;
+        sqm = -item.sqm;
+        quantityofr = -item.quantity;
+        sqmofr = -item.sqm;
+      }
+
+      return invTxRepo.create({
+        transactionType: 'Sales',
+        itemVariantId: item.itemVariantId,
+        itemBatchId: item.itemBatchId,
+        invoiceItemId: item.id,
+        quantity,
+        sqm,
+        quantityofr,
+        sqmofr,
+        transactionDate: new Date(),
+        dateForEachInvoice: new Date(savedInvoice.date),
       });
+    });
 
-      dbgObjNums('insertItem', {
-        sqm: row.sqm, unitPrice: row.unitPrice, totalAmount: row.totalAmount,
-        vat: row.vat, quantity: row.quantity
-      }, ['sqm','unitPrice','totalAmount','vat','quantity']);
+    await invTxRepo.save(newInventoryTransactions);
+    console.log('✅ Inventory transactions saved (new)');
 
-      const saved = await invItemRepo.save(row);
-      console.log(`✅ inserted item ${saved.id} saved with invoiceId=`, saved.invoiceId);
-      upsertedIds.push(saved.id);
+    /* -----------------------------------------------------------
+       7) APPLY NEW BATCH MOVEMENTS & RECOMPUTE VARIANT TOTALS
+       ----------------------------------------------------------- */
+    for (const item of savedItems) {
+      const batch = await batchRepo.findOne({
+        where: { id: item.itemBatchId },
+        relations: ['itemVariant'],
+      });
+      if (!batch) {
+        throw new NotFoundException(
+          `ItemBatch ${item.itemBatchId} not found while applying`,
+        );
+      }
 
-      // force + verify
-      await invItemRepo.update(saved.id, { invoiceId }); // defensive set
-      const rawCheck = await queryRunner.manager.query(
-        `SELECT id, invoiceId FROM invoice_items WHERE id = ?`,
-        [saved.id],
-      );
-      console.log('🔎 RAW check (invoiceId camelCase):', rawCheck);
-      console.log(`🟢 Verified item ${saved.id} invoiceId (entity)=`, saved.invoiceId);
+      const variantId = batch.itemVariant?.id ?? item.itemVariantId;
+      if (variantId) affectedVariantIds.add(variantId);
 
-      await applyNewItem(saved, data.invoiceType, data.date);
+      const qtySqm = Number(item.sqm) || 0;
+
+      // Normalize
+      batch.start = num(batch.start);
+      batch.in = num(batch.in);
+      batch.out = num(batch.out);
+      batch.startOFR = num(batch.startOFR);
+      batch.inOFR = num(batch.inOFR);
+      batch.outOFR = num(batch.outOFR);
+
+      if (savedInvoice.invoiceType === 'S') {
+        batch.out = to2(batch.out + qtySqm);
+        batch.outOFR = to2(batch.outOFR + qtySqm);
+      } else if (savedInvoice.invoiceType === 'G') {
+        batch.outOFR = to2(batch.outOFR + qtySqm);
+      } else if (savedInvoice.invoiceType === 'RVR') {
+        batch.in = to2(batch.in + qtySqm);
+      }
+
+      const start = batch.start as number;
+      const inStd = batch.in as number;
+      const outStd = batch.out as number;
+      const startO = batch.startOFR as number;
+      const inO = batch.inOFR as number;
+      const outO = batch.outOFR as number;
+
+      batch.balance = to2(start + inStd - outStd);
+      batch.balanceOFR = to2(startO + inO - outO);
+
+      const chk2: (keyof ItemBatch)[] = [
+        'in',
+        'out',
+        'balance',
+        'inOFR',
+        'outOFR',
+        'balanceOFR',
+      ];
+      for (const key of chk2) {
+        const val = Number((batch as any)[key]);
+        if (!Number.isFinite(val)) {
+          console.error(`❌ NaN @ apply.batch.${String(key)}`, batch);
+          throw new BadRequestException(
+            `Cannot save NaN in ItemBatch.${String(
+              key,
+            )} (batchId=${batch.id})`,
+          );
+        }
+      }
+
+      await batchRepo.save(batch);
+      console.log('✅ Batch updated & balances recomputed for item:', item.id);
     }
 
-    // ===== Header update =====
-    dbgObjNums('header.incoming', {
-      totalWithoutVAT: data.totalWithoutVAT,
-      totalVAT: data.totalVAT,
-      grandTotal: data.grandTotal,
-      currencyRate: data.currencyRate,
-      vatPercentage: data.vatPercentage
-    }, ['totalWithoutVAT','totalVAT','grandTotal','currencyRate','vatPercentage']);
-
-    // ⚠️ Prevent TypeORM from trying to sync children:
-    if ((existingInvoice as any).items) {
-      console.log('🧼 Removing items array from invoice entity before save (prevent FK side-effects)');
-      delete (existingInvoice as any).items;
-    }
-
-    existingInvoice.customerId      = data.customerId;
-    existingInvoice.date            = data.date;
-    existingInvoice.invoiceType     = data.invoiceType;
-    existingInvoice.documentNumber  = data.documentNumber;
-    existingInvoice.branchId        = data.branchId;
-    existingInvoice.currencyId      = data.currencyId;
-    existingInvoice.totalWithoutVAT = to2(data.totalWithoutVAT);
-    existingInvoice.totalVAT        = to2(data.totalVAT);
-    existingInvoice.grandTotal      = to2(data.grandTotal);
-    existingInvoice.currencyRate    = to2(data.currencyRate);
-    existingInvoice.vatPercentage   = to2(data.vatPercentage);
-
-    dbgObjNums('header.persist', {
-      totalWithoutVAT: existingInvoice.totalWithoutVAT,
-      totalVAT: existingInvoice.totalVAT,
-      grandTotal: existingInvoice.grandTotal,
-      currencyRate: existingInvoice.currencyRate,
-      vatPercentage: existingInvoice.vatPercentage
-    }, ['totalWithoutVAT','totalVAT','grandTotal','currencyRate','vatPercentage']);
-
-    const savedInvoice = await queryRunner.manager.save(Invoice, existingInvoice);
-    console.log('✅ Invoice header updated:', savedInvoice.id);
-
-    // Post-header sanity: see if any rows for this invoice suddenly lost FK
-    const nullsAfterHeader = await queryRunner.manager.query(
-      `SELECT id, invoiceId FROM invoice_items WHERE invoiceId IS NULL OR invoiceId = 0`
-    );
-    if (nullsAfterHeader.length) {
-      console.warn('⚠️ Found NULL/0 invoiceId rows AFTER header save:', nullsAfterHeader);
-    }
-
-    // ===== Variant totals recompute (unchanged from your code) =====
-    for (const variantId of new Set(affectedVariantIds)) {
-      const variant = await variantRepo.findOne({ where: { id: variantId }, relations: ['batches'] });
+    // Recompute variant totals for all affected variants
+    for (const variantId of affectedVariantIds) {
+      const variant = await variantRepo.findOne({
+        where: { id: variantId },
+        relations: ['batches'],
+      });
       if (!variant) continue;
 
-      let totalStart = 0, totalIn = 0, totalOut = 0;
-      let totalStartOFR = 0, totalInOFR = 0, totalOutOFR = 0;
+      let totalStart = 0;
+      let totalIn = 0;
+      let totalOut = 0;
+      let totalStartOFR = 0;
+      let totalInOFR = 0;
+      let totalOutOFR = 0;
+
       for (const b of variant.batches ?? []) {
-        totalStart   += Number(b.start || 0);
-        totalIn      += Number(b.in || 0);
-        totalOut     += Number(b.out || 0);
-        totalStartOFR+= Number(b.startOFR || 0);
-        totalInOFR   += Number(b.inOFR || 0);
-        totalOutOFR  += Number(b.outOFR || 0);
+        totalStart += num(b.start);
+        totalIn += num(b.in);
+        totalOut += num(b.out);
+        totalStartOFR += num(b.startOFR);
+        totalInOFR += num(b.inOFR);
+        totalOutOFR += num(b.outOFR);
       }
-      dbgObjNums(`variant[${variantId}].totals`, {
-        totalStart, totalIn, totalOut, totalStartOFR, totalInOFR, totalOutOFR
-      }, ['totalStart','totalIn','totalOut','totalStartOFR','totalInOFR','totalOutOFR']);
 
-      variant.totalStart       = to2(totalStart);
-      variant.totalIn          = to2(totalIn);
-      variant.totalOut         = to2(totalOut);
-      variant.totalBalance     = to2(totalStart + totalIn - totalOut);
-      variant.totalStartOFR    = to2(totalStartOFR);
-      variant.totalInOFR       = to2(totalInOFR);
-      variant.totalOutOFR      = to2(totalOutOFR);
-      variant.totalBalanceOFR  = to2(totalStartOFR + totalInOFR - totalOutOFR);
+      variant.totalStart = to2(totalStart);
+      variant.totalIn = to2(totalIn);
+      variant.totalOut = to2(totalOut);
+      variant.totalBalance = to2(totalStart + totalIn - totalOut);
 
-      dbgObjNums(`variant[${variantId}].persist`, {
-        totalStart: variant.totalStart,
-        totalIn: variant.totalIn,
-        totalOut: variant.totalOut,
-        totalBalance: variant.totalBalance,
-        totalStartOFR: variant.totalStartOFR,
-        totalInOFR: variant.totalInOFR,
-        totalOutOFR: variant.totalOutOFR,
-        totalBalanceOFR: variant.totalBalanceOFR
-      }, ['totalStart','totalIn','totalOut','totalBalance','totalStartOFR','totalInOFR','totalOutOFR','totalBalanceOFR']);
+      variant.totalStartOFR = to2(totalStartOFR);
+      variant.totalInOFR = to2(totalInOFR);
+      variant.totalOutOFR = to2(totalOutOFR);
+      variant.totalBalanceOFR = to2(
+        totalStartOFR + totalInOFR - totalOutOFR,
+      );
 
       await variantRepo.save(variant);
     }
-    console.log('✅ Variant totals recomputed');
+    console.log('✅ Variant totals recomputed for:', [...affectedVariantIds]);
 
-    // ===== JV rebuild (unchanged except extra small logs) =====
-    const jvType = savedInvoice.invoiceType;
-    const docNbr = savedInvoice.invoiceNumber;
-    const isG    = jvType === 'G';
-    const isReturn = jvType === 'RVR';
-
-    console.log('🧾 JV rebuild start for doc:', docNbr, 'type:', jvType);
-
-    let jvToUpdate = await jvRepo.findOne({ where: { jvType, date: savedInvoice.date as any }, relations: ['details'] });
-    if (!jvToUpdate) {
-      jvToUpdate = await jvRepo
-        .createQueryBuilder('jv')
-        .leftJoinAndSelect('jv.details', 'detail')
-        .where('detail.docNbr = :doc', { doc: docNbr })
-        .orderBy('jv.id', 'DESC')
-        .getOne();
-    }
-
-    let jvNumber: string | null = jvToUpdate?.jvNumber ?? null;
-    if (!jvNumber) {
-      const setting = await this.settingsRepo.findOneBy({ isActive: true });
-      if (!setting) throw new NotFoundException('Active year not found');
-      const yearSuffix = setting.year.slice(-2);
-      const jvPrefix = isG ? 'JVG' : 'JV';
-      const lastJV = await this.journalVoucherRepo
-        .createQueryBuilder('jv')
-        .where('jv.jvNumber LIKE :prefix', { prefix: `${jvPrefix}${yearSuffix}-%` })
-        .orderBy('jv.id', 'DESC')
-        .getOne();
-      const jvSequence = lastJV?.jvNumber ? parseInt(lastJV.jvNumber.split('-')[1]) + 1 : 1;
-      jvNumber = `${jvPrefix}${yearSuffix}-${String(jvSequence).padStart(3, '0')}`;
-    }
-
-    const currencyCode = data.currencyId === 2 ? 'LL' : 'USD';
-    const useVAT = Number(data.vatPercentage) > 0;
-    const rate = Number(data.currencyRate);
-    dbgNum('jv.inputs', 'rate', rate, rate);
-
-    const total            = to2(data.grandTotal);
-    const totalWithoutVAT  = to2(data.totalWithoutVAT);
-    const totalVAT         = to2(data.totalVAT);
-    const totalLL          = to2(total * rate);
-    const totalWithoutVATLL= to2(totalWithoutVAT * rate);
-    const totalVATLL       = to2(totalVAT * rate);
-
-    dbgObjNums('jv.computed', {
-      total, totalWithoutVAT, totalVAT, totalLL, totalWithoutVATLL, totalVATLL
-    }, ['total','totalWithoutVAT','totalVAT','totalLL','totalWithoutVATLL','totalVATLL']);
+    /* -----------------------------------------------------------
+       8) UPDATE / CREATE JOURNAL VOUCHER FOR THIS INVOICE
+       ----------------------------------------------------------- */
+    const currencyCode = savedInvoice.currencyId === 2 ? 'LL' : 'USD';
+    const useVAT = savedInvoice.vatPercentage > 0;
+    const rate = Number(savedInvoice.currencyRate);
 
     let salesAccNumber = '';
     let vatAccNumber = '';
+
     if (useVAT) {
       salesAccNumber = currencyCode === 'USD' ? '701101' : '701102';
-      vatAccNumber   = currencyCode === 'USD' ? '443101' : '443102';
+      vatAccNumber = currencyCode === 'USD' ? '443101' : '443102';
     } else {
       salesAccNumber = '701103';
     }
-    const salesAccount = await this.accountRepo.findOneBy({ accountNumber: salesAccNumber });
-    if (!salesAccount) throw new NotFoundException(`Sales account ${salesAccNumber} not found`);
-    const vatAccount = useVAT ? await this.accountRepo.findOneBy({ accountNumber: vatAccNumber }) : null;
-    if (useVAT && vatAccount == null && !isG) {
+
+    const salesAccount = await this.accountRepo.findOneBy({
+      accountNumber: salesAccNumber,
+    });
+    if (!salesAccount)
+      throw new NotFoundException(
+        `Sales account ${salesAccNumber} not found`,
+      );
+
+    const vatAccount = useVAT
+      ? await this.accountRepo.findOneBy({ accountNumber: vatAccNumber })
+      : null;
+
+    if (useVAT && !vatAccount && !isG) {
       throw new NotFoundException(`VAT account ${vatAccNumber} not found`);
     }
 
-    const jvFields = (type: 'dr' | 'cr', val: number, valLL: number): Partial<JournalVoucherDetail> => {
-      const f: any = {
-        dr: 0, drUSD: 0, drLL: 0, drOFR: 0, drUSDOFR: 0, drLLOFR: 0,
-        cr: 0, crUSD: 0, crLL: 0, crOFR: 0, crUSDOFR: 0, crLLOFR: 0,
+    const total = Number(savedInvoice.grandTotal);
+    const totalWithoutVAT = Number(savedInvoice.totalWithoutVAT);
+    const totalVAT = Number(savedInvoice.totalVAT);
+    const totalLL = total * rate;
+    const totalWithoutVATLL = totalWithoutVAT * rate;
+    const totalVATLL = totalVAT * rate;
+
+    const getJVFields = (
+      type: 'dr' | 'cr',
+      val: number,
+      valLL: number,
+    ): Partial<JournalVoucherDetail> => {
+      const fields: any = {
+        dr: 0,
+        drUSD: 0,
+        drLL: 0,
+        drOFR: 0,
+        drUSDOFR: 0,
+        drLLOFR: 0,
+        cr: 0,
+        crUSD: 0,
+        crLL: 0,
+        crOFR: 0,
+        crUSDOFR: 0,
+        crLLOFR: 0,
       };
       if (type === 'dr') {
-        if (isG) { f.drOFR = val; f.drUSDOFR = val; f.drLLOFR = valLL; }
-        else if (isReturn) { f.dr = val; f.drUSD = val; f.drLL = valLL; }
-        else { f.dr = val; f.drUSD = val; f.drLL = valLL; f.drOFR = val; f.drUSDOFR = val; f.drLLOFR = valLL; }
+        if (isG) {
+          fields.drOFR = val;
+          fields.drUSDOFR = val;
+          fields.drLLOFR = valLL;
+        } else if (isReturn) {
+          fields.dr = val;
+          fields.drUSD = val;
+          fields.drLL = valLL;
+        } else {
+          fields.dr = val;
+          fields.drUSD = val;
+          fields.drLL = valLL;
+          fields.drOFR = val;
+          fields.drUSDOFR = val;
+          fields.drLLOFR = valLL;
+        }
       } else {
-        if (isG) { f.crOFR = val; f.crUSDOFR = val; f.crLLOFR = valLL; }
-        else if (isReturn) { f.cr = val; f.crUSD = val; f.crLL = valLL; }
-        else { f.cr = val; f.crUSD = val; f.crLL = valLL; f.crOFR = val; f.crUSDOFR = val; f.crLLOFR = valLL; }
+        if (isG) {
+          fields.crOFR = val;
+          fields.crUSDOFR = val;
+          fields.crLLOFR = valLL;
+        } else if (isReturn) {
+          fields.cr = val;
+          fields.crUSD = val;
+          fields.crLL = valLL;
+        } else {
+          fields.cr = val;
+          fields.crUSD = val;
+          fields.crLL = valLL;
+          fields.crOFR = val;
+          fields.crUSDOFR = val;
+          fields.crLLOFR = valLL;
+        }
       }
-      return f;
+      return fields;
     };
 
-    const details: JournalVoucherDetail[] = [];
-    details.push(this.journalVoucherDetailRepo.create({
-      customerId: data.customerId,
-      description: isReturn ? 'فاتورة' : 'فاتورة',
-      currency: currencyCode,
-      docNbr,
-      ...jvFields('dr', total, totalLL),
-    }));
-    const salesCrAmount   = isG ? totalWithoutVAT + totalVAT : totalWithoutVAT;
-    const salesCrAmountLL = isG ? totalWithoutVATLL + totalVATLL : totalWithoutVATLL;
-    details.push(this.journalVoucherDetailRepo.create({
-      accountId: salesAccount.id,
-      description: 'Sales Revenue',
-      currency: currencyCode,
-      docNbr,
-      ...jvFields('cr', salesCrAmount, salesCrAmountLL),
-    }));
-    if (useVAT && vatAccount && !isG) {
-      details.push(this.journalVoucherDetailRepo.create({
-        accountId: vatAccount.id,
-        description: 'VAT Payable',
+    const jvDetailsForInvoice: JournalVoucherDetail[] = [];
+
+    // Customer line (DR)
+    jvDetailsForInvoice.push(
+      this.journalVoucherDetailRepo.create({
+        customerId: savedInvoice.customerId,
+        description: 'فاتورة',
         currency: currencyCode,
         docNbr,
-        ...jvFields('cr', totalVAT, totalVATLL),
-      }));
-    }
-
-    const sum = (field: keyof JournalVoucherDetail) =>
-      details.reduce((acc, entry) => acc + Number(entry[field] || 0), 0);
-
-    dbgObjNums('jv.totals', {
-      totalDr: sum('dr'),
-      totalDrUSD: sum('drUSD'),
-      totalDrLL: sum('drLL'),
-      totalDrOFR: sum('drOFR'),
-      totalDrUSDOFR: sum('drUSDOFR'),
-      totalDrLLOFR: sum('drLLOFR'),
-      totalCr: sum('cr'),
-      totalCrLL: sum('crLL'),
-      totalCrOFR: sum('crOFR'),
-      totalCrUSDOFR: sum('crUSDOFR'),
-      totalCrLLOFR: sum('crLLOFR'),
-    }, [
-      'totalDr','totalDrUSD','totalDrLL','totalDrOFR','totalDrUSDOFR','totalDrLLOFR',
-      'totalCr','totalCrLL','totalCrOFR','totalCrUSDOFR','totalCrLLOFR'
-    ]);
-
-    if (jvToUpdate) {
-      await jvdRepo.delete({ journalVoucherId: jvToUpdate.id });
-      const nextJV = await jvRepo.save({
-        ...jvToUpdate,
-        jvType,
-        date: savedInvoice.date,
-        totalDr: sum('dr'),
-        totalDrUSD: sum('drUSD'),
-        totalDrLL: sum('drLL'),
-        totalDrOFR: sum('drOFR'),
-        totalDrUSDOFR: sum('drUSDOFR'),
-        totalDrLLOFR: sum('drLLOFR'),
-        totalCr: sum('cr'),
-        totalCrLL: sum('crLL'),
-        totalCrOFR: sum('crOFR'),
-        totalCrUSDOFR: sum('crUSDOFR'),
-        totalCrLLOFR: sum('crLLOFR'),
-      });
-      for (const d of details) {
-        d.journalVoucherId = nextJV.id;
-        await jvdRepo.save(d);
-      }
-      console.log('✅ Journal voucher updated:', nextJV.jvNumber);
-    } else {
-      const newJV = this.journalVoucherRepo.create({
-        jvNumber: jvNumber!,
-        jvType,
-        date: savedInvoice.date,
-        totalDr: sum('dr'),
-        totalDrUSD: sum('drUSD'),
-        totalDrLL: sum('drLL'),
-        totalDrOFR: sum('drOFR'),
-        totalDrUSDOFR: sum('drUSDOFR'),
-        totalDrLLOFR: sum('drLLOFR'),
-        totalCr: sum('cr'),
-        totalCrLL: sum('crLL'),
-        totalCrOFR: sum('crOFR'),
-        totalCrUSDOFR: sum('crUSDOFR'),
-        totalCrLLOFR: sum('crLLOFR'),
-        details,
-      });
-      await queryRunner.manager.save(JournalVoucher, newJV);
-      console.log('✅ Journal voucher created:', newJV.jvNumber);
-    }
-
-    // Final explicit heal/log (should be no-ops)
-    console.log('🧪 Final FK sanity check for invoice_items…');
-    const badRows = await queryRunner.manager.query(
-      `SELECT id, invoiceId FROM invoice_items WHERE invoiceId IS NULL OR invoiceId = 0`
+        ...getJVFields('dr', total, totalLL),
+      }),
     );
-    if (badRows.length) {
-      console.warn('⚠️ Found rows with NULL/0 invoiceId right before commit:', badRows);
-      // OPTIONAL: if you want to hard-fix everything created in this tx to current invoiceId:
-      // await queryRunner.manager.query(
-      //   `UPDATE invoice_items SET invoiceId = ? WHERE (invoiceId IS NULL OR invoiceId = 0)`,
-      //   [invoiceId],
-      // );
-    } else {
-      console.log('🟢 No NULL/0 invoiceId rows found');
+
+    // Sales revenue line (CR)
+    const salesCrAmount = isG
+      ? totalWithoutVAT + totalVAT
+      : totalWithoutVAT;
+    const salesCrAmountLL = isG
+      ? totalWithoutVATLL + totalVATLL
+      : totalWithoutVATLL;
+
+    jvDetailsForInvoice.push(
+      this.journalVoucherDetailRepo.create({
+        accountId: salesAccount.id,
+        description: 'Sales Revenue',
+        currency: currencyCode,
+        docNbr,
+        ...getJVFields('cr', salesCrAmount, salesCrAmountLL),
+      }),
+    );
+
+    // VAT Payable line (CR) – only for non-G
+    if (useVAT && vatAccount && !isG) {
+      jvDetailsForInvoice.push(
+        this.journalVoucherDetailRepo.create({
+          accountId: vatAccount.id,
+          description: 'VAT Payable',
+          currency: currencyCode,
+          docNbr,
+          ...getJVFields('cr', totalVAT, totalVATLL),
+        }),
+      );
     }
 
+    const sumFrom = (
+      arr: JournalVoucherDetail[],
+      field: keyof JournalVoucherDetail,
+    ) => arr.reduce((acc, row) => acc + Number(row[field] || 0), 0);
+
+    // Check if there were previous JV details for this same docNbr
+    const existingDetailsForDoc = await jvDetailRepo.find({
+      where: { docNbr },
+    });
+
+    if (existingDetailsForDoc.length > 0) {
+      // 🔁 Update existing JV header for this docNbr
+      const jvId = existingDetailsForDoc[0].journalVoucherId;
+      console.log('🔁 Reusing existing JV id:', jvId);
+
+      await jvDetailRepo.remove(existingDetailsForDoc);
+
+      // attach JV id to new details
+      for (const d of jvDetailsForInvoice) {
+        (d as any).journalVoucherId = jvId;
+      }
+      await jvDetailRepo.save(jvDetailsForInvoice);
+
+      // recompute header totals
+      const allDetails = await jvDetailRepo.find({
+        where: { journalVoucherId: jvId },
+      });
+
+      const jvHeader = await jvRepo.findOne({ where: { id: jvId } });
+      if (jvHeader) {
+        jvHeader.totalDr = sumFrom(allDetails, 'dr');
+        jvHeader.totalDrUSD = sumFrom(allDetails, 'drUSD');
+        jvHeader.totalDrLL = sumFrom(allDetails, 'drLL');
+        jvHeader.totalDrOFR = sumFrom(allDetails, 'drOFR');
+        jvHeader.totalDrUSDOFR = sumFrom(allDetails, 'drUSDOFR');
+        jvHeader.totalDrLLOFR = sumFrom(allDetails, 'drLLOFR');
+        jvHeader.totalCr = sumFrom(allDetails, 'cr');
+        jvHeader.totalCrUSD = sumFrom(allDetails, 'crUSD');
+        jvHeader.totalCrLL = sumFrom(allDetails, 'crLL');
+        jvHeader.totalCrOFR = sumFrom(allDetails, 'crOFR');
+        jvHeader.totalCrUSDOFR = sumFrom(allDetails, 'crUSDOFR');
+        jvHeader.totalCrLLOFR = sumFrom(allDetails, 'crLLOFR');
+
+        await jvRepo.save(jvHeader);
+        console.log('✅ Journal voucher updated:', jvHeader.jvNumber);
+      }
+    } else {
+      // ➕ No JV yet for this invoice → create a new one (like in createInvoice)
+      const setting = await this.settingsRepo.findOneBy({ isActive: true });
+      if (!setting) throw new NotFoundException('Active year not found');
+
+      const yearSuffix = setting.year.slice(-2);
+      const jvPrefix = isG ? 'JVG' : 'JV';
+
+      const lastJV = await jvRepo
+        .createQueryBuilder('jv')
+        .where('jv.jvNumber LIKE :prefix', {
+          prefix: `${jvPrefix}${yearSuffix}-%`,
+        })
+        .orderBy('jv.id', 'DESC')
+        .getOne();
+
+      const jvSequence = lastJV?.jvNumber
+        ? parseInt(lastJV.jvNumber.split('-')[1], 10) + 1
+        : 1;
+
+      const jvNumber = `${jvPrefix}${yearSuffix}-${String(
+        jvSequence,
+      ).padStart(3, '0')}`;
+
+      const journalVoucher = jvRepo.create({
+        jvNumber,
+        jvType: savedInvoice.invoiceType,
+        date: savedInvoice.date,
+        totalDr: sumFrom(jvDetailsForInvoice, 'dr'),
+        totalDrUSD: sumFrom(jvDetailsForInvoice, 'drUSD'),
+        totalDrLL: sumFrom(jvDetailsForInvoice, 'drLL'),
+        totalDrOFR: sumFrom(jvDetailsForInvoice, 'drOFR'),
+        totalDrUSDOFR: sumFrom(jvDetailsForInvoice, 'drUSDOFR'),
+        totalDrLLOFR: sumFrom(jvDetailsForInvoice, 'drLLOFR'),
+        totalCr: sumFrom(jvDetailsForInvoice, 'cr'),
+        totalCrUSD: sumFrom(jvDetailsForInvoice, 'crUSD'),
+        totalCrLL: sumFrom(jvDetailsForInvoice, 'crLL'),
+        totalCrOFR: sumFrom(jvDetailsForInvoice, 'crOFR'),
+        totalCrUSDOFR: sumFrom(jvDetailsForInvoice, 'crUSDOFR'),
+        totalCrLLOFR: sumFrom(jvDetailsForInvoice, 'crLLOFR'),
+        details: jvDetailsForInvoice,
+      });
+
+      await queryRunner.manager.save(JournalVoucher, journalVoucher);
+      console.log('✅ Journal voucher created:', jvNumber);
+    }
+
+    /* -----------------------------------------------------------
+       DONE
+       ----------------------------------------------------------- */
     await queryRunner.commitTransaction();
-    console.log('🎉 Invoice update complete');
+    console.log('🎉 Invoice update complete for id:', savedInvoice.id);
     return savedInvoice;
-  } catch (error) {
-    console.error('❌ Invoice update failed:', error?.message || error);
+  } catch (error: any) {
+    console.error('❌ Invoice update failed:', error?.message, error);
     await queryRunner.rollbackTransaction();
-    throw new BadRequestException(error?.message || 'Invoice update failed');
+    throw new BadRequestException(error.message || 'Invoice update failed');
   } finally {
     await queryRunner.release();
   }
 }
+
+
+
+
+
 
 
 

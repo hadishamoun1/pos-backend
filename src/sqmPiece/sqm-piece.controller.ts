@@ -59,6 +59,21 @@ export class SqmPiecesController {
     return this.svc.summaryForOneVariant(id);
   }
 
+   /**
+   * POS endpoint: list active SQM pieces with remaining > 0.
+   * Used by SearchModal "SQM Pieces" tab.
+   *
+   * GET /sqm-pieces/pos-pieces?onlyRemaining=1&q=...
+   */
+// sqm-piece.controller.ts
+
+@Get('pos-pieces')
+async listPiecesForPos(@Query('q') q?: string) {
+  return this.svc.getPosPieces({ q });
+}
+
+
+
   /**
    * Trash some sqm from a single piece group.
    * POST /sqm-pieces/pieces/:pieceId/trash

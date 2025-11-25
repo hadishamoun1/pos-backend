@@ -1558,4 +1558,98 @@ async restoreAllUnallocatedForGroup(body: { groupKey: string; date?: string | Da
 }
 
 
+ /**
+   * POS search: list SQM pieces that can be sold from POS.
+   * - piece must be active
+   * - remaining sqm > 0
+   * - belonging to BOSTS transfers
+   * - optional search by item / origin / transfer / thickness
+   */
+// sqm-piece.service.ts
+
+
+
+async getPosPieces(opts?: { q?: string; onlyRemaining?: boolean }) {
+  const qRaw = (opts?.q ?? '').trim();
+  const onlyRemaining = opts?.onlyRemaining !== false; // default true
+
+  const qb = this.sqmPieceRepo
+    .createQueryBuilder('p')
+    .innerJoin('p.sqmVariant', 'v')
+    .innerJoin('v.thickness', 'th')
+    .innerJoin('th.item', 'it')
+    .innerJoin('p.transferItem', 'ti')
+    .innerJoin('ti.transfer', 'tr')
+    .select([
+      'p.id AS id',
+      'p.sqmVariantId AS sqmVariantId',
+      'p.sqmBatchId AS sqmBatchId',
+      'it.itemName AS itemName',
+      'th.thickness AS thickness',
+      'tr.transferNumber AS transferNumber',
+      'p.length AS length',
+      'p.width AS width',
+      'p.sqmRemaining AS sqmRemaining',
+      // piecesRemaining = floor(sqmRemaining * 10000 / (L * W))
+      `CASE 
+         WHEN p.length > 0 AND p.width > 0 
+           THEN FLOOR(p.sqmRemaining * 10000 / (p.length * p.width)) 
+         ELSE 0 
+       END AS piecesRemaining`,
+    ])
+    .where('p.isActive = 1');
+
+  if (onlyRemaining) {
+    qb.andWhere('p.sqmRemaining > 0');
+  }
+
+  if (qRaw) {
+    qb.andWhere(
+      `(it.itemName LIKE :q OR tr.transferNumber LIKE :q OR th.thickness LIKE :q)`,
+      { q: `%${qRaw}%` },
+    );
+  }
+
+  qb.orderBy('it.itemName', 'ASC')
+    .addOrderBy('th.thickness', 'ASC')
+    .addOrderBy('tr.transferNumber', 'DESC')
+    .addOrderBy('p.id', 'ASC');
+
+  const rows = await qb.getRawMany();
+
+  return rows.map((r) => {
+    const thickness =
+      r.thickness != null ? String(Number(r.thickness)) : '';
+    const label =
+      (thickness ? `${thickness}ملم ` : '') + (r.itemName ?? '');
+
+    const piecesRemaining = Number(r.piecesRemaining ?? 0);
+
+    return {
+      id: r.id, // SqmPiece id
+      // ✅ these are what the POS / invoice needs:
+      itemVariantId: Number(r.sqmVariantId),
+      itemBatchId: Number(r.sqmBatchId),
+
+      itemName: r.itemName,
+      thickness: r.thickness,
+      transferNumber: r.transferNumber,
+      length: Number(r.length),
+      width: Number(r.width),
+      sqmRemaining: Number(r.sqmRemaining),
+      piecesRemaining,
+      label,
+      type: 'sqm', // <- mark it as sqm line
+    };
+  });
 }
+
+
+
+
+
+
+}
+
+
+

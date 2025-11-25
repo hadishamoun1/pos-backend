@@ -17,6 +17,7 @@ import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails
 import { Account } from '../entities/account.entity';
 import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
 import { InventoryCount } from 'src/entities/inventory/count.entity';
+import { SqmPiece } from 'src/entities/inventory/sqmPiece.entity';
 
 
 @Module({
@@ -35,7 +36,8 @@ import { InventoryCount } from 'src/entities/inventory/count.entity';
       JournalVoucherDetail,
       Account, 
         PurchaseInvoiceItem,  
-      InventoryCount, 
+      InventoryCount,
+      SqmPiece 
     ]),
   ],
   providers: [InvoiceService, InventoryTransaction, InvoiceGateway],
