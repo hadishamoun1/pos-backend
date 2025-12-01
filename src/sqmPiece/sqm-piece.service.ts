@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { SqmPiece } from '../entities/inventory/sqmPiece.entity';
+import { SqmPiece } from '../entities/inventory/SqmPiece.entity';
 import { TransferItem } from '../entities/inventory/transferItem.entity';
 import { Transfer } from '../entities/inventory/transfer.entity';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity';

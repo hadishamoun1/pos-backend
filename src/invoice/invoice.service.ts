@@ -18,7 +18,7 @@ import { Thickness } from 'src/entities/inventory/thickness.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-invoice/purchase-invoice-item.entity';
 import { InventoryCount } from '../entities/inventory/count.entity';
-import { SqmPiece } from 'src/entities/inventory/sqmPiece.entity';
+import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
 
 @Injectable()
 export class InvoiceService {

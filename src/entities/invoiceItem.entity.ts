@@ -8,7 +8,7 @@ import {
 import { Invoice } from './invoice.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity'; // Import the ItemVariant entity
 import { ItemBatch } from './inventory/itemBatch.entity';
-import { SqmPiece } from './inventory/sqmPiece.entity';
+import { SqmPiece } from './inventory/SqmPiece.entity';
 
 @Entity('invoice_items')
 export class InvoiceItem {

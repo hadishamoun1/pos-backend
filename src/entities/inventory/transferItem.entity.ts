@@ -10,7 +10,7 @@ import {
 import { Transfer } from './transfer.entity';
 import { ItemVariant } from './itemVariant.entity';
 import { ItemBatch } from './itemBatch.entity';
-import { SqmPiece } from './sqmPiece.entity';
+import { SqmPiece } from './SqmPiece.entity';
 
 @Entity({ name: 'transfer_items' })
 export class TransferItem {
