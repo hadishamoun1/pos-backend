@@ -28,7 +28,7 @@ import { CreditNoteReturnModule } from './credit-note-returns/credit-note-return
 import { RequestModule } from './requests/requests.module';
 import { InventoryTransactionModule } from './inventroy-transactions/inventroy-transactions.module';
 import { PurchaseInvoiceSettingModule } from './Purchase-invoice-settings/purchase-invoice-settings.module';
-import { PurchaseInvoiceModule } from './purchase-invoice/purchase-invoice.module';
+import { PurchaseInvoiceModule } from './Purchase-invoice/purchase-invoice.module';
 import { InventoryCountModule } from './count/count.module';
 import { TransfersModule } from './transfers/transfers.module';
 import { RecievablesModule } from './receipt-voucher/recievables.module';
