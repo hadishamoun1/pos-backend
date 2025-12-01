@@ -41,6 +41,16 @@ export class InvoiceController {
     );
   }
 
+  @Get('v1/invoice-display-names-real')
+  async listInvoiceDisplayNames(@Query('q') q?: string) {
+    return this.invoiceService.listInvoiceDisplayNames({ q });
+  }
+
+    @Get('invoice-display-names-description')
+  async listInvoiceDisplayNameDescription(@Query('q') q?: string) {
+    return this.invoiceService.listInvoiceDisplayNameDescription({ q });
+  }
+
 
   // ✅ NEW: browsing search 
   @Get('v1/browsing/:customerId/search')
@@ -132,6 +142,24 @@ async searchFiltered(
     return this.invoiceService.getFilteredInvoices(page, limit);
   }
 
+@Put("v1/invoice-display-names/fill-defaults")
+fillDefaults() {
+  return this.invoiceService.fillMissingInvoiceDisplayNames();
+}
+
+    @Put('v1/invoice-display-names')
+  async updateInvoiceDisplayNames(
+    @Body()
+    body: {
+      items: {
+        itemVariantId: number;
+        invoiceDisplayName: string | null;
+      }[];
+    },
+  ) {
+    return this.invoiceService.updateInvoiceDisplayNames(body);
+  }
+
   // UPDATE (full replace semantics; handles deletes/inserts/updates of items)
   @Put(':id')
   async update(
@@ -141,4 +169,5 @@ async searchFiltered(
     // body uses the same shape as create; items may include existing item IDs to update
     return this.invoiceService.updateInvoice(id, body);
   }
+
 }

@@ -1158,7 +1158,7 @@ export class SqmPiecesService {
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: sqmVariant.id,
         itemBatchId: sqmBatch.id,
-        transactionType: 'SqmTrashUnallocated',
+        transactionType: 'SqmTrash',
         quantity: 0,
         quantityofr: -sqmToTrash,
         sqm: 0,
@@ -1326,7 +1326,7 @@ export class SqmPiecesService {
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: sqmVariant.id,
         itemBatchId: sqmBatch.id,
-        transactionType: 'SqmTrashUnallocatedRestore', // <── new type
+        transactionType: 'SqmTrashRestore', // <── new type
         quantity: 0,
         quantityofr: sqmToRestore,
         sqm: 0,

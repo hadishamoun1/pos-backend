@@ -109,4 +109,7 @@ export class ItemVariant {
 
   @Column('decimal', { precision: 12, scale: 2, nullable: true })
   lastCostVM: number;
+
+    @Column({ type: 'varchar', length: 255, nullable: true })
+  invoiceDisplayName: string | null;
 }

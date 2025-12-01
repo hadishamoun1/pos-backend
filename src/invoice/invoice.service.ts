@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In } from 'typeorm';
+import { Repository, DataSource, In, IsNull } from 'typeorm';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { Invoice } from '../entities/invoice.entity';
@@ -50,6 +50,9 @@ export class InvoiceService {
 
           @InjectRepository(SqmPiece)
     private readonly SqmPieceRepository: Repository<SqmPiece>,
+
+            @InjectRepository(ItemVariant)
+    private readonly varientRepo: Repository<ItemVariant>,
   ) {}
   /**
    * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
@@ -797,6 +800,7 @@ items: invoice.items.map((item) => {
   const batch     = (item as any).itemBatch;
   const sqmpieceId = item.sqmPieceId;
 
+
   const itemType = itemData?.type; // 'box' | 'sheet' | 'sqm'
 
   // 👇 snapshots stored on invoice_items (we ONLY use these)
@@ -876,6 +880,8 @@ items: invoice.items.map((item) => {
 
     origin: variant?.origin ?? null,
     sqmpieceId,
+
+     invoiceDisplayName: variant?.invoiceDisplayName ?? null,
 
     // 👉 sheetsPerBox only for box, from invoice_items
     sheetsPerBox,
@@ -1637,6 +1643,179 @@ async searchBrowsingInvoices(
   return groups;
 }
 
+
+
+
+async listInvoiceDisplayNames(opts?: { q?: string }) {
+  const qb = this.varientRepo
+    .createQueryBuilder('v')
+    .leftJoinAndSelect('v.thickness', 't')
+    .leftJoinAndSelect('t.item', 'i')
+    .leftJoin('v.realDescription', 'rd') // join so we can sort by sort_index
+    .where('v.realDescriptionId IS NOT NULL'); // ✅ only variants with realDescriptionId
+
+  // search
+  if (opts?.q && opts.q.trim()) {
+    const q = `%${opts.q.trim()}%`;
+    qb.andWhere(
+      `(i.itemName LIKE :q OR COALESCE(v.invoiceDisplayName,'') LIKE :q OR COALESCE(v.origin,'') LIKE :q)`,
+      { q },
+    );
+  }
+
+  // ✅ MySQL-safe "NULLS LAST" for sort index
+  qb.orderBy('rd.sort_index_real_description IS NULL', 'ASC')
+    .addOrderBy('rd.sort_index_real_description', 'ASC')
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('i.itemName', 'ASC')
+    .addOrderBy('v.origin', 'ASC');
+
+  const variants = await qb.getMany();
+
+  return variants.map((v) => ({
+    itemVariantId: v.id,
+    origin: (v as any).origin ?? null,
+    invoiceDisplayName: (v as any).invoiceDisplayName ?? '',
+    thickness: (v as any).thickness?.thickness ?? null,
+    itemName: (v as any).thickness?.item?.itemName ?? null,
+  }));
+}
+
+async listInvoiceDisplayNameDescription(opts?: { q?: string }) {
+  const qb = this.varientRepo
+    .createQueryBuilder('v')
+    .leftJoinAndSelect('v.thickness', 't')
+    .leftJoinAndSelect('t.item', 'i')
+
+    // ✅ join ItemNameDescription (adjust relation name if needed)
+    .leftJoinAndSelect('v.itemNameDescription', 'd')
+
+    // ✅ only variants that have itemNameDescriptionId
+    .where('v.itemNameDescriptionId IS NOT NULL');
+
+  if (opts?.q && opts.q.trim()) {
+    const q = `%${opts.q.trim()}%`;
+    qb.andWhere(
+      `(i.itemName LIKE :q
+        OR COALESCE(v.invoiceDisplayName,'') LIKE :q
+        OR COALESCE(v.origin,'') LIKE :q
+      )`,
+      { q },
+    );
+  }
+
+  // ✅ MySQL "NULLS LAST" emulation:
+  //   (d.sort_index_description IS NULL) -> 0 first, 1 last
+  qb.orderBy('d.sort_index_description IS NULL', 'ASC')
+    .addOrderBy('d.sort_index_description', 'ASC')
+    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('i.itemName', 'ASC')
+    .addOrderBy('v.origin', 'ASC');
+
+  const variants = await qb.getMany();
+
+  return variants.map((v) => ({
+    itemVariantId: v.id,
+    itemNameDescriptionId: (v as any).itemNameDescriptionId ?? null,
+    origin: (v as any).origin ?? null,
+    invoiceDisplayName: v.invoiceDisplayName ?? '',
+    thickness: (v as any).thickness?.thickness ?? null,
+    itemName: (v as any).thickness?.item?.itemName ?? null,
+
+    // ✅ for debug / UI
+    sort_index_description: (v as any).itemNameDescription?.sort_index_description ?? null,
+  }));
+}
+
+
+
+
+async updateInvoiceDisplayNames(payload: {
+  items: { itemVariantId: number; invoiceDisplayName: string | null }[];
+}) {
+  if (!payload?.items || !Array.isArray(payload.items)) {
+    throw new BadRequestException("Invalid payload: items[] is required");
+  }
+
+  const ids = payload.items
+    .map((i) => Number(i.itemVariantId))
+    .filter((id) => Number.isInteger(id) && id > 0);
+
+  if (!ids.length) return { updated: 0 };
+
+  // Load thickness+item so we can build the default name
+  const variants = await this.varientRepo.find({
+    where: { id: In(ids) },
+    relations: ["thickness", "thickness.item"],
+  });
+
+  const byId = new Map(variants.map((v) => [v.id, v]));
+
+  const buildDefault = (v: any) => {
+    const th = v?.thickness?.thickness;
+    const name = v?.thickness?.item?.itemName;
+    const thText =
+      th !== null && th !== undefined && String(th).trim() !== ""
+        ? `${parseFloat(String(th))} ملم `
+        : "";
+    return `${thText}${name ?? ""}`.trim();
+  };
+
+  let updatedCount = 0;
+  const toSave: any[] = [];
+
+  for (const item of payload.items) {
+    const v = byId.get(Number(item.itemVariantId));
+    if (!v) continue;
+
+    const input =
+      typeof item.invoiceDisplayName === "string"
+        ? item.invoiceDisplayName.trim()
+        : "";
+
+    // ✅ If empty => save default = thickness + itemName
+    const next = input.length > 0 ? input : buildDefault(v);
+
+    // only save if changed (optional but better)
+    const current = (v.invoiceDisplayName ?? "").trim();
+    if (current !== next) {
+      v.invoiceDisplayName = next; // store the resolved name
+      toSave.push(v);
+      updatedCount++;
+    }
+  }
+
+  if (toSave.length) {
+    await this.varientRepo.save(toSave);
+  }
+
+  return { updated: updatedCount };
+}
+
+// invoices.service.ts (or variants service)
+async fillMissingInvoiceDisplayNames() {
+  const variants = await this.varientRepo.find({
+    where: { invoiceDisplayName: IsNull() },
+    relations: ["thickness", "thickness.item"],
+  });
+
+  const buildDefault = (v: any) => {
+    const th = v?.thickness?.thickness;
+    const name = v?.thickness?.item?.itemName ?? "";
+    const thText =
+      th !== null && th !== undefined && String(th).trim() !== ""
+        ? `${parseFloat(String(th))} ملم `
+        : "";
+    return `${thText}${name}`.trim();
+  };
+
+  for (const v of variants) {
+    v.invoiceDisplayName = buildDefault(v);
+  }
+
+  if (variants.length) await this.varientRepo.save(variants);
+  return { updated: variants.length };
+}
 
 
 
