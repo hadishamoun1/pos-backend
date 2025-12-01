@@ -10,7 +10,7 @@ import { Customer } from './customer.entity';
 import { Branch } from './branch.entity';
 import { Currency } from './currency.entity';
 import { InvoiceItem } from './invoiceItem.entity';
-import { SqmPiece } from '../entities/inventory/sqmPiece.entity';
+import { SqmPiece } from './inventory/sqmPiece.entity';
 
 @Entity('invoices')
 export class Invoice {
