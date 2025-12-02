@@ -321,8 +321,7 @@ async getFilteredActivity(query: any): Promise<{
     // batch
     .leftJoinAndSelect("tx.itemBatch", "itemBatch");
 
-  // ✅ Always rely on tx.dateForEachInvoice for ANY date logic
-  // Default sort (so even without sortBy, your table is correct)
+  // default sort
   qb.orderBy("tx.dateForEachInvoice", "DESC").addOrderBy("tx.id", "DESC");
 
   /* ───────────────── helpers ───────────────── */
@@ -330,14 +329,9 @@ async getFilteredActivity(query: any): Promise<{
   const hasVal = (v: any) =>
     v !== undefined && v !== null && String(v).trim() !== "";
 
-  // Escape LIKE wildcards; NO "ESCAPE '\'" clause (it was breaking your MySQL)
   const escapeLike = (s: string) => String(s).replace(/[%_\\]/g, (m) => `\\${m}`);
 
   const addStringFilter = (key: string, columnSql: string) => {
-    // supports:
-    // - keyEq
-    // - keyContains
-    // - key  (backward compatible -> contains)
     const eq = query[`${key}Eq`];
     const contains = query[`${key}Contains`] ?? query[key];
 
@@ -377,7 +371,6 @@ async getFilteredActivity(query: any): Promise<{
       .replace(/[xX*]/g, "×")
       .replace(/\s+/g, "");
 
-    // 225×321 OR 225×321-031 / 225×321-31
     const m = s.match(/^(\d+(?:\.\d+)?)×(\d+(?:\.\d+)?)(?:-0*(\d+))?$/);
     if (!m) return null;
 
@@ -392,13 +385,11 @@ async getFilteredActivity(query: any): Promise<{
 
   /* ───────────────── FILTERS ───────────────── */
 
-  // Description fields
   addStringFilter("category", "itemDesc.categoryName");
   addStringFilter("subCategory", "itemDesc.subCategory");
   addStringFilter("color", "itemDesc.colorName");
   addStringFilter("design", "itemDesc.designName");
 
-  // Batch
   addStringFilter("condition", "itemBatch.condition");
   if (hasVal(query.itemBatchId)) {
     qb.andWhere("itemBatch.id = :itemBatchId", {
@@ -411,15 +402,12 @@ async getFilteredActivity(query: any): Promise<{
     });
   }
 
-  // Origin / Brand
   addStringFilter("origin", "itemVariant.origin");
 
-  // Unit
   if (hasVal(query.unit)) {
     qb.andWhere("item.type = :unit", { unit: query.unit });
   }
 
-  // transactionType / status
   if (hasVal(query.transactionType)) {
     qb.andWhere("tx.transactionType = :tt", { tt: query.transactionType });
   }
@@ -427,7 +415,6 @@ async getFilteredActivity(query: any): Promise<{
     qb.andWhere("tx.transactionType = :status", { status: query.status });
   }
 
-  // ✅ Date filters (ONLY tx.dateForEachInvoice)
   if (hasVal(query.date)) {
     qb.andWhere("tx.dateForEachInvoice = :filterDate", { filterDate: query.date });
   }
@@ -438,7 +425,6 @@ async getFilteredActivity(query: any): Promise<{
     qb.andWhere("tx.dateForEachInvoice > :dateGt", { dateGt: query.dateGt });
   }
 
-  // Invoice number
   const invEq = query.invoiceNumberEq;
   const invContains = query.invoiceNumberContains ?? query.invoiceNumber;
   if (hasVal(invEq)) {
@@ -455,7 +441,6 @@ async getFilteredActivity(query: any): Promise<{
     );
   }
 
-  // Dimensions
   const dimRaw = query.dimensionEq ?? query.dimensionContains ?? query.dimension;
   const dim = parseDimension(dimRaw);
   if (dim) {
@@ -466,7 +451,6 @@ async getFilteredActivity(query: any): Promise<{
     }
   }
 
-  // Exact thickness|itemName (from your right-click filter)
   if (hasVal(query.itemNameWithThickness)) {
     const [thicknessValue, itemNameValue] = String(query.itemNameWithThickness)
       .split("|")
@@ -481,7 +465,6 @@ async getFilteredActivity(query: any): Promise<{
     }
   }
 
-  // Optional contains search for item name + thickness user text "2ملم ابيض"
   const nameContains = query.nameContains ?? query.itemNameContains;
   if (hasVal(nameContains)) {
     const s = String(nameContains).trim();
@@ -503,7 +486,6 @@ async getFilteredActivity(query: any): Promise<{
     }
   }
 
-  // tx numeric fields
   addNumberFilter("quantity", "tx.quantity");
   addNumberFilter("quantityofr", "tx.quantityofr");
   addNumberFilter("sqm", "tx.sqm");
@@ -511,7 +493,6 @@ async getFilteredActivity(query: any): Promise<{
   addNumberFilter("finalcost", "tx.finalcost");
   addNumberFilter("finalcostofr", "tx.finalcostofr");
 
-  // PurchaseInvoiceItem numeric fields
   const piiFields = [
     "previousQuantity",
     "previousQuantityC",
@@ -547,22 +528,18 @@ async getFilteredActivity(query: any): Promise<{
       String(query.sortDir || "ASC").toUpperCase() === "DESC" ? "DESC" : "ASC";
 
     if (String(query.sortBy) === "date") {
-      // ✅ CRITICAL: order by the REAL COLUMN (server-safe)
       qb.orderBy("tx.dateForEachInvoice", dir).addOrderBy("tx.id", "DESC");
     } else {
       const columnMap: Record<string, string> = {
-        // tx
         quantity: "tx.quantity",
         quantityofr: "tx.quantityofr",
         sqm: "tx.sqm",
         sqmofr: "tx.sqmofr",
         finalcost: "tx.finalcost",
         finalcostofr: "tx.finalcostofr",
-        // joined
         batchDate: "itemBatch.dateReceived",
         origin: "itemVariant.origin",
 
-        // PII
         previousQuantity: "purchaseInvoiceItem.previousQuantity",
         previousQuantityC: "purchaseInvoiceItem.previousQuantityC",
         previousQuantityVM: "purchaseInvoiceItem.previousQuantityVM",
@@ -578,10 +555,7 @@ async getFilteredActivity(query: any): Promise<{
       };
 
       const mapped = columnMap[String(query.sortBy)];
-      if (mapped) {
-        qb.orderBy(mapped, dir).addOrderBy("tx.id", "DESC");
-      }
-      // else: ignore invalid sortBy (prevents server crashes)
+      if (mapped) qb.orderBy(mapped, dir).addOrderBy("tx.id", "DESC");
     }
   }
 
@@ -589,8 +563,9 @@ async getFilteredActivity(query: any): Promise<{
 
   const pageNum = Number(query.page) || 1;
   const perPage = Number(query.pageSize) || 30;
+  const offset = (pageNum - 1) * perPage;
 
-  // For totals/count, remove ORDER BY safely
+  // Totals / count: remove ORDER BY
   const qbNoOrder = qb.clone();
   qbNoOrder.expressionMap.orderBys = {};
 
@@ -609,10 +584,37 @@ async getFilteredActivity(query: any): Promise<{
     .addSelect("COALESCE(SUM(tx.sqmofr), 0)", "totalSQMOFR")
     .getRawOne();
 
-  const transactions = await qb
-    .skip((pageNum - 1) * perPage)
+  // ✅ Step 1: get sorted IDs for this page (stable across servers)
+  const idRows = await qb
+    .clone()
+    .select("tx.id", "id")
+    .distinct(true)
+    .skip(offset)
     .take(perPage)
-    .getMany();
+    .getRawMany();
+
+  const ids = idRows.map((r: any) => Number(r.id)).filter(Number.isFinite);
+
+  let transactions: any[] = [];
+  if (ids.length) {
+    // ✅ Step 2: fetch full rows and preserve the exact order
+    transactions = await this.inventoryTransactionRepository
+      .createQueryBuilder("tx")
+      .leftJoinAndSelect("tx.itemVariant", "itemVariant")
+      .leftJoinAndSelect("itemVariant.thickness", "thickness")
+      .leftJoinAndSelect("thickness.item", "item")
+      .leftJoinAndSelect("itemVariant.itemNameDescription", "itemDesc")
+      .leftJoinAndSelect("tx.purchaseInvoiceItem", "purchaseInvoiceItem")
+      .leftJoinAndSelect("purchaseInvoiceItem.invoice", "purchaseInvoice")
+      .leftJoinAndSelect("tx.invoiceItem", "invoiceItem")
+      .leftJoinAndSelect("invoiceItem.invoice", "salesInvoice")
+      .leftJoinAndSelect("tx.inventoryCount", "inventoryCount")
+      .leftJoinAndSelect("tx.itemBatch", "itemBatch")
+      .where("tx.id IN (:...ids)", { ids })
+      // MySQL: keep same order as the IDs page
+      .orderBy(`FIELD(tx.id, ${ids.join(",")})`)
+      .getMany();
+  }
 
   /* ───────────────── SHAPE ───────────────── */
 
@@ -636,14 +638,12 @@ async getFilteredActivity(query: any): Promise<{
       id: tx.id,
       transactionType: tx.transactionType,
 
-      // ✅ always dateForEachInvoice
       invoiceDate: tx.dateForEachInvoice
         ? new Date(tx.dateForEachInvoice).toISOString().slice(0, 10)
         : "—",
 
       invoiceNumber,
 
-      // tx values
       sqm: Number(tx.sqm),
       sqmofr: Number(tx.sqmofr),
       quantity: tx.quantity ?? 0,
@@ -651,7 +651,6 @@ async getFilteredActivity(query: any): Promise<{
       finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
       finalcostofr: tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
 
-      // variant/item info
       itemVariantId: (v as any)?.id ?? null,
       thickness: t?.thickness?.toString() ?? "—",
       itemName: i?.itemName ?? "—",
@@ -661,13 +660,11 @@ async getFilteredActivity(query: any): Promise<{
       origin: (v as any)?.origin ?? null,
       itemType: i?.type ?? null,
 
-      // description
       category: desc?.categoryName ?? null,
       subCategory: desc?.subCategory ?? null,
       color: desc?.colorName ?? null,
       design: desc?.designName ?? null,
 
-      // batch
       itemBatch: tx.itemBatch
         ? {
             id: tx.itemBatch.id,
@@ -676,7 +673,6 @@ async getFilteredActivity(query: any): Promise<{
           }
         : null,
 
-      // PII fields
       previousQuantity: toNumOrNull(pii?.previousQuantity),
       previousQuantityC: toNumOrNull(pii?.previousQuantityC),
       previousQuantityVM: toNumOrNull(pii?.previousQuantityVM),
