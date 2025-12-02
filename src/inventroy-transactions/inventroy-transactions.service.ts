@@ -321,29 +321,14 @@ async getFilteredActivity(query: any): Promise<{
     // batch
     .leftJoinAndSelect("tx.itemBatch", "itemBatch");
 
-  // ✅ IMPORTANT: single-line expression + aliased select
-  const EFFECTIVE_DATE_SQL =
-    "COALESCE(tx.dateForEachInvoice, purchaseInvoice.date, salesInvoice.date, inventoryCount.date, tx.transactionDate)";
-
-  qb.addSelect(EFFECTIVE_DATE_SQL, "effectiveDate");
-
-  // ✅ default sort so date works even when user doesn’t request sort
-  qb.orderBy("effectiveDate", "DESC");
-
   /* ───────────────── helpers ───────────────── */
 
   const hasVal = (v: any) =>
     v !== undefined && v !== null && String(v).trim() !== "";
 
-  // DO NOT use ESCAPE in MySQL via TypeORM here (it caused your syntax error).
-  // Instead escape special chars manually for LIKE.
   const escapeLike = (s: string) => s.replace(/[\\%_]/g, (m) => `\\${m}`);
 
   const addStringFilter = (key: string, columnSql: string) => {
-    // supports:
-    // - keyEq
-    // - keyContains
-    // - key (backward compatible -> contains)
     const eq = query[`${key}Eq`];
     const contains = query[`${key}Contains`] ?? query[key];
 
@@ -352,7 +337,6 @@ async getFilteredActivity(query: any): Promise<{
         [`${key}Eq`]: String(eq).trim(),
       });
     }
-
     if (hasVal(contains)) {
       const raw = String(contains).trim();
       qb.andWhere(`${columnSql} LIKE :${key}Like`, {
@@ -384,7 +368,6 @@ async getFilteredActivity(query: any): Promise<{
       .replace(/[xX*]/g, "×")
       .replace(/\s+/g, "");
 
-    // 225×321 OR 225×321-031 / 225×321-31
     const m = s.match(/^(\d+(?:\.\d+)?)×(\d+(?:\.\d+)?)(?:-0*(\d+))?$/);
     if (!m) return null;
 
@@ -397,16 +380,33 @@ async getFilteredActivity(query: any): Promise<{
     return out;
   };
 
+  /* ───────────────── DATE: RELY ONLY ON tx.dateForEachInvoice ───────────────── */
+
+  // ✅ Default sort (works in MySQL/TypeORM). NULLs go last automatically when DESC.
+  qb.orderBy("tx.dateForEachInvoice", "DESC").addOrderBy("tx.id", "DESC");
+
+  // ✅ Date filters ONLY on dateForEachInvoice
+  if (hasVal(query.date)) {
+    qb.andWhere("DATE(tx.dateForEachInvoice) = :filterDate", {
+      filterDate: query.date,
+    });
+  }
+  if (hasVal(query.dateLt)) {
+    qb.andWhere("tx.dateForEachInvoice < :dateLt", { dateLt: query.dateLt });
+  }
+  if (hasVal(query.dateGt)) {
+    qb.andWhere("tx.dateForEachInvoice > :dateGt", { dateGt: query.dateGt });
+  }
+
   /* ───────────────── FILTERS ───────────────── */
 
-  // description
   addStringFilter("category", "itemDesc.categoryName");
   addStringFilter("subCategory", "itemDesc.subCategory");
   addStringFilter("color", "itemDesc.colorName");
   addStringFilter("design", "itemDesc.designName");
 
-  // batch
   addStringFilter("condition", "itemBatch.condition");
+
   if (hasVal(query.itemBatchId)) {
     qb.andWhere("itemBatch.id = :itemBatchId", {
       itemBatchId: Number(query.itemBatchId),
@@ -418,15 +418,12 @@ async getFilteredActivity(query: any): Promise<{
     });
   }
 
-  // origin / brand
   addStringFilter("origin", "itemVariant.origin");
 
-  // unit
   if (hasVal(query.unit)) {
     qb.andWhere("item.type = :unit", { unit: query.unit });
   }
 
-  // transactionType / status
   if (hasVal(query.transactionType)) {
     qb.andWhere("tx.transactionType = :tt", { tt: query.transactionType });
   }
@@ -434,7 +431,6 @@ async getFilteredActivity(query: any): Promise<{
     qb.andWhere("tx.transactionType = :status", { status: query.status });
   }
 
-  // invoice number
   const invEq = query.invoiceNumberEq;
   const invContains = query.invoiceNumberContains ?? query.invoiceNumber;
   if (hasVal(invEq)) {
@@ -451,20 +447,6 @@ async getFilteredActivity(query: any): Promise<{
     );
   }
 
-  // date filters on effective date
-  if (hasVal(query.date)) {
-    qb.andWhere(`DATE(${EFFECTIVE_DATE_SQL}) = :filterDate`, {
-      filterDate: query.date,
-    });
-  }
-  if (hasVal(query.dateLt)) {
-    qb.andWhere(`${EFFECTIVE_DATE_SQL} < :dateLt`, { dateLt: query.dateLt });
-  }
-  if (hasVal(query.dateGt)) {
-    qb.andWhere(`${EFFECTIVE_DATE_SQL} > :dateGt`, { dateGt: query.dateGt });
-  }
-
-  // dimensions
   const dimRaw = query.dimensionEq ?? query.dimensionContains ?? query.dimension;
   const dim = parseDimension(dimRaw);
   if (dim) {
@@ -475,7 +457,6 @@ async getFilteredActivity(query: any): Promise<{
     }
   }
 
-  // exact thickness+itemName
   if (hasVal(query.itemNameWithThickness)) {
     const [thicknessValue, itemNameValue] = String(query.itemNameWithThickness)
       .split("|")
@@ -486,18 +467,15 @@ async getFilteredActivity(query: any): Promise<{
       qb.andWhere("thickness.thickness = :thEq", { thEq: th });
       qb.andWhere("item.itemName = :itemNameEq", { itemNameEq: itemNameValue });
     } else {
-      qb.andWhere("1 = 0");
+      qb.andWhere("1=0");
     }
   }
 
-  // contains search for "2ملم ابيض" style
   const nameContains = query.nameContains ?? query.itemNameContains;
   if (hasVal(nameContains)) {
     const s = String(nameContains).trim();
-
     const thMatch = s.match(/(\d+(?:\.\d+)?)\s*م?ل?م/i);
     const th = thMatch ? Number(thMatch[1]) : null;
-
     const rest = s.replace(/(\d+(?:\.\d+)?)\s*م?ل?م/i, "").trim();
 
     if (th != null && Number.isFinite(th)) {
@@ -507,15 +485,13 @@ async getFilteredActivity(query: any): Promise<{
       qb.andWhere("item.itemName LIKE :itemNameLike", {
         itemNameLike: `%${escapeLike(rest)}%`,
       });
-    }
-    if (!hasVal(rest) && (th == null || !Number.isFinite(th))) {
+    } else if (th == null || !Number.isFinite(th)) {
       qb.andWhere("item.itemName LIKE :itemNameLike2", {
         itemNameLike2: `%${escapeLike(s)}%`,
       });
     }
   }
 
-  // tx numeric fields
   addNumberFilter("quantity", "tx.quantity");
   addNumberFilter("quantityofr", "tx.quantityofr");
   addNumberFilter("sqm", "tx.sqm");
@@ -523,7 +499,6 @@ async getFilteredActivity(query: any): Promise<{
   addNumberFilter("finalcost", "tx.finalcost");
   addNumberFilter("finalcostofr", "tx.finalcostofr");
 
-  // PurchaseInvoiceItem numeric fields
   const piiFields = [
     "previousQuantity",
     "previousQuantityC",
@@ -563,8 +538,8 @@ async getFilteredActivity(query: any): Promise<{
       String(query.sortDir || "ASC").toUpperCase() === "DESC" ? "DESC" : "ASC";
 
     if (String(query.sortBy) === "date") {
-      // ✅ THIS is the critical fix
-      qb.orderBy("effectiveDate", dir);
+      // ✅ Works (NO expressions). Relies purely on tx.dateForEachInvoice.
+      qb.orderBy("tx.dateForEachInvoice", dir).addOrderBy("tx.id", "DESC");
     } else {
       const columnMap: Record<string, string> = {
         quantity: "tx.quantity",
@@ -602,7 +577,6 @@ async getFilteredActivity(query: any): Promise<{
   const pageNum = Number(query.page) || 1;
   const perPage = Number(query.pageSize) || 30;
 
-  // remove ORDER BY from clones (MySQL hates orderBy in aggregate queries sometimes)
   const qbNoOrder = qb.clone();
   qbNoOrder.expressionMap.orderBys = {};
 
@@ -630,18 +604,7 @@ async getFilteredActivity(query: any): Promise<{
   const toNumOrNull = (v: any) => (v === null || v === undefined ? null : Number(v));
 
   const data = transactions.map((tx) => {
-    let invoiceDateRaw: Date | string =
-      (tx as any).dateForEachInvoice || (tx as any).transactionDate;
-
-    if (tx.transactionType === "purchase") {
-      invoiceDateRaw =
-        tx.purchaseInvoiceItem?.invoice?.date ?? invoiceDateRaw;
-    } else if (tx.transactionType === "sale") {
-      invoiceDateRaw =
-        tx.invoiceItem?.invoice?.date ?? invoiceDateRaw;
-    } else if (tx.inventoryCount) {
-      invoiceDateRaw = tx.inventoryCount.date ?? invoiceDateRaw;
-    }
+    const dateRaw = (tx as any).dateForEachInvoice ?? null;
 
     const invoiceNumber =
       tx.transactionType === "purchase"
@@ -675,9 +638,8 @@ async getFilteredActivity(query: any): Promise<{
       origin: v?.origin ?? null,
       itemType: i?.type ?? null,
 
-      invoiceDate: invoiceDateRaw
-        ? new Date(invoiceDateRaw).toISOString().slice(0, 10)
-        : "—",
+      // ✅ ONLY dateForEachInvoice
+      invoiceDate: dateRaw ? new Date(dateRaw).toISOString().slice(0, 10) : "—",
       invoiceNumber,
 
       category: desc?.categoryName ?? null,
@@ -719,5 +681,6 @@ async getFilteredActivity(query: any): Promise<{
 
   return { data, totals, totalRecords };
 }
+
 
 }
