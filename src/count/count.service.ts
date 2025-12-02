@@ -609,221 +609,370 @@ async searchVariants(params: {
       };
     });
   }
-  async update(
-    id: number,
-    data: {
-      itemBatchId?: number;
-      date?: string;
-      count?: number;
-      unit?: 'box' | 'sheet' | 'sqm';
-      countOFR?: number;
-      type?: CountType;
-      finalCost?: number;
-      finalCostOfr?: number;
-    },
-  ): Promise<InventoryCount> {
-    const countRec = await this.inventoryCountRepo.findOne({
-      where: { id },
-      relations: ['itemVariant'],
-    });
-    if (!countRec)
-      throw new NotFoundException(`InventoryCount #${id} not found`);
+ async update(
+  id: number,
+  data: {
+    itemBatchId?: number;
+    date?: string;
+    count?: number;
+    unit?: 'box' | 'sheet' | 'sqm';
+    countOFR?: number;          // IMPORTANT: SR needs this provided (since it's not stored in InventoryCount)
+    type?: CountType;
+    finalCost?: number;
+    finalCostOfr?: number;
+  },
+): Promise<InventoryCount> {
+  const round2 = (n: any) => Number((Number(n || 0)).toFixed(2));
+  const hasVal = (v: any) => v !== undefined && v !== null && String(v).trim() !== '';
 
-    const txn = await this.inventoryTxnRepo.findOne({
-      where: { inventoryCountId: id },
-    });
-    if (!txn)
-      throw new NotFoundException(
-        `InventoryTransaction for count #${id} not found`,
-      );
+  const normalizeDateYYYYMMDD = (v: any): string | null => {
+    if (!v) return null;
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    const s = String(v).trim();
+    // if already YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    // fallback: Date parse
+    const d = new Date(s);
+    if (!Number.isFinite(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  };
 
-    const oldBatch = await this.itemBatchRepo.findOne({
-      where: { id: txn.itemBatchId },
-      relations: ['itemVariant'],
-    });
-    if (!oldBatch)
-      throw new NotFoundException(`ItemBatch #${txn.itemBatchId} not found`);
-    const oldVariant = oldBatch.itemVariant;
+  // Load count with variant (+ description if you use it)
+  const countRec = await this.inventoryCountRepo.findOne({
+    where: { id },
+    relations: ['itemVariant', 'itemVariant.itemNameDescription'],
+  });
+  if (!countRec) throw new NotFoundException(`InventoryCount #${id} not found`);
 
-    const oldSqm = countRec.sqm;
-    const oldSqmOfr = txn.sqmofr;
-    const originalType = countRec.type;
-
-    // ROLLBACK
-    switch (originalType) {
-      case CountType.RVR:
-        oldBatch.start -= oldSqm;
-        oldVariant.totalStart -= oldSqm;
-        break;
-      case CountType.S:
-        oldBatch.start -= oldSqm;
-        oldBatch.startOFR = oldBatch.start;
-        oldVariant.totalStart -= oldSqm;
-        oldVariant.totalStartOFR = oldVariant.totalStart;
-        break;
-      case CountType.G:
-        oldBatch.startOFR -= oldSqmOfr;
-        oldVariant.totalStartOFR -= oldSqmOfr;
-        break;
-      case CountType.SR:
-        oldBatch.start -= oldSqm;
-        oldBatch.startOFR -= oldSqmOfr;
-        oldVariant.totalStart -= oldSqm;
-        oldVariant.totalStartOFR -= oldSqmOfr;
-        break;
-    }
-
-    let newBatch = oldBatch;
-    let newVariant = oldVariant;
-    if (data.itemBatchId != null && data.itemBatchId !== oldBatch.id) {
-      newBatch = await this.itemBatchRepo.findOne({
-        where: { id: data.itemBatchId },
-        relations: ['itemVariant'],
-      });
-      if (!newBatch)
-        throw new NotFoundException(`ItemBatch #${data.itemBatchId} not found`);
-      newVariant = newBatch.itemVariant;
-      countRec.itemVariant = newVariant;
-    }
-
-    countRec.date = data.date ?? countRec.date;
-    countRec.count = data.count ?? countRec.count;
-    countRec.type = data.type ?? countRec.type;
-    countRec.finalCost = data.finalCost ?? countRec.finalCost;
-    countRec.finalCostOfr = data.finalCostOfr ?? countRec.finalCostOfr;
-
-    const unit = data.unit ?? 'sheet';
-    const cnt = countRec.count;
-    const cntOfr = data.countOFR ?? cnt;
-    const oneM2 =
-      (Number(newVariant.length) * Number(newVariant.width)) / 10000;
-
-    let rawSqm = 0;
-    let rawSqmOfr = 0;
-    switch (unit) {
-      case 'box':
-        rawSqm = oneM2 * newVariant.sheetsPerBox * cnt;
-        rawSqmOfr = oneM2 * newVariant.sheetsPerBox * cntOfr;
-        break;
-      case 'sheet':
-        rawSqm = oneM2 * cnt;
-        rawSqmOfr = oneM2 * cntOfr;
-        break;
-      case 'sqm':
-        rawSqm = cnt;
-        rawSqmOfr = cntOfr;
-        break;
-    }
-
-    countRec.sqm = Number(rawSqm.toFixed(2));
-
-    let newSqm = 0;
-    let newSqmOfr = 0;
-    let qty = 0;
-    let qtyOfr = 0;
-
-    switch (countRec.type) {
-      case CountType.S:
-        newSqm = countRec.sqm;
-        newSqmOfr = newSqm;
-        qty = cnt;
-        qtyOfr = cnt;
-        break;
-      case CountType.SR:
-        newSqm = countRec.sqm;
-        newSqmOfr = Number(rawSqmOfr.toFixed(2));
-        qty = cnt;
-        qtyOfr = cntOfr;
-        break;
-      case CountType.G:
-        newSqm = 0;
-        newSqmOfr = countRec.sqm;
-        qty = 0;
-        qtyOfr = cnt;
-        break;
-      case CountType.RVR:
-        newSqm = countRec.sqm;
-        newSqmOfr = 0;
-        qty = cnt;
-        qtyOfr = 0;
-        break;
-    }
-
-    txn.sqm = newSqm;
-    txn.sqmofr = newSqmOfr;
-    txn.quantity = qty;
-    txn.quantityofr = qtyOfr;
-    txn.finalcost = countRec.finalCost;
-    txn.finalcostofr = countRec.finalCostOfr;
-    txn.itemVariant = newVariant;
-    txn.itemBatchId = newBatch.id;
-
-    // APPLY NEW VALUES
-    switch (countRec.type) {
-      case CountType.RVR:
-        newBatch.start += newSqm;
-        newVariant.totalStart += newSqm;
-        break;
-      case CountType.S:
-        newBatch.start += newSqm;
-        newBatch.startOFR = newBatch.start;
-        newVariant.totalStart += newSqm;
-        newVariant.totalStartOFR = newVariant.totalStart;
-        break;
-      case CountType.G:
-        newBatch.startOFR += newSqmOfr;
-        newVariant.totalStartOFR += newSqmOfr;
-        break;
-      case CountType.SR:
-        newBatch.start += newSqm;
-        newBatch.startOFR += newSqmOfr;
-        newVariant.totalStart += newSqm;
-        newVariant.totalStartOFR += newSqmOfr;
-        break;
-    }
-
-    // BALANCE UPDATES
-    newBatch.balance =
-      Number(newBatch.start || 0) +
-      Number(newBatch.in || 0) -
-      Number(newBatch.out || 0);
-    newBatch.balanceOFR = newBatch.startOFR ?? newBatch.balance;
-
-    newVariant.totalBalance =
-      Number(newVariant.totalStart || 0) +
-      Number(newVariant.totalIn || 0) -
-      Number(newVariant.totalOut || 0);
-    newVariant.totalBalanceOFR =
-      newVariant.totalStartOFR ?? newVariant.totalBalance;
-
-    await this.inventoryCountRepo.save(countRec);
-    await this.inventoryTxnRepo.save(txn);
-
-    if (newBatch.id !== oldBatch.id) {
-      oldBatch.balance =
-        Number(oldBatch.start || 0) +
-        Number(oldBatch.in || 0) -
-        Number(oldBatch.out || 0);
-      oldBatch.balanceOFR = oldBatch.startOFR ?? oldBatch.balance;
-
-      oldVariant.totalBalance =
-        Number(oldVariant.totalStart || 0) +
-        Number(oldVariant.totalIn || 0) -
-        Number(oldVariant.totalOut || 0);
-      oldVariant.totalBalanceOFR =
-        oldVariant.totalStartOFR ?? oldVariant.totalBalance;
-
-      await this.itemBatchRepo.save(newBatch);
-      await this.itemVariantRepo.save(newVariant);
-      await this.itemBatchRepo.save(oldBatch);
-      await this.itemVariantRepo.save(oldVariant);
-    } else {
-      await this.itemBatchRepo.save(newBatch);
-      await this.itemVariantRepo.save(newVariant);
-    }
-
-    return countRec;
+  // Load the transaction attached to this count
+  const txn = await this.inventoryTxnRepo.findOne({
+    where: { inventoryCountId: id },
+  });
+  if (!txn) {
+    throw new NotFoundException(`InventoryTransaction for count #${id} not found`);
   }
+
+  // Old batch/variant (must exist for opening count)
+  if (!txn.itemBatchId) {
+    throw new NotFoundException(`ItemBatchId missing on txn for count #${id}`);
+  }
+
+  const oldBatch = await this.itemBatchRepo.findOne({
+    where: { id: txn.itemBatchId },
+    relations: ['itemVariant', 'itemVariant.itemNameDescription'],
+  });
+  if (!oldBatch) throw new NotFoundException(`ItemBatch #${txn.itemBatchId} not found`);
+
+  const oldVariant = oldBatch.itemVariant;
+  if (!oldVariant) throw new NotFoundException(`Old ItemVariant not found for batch #${oldBatch.id}`);
+
+  // Snapshot old values used for rollback (use txn.sqm / txn.sqmofr as truth)
+  const oldSqm = round2(txn.sqm);
+  const oldSqmOfr = round2(txn.sqmofr);
+  const originalType = countRec.type;
+
+  // ─────────────────────────────
+  // ROLLBACK old effect
+  // ─────────────────────────────
+  switch (originalType) {
+    case CountType.RVR:
+      oldBatch.start = round2(Number(oldBatch.start || 0) - oldSqm);
+      oldVariant.totalStart = round2(Number(oldVariant.totalStart || 0) - oldSqm);
+      break;
+
+    case CountType.S:
+      oldBatch.start = round2(Number(oldBatch.start || 0) - oldSqm);
+      oldBatch.startOFR = oldBatch.start; // S mirrors
+      oldVariant.totalStart = round2(Number(oldVariant.totalStart || 0) - oldSqm);
+      oldVariant.totalStartOFR = oldVariant.totalStart;
+      break;
+
+    case CountType.G:
+      oldBatch.startOFR = round2(Number(oldBatch.startOFR || 0) - oldSqmOfr);
+      oldVariant.totalStartOFR = round2(Number(oldVariant.totalStartOFR || 0) - oldSqmOfr);
+      break;
+
+    case CountType.SR:
+      oldBatch.start = round2(Number(oldBatch.start || 0) - oldSqm);
+      oldBatch.startOFR = round2(Number(oldBatch.startOFR || 0) - oldSqmOfr);
+      oldVariant.totalStart = round2(Number(oldVariant.totalStart || 0) - oldSqm);
+      oldVariant.totalStartOFR = round2(Number(oldVariant.totalStartOFR || 0) - oldSqmOfr);
+      break;
+  }
+
+  // ─────────────────────────────
+  // Decide new batch/variant
+  // ─────────────────────────────
+  let newBatch = oldBatch;
+  let newVariant = oldVariant;
+
+  if (data.itemBatchId != null && data.itemBatchId !== oldBatch.id) {
+    const found = await this.itemBatchRepo.findOne({
+      where: { id: data.itemBatchId },
+      relations: ['itemVariant', 'itemVariant.itemNameDescription'],
+    });
+    if (!found) throw new NotFoundException(`ItemBatch #${data.itemBatchId} not found`);
+    if (!found.itemVariant) throw new NotFoundException(`ItemVariant missing on ItemBatch #${found.id}`);
+
+    newBatch = found;
+    newVariant = found.itemVariant;
+
+    countRec.itemVariant = newVariant;
+    countRec.itemVariantId = newVariant.id; // safety
+  }
+
+  // ─────────────────────────────
+  // Apply new inputs to countRec (date/count/type/costs)
+  // ─────────────────────────────
+  const nextType: CountType = (data.type ?? countRec.type) as CountType;
+
+  const nextDateStr =
+    normalizeDateYYYYMMDD(data.date) ??
+    normalizeDateYYYYMMDD(countRec.date) ??
+    normalizeDateYYYYMMDD(txn.dateForEachInvoice) ??
+    null;
+
+  if (!nextDateStr) {
+    throw new NotFoundException(`Invalid date for InventoryCount #${id}`);
+  }
+
+  const nextCount = Number(data.count ?? countRec.count ?? 0);
+  const unit: 'box' | 'sheet' | 'sqm' = (data.unit ?? 'sheet') as any;
+
+  // SR needs countOFR; if not provided, we fall back to count
+  const nextCountOfr = Number(hasVal(data.countOFR) ? data.countOFR : nextCount);
+
+  // Costs like createSingleopening
+  const inFinalCost = Number(data.finalCost ?? countRec.finalCost ?? 0);
+  const inFinalCostOfr = Number(data.finalCostOfr ?? countRec.finalCostOfr ?? 0);
+
+  let fc = 0;
+  let fco = 0;
+  if (nextType === CountType.S) {
+    fc = inFinalCost;
+    fco = inFinalCost;
+  } else if (nextType === CountType.G) {
+    fc = 0;
+    fco = inFinalCostOfr;
+  } else if (nextType === CountType.RVR) {
+    fc = inFinalCost;
+    fco = 0;
+  } else if (nextType === CountType.SR) {
+    fc = inFinalCost;
+    fco = inFinalCostOfr;
+  }
+
+  // Store updated count fields
+  countRec.date = nextDateStr as any;
+  countRec.count = nextCount;
+  countRec.type = nextType;
+  countRec.finalCost = round2(fc);
+  countRec.finalCostOfr = round2(fco);
+
+  // ─────────────────────────────
+  // Compute sqm + sqmOfr (same style as createSingleopening)
+  // ─────────────────────────────
+  const oneM2 = (Number(newVariant.length) * Number(newVariant.width)) / 10000;
+
+  let rawSqm = 0;
+  let rawSqmOfr = 0;
+
+  // For G: OFR count is the normal count; for others: OFR can differ (SR)
+  const countForOfr = nextType === CountType.G ? nextCount : nextCountOfr;
+
+  switch (unit) {
+    case 'box':
+      rawSqm = oneM2 * Number(newVariant.sheetsPerBox || 0) * nextCount;
+      rawSqmOfr = oneM2 * Number(newVariant.sheetsPerBox || 0) * countForOfr;
+      break;
+    case 'sheet':
+      rawSqm = oneM2 * nextCount;
+      rawSqmOfr = oneM2 * countForOfr;
+      break;
+    case 'sqm':
+      rawSqm = nextCount;
+      rawSqmOfr = countForOfr;
+      break;
+  }
+
+  const sqm = round2(rawSqm);
+  const sqmOfr = round2(rawSqmOfr);
+
+  countRec.sqm = sqm;
+  // ✅ you added sqmOfr on InventoryCount, so keep it updated
+  (countRec as any).sqmOfr = sqmOfr;
+
+  // Optional: push opening costs into variant like your create (FIXED mapping)
+  // averageCost   <- finalCost (fc)
+  // averageCostVM <- finalCostOfr (fco)
+  if (fc > 0) {
+    newVariant.averageCost = round2(fc);
+  }
+  if (fco > 0) {
+    newVariant.averageCostVM = round2(fco);
+  }
+
+  // Special: type=RVR push fc into itemNameDescription.averageCostCVM (like create)
+  if (nextType === CountType.RVR && fc > 0 && (newVariant as any).itemNameDescription) {
+    (newVariant as any).itemNameDescription.averageCostCVM = round2(fc);
+    if (this.itemNameDescriptionRepo) {
+      await this.itemNameDescriptionRepo.save((newVariant as any).itemNameDescription);
+    }
+  }
+
+  // ─────────────────────────────
+  // Update transaction fields (sqm/qty/date/batch/variant/cost)
+  // ─────────────────────────────
+  let txnSqm = 0;
+  let txnSqmOfr = 0;
+  let qty = 0;
+  let qtyOfr = 0;
+
+  switch (nextType) {
+    case CountType.S:
+      txnSqm = sqm;
+      txnSqmOfr = sqm;
+      qty = nextCount;
+      qtyOfr = nextCount;
+      break;
+
+    case CountType.G:
+      txnSqm = 0;
+      txnSqmOfr = sqmOfr;
+      qty = 0;
+      qtyOfr = nextCount; // G uses normal count as OFR quantity
+      break;
+
+    case CountType.RVR:
+      txnSqm = sqm;
+      txnSqmOfr = 0;
+      qty = nextCount;
+      qtyOfr = 0;
+      break;
+
+    case CountType.SR:
+      txnSqm = sqm;
+      txnSqmOfr = sqmOfr;
+      qty = nextCount;
+      qtyOfr = nextCountOfr;
+      break;
+  }
+
+  txn.sqm = round2(txnSqm);
+  txn.sqmofr = round2(txnSqmOfr);
+  txn.quantity = qty;
+  txn.quantityofr = qtyOfr;
+
+  txn.finalcost = round2(fc);
+  txn.finalcostofr = round2(fco);
+
+  txn.itemVariant = newVariant;
+  txn.itemVariantId = newVariant.id;
+
+  txn.itemBatchId = newBatch.id;
+
+  // ✅ critical: keep sorting date aligned
+  txn.dateForEachInvoice = new Date(nextDateStr);
+
+  // keep your transactionType (or force it)
+  // txn.transactionType = 'Opening Count';
+
+  // ─────────────────────────────
+  // APPLY new effect to batch/variant totals
+  // Use txnSqm/txnSqmOfr as the exact applied values
+  // ─────────────────────────────
+  const appliedSqm = round2(txn.sqm);
+  const appliedSqmOfr = round2(txn.sqmofr);
+
+  switch (nextType) {
+    case CountType.RVR:
+      newBatch.start = round2(Number(newBatch.start || 0) + appliedSqm);
+      newVariant.totalStart = round2(Number(newVariant.totalStart || 0) + appliedSqm);
+      break;
+
+    case CountType.S:
+      newBatch.start = round2(Number(newBatch.start || 0) + appliedSqm);
+      newBatch.startOFR = newBatch.start; // mirror
+      newVariant.totalStart = round2(Number(newVariant.totalStart || 0) + appliedSqm);
+      newVariant.totalStartOFR = newVariant.totalStart;
+      break;
+
+    case CountType.G:
+      newBatch.startOFR = round2(Number(newBatch.startOFR || 0) + appliedSqmOfr);
+      newVariant.totalStartOFR = round2(Number(newVariant.totalStartOFR || 0) + appliedSqmOfr);
+      break;
+
+    case CountType.SR:
+      newBatch.start = round2(Number(newBatch.start || 0) + appliedSqm);
+      newBatch.startOFR = round2(Number(newBatch.startOFR || 0) + appliedSqmOfr);
+      newVariant.totalStart = round2(Number(newVariant.totalStart || 0) + appliedSqm);
+      newVariant.totalStartOFR = round2(Number(newVariant.totalStartOFR || 0) + appliedSqmOfr);
+      break;
+  }
+
+  // BALANCES (compute properly)
+  const nbStart = Number(newBatch.start || 0);
+  const nbIn = Number((newBatch as any).in || 0);
+  const nbOut = Number((newBatch as any).out || 0);
+  newBatch.balance = round2(nbStart + nbIn - nbOut);
+
+  const nbStartO = Number((newBatch as any).startOFR || 0);
+  const nbInO = Number((newBatch as any).inOFR || 0);
+  const nbOutO = Number((newBatch as any).outOFR || 0);
+  newBatch.balanceOFR = round2(nbStartO + nbInO - nbOutO);
+
+  const nvStart = Number((newVariant as any).totalStart || 0);
+  const nvIn = Number((newVariant as any).totalIn || 0);
+  const nvOut = Number((newVariant as any).totalOut || 0);
+  newVariant.totalBalance = round2(nvStart + nvIn - nvOut);
+
+  const nvStartO = Number((newVariant as any).totalStartOFR || 0);
+  const nvInO = Number((newVariant as any).totalInOFR || 0);
+  const nvOutO = Number((newVariant as any).totalOutOFR || 0);
+  newVariant.totalBalanceOFR = round2(nvStartO + nvInO - nvOutO);
+
+  // Also refresh old batch/variant balances if batch changed
+  const refreshBatchVariantBalances = (b: any, v: any) => {
+    const bStart = Number(b.start || 0);
+    const bIn = Number(b.in || 0);
+    const bOut = Number(b.out || 0);
+    b.balance = round2(bStart + bIn - bOut);
+
+    const bStartO = Number(b.startOFR || 0);
+    const bInO = Number(b.inOFR || 0);
+    const bOutO = Number(b.outOFR || 0);
+    b.balanceOFR = round2(bStartO + bInO - bOutO);
+
+    const vStart = Number(v.totalStart || 0);
+    const vIn = Number(v.totalIn || 0);
+    const vOut = Number(v.totalOut || 0);
+    v.totalBalance = round2(vStart + vIn - vOut);
+
+    const vStartO = Number(v.totalStartOFR || 0);
+    const vInO = Number(v.totalInOFR || 0);
+    const vOutO = Number(v.totalOutOFR || 0);
+    v.totalBalanceOFR = round2(vStartO + vInO - vOutO);
+  };
+
+  // Save everything
+  await this.inventoryCountRepo.save(countRec);
+  await this.inventoryTxnRepo.save(txn);
+
+  if (newBatch.id !== oldBatch.id) {
+    refreshBatchVariantBalances(oldBatch, oldVariant);
+
+    await this.itemBatchRepo.save(newBatch);
+    await this.itemVariantRepo.save(newVariant);
+
+    await this.itemBatchRepo.save(oldBatch);
+    await this.itemVariantRepo.save(oldVariant);
+  } else {
+    await this.itemBatchRepo.save(newBatch);
+    await this.itemVariantRepo.save(newVariant);
+  }
+
+  return countRec;
+}
 
 async createSingleopening(data: any): Promise<InventoryCount> {
   const {
