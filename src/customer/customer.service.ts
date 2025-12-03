@@ -224,113 +224,155 @@ export class CustomerService {
     return 'USD';
   }
 
-  async getCustomerBasicDetails(): Promise<any[]> {
-    // "today" as YYYY-MM-DD (same format you use elsewhere)
-    const today = new Date().toISOString().slice(0, 10);
+ async getCustomerBasicDetails(): Promise<
+  Array<{
+    id: number;
+    customerName: string | null;
+    customerAccountNumber: string | null;
+    firstName: string | null;
+    middleName: string | null;
+    phoneNumber: string | null;
+    area: string | null;
+    address: string | null;
+    invoiceType: string | null;
+    currencyId: number | null;
+    currencyCode: 'USD' | 'LL' | 'EURO' | 'BASE';
+    closingBalanceS: number; // S + RVR
+    closingBalanceG: number; // G only
+    balanceAsOf: string;
+  }>
+> {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-    // 1) Load customers (include fields you want in the modal)
-    const customers = await this.customerRepository.find({
-      select: [
-        'id',
-        'customerName',
-        'customerAccountNumber',
-        'firstName',
-        'middleName',
-        'phoneNumber',
-        'area',
-        'address',
-        'invoiceType',
-        'currencyId',
-      ],
-    });
+  // 1) Load customers + currency code (so we pick correct columns)
+  const customers = await this.customerRepository
+    .createQueryBuilder('c')
+    .leftJoin('c.currency', 'cur') // assumes relation exists
+    .select([
+      'c.id AS id',
+      'c.customerName AS customerName',
+      'c.customerAccountNumber AS customerAccountNumber',
+      'c.firstName AS firstName',
+      'c.middleName AS middleName',
+      'c.phoneNumber AS phoneNumber',
+      'c.area AS area',
+      'c.address AS address',
+      'c.invoiceType AS invoiceType',
+      'c.currencyId AS currencyId',
+      'cur.code AS currencyCode',
+    ])
+    .getRawMany();
 
-    if (!customers.length) return [];
+  if (!customers.length) return [];
 
-    // 2) Column maps (same idea as your statement)
-    const ofrColMap = {
-      USD: { dr: 'drUSDOFR', cr: 'crUSDOFR' },
-      LL: { dr: 'drLLOFR', cr: 'crLLOFR' },
-      EURO: { dr: 'drOFR', cr: 'crOFR' },
-      BASE: { dr: 'drOFR', cr: 'crOFR' },
-    } as const;
+  const normalizeCurrency = (rawCode: any, currencyId: any): 'USD' | 'LL' | 'EURO' | 'BASE' => {
+    const c = String(rawCode ?? '').toUpperCase().trim();
 
-    const baseColMap = {
-      USD: { dr: 'drUSD', cr: 'crUSD' },
-      LL: { dr: 'drLL', cr: 'crLL' },
-      EURO: { dr: 'dr', cr: 'cr' },
-      BASE: { dr: 'dr', cr: 'cr' },
-    } as const;
+    if (c === 'EUR' || c === 'EU' || c === 'EURO') return 'EURO';
+    if (c === 'LBP' || c === 'L.L' || c === 'LL' || c === 'LIRA') return 'LL';
+    if (c === 'BASE') return 'BASE';
+    if (c === 'USD' || c === '$') return 'USD';
 
-    const isGCond = `(jv.jvType = 'G' OR d.docNbr LIKE 'G%')`;
+    // fallback (same idea you had)
+    return Number(currencyId) === 2 ? 'LL' : 'USD';
+  };
 
-    // 3) Group customers by currency code
-    const idsByCurrency = new Map<string, number[]>();
-    for (const c of customers as any[]) {
-      const code = this.getCurrencyCodeFromCustomer(c);
-      if (!idsByCurrency.has(code)) idsByCurrency.set(code, []);
-      idsByCurrency.get(code)!.push(c.id);
-    }
+  // 2) Column maps
+  const ofrColMap = {
+    USD:  { dr: 'drUSDOFR', cr: 'crUSDOFR' },
+    LL:   { dr: 'drLLOFR',  cr: 'crLLOFR'  },
+    EURO: { dr: 'drOFR',    cr: 'crOFR'    },
+    BASE: { dr: 'drOFR',    cr: 'crOFR'    },
+  } as const;
 
-    // 4) For each currency group, run ONE aggregation query
-    const balanceMap = new Map<number, { closingS: number; closingG: number }>();
+  const baseColMap = {
+    USD:  { dr: 'drUSD', cr: 'crUSD' },
+    LL:   { dr: 'drLL',  cr: 'crLL'  },
+    EURO: { dr: 'dr',    cr: 'cr'    },
+    BASE: { dr: 'dr',    cr: 'cr'    },
+  } as const;
 
-    for (const [currencyCode, ids] of idsByCurrency.entries()) {
-      const sCols = (baseColMap as any)[currencyCode] ?? baseColMap.USD;
-      const gCols = (ofrColMap as any)[currencyCode] ?? ofrColMap.USD;
-
-      // closingS: ONLY non-G rows using base columns
-      // closingG: ONLY G rows using OFR columns
-      const raws = await this.journalVoucherDetailRepository
-        .createQueryBuilder('d')
-        .leftJoin('d.journalVoucher', 'jv')
-        .select('d.customerId', 'customerId')
-        .addSelect(
-          `
-          SUM(
-            CASE WHEN ${isGCond}
-              THEN 0
-              ELSE (IFNULL(d.${sCols.dr},0) - IFNULL(d.${sCols.cr},0))
-            END
-          )
-          `,
-          'closingS',
-        )
-        .addSelect(
-          `
-          SUM(
-            CASE WHEN ${isGCond}
-              THEN (IFNULL(d.${gCols.dr},0) - IFNULL(d.${gCols.cr},0))
-              ELSE 0
-            END
-          )
-          `,
-          'closingG',
-        )
-        .where('d.customerId IN (:...ids)', { ids })
-        .andWhere('jv.date <= :today', { today })
-        .groupBy('d.customerId')
-        .getRawMany();
-
-      for (const r of raws) {
-        const cid = Number(r.customerId);
-        balanceMap.set(cid, {
-          closingS: Number(r.closingS || 0),
-          closingG: Number(r.closingG || 0),
-        });
-      }
-    }
-
-    // 5) Attach balances to every customer (default 0 if none)
-    return customers.map((c: any) => {
-      const b = balanceMap.get(c.id) ?? { closingS: 0, closingG: 0 };
-      return {
-        ...c,
-        closingBalanceS: b.closingS,
-        closingBalanceG: b.closingG,
-        balanceAsOf: today,
-      };
-    });
+  // 3) Group customer IDs by currency
+  const idsByCurrency = new Map<'USD' | 'LL' | 'EURO' | 'BASE', number[]>();
+  for (const c of customers as any[]) {
+    const code = normalizeCurrency(c.currencyCode, c.currencyId);
+    c.currencyCode = code;
+    const id = Number(c.id);
+    if (!idsByCurrency.has(code)) idsByCurrency.set(code, []);
+    idsByCurrency.get(code)!.push(id);
   }
+
+  // 4) Aggregated balances map
+  const balanceMap = new Map<number, { s: number; g: number }>();
+
+  for (const [code, ids] of idsByCurrency.entries()) {
+    const sCols = baseColMap[code];
+    const gCols = ofrColMap[code];
+
+    const raws = await this.journalVoucherDetailRepository
+      .createQueryBuilder('d')
+      .leftJoin('d.journalVoucher', 'jv')
+      .select('d.customerId', 'customerId')
+      // ✅ S closing = S + RVR (using base columns)
+      .addSelect(
+        `
+        SUM(
+          CASE WHEN jv.jvType IN ('S','RVR')
+            THEN (COALESCE(d.${sCols.dr},0) - COALESCE(d.${sCols.cr},0))
+            ELSE 0
+          END
+        )
+        `,
+        'closingS',
+      )
+      // ✅ G closing = ONLY G (using OFR columns)
+      .addSelect(
+        `
+        SUM(
+          CASE WHEN jv.jvType = 'G'
+            THEN (COALESCE(d.${gCols.dr},0) - COALESCE(d.${gCols.cr},0))
+            ELSE 0
+          END
+        )
+        `,
+        'closingG',
+      )
+      .where('d.customerId IN (:...ids)', { ids })
+      .andWhere('jv.date <= :today', { today })
+      .groupBy('d.customerId')
+      .getRawMany();
+
+    for (const r of raws) {
+      const cid = Number(r.customerId);
+      balanceMap.set(cid, {
+        s: Number(r.closingS || 0),
+        g: Number(r.closingG || 0),
+      });
+    }
+  }
+
+  // 5) Return customers + balances
+  return (customers as any[]).map((c) => {
+    const b = balanceMap.get(Number(c.id)) ?? { s: 0, g: 0 };
+    return {
+      id: Number(c.id),
+      customerName: c.customerName ?? null,
+      customerAccountNumber: c.customerAccountNumber ?? null,
+      firstName: c.firstName ?? null,
+      middleName: c.middleName ?? null,
+      phoneNumber: c.phoneNumber ?? null,
+      area: c.area ?? null,
+      address: c.address ?? null,
+      invoiceType: c.invoiceType ?? null,
+      currencyId: c.currencyId != null ? Number(c.currencyId) : null,
+      currencyCode: c.currencyCode as 'USD' | 'LL' | 'EURO' | 'BASE',
+      closingBalanceS: b.s, // S + RVR
+      closingBalanceG: b.g, // G only
+      balanceAsOf: today,
+    };
+  });
+}
+
 
 
   /**
