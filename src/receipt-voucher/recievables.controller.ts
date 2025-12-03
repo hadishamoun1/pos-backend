@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   ParseIntPipe,
+  Delete,
 } from '@nestjs/common';
 import { RecievablesService } from './recievables.service';
 import { ReceiptEntry } from '../entities/recievables.entities';
@@ -63,5 +64,11 @@ export class RecievablesController {
   @Get('v1/summary')
   getSummary() {
     return this.service.findSummary();
+  }
+
+
+   @Delete(':id')
+  delete(@Param('id', ParseIntPipe) id: number) {
+    return this.service.delete(id);
   }
 }

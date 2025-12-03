@@ -472,4 +472,50 @@ const descriptionText = autoDesc ?? data.comments ?? null;
 
     return updated;
   }
+
+
+
+
+// In RecievablesService
+
+async delete(id: number): Promise<{ ok: true; id: number }> {
+  await this.entryRepo.manager.transaction(async (mgr) => {
+    const entryRepo = mgr.getRepository(ReceiptEntry);
+    const jvRepo = mgr.getRepository(JournalVoucher);
+    const jvDetailRepo = mgr.getRepository(JournalVoucherDetail);
+
+    const entry = await entryRepo.findOne({
+      where: { id },
+      relations: ['journalVoucher'],
+    });
+    if (!entry) throw new NotFoundException('Receipt entry not found');
+
+    const jvId = entry.journalVoucher?.id ?? entry.journalVoucherId ?? null;
+
+    // If JV has a back-link to receiptEntryId, null it FIRST to avoid the reverse FK (if you have it)
+    if (jvId) {
+      const jv = await jvRepo.findOne({ where: { id: jvId } });
+      if (jv && (jv as any).receiptEntryId != null) {
+        (jv as any).receiptEntryId = null;
+        await jvRepo.save(jv);
+      }
+    }
+
+    // ✅ 1) Delete the child first (receipt_entries) so it no longer references the JV
+    await entryRepo.delete({ id });
+
+    // ✅ 2) Then delete JV details + JV
+    if (jvId) {
+      await jvDetailRepo.delete({ journalVoucherId: jvId });
+      await jvRepo.delete({ id: jvId });
+    }
+  });
+
+  // ✅ Broadcast updated list afterwards
+  this.gateway.broadcastAll(await this.findSummary());
+
+  return { ok: true, id };
+}
+
+
 }
