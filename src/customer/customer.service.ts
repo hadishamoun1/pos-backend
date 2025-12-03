@@ -16,14 +16,11 @@ export type CustomerBasicWithBalances = {
   phoneNumber: string | null;
   area: string | null;
   address: string | null;
-  invoiceType: Customer['invoiceType'] | null;  // ✅ important
-  currencyId: number | null;
-  currencyCode: 'USD' | 'LL' | 'EURO' | 'BASE';
-  closingBalanceS: number;
-  closingBalanceG: number;
-  balanceAsOf: string;
+  invoiceType: Customer['invoiceType'] | null; // 'S' | 'G' | 'Both'
+  closingBalanceS: number; // S + SR
+  closingBalanceG: number; // G only
+  balanceAsOf: string;     // YYYY-MM-DD
 };
-
 
 @Injectable()
 export class CustomerService {
@@ -252,10 +249,9 @@ export class CustomerService {
 async getCustomerBasicDetails(): Promise<CustomerBasicWithBalances[]> {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-  // 1) Load customers + currency code
+  // 1) Load customers (no currency join)
   const customers = await this.customerRepository
     .createQueryBuilder('c')
-    .leftJoin('c.currency', 'cur')
     .select([
       'c.id AS id',
       'c.customerName AS customerName',
@@ -266,102 +262,57 @@ async getCustomerBasicDetails(): Promise<CustomerBasicWithBalances[]> {
       'c.area AS area',
       'c.address AS address',
       'c.invoiceType AS invoiceType',
-      'c.currencyId AS currencyId',
-      'cur.code AS currencyCode', // if your Currency entity uses a different field, change this line
     ])
     .getRawMany();
 
   if (!customers.length) return [];
 
-  // Normalize currency code
-  const normalizeCurrency = (
-    rawCode: any,
-    currencyId: any,
-  ): 'USD' | 'LL' | 'EURO' | 'BASE' => {
-    const c = String(rawCode ?? '').toUpperCase().trim();
-    if (c === 'EUR' || c === 'EU' || c === 'EURO') return 'EURO';
-    if (c === 'LBP' || c === 'L.L' || c === 'LL' || c === 'LIRA') return 'LL';
-    if (c === 'BASE') return 'BASE';
-    if (c === 'USD' || c === '$') return 'USD';
-    return Number(currencyId) === 2 ? 'LL' : 'USD';
-  };
+  const ids = customers.map((c: any) => Number(c.id)).filter((n) => Number.isFinite(n));
+  if (!ids.length) return [];
 
-  // 2) Column maps
-  const ofrColMap = {
-    USD:  { dr: 'drUSDOFR', cr: 'crUSDOFR' },
-    LL:   { dr: 'drLLOFR',  cr: 'crLLOFR'  },
-    EURO: { dr: 'drOFR',    cr: 'crOFR'    },
-    BASE: { dr: 'drOFR',    cr: 'crOFR'    },
-  } as const;
+  // 2) Aggregate balances for ALL customers in one query (USD only)
+  const raws = await this.journalVoucherDetailRepository
+    .createQueryBuilder('d')
+    .leftJoin('d.journalVoucher', 'jv')
+    .select('d.customerId', 'customerId')
+    // S + SR use drUSD/crUSD
+    .addSelect(
+      `
+      SUM(
+        CASE WHEN jv.jvType IN ('S','SR')
+          THEN (COALESCE(d.drUSD,0) - COALESCE(d.crUSD,0))
+          ELSE 0
+        END
+      )
+      `,
+      'closingS',
+    )
+    // G only uses drUSDOFR/crUSDOFR
+    .addSelect(
+      `
+      SUM(
+        CASE WHEN jv.jvType = 'G'
+          THEN (COALESCE(d.drUSDOFR,0) - COALESCE(d.crUSDOFR,0))
+          ELSE 0
+        END
+      )
+      `,
+      'closingG',
+    )
+    .where('d.customerId IN (:...ids)', { ids })
+    .andWhere('jv.date <= :today', { today })
+    .groupBy('d.customerId')
+    .getRawMany();
 
-  const baseColMap = {
-    USD:  { dr: 'drUSD', cr: 'crUSD' },
-    LL:   { dr: 'drLL',  cr: 'crLL'  },
-    EURO: { dr: 'dr',    cr: 'cr'    },
-    BASE: { dr: 'dr',    cr: 'cr'    },
-  } as const;
-
-  // 3) Group customer IDs by currency (so each group uses correct columns)
-  const idsByCurrency = new Map<'USD' | 'LL' | 'EURO' | 'BASE', number[]>();
-  for (const row of customers as any[]) {
-    const code = normalizeCurrency(row.currencyCode, row.currencyId);
-    row.currencyCode = code;
-    const id = Number(row.id);
-
-    if (!idsByCurrency.has(code)) idsByCurrency.set(code, []);
-    idsByCurrency.get(code)!.push(id);
-  }
-
-  // 4) Aggregated balances map (customerId -> {s,g})
   const balanceMap = new Map<number, { s: number; g: number }>();
-
-  for (const [code, ids] of idsByCurrency.entries()) {
-    const sCols = baseColMap[code];
-    const gCols = ofrColMap[code];
-
-    const raws = await this.journalVoucherDetailRepository
-      .createQueryBuilder('d')
-      .leftJoin('d.journalVoucher', 'jv')
-      .select('d.customerId', 'customerId')
-      // ✅ S closing = S + SR (NOT docNbr)
-      .addSelect(
-        `
-        SUM(
-          CASE WHEN jv.jvType IN ('S','SR')
-            THEN (COALESCE(d.${sCols.dr},0) - COALESCE(d.${sCols.cr},0))
-            ELSE 0
-          END
-        )
-        `,
-        'closingS',
-      )
-      // ✅ G closing = G only (NOT docNbr)
-      .addSelect(
-        `
-        SUM(
-          CASE WHEN jv.jvType = 'G'
-            THEN (COALESCE(d.${gCols.dr},0) - COALESCE(d.${gCols.cr},0))
-            ELSE 0
-          END
-        )
-        `,
-        'closingG',
-      )
-      .where('d.customerId IN (:...ids)', { ids })
-      .andWhere('jv.date <= :today', { today })
-      .groupBy('d.customerId')
-      .getRawMany();
-
-    for (const r of raws as any[]) {
-      const cid = Number(r.customerId);
-      balanceMap.set(cid, {
-        s: Number(r.closingS || 0),
-        g: Number(r.closingG || 0),
-      });
-    }
+  for (const r of raws as any[]) {
+    balanceMap.set(Number(r.customerId), {
+      s: Number(r.closingS || 0),
+      g: Number(r.closingG || 0),
+    });
   }
 
-  // 5) Return customers + balances (and fix invoiceType typing)
+  // 3) Return customers + balances
   return (customers as any[]).map((c) => {
     const b = balanceMap.get(Number(c.id)) ?? { s: 0, g: 0 };
 
@@ -374,12 +325,7 @@ async getCustomerBasicDetails(): Promise<CustomerBasicWithBalances[]> {
       phoneNumber: c.phoneNumber ?? null,
       area: c.area ?? null,
       address: c.address ?? null,
-
-      // ✅ cast to your entity union: 'S' | 'G' | 'Both'
       invoiceType: (c.invoiceType ?? null) as Customer['invoiceType'] | null,
-
-      currencyId: c.currencyId != null ? Number(c.currencyId) : null,
-      currencyCode: c.currencyCode as 'USD' | 'LL' | 'EURO' | 'BASE',
       closingBalanceS: b.s,
       closingBalanceG: b.g,
       balanceAsOf: today,
