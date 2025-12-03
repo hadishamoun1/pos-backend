@@ -6,6 +6,25 @@ import { Account } from '../entities/account.entity';
 import { Currency } from '../entities/currency.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 
+
+export type CustomerBasicWithBalances = {
+  id: number;
+  customerName: string | null;
+  customerAccountNumber: string | null;
+  firstName: string | null;
+  middleName: string | null;
+  phoneNumber: string | null;
+  area: string | null;
+  address: string | null;
+  invoiceType: Customer['invoiceType'] | null;  // ✅ important
+  currencyId: number | null;
+  currencyCode: 'USD' | 'LL' | 'EURO' | 'BASE';
+  closingBalanceS: number;
+  closingBalanceG: number;
+  balanceAsOf: string;
+};
+
+
 @Injectable()
 export class CustomerService {
   constructor(
@@ -224,30 +243,19 @@ export class CustomerService {
     return 'USD';
   }
 
- async getCustomerBasicDetails(): Promise<
-  Array<{
-    id: number;
-    customerName: string | null;
-    customerAccountNumber: string | null;
-    firstName: string | null;
-    middleName: string | null;
-    phoneNumber: string | null;
-    area: string | null;
-    address: string | null;
-    invoiceType: string | null;
-    currencyId: number | null;
-    currencyCode: 'USD' | 'LL' | 'EURO' | 'BASE';
-    closingBalanceS: number; // S + RVR
-    closingBalanceG: number; // G only
-    balanceAsOf: string;
-  }>
-> {
+
+
+
+
+  
+
+async getCustomerBasicDetails(): Promise<CustomerBasicWithBalances[]> {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-  // 1) Load customers + currency code (so we pick correct columns)
+  // 1) Load customers + currency code
   const customers = await this.customerRepository
     .createQueryBuilder('c')
-    .leftJoin('c.currency', 'cur') // assumes relation exists
+    .leftJoin('c.currency', 'cur')
     .select([
       'c.id AS id',
       'c.customerName AS customerName',
@@ -259,21 +267,22 @@ export class CustomerService {
       'c.address AS address',
       'c.invoiceType AS invoiceType',
       'c.currencyId AS currencyId',
-      'cur.code AS currencyCode',
+      'cur.code AS currencyCode', // if your Currency entity uses a different field, change this line
     ])
     .getRawMany();
 
   if (!customers.length) return [];
 
-  const normalizeCurrency = (rawCode: any, currencyId: any): 'USD' | 'LL' | 'EURO' | 'BASE' => {
+  // Normalize currency code
+  const normalizeCurrency = (
+    rawCode: any,
+    currencyId: any,
+  ): 'USD' | 'LL' | 'EURO' | 'BASE' => {
     const c = String(rawCode ?? '').toUpperCase().trim();
-
     if (c === 'EUR' || c === 'EU' || c === 'EURO') return 'EURO';
     if (c === 'LBP' || c === 'L.L' || c === 'LL' || c === 'LIRA') return 'LL';
     if (c === 'BASE') return 'BASE';
     if (c === 'USD' || c === '$') return 'USD';
-
-    // fallback (same idea you had)
     return Number(currencyId) === 2 ? 'LL' : 'USD';
   };
 
@@ -292,17 +301,18 @@ export class CustomerService {
     BASE: { dr: 'dr',    cr: 'cr'    },
   } as const;
 
-  // 3) Group customer IDs by currency
+  // 3) Group customer IDs by currency (so each group uses correct columns)
   const idsByCurrency = new Map<'USD' | 'LL' | 'EURO' | 'BASE', number[]>();
-  for (const c of customers as any[]) {
-    const code = normalizeCurrency(c.currencyCode, c.currencyId);
-    c.currencyCode = code;
-    const id = Number(c.id);
+  for (const row of customers as any[]) {
+    const code = normalizeCurrency(row.currencyCode, row.currencyId);
+    row.currencyCode = code;
+    const id = Number(row.id);
+
     if (!idsByCurrency.has(code)) idsByCurrency.set(code, []);
     idsByCurrency.get(code)!.push(id);
   }
 
-  // 4) Aggregated balances map
+  // 4) Aggregated balances map (customerId -> {s,g})
   const balanceMap = new Map<number, { s: number; g: number }>();
 
   for (const [code, ids] of idsByCurrency.entries()) {
@@ -313,11 +323,11 @@ export class CustomerService {
       .createQueryBuilder('d')
       .leftJoin('d.journalVoucher', 'jv')
       .select('d.customerId', 'customerId')
-      // ✅ S closing = S + RVR (using base columns)
+      // ✅ S closing = S + SR (NOT docNbr)
       .addSelect(
         `
         SUM(
-          CASE WHEN jv.jvType IN ('S','RVR')
+          CASE WHEN jv.jvType IN ('S','SR')
             THEN (COALESCE(d.${sCols.dr},0) - COALESCE(d.${sCols.cr},0))
             ELSE 0
           END
@@ -325,7 +335,7 @@ export class CustomerService {
         `,
         'closingS',
       )
-      // ✅ G closing = ONLY G (using OFR columns)
+      // ✅ G closing = G only (NOT docNbr)
       .addSelect(
         `
         SUM(
@@ -342,7 +352,7 @@ export class CustomerService {
       .groupBy('d.customerId')
       .getRawMany();
 
-    for (const r of raws) {
+    for (const r of raws as any[]) {
       const cid = Number(r.customerId);
       balanceMap.set(cid, {
         s: Number(r.closingS || 0),
@@ -351,9 +361,10 @@ export class CustomerService {
     }
   }
 
-  // 5) Return customers + balances
+  // 5) Return customers + balances (and fix invoiceType typing)
   return (customers as any[]).map((c) => {
     const b = balanceMap.get(Number(c.id)) ?? { s: 0, g: 0 };
+
     return {
       id: Number(c.id),
       customerName: c.customerName ?? null,
@@ -363,15 +374,19 @@ export class CustomerService {
       phoneNumber: c.phoneNumber ?? null,
       area: c.area ?? null,
       address: c.address ?? null,
-      invoiceType: c.invoiceType ?? null,
+
+      // ✅ cast to your entity union: 'S' | 'G' | 'Both'
+      invoiceType: (c.invoiceType ?? null) as Customer['invoiceType'] | null,
+
       currencyId: c.currencyId != null ? Number(c.currencyId) : null,
       currencyCode: c.currencyCode as 'USD' | 'LL' | 'EURO' | 'BASE',
-      closingBalanceS: b.s, // S + RVR
-      closingBalanceG: b.g, // G only
+      closingBalanceS: b.s,
+      closingBalanceG: b.g,
       balanceAsOf: today,
     };
   });
 }
+
 
 
 
