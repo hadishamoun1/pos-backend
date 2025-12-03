@@ -4,6 +4,7 @@ import { Repository, Like } from 'typeorm';
 import { Customer } from '../entities/customer.entity';
 import { Account } from '../entities/account.entity';
 import { Currency } from '../entities/currency.entity';
+import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 
 @Injectable()
 export class CustomerService {
@@ -14,6 +15,10 @@ export class CustomerService {
     private accountRepository: Repository<Account>,
     @InjectRepository(Currency)
     private currencyRepository: Repository<Currency>,
+    @InjectRepository(JournalVoucherDetail)
+    private journalVoucherDetailRepository: Repository<JournalVoucherDetail>,
+
+    
   ) {}
 
   // --- area → code mapping (case-insensitive); `as const` keeps literal key types ---
@@ -207,12 +212,126 @@ export class CustomerService {
     return { customers: filteredCustomers, total };
   }
 
-  async getCustomerBasicDetails(): Promise<Partial<Customer>[]> {
-    const customers = await this.customerRepository.find({
-      select: ['id', 'customerName', 'customerAccountNumber'],
-    });
-    return customers;
+
+
+
+
+  private getCurrencyCodeFromCustomer(c: any): 'USD' | 'LL' | 'EURO' | 'BASE' {
+    // If you truly store c.currency.code somewhere, you can use it.
+    // Keeping same fallback logic as your statement method:
+    if (c?.currency?.code) return c.currency.code;
+    if (Number(c.currencyId) === 2) return 'LL';
+    return 'USD';
   }
+
+  async getCustomerBasicDetails(): Promise<any[]> {
+    // "today" as YYYY-MM-DD (same format you use elsewhere)
+    const today = new Date().toISOString().slice(0, 10);
+
+    // 1) Load customers (include fields you want in the modal)
+    const customers = await this.customerRepository.find({
+      select: [
+        'id',
+        'customerName',
+        'customerAccountNumber',
+        'firstName',
+        'middleName',
+        'phoneNumber',
+        'area',
+        'address',
+        'invoiceType',
+        'currencyId',
+      ],
+    });
+
+    if (!customers.length) return [];
+
+    // 2) Column maps (same idea as your statement)
+    const ofrColMap = {
+      USD: { dr: 'drUSDOFR', cr: 'crUSDOFR' },
+      LL: { dr: 'drLLOFR', cr: 'crLLOFR' },
+      EURO: { dr: 'drOFR', cr: 'crOFR' },
+      BASE: { dr: 'drOFR', cr: 'crOFR' },
+    } as const;
+
+    const baseColMap = {
+      USD: { dr: 'drUSD', cr: 'crUSD' },
+      LL: { dr: 'drLL', cr: 'crLL' },
+      EURO: { dr: 'dr', cr: 'cr' },
+      BASE: { dr: 'dr', cr: 'cr' },
+    } as const;
+
+    const isGCond = `(jv.jvType = 'G' OR d.docNbr LIKE 'G%')`;
+
+    // 3) Group customers by currency code
+    const idsByCurrency = new Map<string, number[]>();
+    for (const c of customers as any[]) {
+      const code = this.getCurrencyCodeFromCustomer(c);
+      if (!idsByCurrency.has(code)) idsByCurrency.set(code, []);
+      idsByCurrency.get(code)!.push(c.id);
+    }
+
+    // 4) For each currency group, run ONE aggregation query
+    const balanceMap = new Map<number, { closingS: number; closingG: number }>();
+
+    for (const [currencyCode, ids] of idsByCurrency.entries()) {
+      const sCols = (baseColMap as any)[currencyCode] ?? baseColMap.USD;
+      const gCols = (ofrColMap as any)[currencyCode] ?? ofrColMap.USD;
+
+      // closingS: ONLY non-G rows using base columns
+      // closingG: ONLY G rows using OFR columns
+      const raws = await this.journalVoucherDetailRepository
+        .createQueryBuilder('d')
+        .leftJoin('d.journalVoucher', 'jv')
+        .select('d.customerId', 'customerId')
+        .addSelect(
+          `
+          SUM(
+            CASE WHEN ${isGCond}
+              THEN 0
+              ELSE (IFNULL(d.${sCols.dr},0) - IFNULL(d.${sCols.cr},0))
+            END
+          )
+          `,
+          'closingS',
+        )
+        .addSelect(
+          `
+          SUM(
+            CASE WHEN ${isGCond}
+              THEN (IFNULL(d.${gCols.dr},0) - IFNULL(d.${gCols.cr},0))
+              ELSE 0
+            END
+          )
+          `,
+          'closingG',
+        )
+        .where('d.customerId IN (:...ids)', { ids })
+        .andWhere('jv.date <= :today', { today })
+        .groupBy('d.customerId')
+        .getRawMany();
+
+      for (const r of raws) {
+        const cid = Number(r.customerId);
+        balanceMap.set(cid, {
+          closingS: Number(r.closingS || 0),
+          closingG: Number(r.closingG || 0),
+        });
+      }
+    }
+
+    // 5) Attach balances to every customer (default 0 if none)
+    return customers.map((c: any) => {
+      const b = balanceMap.get(c.id) ?? { closingS: 0, closingG: 0 };
+      return {
+        ...c,
+        closingBalanceS: b.closingS,
+        closingBalanceG: b.closingG,
+        balanceAsOf: today,
+      };
+    });
+  }
+
 
   /**
    * ✅ Search customers by name and return only id & customerName
