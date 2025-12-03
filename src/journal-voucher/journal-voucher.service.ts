@@ -13,6 +13,10 @@ import { CurrencyRate } from '../entities/currencyRate.entity';
 import { Customer } from 'src/entities/customer.entity';
 import { Settings } from 'src/entities/settings.entity'; 
 import { QueryFailedError } from 'typeorm';
+
+
+
+
 @Injectable()
 export class JournalVoucherService {
   constructor(
@@ -385,126 +389,156 @@ async getVoucherSummary(params?: {
 }
 
 
+
+
+
+
 async getCustomerStatementOFR(params: {
   customerId: number;
-  type?: 'S' | 'G' | 'ALL';
+  type?: "S" | "G" | "ALL";
   from?: string; // 'YYYY-MM-DD'
-  to?: string;   // 'YYYY-MM-DD'
+  to?: string; // 'YYYY-MM-DD'
 }) {
-  const { customerId, type = 'ALL', from, to } = params;
+  const { customerId, type = "ALL", from, to } = params;
+
+  // Helpers: expand YMD range to full-day-safe datetime range
+  const ymdToStart = (ymd: string) => `${ymd} 00:00:00`;
+  const nextYMD = (ymd: string) => {
+    const d = new Date(`${ymd}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+
+  const fromStart = from ? ymdToStart(from) : null;           // inclusive
+  const toNext = to ? ymdToStart(nextYMD(to)) : null;         // exclusive (next day 00:00:00)
 
   // 1) Load customer & infer currency
   const customer = await this.customerRepo.findOne({
     where: { id: customerId },
-    relations: ['currency'],
+    relations: ["currency"],
   });
   if (!customer) throw new NotFoundException(`Customer ${customerId} not found`);
 
   let currencyCode =
-    (customer as any)?.currency?.code as 'USD' | 'LL' | 'EURO' | 'BASE' | undefined;
+    (customer as any)?.currency?.code as "USD" | "LL" | "EURO" | "BASE" | undefined;
   if (!currencyCode) {
-    // fallback mapping if you don't store a code
-    currencyCode = customer.currencyId === 2 ? 'LL' : 'USD';
+    currencyCode = (customer as any).currencyId === 2 ? "LL" : "USD";
   }
 
-  // 🔹 Try common field names for account number; keep null if none found
+  // surface customer's account number / invoice type
   const customerAccountNumber: string | null =
-    (customer as any)?.customerAccountNumber ??
-    (customer as any)?.accountNumber ??
-    null;
+    (customer as any)?.customerAccountNumber ?? (customer as any)?.accountNumber ?? null;
 
-  // 🔹 NEW: surface customer's invoice type from the customer table
-  const customerInvoiceType: string | null =
-    (customer as any)?.invoiceType ?? null;
+  const customerInvoiceType: string | null = (customer as any)?.invoiceType ?? null;
 
   // 2) Column maps
   const ofrColMap = {
-    USD:  { dr: 'drUSDOFR',  cr: 'crUSDOFR'  },
-    LL:   { dr: 'drLLOFR',   cr: 'crLLOFR'   },
-    EURO: { dr: 'drOFR',     cr: 'crOFR'     },
-    BASE: { dr: 'drOFR',     cr: 'crOFR'     },
+    USD: { dr: "drUSDOFR", cr: "crUSDOFR" },
+    LL: { dr: "drLLOFR", cr: "crLLOFR" },
+    EURO: { dr: "drOFR", cr: "crOFR" },
+    BASE: { dr: "drOFR", cr: "crOFR" },
   } as const;
 
   const baseColMap = {
-    USD:  { dr: 'drUSD',  cr: 'crUSD'  },
-    LL:   { dr: 'drLL',   cr: 'crLL'   },
-    EURO: { dr: 'dr',     cr: 'cr'     },
-    BASE: { dr: 'dr',     cr: 'cr'     },
+    USD: { dr: "drUSD", cr: "crUSD" },
+    LL: { dr: "drLL", cr: "crLL" },
+    EURO: { dr: "dr", cr: "cr" },
+    BASE: { dr: "dr", cr: "cr" },
   } as const;
 
-  type RowKind = 'S' | 'G';
+  type RowKind = "S" | "G";
 
   const getColsFor = (rowKind: RowKind) => {
-    if (rowKind === 'G') {
+    if (rowKind === "G") {
       const p = ofrColMap[currencyCode] ?? ofrColMap.USD;
-      return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
+      return {
+        drCol: p.dr as keyof JournalVoucherDetail,
+        crCol: p.cr as keyof JournalVoucherDetail,
+      };
     }
     const p = baseColMap[currencyCode] ?? baseColMap.USD;
-    return { drCol: p.dr as keyof JournalVoucherDetail, crCol: p.cr as keyof JournalVoucherDetail };
+    return {
+      drCol: p.dr as keyof JournalVoucherDetail,
+      crCol: p.cr as keyof JournalVoucherDetail,
+    };
   };
 
   // 3) Type filter
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
-    if (type === 'S') {
-      qb.andWhere('(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)', { tS: 'S', sPrefix: 'S%' });
-    } else if (type === 'G') {
-      qb.andWhere('(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)', { tG: 'G', gPrefix: 'G%' });
-    } else {
-      // ALL
+    if (type === "S") {
+      qb.andWhere("(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)", {
+        tS: "S",
+        sPrefix: "S%",
+      });
+    } else if (type === "G") {
+      qb.andWhere("(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)", {
+        tG: "G",
+        gPrefix: "G%",
+      });
     }
     return qb;
   };
 
-  // 4) Main period query
+  // 4) Main period query (full-day safe)
   const qb = this.journalVoucherDetailRepository
-    .createQueryBuilder('d')
-    .leftJoinAndSelect('d.journalVoucher', 'jv')
-    .leftJoinAndSelect('d.customer', 'c')
-    .where('d.customerId = :customerId', { customerId });
+    .createQueryBuilder("d")
+    .leftJoinAndSelect("d.journalVoucher", "jv")
+    .leftJoinAndSelect("d.customer", "c")
+    .where("d.customerId = :customerId", { customerId });
 
-  if (from) qb.andWhere('jv.date >= :from', { from });
-  if (to)   qb.andWhere('jv.date <= :to',   { to });
+  if (fromStart) qb.andWhere("jv.date >= :fromStart", { fromStart });
+  if (toNext) qb.andWhere("jv.date < :toNext", { toNext }); // ✅ exclusive end
 
   applyTypeFilter(qb);
-  qb.orderBy('jv.date', 'ASC').addOrderBy('d.id', 'ASC');
+  qb.orderBy("jv.date", "ASC").addOrderBy("d.id", "ASC");
 
   const rows = await qb.getMany();
 
-  // 5) Opening balance
+  // 5) Opening balance (everything BEFORE fromStart)
+  // ✅ FIX: we must select journalVoucher, not just join, because you read r.journalVoucher?.jvType
   let openingBalance = 0;
-  if (from) {
+  if (fromStart) {
     const beforeQb = this.journalVoucherDetailRepository
-      .createQueryBuilder('d')
-      .leftJoin('d.journalVoucher', 'jv')
-      .where('d.customerId = :customerId', { customerId })
-      .andWhere('jv.date < :from', { from });
+      .createQueryBuilder("d")
+      .leftJoinAndSelect("d.journalVoucher", "jv") // ✅ important
+      .where("d.customerId = :customerId", { customerId })
+      .andWhere("jv.date < :fromStart", { fromStart });
 
     applyTypeFilter(beforeQb);
+
     const beforeRows = await beforeQb.getMany();
 
     let openingDr = 0;
     let openingCr = 0;
+
     for (const r of beforeRows) {
-      const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
-      const rowKind: RowKind = isG ? 'G' : 'S';
+      const isG = r.journalVoucher?.jvType === "G" || (r.docNbr?.startsWith("G") ?? false);
+      const rowKind: RowKind = isG ? "G" : "S";
       const { drCol, crCol } = getColsFor(rowKind);
+
       openingDr += Number((r as any)[drCol] || 0);
       openingCr += Number((r as any)[crCol] || 0);
     }
+
     openingBalance = openingDr - openingCr;
   }
 
   // 6) Items + running balance
   let running = openingBalance;
+
   const items = rows.map((r) => {
-    const isG = r.journalVoucher?.jvType === 'G' || (r.docNbr?.startsWith('G') ?? false);
-    const rowKind: RowKind = isG ? 'G' : 'S';
+    const isG = r.journalVoucher?.jvType === "G" || (r.docNbr?.startsWith("G") ?? false);
+    const rowKind: RowKind = isG ? "G" : "S";
 
     const { drCol, crCol } = getColsFor(rowKind);
-    const debit  = Number((r as any)[drCol] || 0);
+    const debit = Number((r as any)[drCol] || 0);
     const credit = Number((r as any)[crCol] || 0);
+
     running += debit - credit;
 
     return {
@@ -517,14 +551,15 @@ async getCustomerStatementOFR(params: {
       debit,
       credit,
       balanceAfter: running,
-      exRateUSD: currencyCode === 'LL' ? Number(r.exRateUSD || 0) : undefined,
-      exRateEUROToUSD: currencyCode === 'EURO' ? Number(r.exRateEUROToUSD || 0) : undefined,
+      exRateUSD: currencyCode === "LL" ? Number((r as any).exRateUSD || 0) : undefined,
+      exRateEUROToUSD:
+        currencyCode === "EURO" ? Number((r as any).exRateEUROToUSD || 0) : undefined,
     };
   });
 
   const totals = items.reduce(
     (acc, li) => {
-      acc.totalDebit  += li.debit;
+      acc.totalDebit += li.debit;
       acc.totalCredit += li.credit;
       return acc;
     },
@@ -532,7 +567,7 @@ async getCustomerStatementOFR(params: {
   );
 
   // 7) Basis note (debug)
-  const exampleCols = getColsFor('S');
+  const exampleCols = getColsFor("S");
   const basis = {
     currency: currencyCode,
     sUses: { debitColumn: exampleCols.drCol as string, creditColumn: exampleCols.crCol as string },
@@ -541,13 +576,14 @@ async getCustomerStatementOFR(params: {
       creditColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).cr,
     },
     selection: type, // S | G | ALL
+    range: { fromStart, toNext }, // ✅ helpful debug
   };
 
   return {
     customerId,
-    currencyCode,               
-    customerAccountNumber,     
-    customerInvoiceType,       
+    currencyCode,
+    customerAccountNumber,
+    customerInvoiceType,
     from: from ?? null,
     to: to ?? null,
     openingBalance,
@@ -557,6 +593,7 @@ async getCustomerStatementOFR(params: {
     basis,
   };
 }
+
 
 
 async getAccountStatementOFR(params: {
