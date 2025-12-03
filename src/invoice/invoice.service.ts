@@ -2696,6 +2696,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
       const jvHeader = await jvRepo.findOne({ where: { id: jvId } });
       if (jvHeader) {
+        jvHeader.date = savedInvoice.date as any;
         jvHeader.totalDr = sumFrom(allDetails, 'dr');
         jvHeader.totalDrUSD = sumFrom(allDetails, 'drUSD');
         jvHeader.totalDrLL = sumFrom(allDetails, 'drLL');
