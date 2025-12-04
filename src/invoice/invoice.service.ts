@@ -19,6 +19,9 @@ import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
 import { InventoryCount } from '../entities/inventory/count.entity';
 import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
+import { Request as RequestEntity } from '../entities/request.entity';
+import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails.entity';
+
 
 @Injectable()
 export class InvoiceService {
@@ -53,6 +56,9 @@ export class InvoiceService {
 
             @InjectRepository(ItemVariant)
     private readonly varientRepo: Repository<ItemVariant>,
+
+                @InjectRepository(RequestDetailEntity)
+    private readonly requestDetailRepo: Repository<RequestDetailEntity>,
   ) {}
   /**
    * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
@@ -679,6 +685,55 @@ async createInvoice(data: any): Promise<Invoice> {
 
     await queryRunner.manager.save(JournalVoucher, journalVoucher);
     console.log('✅ Journal voucher saved:', jvNumber);
+
+    console.log('🧾 payload.requestId =', data.requestId, 'type=', typeof data.requestId);
+
+
+// ✅ Delete request if provided
+// ✅ Delete request if provided
+if (data.requestId != null && String(data.requestId).trim() !== '') {
+  const reqId = Number(data.requestId);
+
+  console.log('🗑️ attempting delete requestId=', reqId);
+
+  if (!Number.isInteger(reqId) || reqId <= 0) {
+    throw new BadRequestException(`Invalid requestId: ${data.requestId}`);
+  }
+
+  const reqRepo = queryRunner.manager.getRepository(RequestEntity);
+  const reqDetailRepo = queryRunner.manager.getRepository(RequestDetailEntity);
+
+  // 1) delete details by FK column (JoinColumn name = requestId)
+  const delDetails = await reqDetailRepo
+    .createQueryBuilder()
+    .delete()
+    .from(RequestDetailEntity)
+    .where('requestId = :reqId', { reqId })
+    .execute();
+
+  console.log('🧹 deleted request_details affected =', delDetails.affected);
+
+  // 2) delete header
+  const delReq = await reqRepo
+    .createQueryBuilder()
+    .delete()
+    .from(RequestEntity)
+    .where('id = :reqId', { reqId })
+    .execute();
+
+  console.log('🧨 deleted request header affected =', delReq.affected);
+
+  if (!delReq.affected) {
+    // this means the row was NOT found in the table this repo points to
+    throw new BadRequestException(`Request ${reqId} was not deleted (not found in DB/table).`);
+  }
+
+  console.log(`✅ Deleted Request #${reqId} after invoice #${savedInvoice.id}`);
+}
+
+
+
+
 
     await queryRunner.commitTransaction();
     console.log('🎉 Invoice creation complete');

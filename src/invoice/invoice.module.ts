@@ -18,7 +18,8 @@ import { Account } from '../entities/account.entity';
 import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
 import { InventoryCount } from 'src/entities/inventory/count.entity';
 import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
-
+import { Request as RequestEntity } from '../entities/request.entity';
+import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails.entity';
 
 @Module({
   imports: [
@@ -37,7 +38,9 @@ import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
       Account, 
         PurchaseInvoiceItem,  
       InventoryCount,
-      SqmPiece 
+      SqmPiece,
+      RequestEntity,
+      RequestDetailEntity 
     ]),
   ],
   providers: [InvoiceService, InventoryTransaction, InvoiceGateway],
