@@ -71,6 +71,10 @@ export class InventoryCountController {
     const result = await this.svc.createSingleopening(body);
     return { message: 'Opening count created successfully', data: result };
   }
+  @Post('opening/rebuild')
+rebuildOpening(@Body() body: { keepDate: string; deleteDate: string }) {
+  return this.svc.rebuildOpeningCountsKeepDate(body);
+}
 
   @Post('v1/inventory-check')
   async createInventoryCheck(
@@ -105,6 +109,7 @@ export class InventoryCountController {
   update(@Param('id') id: string, @Body() updateData: any) {
     return this.svc.update(+id, updateData);
   }
+  
 
   @Get(':id')
   findOne(@Param('id') id: string) {

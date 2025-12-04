@@ -1,14 +1,16 @@
 // src/inventory-count/inventory-count.service.ts
 
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { InventoryCount } from '../entities/inventory/count.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { CountType } from '../entities/inventory/count.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+import { DataSource } from 'typeorm';
+
 @Injectable()
 export class InventoryCountService {
   constructor(
@@ -26,6 +28,8 @@ export class InventoryCountService {
 
     @InjectRepository(ItemNameDescription)
     private readonly itemNameDescriptionRepo: Repository<ItemNameDescription>,
+
+    private readonly dataSource: DataSource,
   ) {}
 
   async create(
@@ -1418,5 +1422,268 @@ async createSingleopening(data: any): Promise<InventoryCount> {
     }
 
     console.log('\n✅ Inventory check completed.');
+  }
+
+
+
+
+
+
+
+
+  // operation 29-11-2025 
+
+
+    private round2(n: any) {
+    return Number((Number(n || 0)).toFixed(2));
+  }
+
+  /**
+   * Rebuild Opening Counts so that only keepDate remains.
+   * - Deletes Opening Count txns for BOTH dates (keepDate + deleteDate)
+   * - Deletes counts on deleteDate
+   * - Resets & recomputes batch/variant openings from keepDate counts
+   * - Reinserts Opening Count txns only for keepDate counts
+   */
+  async rebuildOpeningCountsKeepDate(params: {
+    keepDate: string;      // e.g. '2025-11-29'
+    deleteDate: string;    // e.g. '2025-10-31'
+  }) {
+    const keepDate = String(params.keepDate || '').slice(0, 10);
+    const deleteDate = String(params.deleteDate || '').slice(0, 10);
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(keepDate) || !/^\d{4}-\d{2}-\d{2}$/.test(deleteDate)) {
+      throw new BadRequestException('keepDate/deleteDate must be YYYY-MM-DD');
+    }
+    if (keepDate === deleteDate) {
+      throw new BadRequestException('keepDate and deleteDate cannot be the same');
+    }
+
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+
+    try {
+      // 1) load counts for both dates
+      const keepCounts = await qr.manager.find(InventoryCount, {
+        where: { date: keepDate as any },
+      });
+      const deleteCounts = await qr.manager.find(InventoryCount, {
+        where: { date: deleteDate as any },
+      });
+
+      if (!deleteCounts.length) {
+        throw new NotFoundException(`No counts found on deleteDate ${deleteDate}`);
+      }
+      if (!keepCounts.length) {
+        throw new NotFoundException(`No counts found on keepDate ${keepDate}`);
+      }
+
+      const keepIds = keepCounts.map(c => c.id);
+      const deleteIds = deleteCounts.map(c => c.id);
+
+      const affectedVariantIds = Array.from(new Set([
+        ...keepCounts.map(c => (c as any).itemVariantId),
+        ...deleteCounts.map(c => (c as any).itemVariantId),
+      ].filter(Boolean)));
+
+      if (!affectedVariantIds.length) {
+        throw new BadRequestException('No affected variants found.');
+      }
+
+      // 2) fetch variants
+      const variants = await qr.manager.findBy(ItemVariant, { id: In(affectedVariantIds) });
+      const variantMap = new Map<number, ItemVariant>(variants.map(v => [v.id, v]));
+
+      // 3) fetch the "single clean null-dateReceived batch" for each affected variant
+      const batches = await qr.manager.find(ItemBatch, {
+        where: {
+          itemVariant: { id: In(affectedVariantIds) } as any,
+          condition: 'Clean' as any,
+          dateReceived: IsNull(),
+        },
+        relations: ['itemVariant'],
+      });
+
+      const batchMap = new Map<number, ItemBatch>();
+      for (const b of batches) {
+        const vid = b.itemVariant?.id;
+        if (!vid) continue;
+        if (batchMap.has(vid)) {
+          throw new BadRequestException(
+            `Variant #${vid} has more than one Clean/NULL-dateReceived batch. Stop to avoid wrong batch updates.`,
+          );
+        }
+        batchMap.set(vid, b);
+      }
+
+      // ensure every affected variant has that batch
+      for (const vid of affectedVariantIds) {
+        if (!batchMap.has(vid)) {
+          throw new BadRequestException(
+            `Variant #${vid} has no Clean/NULL-dateReceived batch. Stop to avoid wrong updates.`,
+          );
+        }
+      }
+
+      // 4) delete Opening Count txns linked to these counts (both dates)
+      await qr.manager
+        .createQueryBuilder()
+        .delete()
+        .from(InventoryTransaction)
+        .where('transactionType = :tt', { tt: 'Opening Count' })
+        .andWhere('inventoryCountId IN (:...ids)', { ids: [...keepIds, ...deleteIds] })
+        .execute();
+
+      // 5) reset openings for affected batches/variants (NOT in/out)
+      for (const vid of affectedVariantIds) {
+        const v = variantMap.get(vid);
+        const b = batchMap.get(vid);
+        if (!v || !b) continue;
+
+        b.start = 0 as any;
+        b.startOFR = 0 as any;
+        v.totalStart = 0 as any;
+        v.totalStartOFR = 0 as any;
+      }
+
+      // 6) apply keepDate counts as truth
+      // build sums per variant
+      const sums = new Map<number, { start: number; startOfr: number }>();
+      const add = (vid: number, ds: number, dofr: number) => {
+        const cur = sums.get(vid) ?? { start: 0, startOfr: 0 };
+        cur.start = this.round2(cur.start + ds);
+        cur.startOfr = this.round2(cur.startOfr + dofr);
+        sums.set(vid, cur);
+      };
+
+      for (const c of keepCounts) {
+        const vid = (c as any).itemVariantId;
+        const sqm = this.round2((c as any).sqm);
+        const sqmOfrRaw = (c as any).sqmOfr; // might be 0 in your old data
+        const sqmOfr = this.round2(sqmOfrRaw ?? 0);
+
+        switch ((c as any).type as CountType) {
+          case CountType.S:
+            add(vid, sqm, sqm);               // S mirrors OFR
+            break;
+          case CountType.G:
+            add(vid, 0, sqmOfr || sqm);       // fallback if sqmOfr missing
+            break;
+          case CountType.SR:
+            add(vid, sqm, sqmOfr || sqm);     // fallback if sqmOfr missing
+            break;
+          case CountType.RVR:
+            add(vid, sqm, 0);
+            break;
+          default:
+            break;
+        }
+      }
+
+      // Safety: if a variant existed in deleteDate counts but has NO keep sum, stop
+      const deleteVariantSet = new Set(deleteCounts.map(c => (c as any).itemVariantId));
+      for (const vid of deleteVariantSet) {
+        if (!sums.has(vid)) {
+          throw new BadRequestException(
+            `Variant #${vid} had an opening count on ${deleteDate} but no kept count on ${keepDate}. Refusing to set its opening to 0.`,
+          );
+        }
+      }
+
+      // apply sums to batch/variant + recompute balances
+      for (const vid of affectedVariantIds) {
+        const v = variantMap.get(vid);
+        const b = batchMap.get(vid);
+        if (!v || !b) continue;
+
+        const s = sums.get(vid);
+        if (!s) continue; // variants unaffected by keepDate (but this should not happen due to safety above)
+
+        b.start = this.round2(s.start) as any;
+        b.startOFR = this.round2(s.startOfr) as any;
+
+        b.balance = this.round2(Number(b.start || 0) + Number(b.in || 0) - Number(b.out || 0)) as any;
+        b.balanceOFR = this.round2(Number(b.startOFR || 0) + Number(b.inOFR || 0) - Number(b.outOFR || 0)) as any;
+
+        v.totalStart = this.round2(s.start) as any;
+        v.totalStartOFR = this.round2(s.startOfr) as any;
+
+        v.totalBalance = this.round2(Number(v.totalStart || 0) + Number(v.totalIn || 0) - Number(v.totalOut || 0)) as any;
+        v.totalBalanceOFR = this.round2(Number(v.totalStartOFR || 0) + Number(v.totalInOFR || 0) - Number(v.totalOutOFR || 0)) as any;
+      }
+
+      await qr.manager.save(ItemBatch, Array.from(batchMap.values()));
+      await qr.manager.save(ItemVariant, variants);
+
+      // 7) delete counts on deleteDate
+      await qr.manager.delete(InventoryCount, { date: deleteDate as any });
+
+      // 8) reinsert Opening Count txns for keepDate only
+      const newTxns: Partial<InventoryTransaction>[] = [];
+      for (const c of keepCounts) {
+        const vid = (c as any).itemVariantId;
+        const v = variantMap.get(vid)!;
+        const b = batchMap.get(vid)!;
+
+        const sqm = this.round2((c as any).sqm);
+        const sqmOfr = this.round2((c as any).sqmOfr ?? 0);
+        const type = (c as any).type as CountType;
+
+        let txnSqm = 0, txnSqmOfr = 0, qty = 0, qtyOfr = 0;
+
+        if (type === CountType.S) {
+          txnSqm = sqm; txnSqmOfr = sqm;
+          qty = (c as any).count; qtyOfr = (c as any).count;
+        } else if (type === CountType.G) {
+          txnSqm = 0; txnSqmOfr = sqmOfr || sqm;
+          qty = 0; qtyOfr = (c as any).count;
+        } else if (type === CountType.RVR) {
+          txnSqm = sqm; txnSqmOfr = 0;
+          qty = (c as any).count; qtyOfr = 0;
+        } else if (type === CountType.SR) {
+          txnSqm = sqm; txnSqmOfr = sqmOfr || sqm;
+          qty = (c as any).count;
+          qtyOfr = (c as any).countOFR ?? (c as any).count; // if you don’t have countOFR stored yet, fallback
+        }
+
+        newTxns.push({
+          transactionType: 'Opening Count',
+          itemVariant: { id: v.id } as any,
+          itemVariantId: v.id,
+          itemBatch: { id: b.id } as any,
+          itemBatchId: b.id,
+          inventoryCount: { id: c.id } as any,
+          inventoryCountId: c.id,
+
+          sqm: this.round2(txnSqm),
+          sqmofr: this.round2(txnSqmOfr),
+          quantity: qty as any,
+          quantityofr: qtyOfr as any,
+
+          finalcost: this.round2((c as any).finalCost ?? 0) as any,
+          finalcostofr: this.round2((c as any).finalCostOfr ?? 0) as any,
+
+          dateForEachInvoice: new Date(keepDate),
+          transactionDate: new Date(), // or new Date(keepDate)
+        });
+      }
+
+      await qr.manager.save(InventoryTransaction, newTxns);
+
+      await qr.commitTransaction();
+      return {
+        ok: true,
+        deletedCounts: deleteCounts.length,
+        keptCounts: keepCounts.length,
+        affectedVariants: affectedVariantIds.length,
+        insertedOpeningTxns: newTxns.length,
+      };
+    } catch (e) {
+      await qr.rollbackTransaction();
+      throw e;
+    } finally {
+      await qr.release();
+    }
   }
 }
