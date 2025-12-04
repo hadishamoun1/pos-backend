@@ -142,39 +142,44 @@ getVariantLedgerByItemName(@Query() q: any) {
 }
 
 
-@Get('v1/real-variant-ledger')
-  async getVariantLedgerReal(
-    @Query('q') q?: string,
-    @Query('itemName') itemName?: string,
-    @Query('type') type?: 'box' | 'sheet' | 'sqm' | 'unit',
-    @Query('thickness') thickness?: string,
-    @Query('length') length?: string,
-    @Query('width') width?: string,
-    @Query('sheetsPerBox') sheetsPerBox?: string,
-    @Query('origin') origin?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('variantIds') variantIdsRaw?: string, // "1,2,3"
-  ) {
-    const variantIds = (variantIdsRaw || '')
-      .split(',')
-      .map(s => Number(s.trim()))
-      .filter(n => Number.isFinite(n) && n > 0);
+// items.controller.ts (or wherever your ItemsController is)
 
-    return this.itemsService.getVariantLedgerByRealDesc({
-      q,
-      itemName,
-      type,
-      thickness: Number(thickness),
-      length: Number(length),
-      width: Number(width),
-      sheetsPerBox: Number(sheetsPerBox),
-      origin,
-      page: Number(page),
-      limit: Number(limit),
-      variantIds: variantIds.length ? variantIds : undefined,
-    });
-  }
+@Get('v1/real-variant-ledger')
+async getVariantLedgerReal(
+  @Query('q') q?: string,
+  @Query('itemName') itemName?: string,
+  @Query('type') type?: 'box' | 'sheet' | 'sqm' | 'unit',
+  @Query('thickness') thickness?: string,
+  @Query('length') length?: string,
+  @Query('width') width?: string,
+  @Query('sheetsPerBox') sheetsPerBox?: string,
+  @Query('origin') origin?: string,
+  @Query('page') page?: string,
+  @Query('limit') limit?: string,
+  @Query('variantIds') variantIdsRaw?: string, // "1,2,3"
+  @Query('asOf') asOf?: string,                // ✅ NEW: "YYYY-MM-DD"
+) {
+  const variantIds = (variantIdsRaw || '')
+    .split(',')
+    .map(s => Number(s.trim()))
+    .filter(n => Number.isFinite(n) && n > 0);
+
+  return this.itemsService.getVariantLedgerByRealDesc({
+    q,
+    itemName,
+    type,
+    thickness: Number(thickness),
+    length: Number(length),
+    width: Number(width),
+    sheetsPerBox: Number(sheetsPerBox),
+    origin,
+    page: Number(page),
+    limit: Number(limit),
+    variantIds: variantIds.length ? variantIds : undefined,
+    asOf: asOf?.trim() || undefined, // ✅ pass through
+  });
+}
+
 
 
 

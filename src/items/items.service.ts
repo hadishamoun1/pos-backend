@@ -4550,6 +4550,7 @@ async getVariantLedgerByRealDesc(params?: {
   page?: number;
   limit?: number;
   variantIds?: number[];
+  asOf?: string; // ✅ NEW: 'YYYY-MM-DD' (inclusive till end of day)
 }) {
   const toNum = (v: any) => {
     const n = Number(v);
@@ -4635,6 +4636,16 @@ async getVariantLedgerByRealDesc(params?: {
     return valueSqm;
   };
 
+  // ✅ NEW: asOf validation (inclusive to end-of-day)
+  const asOfRaw = (params?.asOf ?? '').trim();
+  const asOfEnd =
+    asOfRaw
+      ? (/^\d{4}-\d{2}-\d{2}$/.test(asOfRaw) ? `${asOfRaw} 23:59:59` : null)
+      : null;
+  if (asOfRaw && !asOfEnd) {
+    throw new Error(`asOf must be YYYY-MM-DD, got: ${asOfRaw}`);
+  }
+
   const page  = Math.max(1, Number(params?.page ?? 1));
   const limit = Math.min(200, Math.max(1, Number(params?.limit ?? 50)));
   const skip  = (page - 1) * limit;
@@ -4658,7 +4669,6 @@ async getVariantLedgerByRealDesc(params?: {
       'r.itemNumber','r.sort_index_real_description',
     ]);
 
-  // Keep: only rows that *have* Real description appear
   qb.andWhere('r.id IS NOT NULL');
 
   if (params?.variantIds?.length) {
@@ -4708,7 +4718,6 @@ async getVariantLedgerByRealDesc(params?: {
   if (Number.isFinite(params?.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :spb', { spb: Number(params!.sheetsPerBox) });
   if (params?.origin) qb.andWhere('v.origin = :org', { org: params.origin });
 
-  // 🔽 ORDERING WITH ORIGIN PRIORITY
   qb
     .addSelect('CASE WHEN r.sort_index_real_description IS NULL THEN 1 ELSE 0 END', 'r_nulls')
     .addSelect(
@@ -4724,15 +4733,9 @@ async getVariantLedgerByRealDesc(params?: {
       `,
       'origin_priority',
     )
-    // 1) Group by RealDescription: nulls last, then sort_index, then itemName
     .orderBy('r_nulls', 'ASC')
     .addOrderBy('r.sort_index_real_description', 'ASC')
     .addOrderBy('i.itemName', 'ASC')
-    // 2) Inside each description group:
-    //    a) thickness order
-    //    b) origin priority (SISECAM → AGC → Sphinx → RIDER → S.G → others)
-    //    c) origin alphabetic (for "others")
-    //    d) length
     .addOrderBy('t.sort_index', 'ASC')
     .addOrderBy('t.thickness', 'ASC')
     .addOrderBy('origin_priority', 'ASC')
@@ -4744,13 +4747,83 @@ async getVariantLedgerByRealDesc(params?: {
 
   const variants = await qb.getMany();
 
-  // ---- Enrichment pass identical to Item-Name version ----
+  // ✅ NEW: snapshots (only when asOf is provided)
+  const variantSnap = new Map<number, any>();
+  const batchSnap = new Map<number, any>();
+
+  if (asOfEnd && variants.length) {
+    const variantIds = variants.map(v => Number(v.id)).filter(n => Number.isFinite(n) && n > 0);
+
+    // Collect batch ids present in this page
+    const batchIds: number[] = [];
+    for (const v of variants as any[]) {
+      for (const b of (v.batches ?? [])) {
+        const bid = Number(b?.id);
+        if (Number.isFinite(bid) && bid > 0) batchIds.push(bid);
+      }
+    }
+
+    const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
+
+    // latest txn per variant <= asOf
+    if (variantIds.length) {
+      const sql = `
+        SELECT it.itemVariantId AS variantId,
+               it.start AS startU, it.\`in\` AS inU, it.out AS outU, it.balance AS balU,
+               it.startOFR AS startOFR, it.inOFR AS inOFR, it.outOFR AS outOFR, it.balanceOFR AS balOFR
+        FROM inventory_transaction it
+        INNER JOIN (
+          SELECT itemVariantId,
+                 MAX(CONCAT(LPAD(UNIX_TIMESTAMP(\`date\`), 20, '0'), LPAD(id, 20, '0'))) AS mx
+          FROM inventory_transaction
+          WHERE itemVariantId IN (${makeIn(variantIds)})
+            AND \`date\` <= ?
+          GROUP BY itemVariantId
+        ) last
+          ON last.itemVariantId = it.itemVariantId
+         AND CONCAT(LPAD(UNIX_TIMESTAMP(it.\`date\`), 20, '0'), LPAD(it.id, 20, '0')) = last.mx
+      `;
+      const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfEnd]);
+      for (const r of rows || []) {
+        const vid = Number(r.variantId);
+        if (Number.isFinite(vid)) variantSnap.set(vid, r);
+      }
+    }
+
+    // latest txn per batch <= asOf
+    if (batchIds.length) {
+      const uniq = Array.from(new Set(batchIds));
+      const sql = `
+        SELECT it.itemBatchId AS batchId,
+               it.start AS startU, it.\`in\` AS inU, it.out AS outU, it.balance AS balU,
+               it.startOFR AS startOFR, it.inOFR AS inOFR, it.outOFR AS outOFR, it.balanceOFR AS balOFR
+        FROM inventory_transaction it
+        INNER JOIN (
+          SELECT itemBatchId,
+                 MAX(CONCAT(LPAD(UNIX_TIMESTAMP(\`date\`), 20, '0'), LPAD(id, 20, '0'))) AS mx
+          FROM inventory_transaction
+          WHERE itemBatchId IN (${makeIn(uniq)})
+            AND \`date\` <= ?
+          GROUP BY itemBatchId
+        ) last
+          ON last.itemBatchId = it.itemBatchId
+         AND CONCAT(LPAD(UNIX_TIMESTAMP(it.\`date\`), 20, '0'), LPAD(it.id, 20, '0')) = last.mx
+      `;
+      const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfEnd]);
+      for (const r of rows || []) {
+        const bid = Number(r.batchId);
+        if (Number.isFinite(bid)) batchSnap.set(bid, r);
+      }
+    }
+  }
+
+  // ---- Enrichment pass identical to your version ----
   const thicknessIds = new Set<number>();
   const lengths = new Set<number>();
   const widths = new Set<number>();
   const origins = new Set<string>();
 
-  for (const v of variants) {
+  for (const v of variants as any[]) {
     thicknessIds.add(v.thickness.id);
     lengths.add(toNum(v.length));
     widths.add(toNum(v.width));
@@ -4788,7 +4861,7 @@ async getVariantLedgerByRealDesc(params?: {
     }
   }
 
-  const data = variants.map((v) => {
+  const data = (variants as any[]).map((v) => {
     const itemType = v.thickness.item.type;
     const len = toNum(v.length);
     const wid = toNum(v.width);
@@ -4798,36 +4871,45 @@ async getVariantLedgerByRealDesc(params?: {
     const boxSpbList = fromBoxSet ? Array.from(fromBoxSet).sort((a,b)=>a-b) : [];
     const resolvedBoxSpb = boxSpbList.length ? boxSpbList[0] : null;
 
+    // ✅ totals (same shape) — overridden by asOf snapshot if provided
+    const snap = asOfEnd ? variantSnap.get(Number(v.id)) : null;
+
     const ofrTotalsUnits = {
-      start: Number(toNum(v.totalStart).toFixed(2)),
-      in: Number(toNum(v.totalIn).toFixed(2)),
-      out: Number(toNum(v.totalOut).toFixed(2)),
-      balance: Number(toNum(v.totalBalance).toFixed(2)),
+      start: Number(toNum(snap ? snap.startU : v.totalStart).toFixed(2)),
+      in:    Number(toNum(snap ? snap.inU    : v.totalIn).toFixed(2)),
+      out:   Number(toNum(snap ? snap.outU   : v.totalOut).toFixed(2)),
+      balance:Number(toNum(snap ? snap.balU  : v.totalBalance).toFixed(2)),
     };
 
     const ofrTotalsSqm = {
-      startOFR: Number(toNum(v.totalStartOFR).toFixed(2)),
-      inOFR: Number(toNum(v.totalInOFR).toFixed(2)),
-      outOFR: Number(toNum(v.totalOutOFR).toFixed(2)),
-      balanceOFR: Number(toNum(v.totalBalanceOFR).toFixed(2)),
+      startOFR:  Number(toNum(snap ? snap.startOFR : v.totalStartOFR).toFixed(2)),
+      inOFR:     Number(toNum(snap ? snap.inOFR    : v.totalInOFR).toFixed(2)),
+      outOFR:    Number(toNum(snap ? snap.outOFR   : v.totalOutOFR).toFixed(2)),
+      balanceOFR:Number(toNum(snap ? snap.balOFR   : v.totalBalanceOFR).toFixed(2)),
     };
 
     const batches = (v.batches ?? []).map((b) => {
-      const balanceOFRSqm = toNum(b.balanceOFR ?? 0);
+      const bSnap = asOfEnd ? batchSnap.get(Number(b.id)) : null;
+
+      const balanceOFRSqm = toNum(bSnap ? bSnap.balOFR : (b.balanceOFR ?? 0));
       const convertedUnits = convertFromSqm({
         itemType, lengthCm: len, widthCm: wid, sheetsPerBox: spbSelf, valueSqm: balanceOFRSqm,
       });
+
       return {
         id: b.id,
         condition: b.condition ?? null,
         dateReceived: b.dateReceived ?? null,
-        start: toNum(b.start ?? 0),
-        in: toNum(b.in ?? 0),
-        out: toNum(b.out ?? 0),
-        balance: toNum(b.balance ?? 0),
-        startOFR: Number(toNum(b.startOFR ?? 0).toFixed(2)),
-        inOFR: Number(toNum(b.inOFR ?? 0).toFixed(2)),
-        outOFR: Number(toNum(b.outOFR ?? 0).toFixed(2)),
+
+        start: toNum(bSnap ? bSnap.startU : (b.start ?? 0)),
+        in:    toNum(bSnap ? bSnap.inU    : (b.in ?? 0)),
+        out:   toNum(bSnap ? bSnap.outU   : (b.out ?? 0)),
+        balance:toNum(bSnap ? bSnap.balU  : (b.balance ?? 0)),
+
+        startOFR: Number(toNum(bSnap ? bSnap.startOFR : (b.startOFR ?? 0)).toFixed(2)),
+        inOFR:    Number(toNum(bSnap ? bSnap.inOFR    : (b.inOFR ?? 0)).toFixed(2)),
+        outOFR:   Number(toNum(bSnap ? bSnap.outOFR   : (b.outOFR ?? 0)).toFixed(2)),
+
         balanceOFRSqm: Number(balanceOFRSqm.toFixed(2)),
         balanceOFR: Number(convertedUnits.toFixed(2)),
       };
@@ -4846,8 +4928,10 @@ async getVariantLedgerByRealDesc(params?: {
       width: wid,
       sheetsPerBox: spbSelf,
       origin: v.origin,
+
       ones: ofrTotalsUnits,
       ofrTotalsSqm,
+
       description: rd
         ? {
             id: rd.id ?? null,
@@ -4859,9 +4943,11 @@ async getVariantLedgerByRealDesc(params?: {
             itemNumber:   rd.itemNumber ?? null,
           }
         : null,
+
       batches,
       boxSpbList,
       resolvedBoxSpb,
+
       averageCost: v.averageCost != null
         ? Number(toNum(v.averageCost).toFixed(2))
         : null,
@@ -4879,6 +4965,7 @@ async getVariantLedgerByRealDesc(params?: {
     data,
   };
 }
+
 
 
 
