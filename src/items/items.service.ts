@@ -4550,17 +4550,18 @@ async getVariantLedgerByRealDesc(params?: {
   page?: number;
   limit?: number;
   variantIds?: number[];
-  asOf?: string; // ✅ NEW: 'YYYY-MM-DD' (inclusive till end of day)
+  asOf?: string; // 'YYYY-MM-DD' (inclusive till end of day)
 }) {
   const toNum = (v: any) => {
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
   };
 
-  const ARABIC_INDIC_MAP: Record<string, string> = {
-    '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
-    '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
-  };
+const ARABIC_INDIC_MAP: Record<string, string> = {
+  '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
+  '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+};
+
   const normalizeDigitsAll = (input: string) =>
     String(input || '').replace(/[٠-٩۰-۹]/g, d => ARABIC_INDIC_MAP[d] ?? d);
 
@@ -4636,7 +4637,7 @@ async getVariantLedgerByRealDesc(params?: {
     return valueSqm;
   };
 
-  // ✅ NEW: asOf validation (inclusive to end-of-day)
+  // ✅ asOf validation (inclusive to end-of-day)
   const asOfRaw = (params?.asOf ?? '').trim();
   const asOfEnd =
     asOfRaw
@@ -4645,6 +4646,68 @@ async getVariantLedgerByRealDesc(params?: {
   if (asOfRaw && !asOfEnd) {
     throw new Error(`asOf must be YYYY-MM-DD, got: ${asOfRaw}`);
   }
+
+  // ---- inventory_transaction schema detection (cached) ----
+  const getInvTxnColumns = async (): Promise<string[]> => {
+    const cached = (this as any).__invTxnCols as string[] | undefined;
+    if (cached) return cached;
+
+    const rows = await this.itemVariantRepository.query(`
+      SELECT COLUMN_NAME AS col
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'inventory_transaction'
+    `);
+
+    const cols = (rows || []).map((r: any) => String(r.col));
+    (this as any).__invTxnCols = cols;
+    return cols;
+  };
+
+  const resolveInventoryTxnDateColumn = async (): Promise<string> => {
+    const cached = (this as any).__invTxnDateCol as string | undefined;
+    if (cached) return cached;
+
+    const candidates = [
+      'transactionDate',
+      'date',
+      'createdAt',
+      'created_at',
+      'timestamp',
+    ];
+
+    const sql = `
+      SELECT COLUMN_NAME AS col
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'inventory_transaction'
+        AND COLUMN_NAME IN (${candidates.map(() => '?').join(',')})
+      ORDER BY FIELD(COLUMN_NAME, ${candidates.map(() => '?').join(',')})
+      LIMIT 1
+    `;
+    const rows = await this.itemVariantRepository.query(sql, [...candidates, ...candidates]);
+    const col = rows?.[0]?.col ? String(rows[0].col) : null;
+
+    if (!col) {
+      const cols = await getInvTxnColumns();
+      throw new Error(
+        `Could not find a timestamp column in inventory_transaction. Tried: ${candidates.join(', ')}. Found: ${cols.join(', ')}`
+      );
+    }
+
+    (this as any).__invTxnDateCol = col;
+    return col;
+  };
+
+  const pickCol = (cols: string[], candidates: string[]) => {
+    const map = new Map<string, string>();
+    for (const c of cols) map.set(c.toLowerCase(), c);
+    for (const cand of candidates) {
+      const hit = map.get(cand.toLowerCase());
+      if (hit) return hit;
+    }
+    return null;
+  };
 
   const page  = Math.max(1, Number(params?.page ?? 1));
   const limit = Math.min(200, Math.max(1, Number(params?.limit ?? 50)));
@@ -4747,14 +4810,33 @@ async getVariantLedgerByRealDesc(params?: {
 
   const variants = await qb.getMany();
 
-  // ✅ NEW: snapshots (only when asOf is provided)
-  const variantSnap = new Map<number, any>();
-  const batchSnap = new Map<number, any>();
+  // ✅ asOf snapshots
+  const variantSnap = new Map<number, { balU?: any; balOFR?: any }>();
+  const batchSnap   = new Map<number, { balU?: any; balOFR?: any }>();
 
   if (asOfEnd && variants.length) {
-    const variantIds = variants.map(v => Number(v.id)).filter(n => Number.isFinite(n) && n > 0);
+    const cols = await getInvTxnColumns();
+    const txnDateCol = await resolveInventoryTxnDateColumn();
 
-    // Collect batch ids present in this page
+    // Your real column names:
+    const qtyCol     = pickCol(cols, ['quantity']);
+    const qtyOfrCol  = pickCol(cols, ['quantityofr', 'quantityOFR', 'quantity_ofr']);
+    const sqmCol     = pickCol(cols, ['sqm']);
+    const sqmOfrCol  = pickCol(cols, ['sqmofr', 'sqmOFR', 'sqm_ofr']);
+
+    // balance in UNITS: prefer quantity; fallback sqm if quantity missing
+    const unitExpr = qtyCol ? `SUM(COALESCE(\`${qtyCol}\`,0))` : (sqmCol ? `SUM(COALESCE(\`${sqmCol}\`,0))` : null);
+    // balance in OFR(SQM): prefer sqmofr; fallback quantityofr if sqmofr missing
+    const ofrExpr  = sqmOfrCol ? `SUM(COALESCE(\`${sqmOfrCol}\`,0))` : (qtyOfrCol ? `SUM(COALESCE(\`${qtyOfrCol}\`,0))` : null);
+
+    if (!unitExpr && !ofrExpr) {
+      throw new Error(
+        `inventory_transaction cannot make snapshots: missing quantity/sqm columns. Found: ${cols.join(', ')}`
+      );
+    }
+
+    const variantIds = (variants as any[]).map(v => Number(v.id)).filter(n => Number.isFinite(n) && n > 0);
+
     const batchIds: number[] = [];
     for (const v of variants as any[]) {
       for (const b of (v.batches ?? [])) {
@@ -4765,59 +4847,47 @@ async getVariantLedgerByRealDesc(params?: {
 
     const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
 
-    // latest txn per variant <= asOf
     if (variantIds.length) {
       const sql = `
-        SELECT it.itemVariantId AS variantId,
-               it.start AS startU, it.\`in\` AS inU, it.out AS outU, it.balance AS balU,
-               it.startOFR AS startOFR, it.inOFR AS inOFR, it.outOFR AS outOFR, it.balanceOFR AS balOFR
-        FROM inventory_transaction it
-        INNER JOIN (
-          SELECT itemVariantId,
-                 MAX(CONCAT(LPAD(UNIX_TIMESTAMP(\`date\`), 20, '0'), LPAD(id, 20, '0'))) AS mx
-          FROM inventory_transaction
-          WHERE itemVariantId IN (${makeIn(variantIds)})
-            AND \`date\` <= ?
-          GROUP BY itemVariantId
-        ) last
-          ON last.itemVariantId = it.itemVariantId
-         AND CONCAT(LPAD(UNIX_TIMESTAMP(it.\`date\`), 20, '0'), LPAD(it.id, 20, '0')) = last.mx
+        SELECT itemVariantId AS variantId
+          ${unitExpr ? `, ${unitExpr} AS balU` : ``}
+          ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
+        FROM inventory_transaction
+        WHERE itemVariantId IN (${makeIn(variantIds)})
+          AND \`${txnDateCol}\` <= ?
+        GROUP BY itemVariantId
       `;
       const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfEnd]);
       for (const r of rows || []) {
         const vid = Number(r.variantId);
-        if (Number.isFinite(vid)) variantSnap.set(vid, r);
+        if (Number.isFinite(vid)) {
+          variantSnap.set(vid, { balU: r.balU, balOFR: r.balOFR });
+        }
       }
     }
 
-    // latest txn per batch <= asOf
     if (batchIds.length) {
       const uniq = Array.from(new Set(batchIds));
       const sql = `
-        SELECT it.itemBatchId AS batchId,
-               it.start AS startU, it.\`in\` AS inU, it.out AS outU, it.balance AS balU,
-               it.startOFR AS startOFR, it.inOFR AS inOFR, it.outOFR AS outOFR, it.balanceOFR AS balOFR
-        FROM inventory_transaction it
-        INNER JOIN (
-          SELECT itemBatchId,
-                 MAX(CONCAT(LPAD(UNIX_TIMESTAMP(\`date\`), 20, '0'), LPAD(id, 20, '0'))) AS mx
-          FROM inventory_transaction
-          WHERE itemBatchId IN (${makeIn(uniq)})
-            AND \`date\` <= ?
-          GROUP BY itemBatchId
-        ) last
-          ON last.itemBatchId = it.itemBatchId
-         AND CONCAT(LPAD(UNIX_TIMESTAMP(it.\`date\`), 20, '0'), LPAD(it.id, 20, '0')) = last.mx
+        SELECT itemBatchId AS batchId
+          ${unitExpr ? `, ${unitExpr} AS balU` : ``}
+          ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
+        FROM inventory_transaction
+        WHERE itemBatchId IN (${makeIn(uniq)})
+          AND \`${txnDateCol}\` <= ?
+        GROUP BY itemBatchId
       `;
       const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfEnd]);
       for (const r of rows || []) {
         const bid = Number(r.batchId);
-        if (Number.isFinite(bid)) batchSnap.set(bid, r);
+        if (Number.isFinite(bid)) {
+          batchSnap.set(bid, { balU: r.balU, balOFR: r.balOFR });
+        }
       }
     }
   }
 
-  // ---- Enrichment pass identical to your version ----
+  // ---- Enrichment pass (SPB list) ----
   const thicknessIds = new Set<number>();
   const lengths = new Set<number>();
   const widths = new Set<number>();
@@ -4871,27 +4941,28 @@ async getVariantLedgerByRealDesc(params?: {
     const boxSpbList = fromBoxSet ? Array.from(fromBoxSet).sort((a,b)=>a-b) : [];
     const resolvedBoxSpb = boxSpbList.length ? boxSpbList[0] : null;
 
-    // ✅ totals (same shape) — overridden by asOf snapshot if provided
     const snap = asOfEnd ? variantSnap.get(Number(v.id)) : null;
 
     const ofrTotalsUnits = {
-      start: Number(toNum(snap ? snap.startU : v.totalStart).toFixed(2)),
-      in:    Number(toNum(snap ? snap.inU    : v.totalIn).toFixed(2)),
-      out:   Number(toNum(snap ? snap.outU   : v.totalOut).toFixed(2)),
-      balance:Number(toNum(snap ? snap.balU  : v.totalBalance).toFixed(2)),
+      start:  Number(toNum(v.totalStart).toFixed(2)),
+      in:     Number(toNum(v.totalIn).toFixed(2)),
+      out:    Number(toNum(v.totalOut).toFixed(2)),
+      // ✅ override ONLY balance on asOf
+      balance: Number(toNum(snap?.balU ?? v.totalBalance).toFixed(2)),
     };
 
     const ofrTotalsSqm = {
-      startOFR:  Number(toNum(snap ? snap.startOFR : v.totalStartOFR).toFixed(2)),
-      inOFR:     Number(toNum(snap ? snap.inOFR    : v.totalInOFR).toFixed(2)),
-      outOFR:    Number(toNum(snap ? snap.outOFR   : v.totalOutOFR).toFixed(2)),
-      balanceOFR:Number(toNum(snap ? snap.balOFR   : v.totalBalanceOFR).toFixed(2)),
+      startOFR:  Number(toNum(v.totalStartOFR).toFixed(2)),
+      inOFR:     Number(toNum(v.totalInOFR).toFixed(2)),
+      outOFR:    Number(toNum(v.totalOutOFR).toFixed(2)),
+      // ✅ override ONLY balanceOFR on asOf
+      balanceOFR: Number(toNum(snap?.balOFR ?? v.totalBalanceOFR).toFixed(2)),
     };
 
     const batches = (v.batches ?? []).map((b) => {
       const bSnap = asOfEnd ? batchSnap.get(Number(b.id)) : null;
 
-      const balanceOFRSqm = toNum(bSnap ? bSnap.balOFR : (b.balanceOFR ?? 0));
+      const balanceOFRSqm = toNum(bSnap?.balOFR ?? (b.balanceOFR ?? 0));
       const convertedUnits = convertFromSqm({
         itemType, lengthCm: len, widthCm: wid, sheetsPerBox: spbSelf, valueSqm: balanceOFRSqm,
       });
@@ -4900,16 +4971,14 @@ async getVariantLedgerByRealDesc(params?: {
         id: b.id,
         condition: b.condition ?? null,
         dateReceived: b.dateReceived ?? null,
-
-        start: toNum(bSnap ? bSnap.startU : (b.start ?? 0)),
-        in:    toNum(bSnap ? bSnap.inU    : (b.in ?? 0)),
-        out:   toNum(bSnap ? bSnap.outU   : (b.out ?? 0)),
-        balance:toNum(bSnap ? bSnap.balU  : (b.balance ?? 0)),
-
-        startOFR: Number(toNum(bSnap ? bSnap.startOFR : (b.startOFR ?? 0)).toFixed(2)),
-        inOFR:    Number(toNum(bSnap ? bSnap.inOFR    : (b.inOFR ?? 0)).toFixed(2)),
-        outOFR:   Number(toNum(bSnap ? bSnap.outOFR   : (b.outOFR ?? 0)).toFixed(2)),
-
+        start: toNum(b.start ?? 0),
+        in: toNum(b.in ?? 0),
+        out: toNum(b.out ?? 0),
+        // ✅ override ONLY balance on asOf
+        balance: toNum(bSnap?.balU ?? (b.balance ?? 0)),
+        startOFR: Number(toNum(b.startOFR ?? 0).toFixed(2)),
+        inOFR: Number(toNum(b.inOFR ?? 0).toFixed(2)),
+        outOFR: Number(toNum(b.outOFR ?? 0).toFixed(2)),
         balanceOFRSqm: Number(balanceOFRSqm.toFixed(2)),
         balanceOFR: Number(convertedUnits.toFixed(2)),
       };
@@ -4948,12 +5017,8 @@ async getVariantLedgerByRealDesc(params?: {
       boxSpbList,
       resolvedBoxSpb,
 
-      averageCost: v.averageCost != null
-        ? Number(toNum(v.averageCost).toFixed(2))
-        : null,
-      lastCost: v.lastCost != null
-        ? Number(toNum(v.lastCost).toFixed(2))
-        : null,
+      averageCost: v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null,
+      lastCost: v.lastCost != null ? Number(toNum(v.lastCost).toFixed(2)) : null,
     };
   });
 
@@ -4965,6 +5030,9 @@ async getVariantLedgerByRealDesc(params?: {
     data,
   };
 }
+
+
+
 
 
 
