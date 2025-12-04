@@ -1445,7 +1445,7 @@ async createSingleopening(data: any): Promise<InventoryCount> {
    * - Resets & recomputes batch/variant openings from keepDate counts
    * - Reinserts Opening Count txns only for keepDate counts
    */
- async rebuildOpeningCountsKeepDate(params: {
+async rebuildOpeningCountsKeepDate(params: {
   keepDate: string;      // e.g. '2025-11-29'
   deleteDate: string;    // e.g. '2025-10-31'
 }) {
@@ -1500,8 +1500,7 @@ async createSingleopening(data: any): Promise<InventoryCount> {
     const variants = await qr.manager.findBy(ItemVariant, { id: In(affectedVariantIds) });
     const variantMap = new Map<number, ItemVariant>(variants.map((v) => [v.id, v]));
 
-    // 3) fetch OR CREATE the "single NULL-dateReceived batch" for each affected variant
-    //    and force condition to 'Clean'
+    // 3) fetch OR CREATE the required NULL-dateReceived batch per affected variant
     const nullDateBatches = await qr.manager.find(ItemBatch, {
       where: {
         itemVariant: { id: In(affectedVariantIds) } as any,
@@ -1510,7 +1509,6 @@ async createSingleopening(data: any): Promise<InventoryCount> {
       relations: ['itemVariant'],
     });
 
-    // map by variantId, but detect duplicates
     const batchMap = new Map<number, ItemBatch>();
     for (const b of nullDateBatches) {
       const vid = b.itemVariant?.id;
@@ -1522,7 +1520,7 @@ async createSingleopening(data: any): Promise<InventoryCount> {
         );
       }
 
-      // reuse this null-date batch; force condition clean
+      // force condition = Clean (your business rule)
       if ((b.condition ?? '') !== 'Clean') b.condition = 'Clean';
       batchMap.set(vid, b);
     }
@@ -1533,16 +1531,13 @@ async createSingleopening(data: any): Promise<InventoryCount> {
       if (batchMap.has(vid)) continue;
 
       const v = variantMap.get(vid);
-      if (!v) {
-        throw new BadRequestException(`Variant #${vid} not loaded while creating batch.`);
-      }
+      if (!v) throw new BadRequestException(`Variant #${vid} not loaded while creating batch.`);
 
       const newBatch = qr.manager.create(ItemBatch, {
         itemVariant: v,
         condition: 'Clean',
         dateReceived: null,
 
-        // explicit zeros (safe even if defaults exist)
         start: 0,
         in: 0,
         out: 0,
@@ -1557,13 +1552,10 @@ async createSingleopening(data: any): Promise<InventoryCount> {
       batchMap.set(vid, newBatch);
     }
 
-    if (createdBatches.length) {
-      await qr.manager.save(ItemBatch, createdBatches); // ensures IDs exist
-    }
-    // persist condition fixes too
-    await qr.manager.save(ItemBatch, Array.from(batchMap.values()));
+    if (createdBatches.length) await qr.manager.save(ItemBatch, createdBatches);
+    await qr.manager.save(ItemBatch, Array.from(batchMap.values())); // persist condition fixes too
 
-    // 4) delete Opening Count txns linked to these counts (both dates)
+    // 4) delete Opening Count txns linked to counts (both dates)
     await qr.manager
       .createQueryBuilder()
       .delete()
@@ -1572,7 +1564,7 @@ async createSingleopening(data: any): Promise<InventoryCount> {
       .andWhere('inventoryCountId IN (:...ids)', { ids: [...keepIds, ...deleteIds] })
       .execute();
 
-    // 5) reset openings for affected batches/variants (NOT in/out)
+    // 5) reset openings for affected batches/variants
     for (const vid of affectedVariantIds) {
       const v = variantMap.get(vid);
       const b = batchMap.get(vid);
@@ -1585,9 +1577,8 @@ async createSingleopening(data: any): Promise<InventoryCount> {
       v.totalStartOFR = 0 as any;
     }
 
-    // 6) apply keepDate counts as truth (sum per variant)
+    // 6) build sums ONLY from keepDate counts
     const sums = new Map<number, { start: number; startOfr: number }>();
-
     const add = (vid: number, ds: number, dofr: number) => {
       const cur = sums.get(vid) ?? { start: 0, startOfr: 0 };
       cur.start = this.round2(cur.start + ds);
@@ -1598,17 +1589,17 @@ async createSingleopening(data: any): Promise<InventoryCount> {
     for (const c of keepCounts as any[]) {
       const vid = c.itemVariantId;
       const sqm = this.round2(c.sqm);
-      const sqmOfr = this.round2(c.sqmOfr ?? 0); // might be missing in older rows
+      const sqmOfr = this.round2(c.sqmOfr ?? 0);
 
       switch (c.type as CountType) {
         case CountType.S:
-          add(vid, sqm, sqm); // S mirrors
+          add(vid, sqm, sqm);
           break;
         case CountType.G:
-          add(vid, 0, sqmOfr || sqm); // fallback
+          add(vid, 0, sqmOfr || sqm);
           break;
         case CountType.SR:
-          add(vid, sqm, sqmOfr || sqm); // fallback
+          add(vid, sqm, sqmOfr || sqm);
           break;
         case CountType.RVR:
           add(vid, sqm, 0);
@@ -1616,22 +1607,19 @@ async createSingleopening(data: any): Promise<InventoryCount> {
       }
     }
 
-    // Safety: if variant existed in deleteDate counts but has NO keep sum, stop
-    const deleteVariantSet = new Set((deleteCounts as any[]).map((c) => c.itemVariantId));
-    for (const vid of deleteVariantSet) {
-      if (!sums.has(vid)) {
-        throw new BadRequestException(
-          `Variant #${vid} had an opening count on ${deleteDate} but no kept count on ${keepDate}. Refusing to set its opening to 0.`,
-        );
-      }
-    }
+    // ✅ CHANGED RULE:
+    // Any affected variant that does NOT exist in keepDate sums keeps opening = 0.
+    // We STILL recompute its balances using existing in/out totals.
 
-    // apply sums to batch/variant + recompute balances
+    const zeroedVariants: number[] = [];
+
     for (const vid of affectedVariantIds) {
       const v = variantMap.get(vid);
       const b = batchMap.get(vid);
-      const s = sums.get(vid);
-      if (!v || !b || !s) continue;
+      if (!v || !b) continue;
+
+      const s = sums.get(vid) ?? { start: 0, startOfr: 0 };
+      if (!sums.has(vid)) zeroedVariants.push(vid);
 
       b.start = this.round2(s.start) as any;
       b.startOFR = this.round2(s.startOfr) as any;
@@ -1662,7 +1650,7 @@ async createSingleopening(data: any): Promise<InventoryCount> {
     // 7) delete counts on deleteDate
     await qr.manager.delete(InventoryCount, { date: deleteDate as any });
 
-    // 8) reinsert Opening Count txns for keepDate only
+    // 8) reinsert Opening Count txns ONLY for keepDate counts
     const newTxns: Partial<InventoryTransaction>[] = [];
 
     for (const c of keepCounts as any[]) {
@@ -1688,20 +1676,17 @@ async createSingleopening(data: any): Promise<InventoryCount> {
       } else if (type === CountType.SR) {
         txnSqm = sqm; txnSqmOfr = sqmOfr || sqm;
         qty = c.count;
-        // InventoryCount does not store countOFR in your entity, so fallback
-        qtyOfr = c.countOFR ?? c.count;
+        qtyOfr = c.countOFR ?? c.count; // entity doesn’t store countOFR -> fallback
       }
 
       newTxns.push({
         transactionType: 'Opening Count',
-
         itemVariantId: v.id,
         itemBatchId: b.id,
         inventoryCountId: c.id,
 
         sqm: this.round2(txnSqm) as any,
         sqmofr: this.round2(txnSqmOfr) as any,
-
         quantity: qty as any,
         quantityofr: qtyOfr as any,
 
@@ -1723,6 +1708,9 @@ async createSingleopening(data: any): Promise<InventoryCount> {
       affectedVariants: affectedVariantIds.length,
       createdNullDateBatches: createdBatches.length,
       insertedOpeningTxns: newTxns.length,
+      // ✅ new info to help you verify
+      zeroedVariantsCount: zeroedVariants.length,
+      zeroedVariantsSample: zeroedVariants.slice(0, 25),
     };
   } catch (e) {
     await qr.rollbackTransaction();
