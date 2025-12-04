@@ -4557,10 +4557,10 @@ async getVariantLedgerByRealDesc(params?: {
     return Number.isFinite(n) ? n : 0;
   };
 
-const ARABIC_INDIC_MAP: Record<string, string> = {
-  '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
-  '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
-};
+  const ARABIC_INDIC_MAP: Record<string, string> = {
+    '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
+    '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+  };
 
   const normalizeDigitsAll = (input: string) =>
     String(input || '').replace(/[٠-٩۰-۹]/g, d => ARABIC_INDIC_MAP[d] ?? d);
@@ -4637,13 +4637,10 @@ const ARABIC_INDIC_MAP: Record<string, string> = {
     return valueSqm;
   };
 
-  // ✅ asOf validation (inclusive to end-of-day)
+  // ✅ asOf validation (we use YYYY-MM-DD string for COALESCE(dateForEachInvoice, DATE(transactionDate)))
   const asOfRaw = (params?.asOf ?? '').trim();
-  const asOfEnd =
-    asOfRaw
-      ? (/^\d{4}-\d{2}-\d{2}$/.test(asOfRaw) ? `${asOfRaw} 23:59:59` : null)
-      : null;
-  if (asOfRaw && !asOfEnd) {
+  const asOfOk = !asOfRaw || /^\d{4}-\d{2}-\d{2}$/.test(asOfRaw);
+  if (!asOfOk) {
     throw new Error(`asOf must be YYYY-MM-DD, got: ${asOfRaw}`);
   }
 
@@ -4662,41 +4659,6 @@ const ARABIC_INDIC_MAP: Record<string, string> = {
     const cols = (rows || []).map((r: any) => String(r.col));
     (this as any).__invTxnCols = cols;
     return cols;
-  };
-
-  const resolveInventoryTxnDateColumn = async (): Promise<string> => {
-    const cached = (this as any).__invTxnDateCol as string | undefined;
-    if (cached) return cached;
-
-    const candidates = [
-      'transactionDate',
-      'date',
-      'createdAt',
-      'created_at',
-      'timestamp',
-    ];
-
-    const sql = `
-      SELECT COLUMN_NAME AS col
-      FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = 'inventory_transaction'
-        AND COLUMN_NAME IN (${candidates.map(() => '?').join(',')})
-      ORDER BY FIELD(COLUMN_NAME, ${candidates.map(() => '?').join(',')})
-      LIMIT 1
-    `;
-    const rows = await this.itemVariantRepository.query(sql, [...candidates, ...candidates]);
-    const col = rows?.[0]?.col ? String(rows[0].col) : null;
-
-    if (!col) {
-      const cols = await getInvTxnColumns();
-      throw new Error(
-        `Could not find a timestamp column in inventory_transaction. Tried: ${candidates.join(', ')}. Found: ${cols.join(', ')}`
-      );
-    }
-
-    (this as any).__invTxnDateCol = col;
-    return col;
   };
 
   const pickCol = (cols: string[], candidates: string[]) => {
@@ -4810,15 +4772,17 @@ const ARABIC_INDIC_MAP: Record<string, string> = {
 
   const variants = await qb.getMany();
 
-  // ✅ asOf snapshots
+  // ✅ asOf snapshots (uses COALESCE(dateForEachInvoice, DATE(transactionDate)) <= asOfRaw)
   const variantSnap = new Map<number, { balU?: any; balOFR?: any }>();
   const batchSnap   = new Map<number, { balU?: any; balOFR?: any }>();
 
-  if (asOfEnd && variants.length) {
+  if (asOfRaw && variants.length) {
     const cols = await getInvTxnColumns();
-    const txnDateCol = await resolveInventoryTxnDateColumn();
 
-    // Your real column names:
+    // column choices based on YOUR entity:
+    const hasDateForEach = !!pickCol(cols, ['dateForEachInvoice']);
+    const txnDateCol = pickCol(cols, ['transactionDate']) || 'transactionDate';
+
     const qtyCol     = pickCol(cols, ['quantity']);
     const qtyOfrCol  = pickCol(cols, ['quantityofr', 'quantityOFR', 'quantity_ofr']);
     const sqmCol     = pickCol(cols, ['sqm']);
@@ -4834,6 +4798,11 @@ const ARABIC_INDIC_MAP: Record<string, string> = {
         `inventory_transaction cannot make snapshots: missing quantity/sqm columns. Found: ${cols.join(', ')}`
       );
     }
+
+    // ✅ this is the FIX: use invoice date if present, else transactionDate
+    const dateFilterExpr = hasDateForEach
+      ? `COALESCE(dateForEachInvoice, DATE(\`${txnDateCol}\`))`
+      : `DATE(\`${txnDateCol}\`)`;
 
     const variantIds = (variants as any[]).map(v => Number(v.id)).filter(n => Number.isFinite(n) && n > 0);
 
@@ -4854,10 +4823,10 @@ const ARABIC_INDIC_MAP: Record<string, string> = {
           ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
         FROM inventory_transaction
         WHERE itemVariantId IN (${makeIn(variantIds)})
-          AND \`${txnDateCol}\` <= ?
+          AND ${dateFilterExpr} <= ?
         GROUP BY itemVariantId
       `;
-      const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfEnd]);
+      const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfRaw]);
       for (const r of rows || []) {
         const vid = Number(r.variantId);
         if (Number.isFinite(vid)) {
@@ -4874,10 +4843,10 @@ const ARABIC_INDIC_MAP: Record<string, string> = {
           ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
         FROM inventory_transaction
         WHERE itemBatchId IN (${makeIn(uniq)})
-          AND \`${txnDateCol}\` <= ?
+          AND ${dateFilterExpr} <= ?
         GROUP BY itemBatchId
       `;
-      const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfEnd]);
+      const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfRaw]);
       for (const r of rows || []) {
         const bid = Number(r.batchId);
         if (Number.isFinite(bid)) {
@@ -4941,7 +4910,7 @@ const ARABIC_INDIC_MAP: Record<string, string> = {
     const boxSpbList = fromBoxSet ? Array.from(fromBoxSet).sort((a,b)=>a-b) : [];
     const resolvedBoxSpb = boxSpbList.length ? boxSpbList[0] : null;
 
-    const snap = asOfEnd ? variantSnap.get(Number(v.id)) : null;
+    const snap = asOfRaw ? variantSnap.get(Number(v.id)) : null;
 
     const ofrTotalsUnits = {
       start:  Number(toNum(v.totalStart).toFixed(2)),
@@ -4960,7 +4929,7 @@ const ARABIC_INDIC_MAP: Record<string, string> = {
     };
 
     const batches = (v.batches ?? []).map((b) => {
-      const bSnap = asOfEnd ? batchSnap.get(Number(b.id)) : null;
+      const bSnap = asOfRaw ? batchSnap.get(Number(b.id)) : null;
 
       const balanceOFRSqm = toNum(bSnap?.balOFR ?? (b.balanceOFR ?? 0));
       const convertedUnits = convertFromSqm({
