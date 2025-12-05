@@ -116,8 +116,9 @@ rebuildOpening(@Body() body: { keepDate: string; deleteDate: string }) {
     return this.svc.findOne(+id);
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.svc.remove(+id);
-  }
+@Post('v1/delete-counts-strict')
+deleteCountsStrict(@Body() body: { ids: number[] }) {
+  return this.svc.deleteCountsStrictRecomputeFromCounts(body);
+}
+
 }

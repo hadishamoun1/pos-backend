@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, Query, Header } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Query, Header, Delete, ParseIntPipe } from '@nestjs/common';
 import { InventoryTransactionService } from './inventroy-transactions.service';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 
@@ -58,5 +58,10 @@ async getFilteredActivity(@Query() query: any) {
     );
   }
 
+ @Delete(':id')
+  async deleteOne(@Param('id', ParseIntPipe) id: number) {
+    return this.inventoryTransactionService.deleteTransactionOnly(id);
+  }
+  
  
 }

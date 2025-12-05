@@ -106,6 +106,17 @@ export class InventoryCountService {
       fc = finalCost;
       fco = finalCostOfr;
     }
+    if (Number(fc) > 0) {
+  variant.averageCost = Number(Number(fc).toFixed(2));
+}
+if (Number(fco) > 0) {
+  variant.averageCostVM = Number(Number(fco).toFixed(2));
+}
+if (type === 'RVR' && Number(fc) > 0 && (variant as any).itemNameDescription) {
+  (variant as any).itemNameDescription.averageCostCVM = Number(Number(fc).toFixed(2));
+  await this.itemNameDescriptionRepo.save((variant as any).itemNameDescription);
+}
+
 
     // 5) save the InventoryCount
     const inventoryCount = this.inventoryCountRepo.create({
@@ -247,10 +258,6 @@ export class InventoryCountService {
       throw new NotFoundException(`InventoryCount #${id} not found`);
     }
     return rec;
-  }
-
-  async remove(id: number): Promise<void> {
-    await this.inventoryCountRepo.delete(id);
   }
 
   async getFilteredCounts(): Promise<any[]> {
@@ -810,10 +817,10 @@ async searchVariants(params: {
   // averageCost   <- finalCost (fc)
   // averageCostVM <- finalCostOfr (fco)
   if (fc > 0) {
-    newVariant.averageCost = round2(fc);
+    newVariant.averageCostVM = round2(fc);
   }
   if (fco > 0) {
-    newVariant.averageCostVM = round2(fco);
+    newVariant.averageCost = round2(fco);
   }
 
   // Special: type=RVR push fc into itemNameDescription.averageCostCVM (like create)
@@ -1090,10 +1097,10 @@ async createSingleopening(data: any): Promise<InventoryCount> {
   // finalCostOfr   -> averageCostVM
   // We only overwrite if a positive cost is provided.
   if (fc > 0) {
-    variant.averageCost = Number(fco.toFixed(2));
+    variant.averageCostVM = Number(fco.toFixed(2));
   }
   if (fco > 0) {
-    variant.averageCostVM = Number(fc.toFixed(2));
+    variant.averageCost = Number(fc.toFixed(2));
   }
 
   // ✅ Step 5: Save inventory count
@@ -1719,4 +1726,317 @@ async rebuildOpeningCountsKeepDate(params: {
     await qr.release();
   }
 }
+
+
+
+// In InventoryCountService
+
+async deleteCountsStrictRecomputeFromCounts(params: { ids: number[] }) {
+  console.log('🧨 deleteCountsStrictRecomputeFromCounts IN:', params);
+
+  const ids = Array.from(
+    new Set(
+      (params.ids || [])
+        .map((x) => Number(x))
+        .filter((x) => Number.isInteger(x) && x > 0),
+    ),
+  );
+
+  console.log('🧾 normalized ids:', ids);
+
+  if (!ids.length) {
+    throw new BadRequestException('ids must be a non-empty array of positive integers');
+  }
+
+  const round2 = (n: any) => Number((Number(n || 0)).toFixed(2));
+
+  const qr = this.dataSource.createQueryRunner();
+  await qr.connect();
+  await qr.startTransaction();
+
+  try {
+    // 0) show which DB we’re connected to
+    const dbRow = await qr.query(`SELECT DATABASE() AS db`);
+    console.log('🗄️ Connected DB:', dbRow?.[0]?.db);
+
+    const ph = ids.map(() => '?').join(',');
+
+    // 1) Load counts (NO itemBatch relation exists on InventoryCount)
+    const counts: InventoryCount[] = await qr.manager.find(InventoryCount, {
+      where: { id: In(ids) } as any,
+      relations: ['itemVariant'] as any, // ok
+    });
+
+    console.log('✅ counts loaded:', counts.map((c) => c.id));
+
+    if (counts.length !== ids.length) {
+      const found = new Set(counts.map((c) => Number(c.id)));
+      const missingCounts = ids.filter((id) => !found.has(id));
+      console.error('❌ Missing InventoryCount ids:', missingCounts);
+      throw new NotFoundException(`InventoryCount not found for ids: ${missingCounts.join(', ')}`);
+    }
+
+    // 2) STRICT: each count must have at least one txn where txn.inventoryCountId = count.id
+    const txnAgg: any[] = await qr.query(
+      `
+      SELECT inventoryCountId, COUNT(*) AS cnt
+      FROM inventory_transaction
+      WHERE inventoryCountId IN (${ph})
+      GROUP BY inventoryCountId
+      `,
+      ids,
+    );
+
+    console.log('📌 txnAgg:', txnAgg);
+
+    const present = new Set(
+      txnAgg
+        .map((r) => Number(r.inventoryCountId))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    );
+
+    const missingTxnIds = ids.filter((cid) => !present.has(cid));
+    console.log('🔎 present txn countIds:', Array.from(present.values()));
+    console.log('❓ missingTxnIds:', missingTxnIds);
+
+    if (missingTxnIds.length) {
+      // extra debug: show latest txns around these ids
+      const mph = missingTxnIds.map(() => '?').join(',');
+      const sample = await qr.query(
+        `
+        SELECT id, inventoryCountId, itemVariantId, itemBatchId, transactionType, sqm, sqmofr, dateForEachInvoice
+        FROM inventory_transaction
+        WHERE inventoryCountId IN (${mph})
+        ORDER BY id DESC
+        LIMIT 50
+        `,
+        missingTxnIds,
+      );
+      console.log('🧪 txns found for missingTxnIds sample:', sample);
+
+      throw new BadRequestException(
+        `Cannot delete counts: related InventoryTransaction is missing for count ids: ${missingTxnIds.join(', ')}`,
+      );
+    }
+
+    // 3) Derive affected batchIds + variantIds from transactions (this is the correct source)
+    const countToBatch: any[] = await qr.query(
+      `
+      SELECT
+        inventoryCountId,
+        MIN(itemBatchId)  AS itemBatchId,
+        MIN(itemVariantId) AS itemVariantId,
+        COUNT(DISTINCT itemBatchId) AS batchesForSameCount
+      FROM inventory_transaction
+      WHERE inventoryCountId IN (${ph})
+      GROUP BY inventoryCountId
+      `,
+      ids,
+    );
+
+    console.log('🧩 countToBatch mapping:', countToBatch);
+
+    const multiBatchCounts = countToBatch.filter((r) => Number(r.batchesForSameCount) > 1);
+    if (multiBatchCounts.length) {
+      console.warn('⚠️ Some counts have txns pointing to multiple batches:', multiBatchCounts);
+    }
+
+    const affectedBatchIds = Array.from(
+      new Set(
+        countToBatch
+          .map((r) => Number(r.itemBatchId))
+          .filter((x) => Number.isInteger(x) && x > 0),
+      ),
+    );
+
+    const affectedVariantIds = Array.from(
+      new Set(
+        countToBatch
+          .map((r) => Number(r.itemVariantId))
+          .filter((x) => Number.isInteger(x) && x > 0),
+      ),
+    );
+
+    console.log('📦 affectedBatchIds:', affectedBatchIds);
+    console.log('🧱 affectedVariantIds:', affectedVariantIds);
+
+    // 4) Delete txns first, then delete counts
+    const delTxnRes = await qr.query(
+      `DELETE FROM inventory_transaction WHERE inventoryCountId IN (${ph})`,
+      ids,
+    );
+    console.log('🗑️ Deleted txns:', delTxnRes);
+
+    const delCountRes = await qr.query(
+      `DELETE FROM inventory_count WHERE id IN (${ph})`,
+      ids,
+    );
+    console.log('🗑️ Deleted counts:', delCountRes);
+
+    // 5) Recompute batch.start/startOFR from REMAINING counts (via txn->count mapping)
+    if (affectedBatchIds.length) {
+      const bph = affectedBatchIds.map(() => '?').join(',');
+
+      const batchSums: any[] = await qr.query(
+        `
+        SELECT
+          m.itemBatchId AS itemBatchId,
+          COALESCE(SUM(
+            CASE
+              WHEN ic.type IN ('S','SR','RVR') THEN ic.sqm
+              ELSE 0
+            END
+          ),0) AS sumStart,
+          COALESCE(SUM(
+            CASE
+              WHEN ic.type = 'S'  THEN ic.sqm
+              WHEN ic.type = 'G'  THEN COALESCE(ic.sqmOfr, ic.sqm, 0)
+              WHEN ic.type = 'SR' THEN COALESCE(ic.sqmOfr, ic.sqm, 0)
+              ELSE 0
+            END
+          ),0) AS sumStartOfr
+        FROM inventory_count ic
+        JOIN (
+          SELECT inventoryCountId, MIN(itemBatchId) AS itemBatchId
+          FROM inventory_transaction
+          WHERE inventoryCountId IS NOT NULL
+            AND transactionType IN ('Count','Opening Count')
+          GROUP BY inventoryCountId
+        ) m ON m.inventoryCountId = ic.id
+        WHERE m.itemBatchId IN (${bph})
+        GROUP BY m.itemBatchId
+        `,
+        affectedBatchIds,
+      );
+
+      console.log('📊 batchSums:', batchSums);
+
+      const batchMap = new Map<number, { start: number; startOfr: number }>();
+      for (const r of batchSums) {
+        batchMap.set(Number(r.itemBatchId), {
+          start: round2(r.sumStart),
+          startOfr: round2(r.sumStartOfr),
+        });
+      }
+
+      const batches: any[] = await qr.manager.findBy(ItemBatch, { id: In(affectedBatchIds) } as any);
+      console.log('📦 loaded batches:', batches.map((b) => b.id));
+
+      for (const b of batches) {
+        const bid = Number(b.id);
+        const s = batchMap.get(bid) ?? { start: 0, startOfr: 0 };
+
+        const before = {
+          id: bid,
+          start: Number(b.start || 0),
+          startOFR: Number((b as any).startOFR || 0),
+          balance: Number((b as any).balance || 0),
+          balanceOFR: Number((b as any).balanceOFR || 0),
+        };
+
+        b.start = round2(s.start);
+        (b as any).startOFR = round2(s.startOfr);
+
+        (b as any).balance = round2(
+          Number(b.start || 0) + Number((b as any).in || 0) - Number((b as any).out || 0),
+        );
+        (b as any).balanceOFR = round2(
+          Number((b as any).startOFR || 0) +
+            Number((b as any).inOFR || 0) -
+            Number((b as any).outOFR || 0),
+        );
+
+        console.log('🧮 batch recompute', { before, computed: s, after: {
+          id: bid,
+          start: Number(b.start || 0),
+          startOFR: Number((b as any).startOFR || 0),
+          balance: Number((b as any).balance || 0),
+          balanceOFR: Number((b as any).balanceOFR || 0),
+        }});
+      }
+
+      await qr.manager.save(ItemBatch, batches);
+      console.log('✅ batches saved');
+    }
+
+    // 6) Recompute variant totals from batches
+    if (affectedVariantIds.length) {
+      const variantSums = await qr.manager
+        .createQueryBuilder(ItemBatch, 'b')
+        .select('b.itemVariantId', 'itemVariantId')
+        .addSelect('COALESCE(SUM(b.start),0)', 'sumTotalStart')
+        .addSelect('COALESCE(SUM(b.startOFR),0)', 'sumTotalStartOfr')
+        .where('b.itemVariantId IN (:...vids)', { vids: affectedVariantIds })
+        .groupBy('b.itemVariantId')
+        .getRawMany();
+
+      console.log('📊 variantSums:', variantSums);
+
+      const vMap = new Map<number, { ts: number; tso: number }>();
+      for (const r of variantSums as any[]) {
+        vMap.set(Number(r.itemVariantId), {
+          ts: round2(r.sumTotalStart),
+          tso: round2(r.sumTotalStartOfr),
+        });
+      }
+
+      const variants: any[] = await qr.manager.findBy(ItemVariant, { id: In(affectedVariantIds) } as any);
+      console.log('🧱 loaded variants:', variants.map((v) => v.id));
+
+      for (const v of variants) {
+        const vid = Number(v.id);
+        const s = vMap.get(vid) ?? { ts: 0, tso: 0 };
+
+        const before = {
+          id: vid,
+          totalStart: Number((v as any).totalStart || 0),
+          totalStartOFR: Number((v as any).totalStartOFR || 0),
+        };
+
+        (v as any).totalStart = round2(s.ts);
+        (v as any).totalStartOFR = round2(s.tso);
+
+        (v as any).totalBalance = round2(
+          Number((v as any).totalStart || 0) +
+            Number((v as any).totalIn || 0) -
+            Number((v as any).totalOut || 0),
+        );
+        (v as any).totalBalanceOFR = round2(
+          Number((v as any).totalStartOFR || 0) +
+            Number((v as any).totalInOFR || 0) -
+            Number((v as any).totalOutOFR || 0),
+        );
+
+        console.log('🧮 variant recompute', { before, computed: s, after: {
+          id: vid,
+          totalStart: Number((v as any).totalStart || 0),
+          totalStartOFR: Number((v as any).totalStartOFR || 0),
+        }});
+      }
+
+      await qr.manager.save(ItemVariant, variants);
+      console.log('✅ variants saved');
+    }
+
+    await qr.commitTransaction();
+    console.log('✅ COMMIT OK');
+
+    return {
+      ok: true,
+      deletedCountIds: ids,
+      affectedBatchIds,
+      affectedVariantIds,
+    };
+  } catch (e) {
+    console.error('🧨 ERROR -> rollback:', (e as any)?.message || e);
+    await qr.rollbackTransaction();
+    throw e;
+  } finally {
+    await qr.release();
+    console.log('🧹 released queryRunner');
+  }
+}
+
+
+
 }

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
@@ -681,6 +681,29 @@ async getFilteredActivity(query: any): Promise<{
 
   return { data, totals, totalRecords };
 }
+
+
+
+
+
+
+ async deleteTransactionOnly(id: number): Promise<{ ok: true }> {
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new BadRequestException('id must be a positive integer');
+    }
+
+    const exists = await this.inventoryTransactionRepository.findOne({
+      where: { id },
+      select: { id: true } as any, // keeps it light
+    });
+
+    if (!exists) {
+      throw new NotFoundException(`InventoryTransaction #${id} not found`);
+    }
+
+    await this.inventoryTransactionRepository.delete({ id });
+    return { ok: true };
+  }
 
 
 }
