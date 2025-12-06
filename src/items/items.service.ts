@@ -524,7 +524,8 @@ async getSelectedItemDetailsPaginatedByDescription(opts?: {
 
 async createFullItem(data: {
   itemName: string;
-  type: 'box' | 'sheet' | 'sqm';
+  type: 'box' | 'sheet' | 'sqm' | 'unit'; // ✅ added unit
+  stockMode?: 'SQM' | 'QTY' | 'NONE';     // ✅ added stockMode
   descriptions?: Array<{
     itemNumber: string;
     categoryName: string;
@@ -546,6 +547,10 @@ async createFullItem(data: {
   }>;
 }): Promise<Item> {
   const { itemName, type, thicknesses: rawTh, descriptions = [] } = data;
+
+  // ✅ NEW: choose stock mode (default: glass=SQM, unit=QTY)
+  const stockMode: 'SQM' | 'QTY' | 'NONE' =
+    data.stockMode ?? (type === 'unit' ? 'QTY' : 'SQM');
 
   // ──────────────────────────────────────────────
   // Normalization helpers
@@ -628,6 +633,24 @@ async createFullItem(data: {
     }));
   };
 
+  // ✅ NEW: for unit (because your variant columns are NOT NULL)
+  const buildUnitIncomingForRequested = () => [
+    {
+      thickness: 0,
+      variants: [
+        {
+          length: 0,
+          width: 0,
+          sheetsPerBox: 1,
+          origin: '-', // required
+          fixBox: false,
+          fixLength: false,
+          fixWidth: false,
+        },
+      ],
+    },
+  ];
+
   // Resolve/create BOTH descriptions from one descriptor
   const resolveOrCreatePair = async (desc: {
     itemNumber: string;
@@ -671,7 +694,7 @@ async createFullItem(data: {
    * Each variant is saved with BOTH itemNameDescription and realDescription set.
    */
   const upsertItemWith = async (
-    targetType: 'box' | 'sheet' | 'sqm',
+    targetType: 'box' | 'sheet' | 'sqm' | 'unit', // ✅ added unit
     incoming: Array<{
       thickness: number;
       variants: Array<{
@@ -684,7 +707,7 @@ async createFullItem(data: {
         fixWidth: boolean;
       }>;
     }>,
-    pairs: Array<{ nameDesc: any; realDesc: any }>
+    pairs: Array<{ nameDesc: any; realDesc: any }>,
   ): Promise<{
     item: Item;
     createdByThickness: Map<number, string[]>;
@@ -702,7 +725,8 @@ async createFullItem(data: {
     const createdByThickness = new Map<number, string[]>();
 
     if (!item) {
-      item = this.itemRepository.create({ itemName, type: targetType });
+      // ✅ NEW: save stockMode too
+      item = this.itemRepository.create({ itemName, type: targetType, stockMode });
       item = await this.itemRepository.save(item);
       item.thicknesses = [];
 
@@ -746,6 +770,12 @@ async createFullItem(data: {
       }
 
       return { item, createdByThickness };
+    }
+
+    // ✅ NEW: keep stockMode in sync (doesn't change your upsert rules)
+    if ((item as any).stockMode !== stockMode) {
+      (item as any).stockMode = stockMode;
+      await this.itemRepository.save(item);
     }
 
     // Existing item → idempotent upsert
@@ -860,7 +890,10 @@ async createFullItem(data: {
   // ──────────────────────────────────────────────
   // 2) Upsert the requested item TYPE (main)
   // ──────────────────────────────────────────────
-  const incomingForRequested = normalizeForType(type);
+  // ✅ NEW: unit gets a default thickness+variant so NOT NULL columns are satisfied
+  const incomingForRequested =
+    type === 'unit' ? buildUnitIncomingForRequested() : normalizeForType(type);
+
   const { item: mainItem, createdByThickness } = await upsertItemWith(
     type,
     incomingForRequested,
@@ -942,7 +975,8 @@ async createFullItem(data: {
   // ──────────────────────────────────────────────
   // 4) SQM for NEW pairs (one 0x0 variant per thickness)
   // ──────────────────────────────────────────────
-  if (newPairsForSQM.length > 0 && uniqueThicknesses.length > 0) {
+  // ✅ NEW: unit items should NOT create sqm mirrors
+  if (type !== 'unit' && newPairsForSQM.length > 0 && uniqueThicknesses.length > 0) {
     const sqmIncoming = buildSQMIncomingForOnePair(uniqueThicknesses);
     for (const pair of newPairsForSQM) {
       await upsertItemWith('sqm', sqmIncoming, [pair]);
@@ -954,9 +988,11 @@ async createFullItem(data: {
 
 
 
+
 async createFullItemUsingRealDescription(data: {
   itemName: string;
-  type: 'box' | 'sheet' | 'sqm';
+  type: 'box' | 'sheet' | 'sqm' | 'unit'; // ✅ extended (no logic change)
+  stockMode?: 'SQM' | 'QTY' | 'NONE';     // ✅ NEW
   descriptions?: Array<{
     itemNumber: string;
     categoryName: string;
@@ -978,6 +1014,10 @@ async createFullItemUsingRealDescription(data: {
   }>;
 }): Promise<Item> {
   const { itemName, type, thicknesses: rawTh, descriptions = [] } = data;
+
+  // ✅ NEW: decide stock mode (glass defaults to SQM, unit defaults to QTY)
+  const stockMode: 'SQM' | 'QTY' | 'NONE' =
+    data.stockMode ?? (type === 'unit' ? 'QTY' : 'SQM');
 
   // ── Helpers ─────────────────────────────────────────────────────────
   const normalizeDigits = (s: string) => {
@@ -1049,6 +1089,24 @@ async createFullItemUsingRealDescription(data: {
         : [],
     }));
 
+  // ✅ NEW: unit payload (because your Variant columns are NOT NULL)
+  const buildUnitIncoming = () => [
+    {
+      thickness: 0,
+      variants: [
+        {
+          length: 0,
+          width: 0,
+          sheetsPerBox: 1,
+          origin: '-', // required
+          fixBox: false,
+          fixLength: false,
+          fixWidth: false,
+        },
+      ],
+    },
+  ];
+
   // Only REAL description is resolved/created here
   const resolveOrCreateReal = async (desc: {
     itemNumber: string;
@@ -1075,7 +1133,7 @@ async createFullItemUsingRealDescription(data: {
 
   // Upsert with ONLY realDescription set; itemNameDescription is NULL
   const upsertItemWith = async (
-    targetType: 'box' | 'sheet' | 'sqm',
+    targetType: 'box' | 'sheet' | 'sqm' | 'unit', // ✅ extended
     incoming: Array<{
       thickness: number;
       variants: Array<{
@@ -1103,7 +1161,10 @@ async createFullItemUsingRealDescription(data: {
     const createdByThickness = new Map<number, string[]>();
 
     if (!item) {
-      item = await this.itemRepository.save(this.itemRepository.create({ itemName, type: targetType }));
+      // ✅ NEW: save stockMode too
+      item = await this.itemRepository.save(
+        this.itemRepository.create({ itemName, type: targetType, stockMode })
+      );
       item.thicknesses = [];
 
       for (const thDto of incoming) {
@@ -1140,6 +1201,12 @@ async createFullItemUsingRealDescription(data: {
       }
 
       return { item, createdByThickness };
+    }
+
+    // ✅ NEW: keep stockMode in sync (no change to your existing upsert logic)
+    if ((item as any).stockMode !== stockMode) {
+      (item as any).stockMode = stockMode;
+      await this.itemRepository.save(item);
     }
 
     // existing item: idempotent upsert
@@ -1240,7 +1307,10 @@ async createFullItemUsingRealDescription(data: {
   ).filter((n) => Number.isFinite(n));
 
   // ── 2) Upsert main (only real side) ────────────────────────────────
-  const incomingForRequested = normalizeForType(type);
+  // ✅ NEW: if unit => create a default thickness+variant; otherwise keep your exact logic
+  const incomingForRequested =
+    type === 'unit' ? buildUnitIncoming() : normalizeForType(type);
+
   const { item: mainItem, createdByThickness } = await upsertItemWith(
     type,
     incomingForRequested,
@@ -1313,7 +1383,8 @@ async createFullItemUsingRealDescription(data: {
   }
 
   // ── 4) SQM for NEW real descriptions ONLY ──────────────────────────
-  if (newRealDescs.length > 0 && uniqueThicknesses.length > 0) {
+  // ✅ NEW: skip this for unit items (no change to glass behavior)
+  if (type !== 'unit' && newRealDescs.length > 0 && uniqueThicknesses.length > 0) {
     const sqmIncoming = buildSQMIncoming(uniqueThicknesses);
     for (const rd of newRealDescs) {
       await upsertItemWith('sqm', sqmIncoming, [rd]);
@@ -1322,6 +1393,7 @@ async createFullItemUsingRealDescription(data: {
 
   return mainItem;
 }
+
 
 
 
@@ -1347,7 +1419,8 @@ private safeJson(obj: any, max = 4000) {
 async editFullItem(editDto: {
   itemId?: number;
   itemName?: string;
-  type?: 'box'|'sheet'|'sqm';
+  type?: 'box' | 'sheet' | 'sqm' | 'unit';          // ✅ added unit
+  stockMode?: 'SQM' | 'QTY' | 'NONE';               // ✅ added stockMode edit
   thicknesses: Array<{
     thicknessId?: number;
     thickness?: number | string;
@@ -1362,6 +1435,9 @@ async editFullItem(editDto: {
       fixWidth?: boolean;
       // Optional re-link (no creation): only id is honored
       description?: { id?: number } | null;
+
+      // ✅ optional: allow setting realDescription too (same pattern)
+      realDescription?: { id?: number } | null;
     }>;
   }>;
 }): Promise<Item> {
@@ -1369,8 +1445,10 @@ async editFullItem(editDto: {
     const n = Number(v);
     return Number.isFinite(n) ? n : def;
   };
+
+  // ✅ added unit + keep default behavior
   const normType = (t?: string) =>
-    (t === 'box' || t === 'sheet' || t === 'sqm') ? t : 'box';
+    (t === 'box' || t === 'sheet' || t === 'sqm' || t === 'unit') ? t : 'box';
 
   const tag = (s: string) => `[editFullItem] ${s}`;
   const j = (o: any) => JSON.stringify(o);
@@ -1390,6 +1468,7 @@ async editFullItem(editDto: {
         'thicknesses',
         'thicknesses.variants',
         'thicknesses.variants.itemNameDescription',
+        'thicknesses.variants.realDescription',          // ✅ added
       ],
     });
   } else if (itemName && tType) {
@@ -1400,6 +1479,7 @@ async editFullItem(editDto: {
         'thicknesses',
         'thicknesses.variants',
         'thicknesses.variants.itemNameDescription',
+        'thicknesses.variants.realDescription',          // ✅ added
       ],
     });
   }
@@ -1414,19 +1494,36 @@ async editFullItem(editDto: {
     j({
       itemId: item.id,
       type: item.type,
+      stockMode: (item as any).stockMode ?? null,        // ✅ added log
       thicknessCount: item.thicknesses?.length ?? 0,
       thicknessIds: (item.thicknesses ?? []).map(t => t.id),
-    })
+    }),
   );
 
+  // ✅ NEW: allow changing the item itself (type + stockMode) without touching your variant logic
+  // stockMode update
+  if (editDto.stockMode && (editDto.stockMode === 'SQM' || editDto.stockMode === 'QTY' || editDto.stockMode === 'NONE')) {
+    (item as any).stockMode = editDto.stockMode;
+  }
+
+  // type update (optional)
+  if (editDto.type && editDto.type !== item.type) {
+    item.type = editDto.type as any;
+  }
+
+  // ✅ persist item-level fields if changed
+  await this.itemRepository.save(item);
+
+  // IMPORTANT: compute invariants based on the (possibly updated) item.type
   const isSQM = item.type === 'sqm';
+  const isUNIT = item.type === 'unit';
 
   // 2) Build quick lookups for thickness
   const thicknessById = new Map<number, Thickness>();
   const thicknessByVal = new Map<number, Thickness>();
   for (const th of item.thicknesses ?? []) {
     thicknessById.set(th.id, th);
-    thicknessByVal.set(Number(th.thickness), th);
+    thicknessByVal.set(Number((th as any).thickness), th);
     th.variants = th.variants ?? [];
   }
 
@@ -1445,11 +1542,11 @@ async editFullItem(editDto: {
     }
     console.log(tag('ERROR: Thickness not found on this item'));
     throw new Error(
-      `Thickness not found on this item. Provide a valid thicknessId or an existing numeric thickness.`
+      `Thickness not found on this item. Provide a valid thicknessId or an existing numeric thickness.`,
     );
   };
 
-  // Optional: cache for description entities
+  // Optional: cache for description entities (Name side)
   const descCache = new Map<number, any>();
   const getDescById = async (id?: number | null) => {
     if (!id) return null;
@@ -1463,13 +1560,27 @@ async editFullItem(editDto: {
     return ent;
   };
 
+  // ✅ NEW: cache for REAL description entities
+  const realDescCache = new Map<number, any>();
+  const getRealDescById = async (id?: number | null) => {
+    if (!id) return null;
+    if (realDescCache.has(id)) return realDescCache.get(id);
+    const ent = await this.realDescriptionRepository.findOne({ where: { id } });
+    if (!ent) {
+      console.log(tag(`ERROR: RealDescription id ${id} not found.`));
+      throw new Error(`RealDescription id ${id} not found.`);
+    }
+    realDescCache.set(id, ent);
+    return ent;
+  };
+
   // 3) Apply edits per thickness/variant
   for (const thDto of editDto.thicknesses ?? []) {
     console.log(tag('Incoming thickness DTO:'), j(thDto));
     const thEnt = findThicknessStrict(thDto);
     console.log(
       tag('Editing within thickness:'),
-      j({ thEntId: thEnt.id, thValue: String(thEnt.thickness) })
+      j({ thEntId: thEnt.id, thValue: String((thEnt as any).thickness) }),
     );
 
     for (const vDto of thDto.variants ?? []) {
@@ -1484,7 +1595,12 @@ async editFullItem(editDto: {
       // 🔴 Always DB-load variant WITH relations so thickness.item is present
       const targetVariant = await this.itemVariantRepository.findOne({
         where: { id: variantId },
-        relations: ['thickness', 'thickness.item', 'itemNameDescription'],
+        relations: [
+          'thickness',
+          'thickness.item',
+          'itemNameDescription',
+          'realDescription', // ✅ added
+        ],
       });
 
       console.log(
@@ -1492,10 +1608,10 @@ async editFullItem(editDto: {
         j({
           requestedVariantId: variantId,
           found: !!targetVariant,
-          foundThicknessId: targetVariant?.thickness?.id ?? null,
-          foundItemId: targetVariant?.thickness?.item?.id ?? null,
+          foundThicknessId: (targetVariant as any)?.thickness?.id ?? null,
+          foundItemId: (targetVariant as any)?.thickness?.item?.id ?? null,
           editingItemId: item.id,
-        })
+        }),
       );
 
       if (!targetVariant) {
@@ -1503,72 +1619,84 @@ async editFullItem(editDto: {
       }
 
       // ✅ Ownership check now reliable
-      if (targetVariant.thickness?.item?.id !== item.id) {
+      if ((targetVariant as any).thickness?.item?.id !== item.id) {
         console.log(
           tag('ERROR: Variant does not belong to this item'),
           j({
-            variantId: targetVariant.id,
-            variantItemId: targetVariant.thickness?.item?.id,
+            variantId: (targetVariant as any).id,
+            variantItemId: (targetVariant as any).thickness?.item?.id,
             expectedItemId: item.id,
             incomingThicknessId: thEnt.id,
-            itemThicknessIds: (item.thicknesses ?? []).map(t => t.id),
-          })
+            itemThicknessIds: (item.thicknesses ?? []).map(t => (t as any).id),
+          }),
         );
         throw new Error(`Variant id ${variantId} does not belong to the specified item.`);
       }
 
       // If variant is currently on a different thickness within the SAME item, move it
-      if (targetVariant.thickness?.id !== thEnt.id) {
+      if ((targetVariant as any).thickness?.id !== thEnt.id) {
         console.log(
           tag('Moving variant to target thickness'),
           j({
-            variantId: targetVariant.id,
-            fromThicknessId: targetVariant.thickness?.id,
+            variantId: (targetVariant as any).id,
+            fromThicknessId: (targetVariant as any).thickness?.id,
             toThicknessId: thEnt.id,
-          })
+          }),
         );
-        targetVariant.thickness = thEnt;
+        (targetVariant as any).thickness = thEnt;
       }
 
       // Compute next field values, enforcing SQM invariants
+      // ✅ NEW: unit behaves like "no dimensions" while still satisfying NOT NULL columns
       const next = {
-        length: isSQM ? 0 : toNum(vDto.length, Number(targetVariant.length)),
-        width: isSQM ? 0 : toNum(vDto.width, Number(targetVariant.width)),
-        sheetsPerBox: isSQM ? 0 : toNum(vDto.sheetsPerBox, Number(targetVariant.sheetsPerBox)),
-        origin: isSQM ? '' : (vDto.origin ?? targetVariant.origin ?? ''),
-        fixBox: vDto.fixBox ?? !!targetVariant.fixBox,
-        fixLength: vDto.fixLength ?? !!targetVariant.fixLength,
-        fixWidth: vDto.fixWidth ?? !!targetVariant.fixWidth,
+        length: (isSQM || isUNIT) ? 0 : toNum(vDto.length, Number((targetVariant as any).length)),
+        width:  (isSQM || isUNIT) ? 0 : toNum(vDto.width, Number((targetVariant as any).width)),
+        sheetsPerBox: (isSQM ? 0 : (isUNIT ? 1 : toNum(vDto.sheetsPerBox, Number((targetVariant as any).sheetsPerBox)))),
+        origin: (isSQM ? '' : (isUNIT ? ((vDto.origin ?? (targetVariant as any).origin ?? '-') || '-') : (vDto.origin ?? (targetVariant as any).origin ?? ''))),
+        fixBox: vDto.fixBox ?? !!(targetVariant as any).fixBox,
+        fixLength: vDto.fixLength ?? !!(targetVariant as any).fixLength,
+        fixWidth: vDto.fixWidth ?? !!(targetVariant as any).fixWidth,
       };
 
       console.log(tag('Computed next fields:'), j(next));
 
       // Keep current description UNCHANGED unless description.id is explicitly provided.
-      let nextDesc = targetVariant.itemNameDescription ?? null;
-      if (vDto.description && typeof vDto.description === 'object' && 'id' in vDto.description!) {
-        const newDescId = Number(vDto.description!.id);
+      let nextDesc = (targetVariant as any).itemNameDescription ?? null;
+      if (vDto.description && typeof vDto.description === 'object' && 'id' in (vDto.description as any)) {
+        const newDescId = Number((vDto.description as any).id);
         if (Number.isFinite(newDescId)) {
           nextDesc = await getDescById(newDescId); // will throw if id doesn't exist
           console.log(tag('Re-linked description to id=' + newDescId));
         }
       }
 
+      // ✅ NEW: same rule for realDescription
+      let nextRealDesc = (targetVariant as any).realDescription ?? null;
+      if (vDto.realDescription && typeof vDto.realDescription === 'object' && 'id' in (vDto.realDescription as any)) {
+        const newRealDescId = Number((vDto.realDescription as any).id);
+        if (Number.isFinite(newRealDescId)) {
+          nextRealDesc = await getRealDescById(newRealDescId);
+          console.log(tag('Re-linked realDescription to id=' + newRealDescId));
+        }
+      }
+
       // Apply updates
-      targetVariant.length = next.length;
-      targetVariant.width = next.width;
-      targetVariant.sheetsPerBox = next.sheetsPerBox;
-      targetVariant.origin = next.origin;
-      targetVariant.fixBox = next.fixBox;
-      targetVariant.fixLength = next.fixLength;
-      targetVariant.fixWidth = next.fixWidth;
-      targetVariant.itemNameDescription = nextDesc;
+      (targetVariant as any).length = next.length;
+      (targetVariant as any).width = next.width;
+      (targetVariant as any).sheetsPerBox = next.sheetsPerBox;
+      (targetVariant as any).origin = next.origin;
+      (targetVariant as any).fixBox = next.fixBox;
+      (targetVariant as any).fixLength = next.fixLength;
+      (targetVariant as any).fixWidth = next.fixWidth;
+      (targetVariant as any).itemNameDescription = nextDesc;
+      (targetVariant as any).realDescription = nextRealDesc; // ✅ added
 
       await this.itemVariantRepository.save(targetVariant);
-      console.log(tag('Saved variant id=' + targetVariant.id));
+      console.log(tag('Saved variant id=' + (targetVariant as any).id));
 
       // keep the in-memory thickness list consistent (for subsequent loops)
-      if (!thEnt.variants.some(v => v.id === targetVariant.id)) {
-        thEnt.variants.push(targetVariant);
+      if (!thEnt.variants.some((v: any) => v.id === (targetVariant as any).id)) {
+        thEnt.variants.push(targetVariant as any);
       }
     }
   }
@@ -1583,12 +1711,14 @@ async editFullItem(editDto: {
       'thicknesses',
       'thicknesses.variants',
       'thicknesses.variants.itemNameDescription',
+      'thicknesses.variants.realDescription', // ✅ added
     ],
   });
 
   console.log(tag('Done. Returning updated item id=' + item.id));
   return updated!;
 }
+
 
 
 
@@ -1845,7 +1975,7 @@ async editFullItemByRealDescription(editDto: {
 
 async getitemDetails(opts?: { page?: number; limit?: number }) {
   // ---- paging is by *rows* (table lines), not by item-name groups ----
-  const page  = Math.max(1, Number(opts?.page ?? 1));
+  const page = Math.max(1, Number(opts?.page ?? 1));
   const limit = Math.min(500, Math.max(1, Number(opts?.limit ?? 100)));
   const start = (page - 1) * limit;
 
@@ -1894,6 +2024,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       "item.itemName",
       "item.type",
       "item.sortIndex",
+      "item.stockMode", // ✅ ADDED
       // thickness
       "thickness.id",
       "thickness.thickness",
@@ -1926,7 +2057,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     .getMany();
 
   // -------------------------------------------------------------------
-  // 2) Flatten (FILTER OUT ZERO/NEGATIVE STOCK)
+  // 2) Flatten (FILTER OUT ZERO/NEGATIVE STOCK for non-unit)
   // -------------------------------------------------------------------
   type Flat = {
     // item
@@ -1934,6 +2065,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     itemName: string;
     itemSortIndex: number | null;
     type: string; // 'box' | 'sheet' | 'sqm' | 'unit'
+    itemType: string; // ✅ ADDED (same as type, but explicit)
+    stockMode: string; // ✅ ADDED (e.g. 'sqm' | 'qty' | 'none')
     // thickness
     thicknessId: number;
     thickness: number;
@@ -1962,16 +2095,23 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
 
   const flat: Flat[] = [];
   for (const item of entities) {
+    const itemTypeLower = String(item.type || "").toLowerCase();
+    const allowZeroOrNegative = itemTypeLower === "unit";
+
+    // ✅ ADDED: stockMode on the item (default to 'sqm' for backward-compat)
+    const stockModeLower =
+      String((item as any).stockMode ?? "").trim().toLowerCase() || "sqm";
+
     for (const th of item.thicknesses || []) {
       for (const v of th.variants || []) {
         const lengthNum = toNum(v.length);
-        const widthNum  = toNum(v.width);
-        const spbNum    = Math.max(1, toNum(v.sheetsPerBox));
+        const widthNum = toNum(v.width);
+        const spbNum = Math.max(1, toNum(v.sheetsPerBox));
 
         const batches = (v.batches || [])
           .map((b) => {
             const balanceSqm = toNum(b.balanceOFR);
-            const converted  = convertBalanceFromSqm({
+            const converted = convertBalanceFromSqm({
               itemType: item.type,
               lengthCm: lengthNum,
               widthCm: widthNum,
@@ -1986,34 +2126,36 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
               balanceOFR: Number(converted.toFixed(2)),
             };
           })
-          
+          // ✅ NEW RULE:
+          // - unit: keep all rows
+          // - non-unit: keep only positive balance
+          .filter((row) => allowZeroOrNegative || row.balanceOFR > 0);
 
+        // ✅ if no valid batches remain, drop the variant entirely
         if (!batches.length) continue;
 
         const d = (v as any).realDescription || null;
-        const realDescLabel =
-          d
-            ? [
-                d.categoryName ?? "",
-                d.subCategory ?? "",
-                d.colorName ?? "",
-                d.designName ?? "",
-              ].join(" | ")
-            : "ZZZ (No Description)";
+        const realDescLabel = d
+          ? [d.categoryName ?? "", d.subCategory ?? "", d.colorName ?? "", d.designName ?? ""].join(
+              " | "
+            )
+          : "ZZZ (No Description)";
 
         flat.push({
           itemId: item.id,
           itemName: item.itemName,
           itemSortIndex: (item as any)?.sortIndex ?? null,
-          type: String(item.type || "").toLowerCase(),
+          type: itemTypeLower,
+          itemType: itemTypeLower, // ✅ ADDED
+          stockMode: stockModeLower, // ✅ ADDED
           thicknessId: th.id,
-          thickness: toNum(th.thickness),
+          thickness: toNum((th as any).thickness),
           thicknessSortIndex: (th as any)?.sort_index ?? null,
           variantId: v.id,
           length: lengthNum,
           width: widthNum,
           sheetsPerBox: spbNum,
-          origin: v.origin || null,
+          origin: (v as any)?.origin ?? null,
           realDescId: (v as any).realDescriptionId ?? null,
           realDescSortIndex: d?.sort_index_real_description ?? null,
           realDescLabel,
@@ -2082,7 +2224,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       const rowsTh = byTh.get(th)!;
 
       // split dimensioned vs others
-      const dimmed    = rowsTh.filter((r) => r.length > 0 && r.width > 0);
+      const dimmed = rowsTh.filter((r) => r.length > 0 && r.width > 0);
       const nonDimmed = rowsTh.filter((r) => !(r.length > 0 && r.width > 0) || r.type === "sqm");
 
       // group dimmed by **length only**
@@ -2099,24 +2241,21 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         const g = byLen.get(lk)!;
 
         // keep type order: box → sheet → sqm (no width sort)
-        const boxes  = g
+        const boxes = g
           .filter((x) => x.type === "box")
           .sort(
             (a, b) =>
-              (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) ||
-              a.variantId - b.variantId,
+              (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) || a.variantId - b.variantId
           );
 
-        const sheets = g
-          .filter((x) => x.type === "sheet")
-          .sort((a, b) => a.variantId - b.variantId);
+        const sheets = g.filter((x) => x.type === "sheet").sort((a, b) => a.variantId - b.variantId);
 
-        const sqms   = g.filter((x) => x.type === "sqm");
+        const sqms = g.filter((x) => x.type === "sqm");
         ordered.push(...boxes, ...sheets, ...sqms);
       }
 
       // place unspecified dims after (same as before)
-      const sqmOthers    = nonDimmed
+      const sqmOthers = nonDimmed
         .filter((x) => x.type === "sqm")
         .sort((a, b) => a.variantId - b.variantId);
       const noDimsNonSqm = nonDimmed.filter((x) => x.type !== "sqm");
@@ -2131,6 +2270,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     itemId: number;
     itemName: string;
     type: string;
+    itemType: string; // ✅ ADDED
+    stockMode: string; // ✅ ADDED
     variantId: number;
     thickness: number;
     length: number;
@@ -2152,6 +2293,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         itemId: r.itemId,
         itemName: r.itemName,
         type: r.type,
+        itemType: r.itemType, // ✅ ADDED
+        stockMode: r.stockMode, // ✅ ADDED
         variantId: r.variantId,
         thickness: r.thickness,
         length: r.length,
@@ -2168,9 +2311,9 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     }
   }
 
-  const totalRows  = allRows.length;
+  const totalRows = allRows.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / limit));
-  const pageRows   = allRows.slice(start, start + limit);
+  const pageRows = allRows.slice(start, start + limit);
 
   return {
     page,
@@ -2181,6 +2324,8 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     data: pageRows,
   };
 }
+
+
 
 
 
@@ -2420,123 +2565,144 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
    *   includeEmpty: false
    * }
    */
-  async searchForModalPOS(params: {
-    q: string;
-    dims?: string;
-    length?: number;
-    width?: number;
-    spb?: number;
-    type?: 'box' | 'sheet' | 'sqm' | 'unit';
-    page: number;
-    limit: number;
-    includeEmpty?: boolean;
-    roundUnitsToInt?: boolean;
-  }) {
-  
+ async searchForModalPOS(params: {
+  q: string;
+  dims?: string;
+  length?: number;
+  width?: number;
+  spb?: number;
+  type?: "box" | "sheet" | "sqm" | "unit";
+  page: number;
+  limit: number;
+  includeEmpty?: boolean;
+  roundUnitsToInt?: boolean;
+}) {
+  const { q, dims, includeEmpty, roundUnitsToInt } = params;
 
-    const { q, dims, includeEmpty, roundUnitsToInt } = params;
+  // Parse tokens
+  const { thickness, cleanName, nmNorm } = this.parseThicknessFromQ(q || "");
+  const parsedDims = this.parseDims(dims);
+  const length = params.length ?? parsedDims.length;
+  const width = params.width ?? parsedDims.width;
+  const spb = params.spb ?? parsedDims.spb;
+  const type = params.type ?? parsedDims.type;
 
-    // Parse tokens
-    const { thickness, cleanName, nmNorm } = this.parseThicknessFromQ(q || '');
-    const parsedDims = this.parseDims(dims);
-    const length = params.length ?? parsedDims.length;
-    const width  = params.width  ?? parsedDims.width;
-    const spb    = params.spb    ?? parsedDims.spb;
-    const type   = params.type   ?? parsedDims.type;
+  const qb = this.baseQBForModal();
 
+  // ✅ Ensure stockMode is selected (important if baseQBForModal uses .select([...]))
+  qb.addSelect("item.stockMode");
 
-
-    const qb = this.baseQBForModal();
-
-    // Name filter (Arabic normalization OR raw)
-    if (cleanName && cleanName.length > 0) {
-      qb.andWhere(
-        `(
-          REPLACE(REPLACE(REPLACE(item.itemName, 'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm
-          OR item.itemName LIKE :nmRaw
-        )`,
-        { nm: `%${nmNorm || cleanName}%`, nmRaw: `%${cleanName}%` }
-      );
-    }
-
-    // Optional item.type
-    if (type) {
-      qb.andWhere('item.type = :tp', { tp: type });
-    }
-
-    // Thickness tolerance
-    if (typeof thickness === 'number' && !Number.isNaN(thickness)) {
-      qb.andWhere('ABS(thickness.thickness - :th) < :thTol', { th: thickness, thTol: 0.011 });
-    }
-
-    // Dimensions tolerance + swap
-    const tol = 0.51;
-    const hasLen = typeof length === 'number' && !Number.isNaN(length);
-    const hasWid = typeof width  === 'number' && !Number.isNaN(width);
-
-    if (hasLen && hasWid) {
-      qb.andWhere(
-        `(
-          (ABS(variant.length - :len) < :tol AND ABS(variant.width - :wid) < :tol)
-          OR
-          (ABS(variant.length - :wid) < :tol AND ABS(variant.width - :len) < :tol)
-        )`,
-        { len: length!, wid: width!, tol }
-      );
-    } else if (hasLen) {
-      qb.andWhere('ABS(variant.length - :len) < :tol', { len: length!, tol });
-    } else if (hasWid) {
-      qb.andWhere('ABS(variant.width - :wid) < :tol', { wid: width!, tol });
-    }
-
-    // Sheets/box exact match if provided
-    if (typeof spb === 'number' && !Number.isNaN(spb)) {
-      qb.andWhere('variant.sheetsPerBox = :spb', { spb });
-    }
-
-    qb
-      .orderBy('item.id', 'DESC')
-      .addOrderBy('thickness.thickness', 'ASC')
-      .addOrderBy('variant.id', 'ASC');
-
-    const appliedFilters: string[] = [];
-    if (cleanName) appliedFilters.push(`normalized(item.itemName) LIKE %${nmNorm || cleanName}% OR raw LIKE %${cleanName}%`);
-    if (type) appliedFilters.push(`item.type = ${type}`);
-    if (typeof thickness === 'number') appliedFilters.push(`ABS(thickness.thickness - ${thickness}) < 0.011`);
-    if (hasLen && hasWid) {
-      appliedFilters.push(`dims ~ (${length}×${width}) with swap & tol ${tol}`);
-    } else if (hasLen) {
-      appliedFilters.push(`length ~ ${length} tol ${tol}`);
-    } else if (hasWid) {
-      appliedFilters.push(`width ~ ${width} tol ${tol}`);
-    }
-    if (typeof spb === 'number') appliedFilters.push(`variant.sheetsPerBox = ${spb}`);
-
-
-    const pageNum  = Number.isFinite(Number(params.page))  ? Math.max(1, Number(params.page))  : 1;
-    const limitNum = Number.isFinite(Number(params.limit)) ? Math.min(500, Math.max(1, Number(params.limit))) : 50;
-
-    const results = await this.runAndFilter(qb, pageNum, limitNum, { includeEmpty, roundUnitsToInt });
-
-    if (!results.length) {
-      console.log('[SRV] No records matched. Tips:', [
-        '• Verify SPB (e.g., -023 → 23).',
-        '• Try includeEmpty=1 to see variants without stock.',
-        '• Try removing dims to see if name+thickness match.',
-        '• Check spelling/normalization (أبيض vs ابيض).',
-      ]);
-    }
-
-
-    return results;
+  // Name filter (Arabic normalization OR raw)
+  if (cleanName && cleanName.length > 0) {
+    qb.andWhere(
+      `(
+        REPLACE(REPLACE(REPLACE(item.itemName, 'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm
+        OR item.itemName LIKE :nmRaw
+      )`,
+      { nm: `%${nmNorm || cleanName}%`, nmRaw: `%${cleanName}%` }
+    );
   }
+
+  // Optional item.type
+  if (type) {
+    qb.andWhere("item.type = :tp", { tp: type });
+  }
+
+  // Thickness tolerance
+  if (typeof thickness === "number" && !Number.isNaN(thickness)) {
+    qb.andWhere("ABS(thickness.thickness - :th) < :thTol", {
+      th: thickness,
+      thTol: 0.011,
+    });
+  }
+
+  // Dimensions tolerance + swap
+  const tol = 0.51;
+  const hasLen = typeof length === "number" && !Number.isNaN(length);
+  const hasWid = typeof width === "number" && !Number.isNaN(width);
+
+  if (hasLen && hasWid) {
+    qb.andWhere(
+      `(
+        (ABS(variant.length - :len) < :tol AND ABS(variant.width - :wid) < :tol)
+        OR
+        (ABS(variant.length - :wid) < :tol AND ABS(variant.width - :len) < :tol)
+      )`,
+      { len: length!, wid: width!, tol }
+    );
+  } else if (hasLen) {
+    qb.andWhere("ABS(variant.length - :len) < :tol", { len: length!, tol });
+  } else if (hasWid) {
+    qb.andWhere("ABS(variant.width - :wid) < :tol", { wid: width!, tol });
+  }
+
+  // Sheets/box exact match if provided
+  if (typeof spb === "number" && !Number.isNaN(spb)) {
+    qb.andWhere("variant.sheetsPerBox = :spb", { spb });
+  }
+
+  qb
+    .orderBy("item.id", "DESC")
+    .addOrderBy("thickness.thickness", "ASC")
+    .addOrderBy("variant.id", "ASC");
+
+  const appliedFilters: string[] = [];
+  if (cleanName)
+    appliedFilters.push(
+      `normalized(item.itemName) LIKE %${nmNorm || cleanName}% OR raw LIKE %${cleanName}%`
+    );
+  if (type) appliedFilters.push(`item.type = ${type}`);
+  if (typeof thickness === "number")
+    appliedFilters.push(`ABS(thickness.thickness - ${thickness}) < 0.011`);
+  if (hasLen && hasWid) {
+    appliedFilters.push(`dims ~ (${length}×${width}) with swap & tol ${tol}`);
+  } else if (hasLen) {
+    appliedFilters.push(`length ~ ${length} tol ${tol}`);
+  } else if (hasWid) {
+    appliedFilters.push(`width ~ ${width} tol ${tol}`);
+  }
+  if (typeof spb === "number") appliedFilters.push(`variant.sheetsPerBox = ${spb}`);
+
+  const pageNum = Number.isFinite(Number(params.page)) ? Math.max(1, Number(params.page)) : 1;
+  const limitNum = Number.isFinite(Number(params.limit))
+    ? Math.min(500, Math.max(1, Number(params.limit)))
+    : 50;
+
+  const results = await this.runAndFilter(qb, pageNum, limitNum, {
+    includeEmpty,
+    roundUnitsToInt,
+  });
+
+  if (!results.length) {
+    console.log("[SRV] No records matched. Tips:", [
+      "• Verify SPB (e.g., -023 → 23).",
+      "• Try includeEmpty=1 to see variants without stock.",
+      "• Try removing dims to see if name+thickness match.",
+      "• Check spelling/normalization (أبيض vs ابيض).",
+    ]);
+  }
+
+  // ✅ Inject itemType + stockMode into the returned nested items
+  // (so frontend can read item.itemType and item.stockMode like StockTab does)
+  const out = (results || []).map((item: any) => {
+    const typeLower = String(item?.type ?? "").toLowerCase();
+    return {
+      ...item,
+      itemType: item?.itemType ?? typeLower,            // ✅
+      stockMode: item?.stockMode ?? item?.item?.stockMode ?? null, // ✅
+    };
+  });
+
+  return out;
+}
+
 
 
 
   // items.service.ts
 async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
   // ---- paginate by *rows* (table lines) ----
-  const page  = Math.max(1, Number(opts?.page ?? 1));
+  const page = Math.max(1, Number(opts?.page ?? 1));
   const limit = Math.min(500, Math.max(1, Number(opts?.limit ?? 100)));
   const start = (page - 1) * limit;
 
@@ -2584,11 +2750,14 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
       "item.id",
       "item.itemName",
       "item.type",
-      "item.sortIndex",        // entity is camelCase; DB col is sort_index
+      "item.stockMode", // ✅ ADD
+      "item.sortIndex", // entity is camelCase; DB col is sort_index
+
       // thickness
       "thickness.id",
       "thickness.thickness",
-      "thickness.sort_index",  // entity exposes snake_case
+      "thickness.sort_index", // entity exposes snake_case
+
       // variant
       "variant.id",
       "variant.length",
@@ -2596,12 +2765,14 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
       "variant.sheetsPerBox",
       "variant.origin",
       "variant.itemNameDescriptionId",
+
       // description
       "variantDescription.id",
       "variantDescription.categoryName",
       "variantDescription.subCategory",
       "variantDescription.colorName",
       "variantDescription.designName",
+
       // batches (we will include *all* batches, even <= 0)
       "batch.id",
       "batch.condition",
@@ -2621,23 +2792,29 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
     itemId: number;
     itemName: string;
     itemSortIndex: number | null;
+
     type: string; // 'box' | 'sheet' | 'sqm' | 'unit'
+    stockMode: string | null; // ✅ ADD (e.g. 'SQM' | 'QTY' | 'NONE')
+
     thicknessId: number;
     thickness: number;
     thicknessSortIndex: number | null;
+
     variantId: number;
     length: number;
     width: number;
     sheetsPerBox: number;
     origin: string | null;
+
     itemNameDescriptionId: number | null;
     itemNameDescription: any | null;
+
     batches: Array<{
       id: number;
       condition: string | null;
       dateReceived: string | Date | null;
       balanceOFRSqm: number; // original sqm
-      balanceOFR: number;    // converted count (may be 0 or negative)
+      balanceOFR: number; // converted count (may be 0 or negative)
     }>;
   };
 
@@ -2647,13 +2824,13 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
     for (const th of item.thicknesses || []) {
       for (const v of th.variants || []) {
         const lengthNum = toNum(v.length);
-        const widthNum  = toNum(v.width);
-        const spbNum    = Math.max(1, toNum(v.sheetsPerBox));
+        const widthNum = toNum(v.width);
+        const spbNum = Math.max(1, toNum(v.sheetsPerBox));
 
         // Map every batch (keep even if converted balance <= 0)
         const mappedBatches = (v.batches || []).map((b) => {
           const balanceSqm = toNum(b.balanceOFR);
-          const converted  = convertBalanceFromSqm({
+          const converted = convertBalanceFromSqm({
             itemType: item.type,
             lengthCm: lengthNum,
             widthCm: widthNum,
@@ -2670,23 +2847,26 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
         });
 
         // Only push variants that *have a batch* (require batch presence)
-        if (mappedBatches.length === 0) {
-          continue; // skip variants without batches
-        }
+        if (mappedBatches.length === 0) continue;
 
         flat.push({
           itemId: item.id,
           itemName: item.itemName,
           itemSortIndex: (item as any)?.sortIndex ?? null,
+
           type: String(item.type || "").toLowerCase(),
+          stockMode: (item as any)?.stockMode ?? null, // ✅ ADD
+
           thicknessId: th.id,
           thickness: toNum(th.thickness),
           thicknessSortIndex: (th as any)?.sort_index ?? null,
+
           variantId: v.id,
           length: lengthNum,
           width: widthNum,
           sheetsPerBox: spbNum,
           origin: v.origin || null,
+
           itemNameDescriptionId: v.itemNameDescriptionId || null,
           itemNameDescription: v.itemNameDescription
             ? {
@@ -2697,6 +2877,7 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
                 designName: v.itemNameDescription.designName,
               }
             : null,
+
           batches: mappedBatches, // includes zero/negative
         });
       }
@@ -2707,7 +2888,6 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
   // 3) Order (itemName → thickness → dims → type)
   // -------------------------------------------------------------------
   const nullLast = (n: any) => (n == null ? Number.POSITIVE_INFINITY : Number(n));
-  const typeRank = (t: string) => (t === "box" ? 0 : t === "sheet" ? 1 : t === "sqm" ? 2 : 3);
 
   const byName = new Map<string, Flat[]>();
   for (const r of flat) {
@@ -2748,8 +2928,10 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
     for (const th of thKeys) {
       const rowsTh = byTh.get(th)!;
 
-      const dimmed     = rowsTh.filter((r) => r.length > 0 && r.width > 0);
-      const nonDimmed  = rowsTh.filter((r) => !(r.length > 0 && r.width > 0) || r.type === "sqm");
+      const dimmed = rowsTh.filter((r) => r.length > 0 && r.width > 0);
+      const nonDimmed = rowsTh.filter(
+        (r) => !(r.length > 0 && r.width > 0) || r.type === "sqm"
+      );
 
       // group by dims
       const byDims = new Map<string, Flat[]>();
@@ -2763,7 +2945,8 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
       const dimKeys = Array.from(byDims.keys()).sort((ka, kb) => {
         const [aL, aW] = ka.split("|").map(Number);
         const [bL, bW] = kb.split("|").map(Number);
-        const aArea = aL * aW, bArea = bL * bW;
+        const aArea = aL * aW,
+          bArea = bL * bW;
         if (aArea !== bArea) return bArea - aArea;
         if (aL !== bL) return bL - aL;
         return bW - aW;
@@ -2772,16 +2955,31 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
       // Emit box → sheet → sqm for each dims group
       for (const dk of dimKeys) {
         const g = byDims.get(dk)!;
-        const boxes  = g.filter((x) => x.type === "box")
-                        .sort((a, b) => (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) || a.variantId - b.variantId);
-        const sheets = g.filter((x) => x.type === "sheet").sort((a, b) => a.variantId - b.variantId);
-        const sqms   = g.filter((x) => x.type === "sqm");
+
+        const boxes = g
+          .filter((x) => x.type === "box")
+          .sort(
+            (a, b) =>
+              (b.sheetsPerBox || 0) - (a.sheetsPerBox || 0) ||
+              a.variantId - b.variantId
+          );
+
+        const sheets = g
+          .filter((x) => x.type === "sheet")
+          .sort((a, b) => a.variantId - b.variantId);
+
+        const sqms = g.filter((x) => x.type === "sqm");
+
         ordered.push(...boxes, ...sheets, ...sqms);
       }
 
       // then sqm without dims, then any other no-dims
-      const sqmOthers     = nonDimmed.filter((x) => x.type === "sqm").sort((a, b) => a.variantId - b.variantId);
-      const noDimsNonSqm  = nonDimmed.filter((x) => x.type !== "sqm");
+      const sqmOthers = nonDimmed
+        .filter((x) => x.type === "sqm")
+        .sort((a, b) => a.variantId - b.variantId);
+
+      const noDimsNonSqm = nonDimmed.filter((x) => x.type !== "sqm");
+
       ordered.push(...sqmOthers, ...noDimsNonSqm);
     }
   }
@@ -2793,7 +2991,12 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
   type Row = {
     itemId: number;
     itemName: string;
-    type: string;
+
+    type: string; // what your table currently uses
+    itemType: string; // ✅ ADD (for your frontend payload consistency)
+
+    stockMode: string | null; // ✅ ADD
+
     variantId: number;
     thickness: number;
     length: number;
@@ -2805,17 +3008,21 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
     batchId: number | null;
     condition: string | null;
     dateReceived: string | Date | null;
-    balanceOFR: number | null; // may be 0 or negative by design in this endpoint
+    balanceOFR: number | null; // may be 0 or negative
   };
 
   const allRows: Row[] = [];
+
   for (const r of ordered) {
-    // Only variants with batches were pushed earlier, so we can just expand
     for (const b of r.batches) {
       allRows.push({
         itemId: r.itemId,
         itemName: r.itemName,
+
         type: r.type,
+        itemType: r.type, // ✅ same value (frontend expects itemType)
+        stockMode: r.stockMode, // ✅
+
         variantId: r.variantId,
         thickness: r.thickness,
         length: r.length,
@@ -2827,14 +3034,14 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
         batchId: b.id,
         condition: b.condition,
         dateReceived: b.dateReceived,
-        balanceOFR: b.balanceOFR, // keep 0/negative
+        balanceOFR: b.balanceOFR,
       });
     }
   }
 
-  const totalRows  = allRows.length;
+  const totalRows = allRows.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / limit));
-  const pageRows   = allRows.slice(start, start + limit);
+  const pageRows = allRows.slice(start, start + limit);
 
   return {
     page,
@@ -2847,6 +3054,7 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
 }
 
 
+
 // Add this next to searchForModalPOS
 async searchForModalPOSInStock(params: {
   q: string;
@@ -2854,25 +3062,27 @@ async searchForModalPOSInStock(params: {
   length?: number;
   width?: number;
   spb?: number;
-  type?: 'box' | 'sheet' | 'sqm' | 'unit';
+  type?: "box" | "sheet" | "sqm" | "unit";
   page: number;
   limit: number;
   roundUnitsToInt?: boolean;
 }) {
-
-
   const { q } = params;
 
-  // Parse tokens exactly like your original
-  const { thickness, cleanName, nmNorm } = this.parseThicknessFromQ(q || '');
+  // Parse tokens
+  const { thickness, cleanName, nmNorm } = this.parseThicknessFromQ(q || "");
   const parsedDims = this.parseDims(params.dims);
   const length = params.length ?? parsedDims.length;
   const width  = params.width  ?? parsedDims.width;
   const spb    = params.spb    ?? parsedDims.spb;
   const type   = params.type   ?? parsedDims.type;
 
-
   const qb = this.baseQBForModal();
+
+  // ✅ IMPORTANT:
+  // baseQBForModal() already selects item.type (alias item_type), so DON'T addSelect(item.type) again.
+  // We only add the missing column:
+  qb.addSelect("item.stockMode"); // -> alias becomes item_stockMode
 
   // Name filter (Arabic normalization OR raw)
   if (cleanName && cleanName.length > 0) {
@@ -2885,18 +3095,21 @@ async searchForModalPOSInStock(params: {
     );
   }
 
-  // Optional item.type
-  if (type) qb.andWhere('item.type = :tp', { tp: type });
+  // Optional item.type filter
+  if (type) qb.andWhere("item.type = :tp", { tp: type });
 
   // Thickness tolerance
-  if (typeof thickness === 'number' && !Number.isNaN(thickness)) {
-    qb.andWhere('ABS(thickness.thickness - :th) < :thTol', { th: thickness, thTol: 0.011 });
+  if (typeof thickness === "number" && !Number.isNaN(thickness)) {
+    qb.andWhere("ABS(thickness.thickness - :th) < :thTol", {
+      th: thickness,
+      thTol: 0.011,
+    });
   }
 
-  // Dimensions tolerance + swap
+  // Dimensions tolerance (+ swap)
   const tol = 0.51;
-  const hasLen = typeof length === 'number' && !Number.isNaN(length);
-  const hasWid = typeof width  === 'number' && !Number.isNaN(width);
+  const hasLen = typeof length === "number" && !Number.isNaN(length);
+  const hasWid = typeof width === "number" && !Number.isNaN(width);
 
   if (hasLen && hasWid) {
     qb.andWhere(
@@ -2908,73 +3121,86 @@ async searchForModalPOSInStock(params: {
       { len: length!, wid: width!, tol }
     );
   } else if (hasLen) {
-    qb.andWhere('ABS(variant.length - :len) < :tol', { len: length!, tol });
+    qb.andWhere("ABS(variant.length - :len) < :tol", { len: length!, tol });
   } else if (hasWid) {
-    qb.andWhere('ABS(variant.width - :wid) < :tol', { wid: width!, tol });
+    qb.andWhere("ABS(variant.width - :wid) < :tol", { wid: width!, tol });
   }
 
-  // Sheets/box exact match if provided
-  if (typeof spb === 'number' && !Number.isNaN(spb)) {
-    qb.andWhere('variant.sheetsPerBox = :spb', { spb });
+  // Sheets/box exact match
+  if (typeof spb === "number" && !Number.isNaN(spb)) {
+    qb.andWhere("variant.sheetsPerBox = :spb", { spb });
   }
 
-  qb
-    .orderBy('item.id', 'DESC')
-    .addOrderBy('thickness.thickness', 'ASC')
-    .addOrderBy('variant.id', 'ASC');
+  qb.orderBy("item.id", "DESC")
+    .addOrderBy("thickness.thickness", "ASC")
+    .addOrderBy("variant.id", "ASC");
 
-  const appliedFilters: string[] = [];
-  if (cleanName) appliedFilters.push(`normalized(item.itemName) LIKE %${nmNorm || cleanName}% OR raw LIKE %${cleanName}%`);
-  if (type) appliedFilters.push(`item.type = ${type}`);
-  if (typeof thickness === 'number') appliedFilters.push(`ABS(thickness.thickness - ${thickness}) < 0.011`);
-  if (hasLen && hasWid) {
-    appliedFilters.push(`dims ~ (${length}×${width}) with swap & tol ${tol}`);
-  } else if (hasLen) {
-    appliedFilters.push(`length ~ ${length} tol ${tol}`);
-  } else if (hasWid) {
-    appliedFilters.push(`width ~ ${width} tol ${tol}`);
-  }
-  if (typeof spb === 'number') appliedFilters.push(`variant.sheetsPerBox = ${spb}`);
+  const pageNum = Number.isFinite(Number(params.page)) ? Math.max(1, Number(params.page)) : 1;
+  const limitNum = Number.isFinite(Number(params.limit))
+    ? Math.min(500, Math.max(1, Number(params.limit)))
+    : 50;
 
-
-  const pageNum  = Number.isFinite(Number(params.page))  ? Math.max(1, Number(params.page))  : 1;
-  const limitNum = Number.isFinite(Number(params.limit)) ? Math.min(500, Math.max(1, Number(params.limit))) : 50;
-
-  // ⬇️ Force includeEmpty = false so runAndFilter prefers only in-stock
   const results = await this.runAndFilter(qb, pageNum, limitNum, {
-    includeEmpty: false,
+    includeEmpty: true,
     roundUnitsToInt: params.roundUnitsToInt,
   });
 
-  // Safety trim: drop batches with balance <= 0 (in case rounding/conversion left any)
-  // and drop empty variants/thicknesses/items after trimming.
+  // helper: support entity OR raw output
+  const pickItemType = (item: any) =>
+    String(item?.type ?? item?.item_type ?? item?.itemType ?? item?.["item_type"] ?? "").toLowerCase();
+
+  const pickStockMode = (item: any) =>
+    item?.stockMode ??
+    item?.item_stockMode ??      // default TypeORM alias
+    item?.item_stock_mode ??
+    item?.["item_stockMode"] ??
+    item?.["item_stock_mode"] ??
+    null;
+
   const filtered = (results || [])
-    .map((item: any) => ({
-      ...item,
-      thicknesses: (item.thicknesses || [])
-        .map((th: any) => ({
-          ...th,
-          variants: (th.variants || [])
-            .map((v: any) => ({
-              ...v,
-              batches: (v.batches || []).filter((b: any) => Number(b.balanceOFR) > 0),
-            }))
-            .filter((v: any) => Array.isArray(v.batches) && v.batches.length > 0),
-        }))
-        .filter((th: any) => Array.isArray(th.variants) && th.variants.length > 0),
-    }))
+    .map((item: any) => {
+      const itemType = pickItemType(item);
+      const isUnit = itemType === "unit";
+      const stockMode = pickStockMode(item); // ✅ REAL or null (NO DEFAULT)
+
+      const thicknesses = (item.thicknesses || [])
+        .map((th: any) => {
+          const variants = (th.variants || [])
+            .map((v: any) => {
+              const batchesRaw = Array.isArray(v.batches) ? v.batches : [];
+              const batches = isUnit
+                ? batchesRaw
+                : batchesRaw.filter((b: any) => Number(b.balanceOFR) > 0);
+
+              return {
+                ...v,
+                batches,
+                itemType,
+                stockMode,
+              };
+            })
+            .filter((v: any) => (isUnit ? true : Array.isArray(v.batches) && v.batches.length > 0));
+
+          return { ...th, variants };
+        })
+        .filter((th: any) => Array.isArray(th.variants) && th.variants.length > 0);
+
+      return {
+        ...item,
+        thicknesses,
+        itemType,
+        stockMode,
+      };
+    })
     .filter((item: any) => Array.isArray(item.thicknesses) && item.thicknesses.length > 0);
-
-  if (!filtered.length) {
-    console.log('[SRV] No in-stock records matched. Tips:', [
-      '• Remove SPB or dims to broaden.',
-      '• Check spelling/normalization (أبيض vs ابيض).',
-    ]);
-  }
-
 
   return filtered;
 }
+
+
+
+
+
 
 
 
@@ -5911,7 +6137,757 @@ private async editDescriptionRowNoDto(
     );
   }
 
+
+
+
+
+async getItemsStockTotals(opts?: any) {
+  const page = Math.max(1, Number(opts?.page ?? 1));
+  const limit = Math.min(500, Math.max(1, Number(opts?.limit ?? 50)));
+  const start = (page - 1) * limit;
+
+  const fix =
+    String(opts?.fix ?? '').toLowerCase() === '1' ||
+    String(opts?.fix ?? '').toLowerCase() === 'true';
+
+  const includeVariants =
+    String(opts?.includeVariants ?? '1').toLowerCase() !== '0' &&
+    String(opts?.includeVariants ?? '1').toLowerCase() !== 'false';
+
+  const includeBatches =
+    String(opts?.includeBatches ?? '1').toLowerCase() !== '0' &&
+    String(opts?.includeBatches ?? '1').toLowerCase() !== 'false';
+
+  const tol = Number.isFinite(Number(opts?.tol)) ? Math.max(0, Number(opts?.tol)) : 0.01;
+
+  const toNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const r2 = (n: any) => Number(toNum(n).toFixed(2));
+  const calcBal = (st: any, inn: any, out: any) => r2(toNum(st) + toNum(inn) - toNum(out));
+  const isDiff = (a: any, b: any) => Math.abs(toNum(a) - toNum(b)) > tol;
+
+  // ✅ counts
+  const totalItems = await this.itemRepository.count();
+  const totalVariants = await this.dataSource.getRepository(ItemVariant).count();
+  const totalPages = Math.max(1, Math.ceil(totalVariants / limit));
+
+  const qr = this.dataSource.createQueryRunner();
+  await qr.connect();
+  if (fix) await qr.startTransaction();
+
+  try {
+    // ============================================================
+    // ✅ STEP 1: Get ONLY variant IDs for this page (sorted properly)
+    // ============================================================
+    const idRows = await qr.manager
+      .getRepository(ItemVariant)
+      .createQueryBuilder('v')
+      .leftJoin('v.thickness', 'th')
+      .leftJoin('th.item', 'item')
+      .leftJoin(RealDescription, 'rd', 'rd.id = v.realDescriptionId')
+      .select(['v.id AS id'])
+      .orderBy('item.sortIndex', 'ASC')
+      .addOrderBy('item.id', 'ASC')
+      .addOrderBy('th.sort_index', 'ASC')
+      .addOrderBy('th.id', 'ASC')
+      // ✅ sort by realDescription.sortIndex (nulls last)
+      .addOrderBy('COALESCE(rd.sort_index_real_description, 999999)', 'ASC')
+      .addOrderBy('rd.id', 'ASC')
+      .addOrderBy('v.id', 'ASC')
+      .skip(start)
+      .take(limit)
+      .getRawMany();
+
+    const variantIds = idRows.map((r: any) => Number(r?.id)).filter((x) => Number.isFinite(x) && x > 0);
+
+    // No variants in this page
+    if (!variantIds.length) {
+      if (fix) await qr.commitTransaction();
+      return {
+        page,
+        limit,
+        totalItems,
+        totalVariants,
+        totalPages,
+        hasMore: page < totalPages,
+        fixApplied: fix,
+        tolerance: tol,
+        data: [],
+      };
+    }
+
+    // ============================================================
+    // ✅ STEP 2: Fetch variants + item/thickness (+ batches) for IDs
+    // ============================================================
+    const vqb = qr.manager
+      .getRepository(ItemVariant)
+      .createQueryBuilder('v')
+      .leftJoinAndSelect('v.thickness', 'th')
+      .leftJoinAndSelect('th.item', 'item')
+      .leftJoin(RealDescription, 'rd', 'rd.id = v.realDescriptionId')
+      .where('v.id IN (:...ids)', { ids: variantIds });
+
+    if (includeBatches) vqb.leftJoinAndSelect('v.batches', 'b');
+    else vqb.leftJoin('v.batches', 'b');
+
+    // keep the SAME ordering as step 1
+    vqb.orderBy('item.sortIndex', 'ASC')
+      .addOrderBy('item.id', 'ASC')
+      .addOrderBy('th.sort_index', 'ASC')
+      .addOrderBy('th.id', 'ASC')
+      .addOrderBy('COALESCE(rd.sort_index_real_description, 999999)', 'ASC')
+      .addOrderBy('rd.id', 'ASC')
+      .addOrderBy('v.id', 'ASC')
+      .addOrderBy('b.id', 'ASC');
+
+    const variants = await vqb.getMany();
+
+    // ============================================================
+    // Build response in SAME SHAPE your frontend expects:
+    // data: [{ itemId, itemName, type, ..., variants: [...] }]
+    // ============================================================
+    const itemMap = new Map<number, any>();
+
+    for (const v of variants) {
+      const th: any = (v as any).thickness;
+      const item: any = th?.item;
+
+      const itemId = Number(item?.id);
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+
+      if (!itemMap.has(itemId)) {
+        itemMap.set(itemId, {
+          itemId,
+          itemName: item?.itemName ?? null,
+          type: item?.type ?? null,
+          stockMode: item?.stockMode ?? null,
+          sortIndex: item?.sortIndex ?? null,
+          totals: {
+            start: 0, in: 0, out: 0, balance: 0,
+            startOFR: 0, inOFR: 0, outOFR: 0, balanceOFR: 0,
+          },
+          variants: [],
+        });
+      }
+
+      // ---------- compute stored vs computed ----------
+      const storedV = {
+        totalStart: r2((v as any).totalStart),
+        totalIn: r2((v as any).totalIn),
+        totalOut: r2((v as any).totalOut),
+        totalBalance: r2((v as any).totalBalance),
+
+        totalStartOFR: r2((v as any).totalStartOFR),
+        totalInOFR: r2((v as any).totalInOFR),
+        totalOutOFR: r2((v as any).totalOutOFR),
+        totalBalanceOFR: r2((v as any).totalBalanceOFR),
+      };
+
+      let computedV = { ...storedV };
+      const batchesOut: any[] = [];
+
+      if (includeBatches) {
+        let vStart = 0, vIn = 0, vOut = 0, vBal = 0;
+        let vStartO = 0, vInO = 0, vOutO = 0, vBalO = 0;
+
+        for (const b of ((v as any).batches || [])) {
+          const expBal = calcBal(b.start, b.in, b.out);
+          const expBalO = calcBal(b.startOFR, b.inOFR, b.outOFR);
+
+          const wrongBal = isDiff(b.balance, expBal);
+          const wrongBalO = isDiff(b.balanceOFR, expBalO);
+
+          if (fix && (wrongBal || wrongBalO)) {
+            if (wrongBal) (b as any).balance = expBal;
+            if (wrongBalO) (b as any).balanceOFR = expBalO;
+          }
+
+          const effBal = fix && wrongBal ? expBal : b.balance;
+          const effBalO = fix && wrongBalO ? expBalO : b.balanceOFR;
+
+          vStart += toNum(b.start);
+          vIn += toNum(b.in);
+          vOut += toNum(b.out);
+          vBal += toNum(effBal);
+
+          vStartO += toNum(b.startOFR);
+          vInO += toNum(b.inOFR);
+          vOutO += toNum(b.outOFR);
+          vBalO += toNum(effBalO);
+
+          batchesOut.push({
+            batchId: b.id,
+            condition: b.condition ?? null,
+            dateReceived: b.dateReceived ?? null,
+
+            start: r2(b.start),
+            in: r2(b.in),
+            out: r2(b.out),
+            balance: r2(effBal),
+            expectedBalance: expBal,
+            wrongBalance: wrongBal,
+
+            startOFR: r2(b.startOFR),
+            inOFR: r2(b.inOFR),
+            outOFR: r2(b.outOFR),
+            balanceOFR: r2(effBalO),
+            expectedBalanceOFR: expBalO,
+            wrongBalanceOFR: wrongBalO,
+          });
+        }
+
+        computedV = {
+          totalStart: r2(vStart),
+          totalIn: r2(vIn),
+          totalOut: r2(vOut),
+          totalBalance: r2(vBal),
+
+          totalStartOFR: r2(vStartO),
+          totalInOFR: r2(vInO),
+          totalOutOFR: r2(vOutO),
+          totalBalanceOFR: r2(vBalO),
+        };
+
+        const totalsMismatch =
+          isDiff(storedV.totalStart, computedV.totalStart) ||
+          isDiff(storedV.totalIn, computedV.totalIn) ||
+          isDiff(storedV.totalOut, computedV.totalOut) ||
+          isDiff(storedV.totalBalance, computedV.totalBalance) ||
+          isDiff(storedV.totalStartOFR, computedV.totalStartOFR) ||
+          isDiff(storedV.totalInOFR, computedV.totalInOFR) ||
+          isDiff(storedV.totalOutOFR, computedV.totalOutOFR) ||
+          isDiff(storedV.totalBalanceOFR, computedV.totalBalanceOFR);
+
+        if (fix && totalsMismatch) {
+          (v as any).totalStart = computedV.totalStart;
+          (v as any).totalIn = computedV.totalIn;
+          (v as any).totalOut = computedV.totalOut;
+          (v as any).totalBalance = computedV.totalBalance;
+
+          (v as any).totalStartOFR = computedV.totalStartOFR;
+          (v as any).totalInOFR = computedV.totalInOFR;
+          (v as any).totalOutOFR = computedV.totalOutOFR;
+          (v as any).totalBalanceOFR = computedV.totalBalanceOFR;
+        }
+
+        if (fix && ((v as any).batches?.length || 0) > 0) {
+          await qr.manager.getRepository(ItemBatch).save((v as any).batches as any[]);
+        }
+        if (fix) {
+          await qr.manager.getRepository(ItemVariant).save(v as any);
+        }
+      }
+
+      // update item totals (for this page only)
+      const acc = itemMap.get(itemId);
+      acc.totals.start += toNum(computedV.totalStart);
+      acc.totals.in += toNum(computedV.totalIn);
+      acc.totals.out += toNum(computedV.totalOut);
+      acc.totals.balance += toNum(computedV.totalBalance);
+
+      acc.totals.startOFR += toNum(computedV.totalStartOFR);
+      acc.totals.inOFR += toNum(computedV.totalInOFR);
+      acc.totals.outOFR += toNum(computedV.totalOutOFR);
+      acc.totals.balanceOFR += toNum(computedV.totalBalanceOFR);
+
+      if (includeVariants) {
+        acc.variants.push({
+          variantId: (v as any).id,
+          thicknessId: th?.id ?? null,
+          thickness: r2(th?.thickness),
+
+          length: r2((v as any).length),
+          width: r2((v as any).width),
+          origin: (v as any).origin ?? null,
+          sheetsPerBox: Number((v as any).sheetsPerBox || 0),
+          realDescriptionId: (v as any).realDescriptionId ?? null,
+
+          stored: storedV,
+          computed: computedV,
+          mismatch: includeBatches
+            ? (
+                isDiff(storedV.totalStart, computedV.totalStart) ||
+                isDiff(storedV.totalIn, computedV.totalIn) ||
+                isDiff(storedV.totalOut, computedV.totalOut) ||
+                isDiff(storedV.totalBalance, computedV.totalBalance) ||
+                isDiff(storedV.totalStartOFR, computedV.totalStartOFR) ||
+                isDiff(storedV.totalInOFR, computedV.totalInOFR) ||
+                isDiff(storedV.totalOutOFR, computedV.totalOutOFR) ||
+                isDiff(storedV.totalBalanceOFR, computedV.totalBalanceOFR)
+              )
+            : false,
+
+          batches: includeBatches ? batchesOut : undefined,
+        });
+      }
+    }
+
+    // finalize totals rounding
+    const data = Array.from(itemMap.values()).map((it) => ({
+      ...it,
+      totals: {
+        start: r2(it.totals.start),
+        in: r2(it.totals.in),
+        out: r2(it.totals.out),
+        balance: r2(it.totals.balance),
+        startOFR: r2(it.totals.startOFR),
+        inOFR: r2(it.totals.inOFR),
+        outOFR: r2(it.totals.outOFR),
+        balanceOFR: r2(it.totals.balanceOFR),
+      },
+    }));
+
+    if (fix) await qr.commitTransaction();
+
+    return {
+      page,
+      limit,
+      totalItems,
+      totalVariants,           // ✅ NOW pagination is by variants
+      totalPages,
+      hasMore: page < totalPages,
+      fixApplied: fix,
+      tolerance: tol,
+      data,
+    };
+  } catch (e) {
+    if (fix) {
+      try { await qr.rollbackTransaction(); } catch {}
+    }
+    throw e;
+  } finally {
+    try { await qr.release(); } catch {}
+  }
 }
+
+
+  /* ---------------- helpers ---------------- */
+  private toANum(v: any) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  private r2(v: any) {
+    return Number(this.toANum(v).toFixed(2));
+  }
+  private calcBal(st: any, inn: any, out: any) {
+    return this.r2(this.toANum(st) + this.toANum(inn) - this.toANum(out));
+  }
+  private isDiff(a: any, b: any, tol: number) {
+    return Math.abs(this.toANum(a) - this.toANum(b)) > tol;
+  }
+
+  /* ============================================================
+     ✅ 1) GET variants audit (PAGINATE BY VARIANTS, not items)
+     ============================================================ */
+
+  // ----------------------------
+  // PUT /items/v2/stock-totals/variants/:id/totals
+  // Body: { totalStart, totalIn, totalOut, totalStartOFR, totalInOFR, totalOutOFR }
+  // Server auto-calculates balances.
+  // ----------------------------
+
+
+
+    async getVariantStockAudit(q: any) {
+    const page = Math.max(1, Number(q?.page ?? 1));
+    const limit = Math.min(2000, Math.max(1, Number(q?.limit ?? 200))); // allow big lists
+    const skip = (page - 1) * limit;
+
+    const search = String(q?.search ?? '').trim();
+    const type = String(q?.type ?? 'all').toLowerCase(); // all|box|sheet|sqm|unit
+    const includeBatches = String(q?.includeBatches ?? '1') === '1' || String(q?.includeBatches ?? '').toLowerCase() === 'true';
+    const onlyIssues = String(q?.onlyIssues ?? '0') === '1' || String(q?.onlyIssues ?? '').toLowerCase() === 'true';
+    const fix = String(q?.fix ?? '0') === '1' || String(q?.fix ?? '').toLowerCase() === 'true';
+    const tol = Number.isFinite(Number(q?.tol)) ? Math.max(0, Number(q?.tol)) : 0.01;
+
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    if (fix) await qr.startTransaction();
+
+    try {
+      // 1) Page VARIANT IDS (no batches join here!)
+      const base = qr.manager
+        .getRepository(ItemVariant)
+        .createQueryBuilder('v')
+        .leftJoin('v.thickness', 'th')
+        .leftJoin('th.item', 'item');
+
+      if (search) {
+        base.andWhere('LOWER(item.itemName) LIKE :s', { s: `%${search.toLowerCase()}%` });
+      }
+      if (type !== 'all') {
+        base.andWhere('LOWER(item.type) = :t', { t: type });
+      }
+
+      const totalVariants = await base.clone().getCount();
+
+      const idRows = await base
+        .select('v.id', 'id')
+        .orderBy('item.sortIndex', 'ASC')
+        .addOrderBy('item.id', 'ASC')
+        .addOrderBy('th.sort_index', 'ASC')
+        .addOrderBy('th.id', 'ASC')
+        .addOrderBy('v.id', 'ASC')
+        .skip(skip)
+        .take(limit)
+        .getRawMany();
+
+      const variantIds = idRows.map((r) => Number(r.id)).filter((x) => x > 0);
+      if (variantIds.length === 0) {
+        if (fix) await qr.commitTransaction();
+        return {
+          page,
+          limit,
+          totalVariants,
+          totalPages: Math.max(1, Math.ceil(totalVariants / limit)),
+          hasMore: page < Math.max(1, Math.ceil(totalVariants / limit)),
+          fixApplied: fix,
+          tolerance: tol,
+          data: [],
+        };
+      }
+
+      // 2) Load VARIANTS + ITEM + THICKNESS (+ batches)
+      const qb2 = qr.manager
+        .getRepository(ItemVariant)
+        .createQueryBuilder('v')
+        .leftJoinAndSelect('v.thickness', 'th')
+        .leftJoinAndSelect('th.item', 'item')
+        .where('v.id IN (:...ids)', { ids: variantIds })
+        .orderBy('item.sortIndex', 'ASC')
+        .addOrderBy('item.id', 'ASC')
+        .addOrderBy('th.sort_index', 'ASC')
+        .addOrderBy('th.id', 'ASC')
+        .addOrderBy('v.id', 'ASC');
+
+      if (includeBatches) {
+        qb2.leftJoinAndSelect('v.batches', 'b').addOrderBy('b.id', 'ASC');
+      }
+
+      const variants = await qb2.getMany();
+
+      // 3) Compute / fix
+      const out: any[] = [];
+
+      for (const v of variants) {
+        const item = (v as any).thickness?.item;
+        if (!item) continue;
+
+        // compute from batches
+        let sumSt = 0, sumIn = 0, sumOut = 0;
+        let sumStO = 0, sumInO = 0, sumOutO = 0;
+
+        const batches = Array.isArray((v as any).batches) ? (v as any).batches : [];
+        const batchRows: any[] = [];
+
+        for (const b of batches) {
+          const expBal = this.calcBal((b as any).start, (b as any).in, (b as any).out);
+          const expBalO = this.calcBal((b as any).startOFR, (b as any).inOFR, (b as any).outOFR);
+
+          const wrongBal = this.isDiff((b as any).balance, expBal, tol);
+          const wrongBalO = this.isDiff((b as any).balanceOFR, expBalO, tol);
+
+          if (fix) {
+            if (wrongBal) (b as any).balance = expBal;
+            if (wrongBalO) (b as any).balanceOFR = expBalO;
+          }
+
+          sumSt += this.toNum((b as any).start);
+          sumIn += this.toNum((b as any).in);
+          sumOut += this.toNum((b as any).out);
+
+          sumStO += this.toNum((b as any).startOFR);
+          sumInO += this.toNum((b as any).inOFR);
+          sumOutO += this.toNum((b as any).outOFR);
+
+          batchRows.push({
+            batchId: (b as any).id,
+            condition: (b as any).condition ?? null,
+            dateReceived: (b as any).dateReceived ?? null,
+            start: this.r2((b as any).start),
+            in: this.r2((b as any).in),
+            out: this.r2((b as any).out),
+            balance: this.r2((b as any).balance),
+            startOFR: this.r2((b as any).startOFR),
+            inOFR: this.r2((b as any).inOFR),
+            outOFR: this.r2((b as any).outOFR),
+            balanceOFR: this.r2((b as any).balanceOFR),
+            computed: {
+              expectedBalance: expBal,
+              expectedBalanceOFR: expBalO,
+              wrongBalance: wrongBal,
+              wrongBalanceOFR: wrongBalO,
+            },
+          });
+        }
+
+        const computed = {
+          totalStart: this.r2(sumSt),
+          totalIn: this.r2(sumIn),
+          totalOut: this.r2(sumOut),
+          totalBalance: this.r2(sumSt + sumIn - sumOut),
+
+          totalStartOFR: this.r2(sumStO),
+          totalInOFR: this.r2(sumInO),
+          totalOutOFR: this.r2(sumOutO),
+          totalBalanceOFR: this.r2(sumStO + sumInO - sumOutO),
+        };
+
+        const stored = {
+          totalStart: this.r2((v as any).totalStart),
+          totalIn: this.r2((v as any).totalIn),
+          totalOut: this.r2((v as any).totalOut),
+          totalBalance: this.r2((v as any).totalBalance),
+
+          totalStartOFR: this.r2((v as any).totalStartOFR),
+          totalInOFR: this.r2((v as any).totalInOFR),
+          totalOutOFR: this.r2((v as any).totalOutOFR),
+          totalBalanceOFR: this.r2((v as any).totalBalanceOFR),
+        };
+
+        const mismatch =
+          this.isDiff(stored.totalStart, computed.totalStart, tol) ||
+          this.isDiff(stored.totalIn, computed.totalIn, tol) ||
+          this.isDiff(stored.totalOut, computed.totalOut, tol) ||
+          this.isDiff(stored.totalBalance, computed.totalBalance, tol) ||
+          this.isDiff(stored.totalStartOFR, computed.totalStartOFR, tol) ||
+          this.isDiff(stored.totalInOFR, computed.totalInOFR, tol) ||
+          this.isDiff(stored.totalOutOFR, computed.totalOutOFR, tol) ||
+          this.isDiff(stored.totalBalanceOFR, computed.totalBalanceOFR, tol);
+
+        // If fix=1, set variant totals to computed
+        if (fix && mismatch) {
+          (v as any).totalStart = computed.totalStart;
+          (v as any).totalIn = computed.totalIn;
+          (v as any).totalOut = computed.totalOut;
+          (v as any).totalBalance = computed.totalBalance;
+
+          (v as any).totalStartOFR = computed.totalStartOFR;
+          (v as any).totalInOFR = computed.totalInOFR;
+          (v as any).totalOutOFR = computed.totalOutOFR;
+          (v as any).totalBalanceOFR = computed.totalBalanceOFR;
+        }
+
+        // Persist any fixes
+        if (fix && includeBatches && batches.length) {
+          await qr.manager.getRepository(ItemBatch).save(batches);
+        }
+        if (fix && mismatch) {
+          await qr.manager.getRepository(ItemVariant).save(v as any);
+        }
+
+        const hasBatchIssues = batchRows.some((bb) => bb.computed.wrongBalance || bb.computed.wrongBalanceOFR);
+        const hasIssues = mismatch || hasBatchIssues;
+
+        if (!onlyIssues || hasIssues) {
+          out.push({
+            // item info (what your UI needs)
+            itemId: item.id,
+            itemName: item.itemName,
+            type: item.type,
+            stockMode: item.stockMode,
+            sortIndex: item.sortIndex ?? null,
+
+            // variant fields (what your UI asked for)
+            variantId: (v as any).id,
+            thicknessId: (v as any).thickness?.id ?? null,
+            thickness: this.r2((v as any).thickness?.thickness),
+            length: this.r2((v as any).length),
+            width: this.r2((v as any).width),
+            origin: (v as any).origin ?? null,
+            sheetsPerBox: Number((v as any).sheetsPerBox || 0),
+
+            stored,
+            computed,
+            mismatch,
+
+            batches: includeBatches ? batchRows : undefined,
+          });
+        }
+      }
+
+      if (fix) await qr.commitTransaction();
+
+      const totalPages = Math.max(1, Math.ceil(totalVariants / limit));
+      return {
+        page,
+        limit,
+        totalVariants,
+        totalPages,
+        hasMore: page < totalPages,
+        fixApplied: fix,
+        tolerance: tol,
+        data: out,
+      };
+    } catch (e) {
+      if (fix) {
+        try { await qr.rollbackTransaction(); } catch {}
+      }
+      throw e;
+    } finally {
+      try { await qr.release(); } catch {}
+    }
+  }
+
+  /* ============================================================
+     ✅ 2) PUT variant totals (edit totals, server recalculates balance)
+     ============================================================ */
+  async updateVariantTotals(variantId: number, body: any) {
+    if (!Number.isInteger(variantId) || variantId <= 0) {
+      throw new BadRequestException('invalid variantId');
+    }
+
+    const repo = this.dataSource.getRepository(ItemVariant);
+    const v = await repo.findOne({ where: { id: variantId } as any });
+    if (!v) throw new NotFoundException(`ItemVariant #${variantId} not found`);
+
+    // Update only start/in/out fields (base + ofr)
+    const st = this.r2(body?.totalStart);
+    const inn = this.r2(body?.totalIn);
+    const outt = this.r2(body?.totalOut);
+
+    const stO = this.r2(body?.totalStartOFR);
+    const inO = this.r2(body?.totalInOFR);
+    const outO = this.r2(body?.totalOutOFR);
+
+    (v as any).totalStart = st;
+    (v as any).totalIn = inn;
+    (v as any).totalOut = outt;
+    (v as any).totalBalance = this.r2(st + inn - outt);
+
+    (v as any).totalStartOFR = stO;
+    (v as any).totalInOFR = inO;
+    (v as any).totalOutOFR = outO;
+    (v as any).totalBalanceOFR = this.r2(stO + inO - outO);
+
+    await repo.save(v as any);
+
+    return {
+      ok: true,
+      variantId,
+      stored: {
+        totalStart: this.r2((v as any).totalStart),
+        totalIn: this.r2((v as any).totalIn),
+        totalOut: this.r2((v as any).totalOut),
+        totalBalance: this.r2((v as any).totalBalance),
+        totalStartOFR: this.r2((v as any).totalStartOFR),
+        totalInOFR: this.r2((v as any).totalInOFR),
+        totalOutOFR: this.r2((v as any).totalOutOFR),
+        totalBalanceOFR: this.r2((v as any).totalBalanceOFR),
+      },
+    };
+  }
+
+  /* ============================================================
+     ✅ 3) PUT batch totals (edit batch, server recalculates balance,
+         then rebuild the parent variant totals from ALL batches)
+     ============================================================ */
+  async updateBatchTotals(batchId: number, body: any) {
+    if (!Number.isInteger(batchId) || batchId <= 0) {
+      throw new BadRequestException('invalid batchId');
+    }
+
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+
+    try {
+      const batchRepo = qr.manager.getRepository(ItemBatch);
+      const varRepo = qr.manager.getRepository(ItemVariant);
+
+      const b = await batchRepo.findOne({
+        where: { id: batchId } as any,
+        relations: ['itemVariant'] as any,
+      });
+
+      if (!b) throw new NotFoundException(`ItemBatch #${batchId} not found`);
+      const variantId = (b as any)?.itemVariant?.id;
+      if (!variantId) throw new BadRequestException('Batch missing itemVariant relation');
+
+      // update batch fields
+      (b as any).start = this.r2(body?.start);
+      (b as any).in = this.r2(body?.in);
+      (b as any).out = this.r2(body?.out);
+
+      (b as any).startOFR = this.r2(body?.startOFR);
+      (b as any).inOFR = this.r2(body?.inOFR);
+      (b as any).outOFR = this.r2(body?.outOFR);
+
+      // recalc batch balances always
+      (b as any).balance = this.calcBal((b as any).start, (b as any).in, (b as any).out);
+      (b as any).balanceOFR = this.calcBal((b as any).startOFR, (b as any).inOFR, (b as any).outOFR);
+
+      await batchRepo.save(b as any);
+
+      // rebuild variant totals from all batches for this variant
+      const allBatches = await batchRepo.find({ where: { itemVariant: { id: variantId } } as any });
+      let sumSt = 0, sumIn = 0, sumOut = 0;
+      let sumStO = 0, sumInO = 0, sumOutO = 0;
+
+      for (const bb of allBatches) {
+        sumSt += this.toNum((bb as any).start);
+        sumIn += this.toNum((bb as any).in);
+        sumOut += this.toNum((bb as any).out);
+
+        sumStO += this.toNum((bb as any).startOFR);
+        sumInO += this.toNum((bb as any).inOFR);
+        sumOutO += this.toNum((bb as any).outOFR);
+      }
+
+      const v = await varRepo.findOne({ where: { id: variantId } as any });
+      if (!v) throw new NotFoundException(`ItemVariant #${variantId} not found`);
+
+      (v as any).totalStart = this.r2(sumSt);
+      (v as any).totalIn = this.r2(sumIn);
+      (v as any).totalOut = this.r2(sumOut);
+      (v as any).totalBalance = this.r2(sumSt + sumIn - sumOut);
+
+      (v as any).totalStartOFR = this.r2(sumStO);
+      (v as any).totalInOFR = this.r2(sumInO);
+      (v as any).totalOutOFR = this.r2(sumOutO);
+      (v as any).totalBalanceOFR = this.r2(sumStO + sumInO - sumOutO);
+
+      await varRepo.save(v as any);
+
+      await qr.commitTransaction();
+
+      return {
+        ok: true,
+        batchId,
+        variantId,
+        batch: {
+          start: this.r2((b as any).start),
+          in: this.r2((b as any).in),
+          out: this.r2((b as any).out),
+          balance: this.r2((b as any).balance),
+          startOFR: this.r2((b as any).startOFR),
+          inOFR: this.r2((b as any).inOFR),
+          outOFR: this.r2((b as any).outOFR),
+          balanceOFR: this.r2((b as any).balanceOFR),
+        },
+        variantTotalsNow: {
+          totalStart: this.r2((v as any).totalStart),
+          totalIn: this.r2((v as any).totalIn),
+          totalOut: this.r2((v as any).totalOut),
+          totalBalance: this.r2((v as any).totalBalance),
+          totalStartOFR: this.r2((v as any).totalStartOFR),
+          totalInOFR: this.r2((v as any).totalInOFR),
+          totalOutOFR: this.r2((v as any).totalOutOFR),
+          totalBalanceOFR: this.r2((v as any).totalBalanceOFR),
+        },
+      };
+    } catch (e) {
+      try { await qr.rollbackTransaction(); } catch {}
+      throw e;
+    } finally {
+      try { await qr.release(); } catch {}
+    }
+  }
+}
+
+
 
 
 

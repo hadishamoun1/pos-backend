@@ -12,6 +12,10 @@ export class Item {
 
   @Column({ type: 'enum', enum: ['box', 'sheet', 'sqm','unit'], default: 'box' })
   type: string; // Enum for item type
+  
+  @Column({ type: 'enum', enum: ['SQM', 'QTY', 'NONE'], default: 'SQM' })
+stockMode: 'SQM' | 'QTY' | 'NONE';
+
 
 
     // NEW: controls display order of items globally

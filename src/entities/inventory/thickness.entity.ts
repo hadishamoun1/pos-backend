@@ -22,7 +22,7 @@ export class Thickness {
 sort_index: number | null;
 
 
-  @Column('decimal', { precision: 5, scale: 2, nullable: false })
+  @Column('decimal', { precision: 5, scale: 2, nullable: false ,default:0})
   thickness: number; // e.g., 8mm, 10mm, 5.5mm
 
 

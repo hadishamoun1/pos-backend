@@ -333,6 +333,21 @@ async searchModalInStock(
     return this.itemsService.searchSmart(q || '', pg, lm);
   }
 
+
+  
+@Get('v1/stock-totals/all-variants-batches')
+  async getStockTotalsAll(@Query() query: any) {
+    return this.itemsService.getItemsStockTotals(query);
+  }
+
+
+
+    @Get('v1/stock-totals/variants')
+  async getVariantStockAudit(@Query() q: any) {
+    return this.itemsService.getVariantStockAudit(q);
+  }
+
+
   
   @Get('v1/search-real')
   async searchReal(
@@ -597,6 +612,20 @@ async relinkVariantDescription(
   async editFullItem(@Body() editFullItemDto: any): Promise<Item> {
     return this.itemsService.editFullItem(editFullItemDto);
   }
+
+
+    @Put('v1/stock-totals/variants/:id/totals')
+  async updateVariantTotals(@Param('id') id: string, @Body() body: any) {
+    return this.itemsService.updateVariantTotals(Number(id), body);
+  }
+
+  // ✅ Edit BATCH totals (start/in/out + OFR). Balances recalculated, then variant totals rebuilt from batches.
+  // PUT /items/v1/stock-totals/batches/:id/totals
+  @Put('v1/stock-totals/batches/:id/totals')
+  async updateBatchTotals(@Param('id') id: string, @Body() body: any) {
+    return this.itemsService.updateBatchTotals(Number(id), body);
+  }
+
 
   // Edit Item-Name description (NO DTO)
   @Patch('descriptions/name/:id')
