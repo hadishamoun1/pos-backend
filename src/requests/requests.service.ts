@@ -1,123 +1,124 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like } from 'typeorm';
+import { Repository, Like, In,DataSource } from 'typeorm';
 import { Request } from '../entities/request.entity';
 import { RequestDetail } from '../entities/requestDetails.entity';
 import { Customer } from '../entities/customer.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { Settings } from '../entities/settings.entity';
 import { RequestGateway } from './requests.gateway';
+import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+
 @Injectable()
 export class RequestService {
   constructor(
-    @InjectRepository(Request) private requestRepo: Repository<Request>,
-    @InjectRepository(RequestDetail)
-    private detailRepo: Repository<RequestDetail>,
-    @InjectRepository(Customer) private customerRepo: Repository<Customer>,
-    @InjectRepository(ItemVariant)
-    private itemVariantRepo: Repository<ItemVariant>,
-    @InjectRepository(Settings) private settingsRepo: Repository<Settings>,
-    private requestGateway: RequestGateway,
+   @InjectRepository(Request) private readonly requestRepo: Repository<Request>,
+    @InjectRepository(RequestDetail) private readonly detailRepo: Repository<RequestDetail>,
+    @InjectRepository(Customer) private readonly customerRepo: Repository<Customer>,
+    @InjectRepository(ItemVariant) private readonly itemVariantRepo: Repository<ItemVariant>,
+
+    // ✅ if you have this repo in the constructor, it MUST be in forFeature in the module
+    @InjectRepository(ItemBatch) private readonly itemBatchRepo: Repository<ItemBatch>,
+
+    @InjectRepository(Settings) private readonly settingsRepo: Repository<Settings>,
+
+    // ✅ NO decorator here
+    private readonly dataSource: DataSource,
+
+    private readonly requestGateway: RequestGateway,
   ) {}
 
-  async createRequest(data: any): Promise<Request> {
-    const {
-      requestDate,
-      totalAmount,
-      vatAmount,
-      grandTotal,
-      customerId,
-      details,
-    } = data;
+async createRequest(data: any): Promise<Request> {
+  const { requestDate, totalAmount, vatAmount, grandTotal, customerId, details } = data;
 
-    // ✅ Validate Customer
-    const customer = await this.customerRepo.findOne({
-      where: { id: customerId },
-    });
-    if (!customer) {
-      throw new NotFoundException('Customer not found');
-    }
+  // ✅ Validate Customer
+  const customer = await this.customerRepo.findOne({ where: { id: customerId } });
+  if (!customer) throw new NotFoundException('Customer not found');
 
-    // ✅ Get Active Year from Settings
-    const activeYear = await this.settingsRepo.findOne({
-      where: { isActive: true },
-    });
-    if (!activeYear) {
-      throw new NotFoundException('No active year found in Settings.');
-    }
-    const year = activeYear.year.slice(-2); // Extract last 2 digits (e.g., '2025' → '25')
-    const prefix = `REQ${year}`;
+  // ✅ Get Active Year from Settings
+  const activeYear = await this.settingsRepo.findOne({ where: { isActive: true } });
+  if (!activeYear) throw new NotFoundException('No active year found in Settings.');
 
-    // ✅ Find the last request number **correctly**
-    const lastRequest = await this.requestRepo
-      .createQueryBuilder('request')
-      .select(
-        "CAST(SUBSTRING_INDEX(request.requestNumber, ' - ', -1) AS UNSIGNED) AS maxNumber",
-      )
-      .where('request.requestNumber LIKE :prefix', { prefix: `${prefix} - %` })
-      .orderBy('maxNumber', 'DESC')
-      .limit(1)
-      .getRawOne();
+  const year = activeYear.year.slice(-2);
+  const prefix = `REQ${year}`;
 
-    // ✅ Ensure correct numbering
-    const newRequestNumber = lastRequest?.maxNumber
-      ? parseInt(lastRequest.maxNumber) + 1
-      : 1;
-    const requestNumber = `${prefix} - ${newRequestNumber}`;
+  // ✅ Find the last request number
+  const lastRequest = await this.requestRepo
+    .createQueryBuilder('request')
+    .select("CAST(SUBSTRING_INDEX(request.requestNumber, ' - ', -1) AS UNSIGNED) AS maxNumber")
+    .where('request.requestNumber LIKE :prefix', { prefix: `${prefix} - %` })
+    .orderBy('maxNumber', 'DESC')
+    .limit(1)
+    .getRawOne();
 
-    // ✅ Validate and Link Item Variants
-    const requestDetails = await Promise.all(
-      details.map(async (detail) => {
-        const { itemVariantId, quantity, sqm, price, total } = detail;
+  const newRequestNumber = lastRequest?.maxNumber ? parseInt(lastRequest.maxNumber) + 1 : 1;
+  const requestNumber = `${prefix} - ${newRequestNumber}`;
 
-        const itemVariant = await this.itemVariantRepo.findOne({
-          where: { id: itemVariantId },
-          relations: ['thickness', 'thickness.item'],
+  // ✅ Validate and Link Item Variants (+ ItemBatch)
+  const requestDetails = await Promise.all(
+    (details || []).map(async (detail) => {
+      const { itemVariantId, itemBatchId, quantity, sqm, price, total } = detail;
+
+      const itemVariant = await this.itemVariantRepo.findOne({
+        where: { id: itemVariantId },
+        relations: ['thickness', 'thickness.item'],
+      });
+
+      if (!itemVariant) {
+        throw new NotFoundException(`ItemVariant with ID ${itemVariantId} not found.`);
+      }
+
+      // ✅ Load itemBatch from the id sent by frontend
+      let itemBatch = null;
+      if (itemBatchId !== null && itemBatchId !== undefined && Number(itemBatchId) > 0) {
+        itemBatch = await this.itemBatchRepo.findOne({
+          where: { id: Number(itemBatchId) },
         });
 
-        if (!itemVariant) {
-          throw new NotFoundException(
-            `ItemVariant with ID ${itemVariantId} not found.`,
-          );
+        if (!itemBatch) {
+          throw new NotFoundException(`ItemBatch with ID ${itemBatchId} not found.`);
         }
+      }
 
-        return this.detailRepo.create({
-          itemVariant,
-          quantity,
-          sqm,
-          price,
-          total,
-        });
-      }),
-    );
+      return this.detailRepo.create({
+        itemVariant,
+        itemBatch, // ✅ THIS saves itemBatchId because of the relation
+        quantity,
+        sqm,
+        price,
+        total,
+      });
+    }),
+  );
 
-    // ✅ Create and Save Request
-    const request = this.requestRepo.create({
-      requestNumber, // ✅ Set Auto-Generated Request Number
-      requestDate,
-      totalAmount,
-      vatAmount,
-      grandTotal,
-      customer,
-      details: requestDetails,
-    });
+  // ✅ Create and Save Request
+  const request = this.requestRepo.create({
+    requestNumber,
+    requestDate,
+    totalAmount,
+    vatAmount,
+    grandTotal,
+    customer,
+    details: requestDetails,
+  });
 
-    const savedRequest = await this.requestRepo.save(request);
+  const savedRequest = await this.requestRepo.save(request);
 
-    // ✅ Emit the new request to all connected clients
-    this.requestGateway.notifyNewRequest({
-      id: savedRequest.id,
-      requestNumber: savedRequest.requestNumber,
-      requestDate: savedRequest.requestDate,
-      totalAmount: savedRequest.totalAmount,
-      vatAmount: savedRequest.vatAmount,
-      grandTotal: savedRequest.grandTotal,
-      customerName: customer.customerName,
-      invoiceType: customer.invoiceType,
-    });
+  // ✅ Emit the new request to all connected clients
+  this.requestGateway.notifyNewRequest({
+    id: savedRequest.id,
+    requestNumber: savedRequest.requestNumber,
+    requestDate: savedRequest.requestDate,
+    totalAmount: savedRequest.totalAmount,
+    vatAmount: savedRequest.vatAmount,
+    grandTotal: savedRequest.grandTotal,
+    customerName: customer.customerName,
+    invoiceType: customer.invoiceType,
+  });
 
-    return savedRequest;
-  }
+  return savedRequest;
+}
+
 
   async getAllRequests(): Promise<Request[]> {
     return this.requestRepo.find({
@@ -131,48 +132,74 @@ export class RequestService {
     });
   }
 
-  async getRequestById(id: number): Promise<any> {
-    const request = await this.requestRepo.findOne({
-      where: { id },
-      relations: [
-        'customer',
-        'details',
-        'details.itemVariant',
-        'details.itemVariant.thickness',
-        'details.itemVariant.thickness.item',
-      ],
-    });
+async getRequestById(id: number): Promise<any> {
+  const request = await this.requestRepo.findOne({
+    where: { id },
+    relations: [
+      'customer',
+      'details',
+      'details.itemBatch', // ✅ added
+      'details.itemVariant',
+      'details.itemVariant.thickness',
+      'details.itemVariant.thickness.item',
+    ],
+  });
 
-    if (!request) {
-      throw new NotFoundException(`Request with ID ${id} not found.`);
-    }
-
-    return {
-      id: request.id,
-      requestNumber: request.requestNumber,
-      requestDate: request.requestDate,
-      totalAmount: request.totalAmount,
-      vatAmount: request.vatAmount,
-      grandTotal: request.grandTotal,
-      customerId: request.customer?.id || null, // ✅ Prevent null errors
-      customerName: request.customer?.customerName || 'Unknown', // ✅ Fallback for missing name
-      invoiceType: request.customer?.invoiceType || 'Both', // ✅ Default to 'Both' if missing
-      details: request.details.map((detail) => ({
-        itemVariantId: detail.itemVariant?.id || null,
-        itemName: detail.itemVariant?.thickness?.item?.itemName || 'Unknown',
-        thickness: detail.itemVariant?.thickness?.thickness || 'Unknown',
-        length: detail.itemVariant?.length || 0,
-        width: detail.itemVariant?.width || 0,
-        origin: detail.itemVariant?.origin || 'Unknown',
-        sheetsPerBox: detail.itemVariant?.sheetsPerBox || 0,
-        itemType: detail.itemVariant?.thickness?.item?.type || 'Unknown',
-        quantity: detail.quantity || 0,
-        sqm: detail.sqm || 0,
-        price: detail.price || 0,
-        total: detail.total || 0,
-      })),
-    };
+  if (!request) {
+    throw new NotFoundException(`Request with ID ${id} not found.`);
   }
+
+  return {
+    id: request.id,
+    requestNumber: request.requestNumber,
+    requestDate: request.requestDate,
+    totalAmount: request.totalAmount,
+    vatAmount: request.vatAmount,
+    grandTotal: request.grandTotal,
+
+    customerId: request.customer?.id ?? null,
+    customerName: request.customer?.customerName ?? 'Unknown',
+    invoiceType: request.customer?.invoiceType ?? 'Both',
+
+    details: (request.details || []).map((detail) => {
+      const item = detail.itemVariant?.thickness?.item;
+
+      // ✅ robust: prefer FK column if it exists, else relation
+      const rawBatchId =
+        (detail as any)?.itemBatchId ?? (detail as any)?.itemBatch?.id ?? null;
+
+      const itemBatchId =
+        rawBatchId !== null && rawBatchId !== undefined && Number(rawBatchId) > 0
+          ? Number(rawBatchId)
+          : null;
+
+      return {
+        itemVariantId: detail.itemVariant?.id ?? null,
+
+        // ✅ batch id
+        itemBatchId, // ✅ ADD THIS
+
+        itemName: item?.itemName ?? 'Unknown',
+        thickness: detail.itemVariant?.thickness?.thickness ?? 'Unknown',
+
+        itemType: item?.type ?? 'Unknown',        // box/sheet/sqm/unit
+        stockMode: item?.stockMode ?? 'SQM',      // SQM/QTY/NONE (fallback)
+
+        length: detail.itemVariant?.length ?? 0,
+        width: detail.itemVariant?.width ?? 0,
+        origin: detail.itemVariant?.origin ?? 'Unknown',
+        sheetsPerBox: detail.itemVariant?.sheetsPerBox ?? 0,
+
+        quantity: detail.quantity ?? 0,
+        sqm: detail.sqm ?? 0,
+        price: detail.price ?? 0,
+        total: detail.total ?? 0,
+      };
+    }),
+  };
+}
+
+
 
 async getFilteredRequests(page: number = 1, limit: number = 10) {
   // 🔒 Coerce + clamp — never trust inputs at runtime
@@ -219,59 +246,149 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
 
 
   async updateRequest(id: number, data: any): Promise<Request> {
-    const { requestDate, totalAmount, vatAmount, grandTotal, customerId, details } = data;
+  const { requestDate, totalAmount, vatAmount, grandTotal, customerId, details } = data;
 
-    // Check if request exists
-    const request = await this.requestRepo.findOne({
+  if (!Array.isArray(details) || details.length === 0) {
+    throw new BadRequestException('details must be a non-empty array');
+  }
+
+  const qr = this.dataSource.createQueryRunner();
+  await qr.connect();
+  await qr.startTransaction();
+
+  try {
+    // 1) Load request
+    const request = await qr.manager.findOne(Request, {
       where: { id },
       relations: ['details'],
     });
+
     if (!request) {
       throw new NotFoundException(`Request with ID ${id} not found.`);
     }
 
-    // Validate customer
-    const customer = await this.customerRepo.findOne({ where: { id: customerId } });
-    if (!customer) {
-      throw new NotFoundException('Customer not found');
+    // 2) Validate customer
+    const customer = await qr.manager.findOne(Customer, { where: { id: customerId } });
+    if (!customer) throw new NotFoundException('Customer not found');
+
+    // 3) Validate itemVariantIds in one shot
+    const variantIds = Array.from(
+      new Set(details.map((d) => Number(d.itemVariantId)).filter((x) => Number.isInteger(x) && x > 0)),
+    );
+
+    if (!variantIds.length) {
+      throw new BadRequestException('details.itemVariantId missing/invalid');
     }
 
-    // Update the request details
+    const variants = await qr.manager.find(ItemVariant, {
+      where: { id: In(variantIds) } as any,
+    });
+
+    if (variants.length !== variantIds.length) {
+      const found = new Set(variants.map((v) => v.id));
+      const missing = variantIds.filter((x) => !found.has(x));
+      throw new NotFoundException(`ItemVariant not found for ids: ${missing.join(', ')}`);
+    }
+
+    const variantById = new Map<number, ItemVariant>(variants.map((v) => [v.id, v]));
+
+    // 4) Validate itemBatchIds (only if provided) in one shot
+    const batchIds = Array.from(
+      new Set(details.map((d) => d.itemBatchId).filter((x) => x !== null && x !== undefined).map(Number)),
+    ).filter((x) => Number.isInteger(x) && x > 0);
+
+    let batchById = new Map<number, ItemBatch>();
+    if (batchIds.length) {
+      const batches = await qr.manager.find(ItemBatch, {
+        where: { id: In(batchIds) } as any,
+      });
+
+      if (batches.length !== batchIds.length) {
+        const found = new Set(batches.map((b) => b.id));
+        const missing = batchIds.filter((x) => !found.has(x));
+        throw new NotFoundException(`ItemBatch not found for ids: ${missing.join(', ')}`);
+      }
+
+      batchById = new Map<number, ItemBatch>(batches.map((b) => [b.id, b]));
+    }
+
+    // 5) Update request header fields
     request.requestDate = requestDate;
     request.totalAmount = totalAmount;
     request.vatAmount = vatAmount;
     request.grandTotal = grandTotal;
     request.customer = customer;
 
-    // Clear existing details and add new ones
-    request.details = await Promise.all(
-      details.map(async (detail) => {
-        const { itemVariantId, quantity, sqm, price, total } = detail;
+    await qr.manager.save(Request, request);
 
-        const itemVariant = await this.itemVariantRepo.findOne({
-          where: { id: itemVariantId },
-        });
+    // 6) Delete old details
+    // If you have requestId column in RequestDetail, this is very solid:
+    await qr.manager.delete(RequestDetail, { request: { id } as any } as any);
 
-        if (!itemVariant) {
-          throw new NotFoundException(`ItemVariant with ID ${itemVariantId} not found.`);
+    // 7) Insert new details
+    const newDetails = details.map((d) => {
+      const itemVariantId = Number(d.itemVariantId);
+      const itemBatchId =
+        d.itemBatchId === null || d.itemBatchId === undefined ? null : Number(d.itemBatchId);
+
+      const itemVariant = variantById.get(itemVariantId)!;
+
+      const detailEntity: Partial<RequestDetail> = {
+        request, // link to parent
+        itemVariant,
+        quantity: Number(d.quantity) || 0,
+        sqm: Number(d.sqm) || 0,
+        price: Number(d.price) || 0,
+        total: Number(d.total) || 0,
+      };
+
+      // ✅ Save batch if provided
+      if (itemBatchId && batchById.size) {
+        // If you have a relation: detailEntity.itemBatch = batchById.get(itemBatchId)
+        // If you have a raw column: detailEntity.itemBatchId = itemBatchId
+        (detailEntity as any).itemBatchId = itemBatchId;
+
+        // If you ALSO have a relation field and want it populated:
+        if ((RequestDetail.prototype as any).itemBatch !== undefined) {
+          (detailEntity as any).itemBatch = batchById.get(itemBatchId);
         }
+      } else {
+        // allow null (recommended)
+        (detailEntity as any).itemBatchId = null;
+        if ((RequestDetail.prototype as any).itemBatch !== undefined) {
+          (detailEntity as any).itemBatch = null;
+        }
+      }
 
-        return this.detailRepo.create({
-          itemVariant,
-          quantity,
-          sqm,
-          price,
-          total,
-        });
-      }),
-    );
+      return qr.manager.create(RequestDetail, detailEntity);
+    });
 
-    // Save the updated request
-    const updatedRequest = await this.requestRepo.save(request);
+    await qr.manager.save(RequestDetail, newDetails);
 
-    // Return the updated request
-    return updatedRequest;
+    await qr.commitTransaction();
+
+    // 8) Return fresh request with relations (including batch if you added it)
+    const updated = await this.requestRepo.findOne({
+      where: { id },
+      relations: [
+        'customer',
+        'details',
+        'details.itemVariant',
+        'details.itemVariant.thickness',
+        'details.itemVariant.thickness.item',
+        // add these only if they exist on entity:
+        'details.itemBatch',
+      ] as any,
+    });
+
+    return updated as Request;
+  } catch (e) {
+    await qr.rollbackTransaction();
+    throw e;
+  } finally {
+    await qr.release();
   }
+}
 
 
 

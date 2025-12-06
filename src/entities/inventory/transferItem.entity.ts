@@ -11,6 +11,7 @@ import { Transfer } from './transfer.entity';
 import { ItemVariant } from './itemVariant.entity';
 import { ItemBatch } from './itemBatch.entity';
 import { SqmPiece } from './SqmPiece.entity';
+import { InvoiceItem } from '../invoiceItem.entity';
 
 @Entity({ name: 'transfer_items' })
 export class TransferItem {
@@ -49,4 +50,13 @@ export class TransferItem {
 
     @OneToMany(() => SqmPiece, (p) => p.transferItem)
   sqmPieces: SqmPiece[];
+
+
+  
+    @ManyToOne(() => InvoiceItem, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'invoiceItemId' })
+  invoiceItem?: InvoiceItem | null;
+
+  @Column({ type: 'int', nullable: true })
+  invoiceItemId?: number | null;
 }

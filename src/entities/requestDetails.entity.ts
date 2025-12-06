@@ -4,9 +4,11 @@ import {
   PrimaryGeneratedColumn,
   ManyToOne,
   JoinColumn,
+  RelationId,
 } from 'typeorm';
 import { Request } from './request.entity';
 import { ItemVariant } from './inventory/itemVariant.entity';
+import { ItemBatch } from './inventory/itemBatch.entity';
 
 @Entity()
 export class RequestDetail {
@@ -25,6 +27,15 @@ export class RequestDetail {
   @ManyToOne(() => ItemVariant, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'itemVariantId' })
   itemVariant: ItemVariant;
+
+@ManyToOne(() => ItemBatch, { nullable: true, onDelete: 'RESTRICT' })
+@JoinColumn({ name: 'itemBatchId' })
+itemBatch?: ItemBatch;
+
+@Column({ type: 'int', nullable: true, default: null })
+itemBatchId?: number | null;
+
+
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   sqm: number; // Square meters for this item in the request

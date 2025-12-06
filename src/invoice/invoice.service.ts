@@ -886,7 +886,7 @@ async getInvoiceById(invoiceId: number): Promise<any> {
       "items.itemVariant",
       "items.itemVariant.thickness",
       "items.itemVariant.thickness.item",
-      "items.itemBatch",
+      "items.itemBatch", // ✅ needed
     ],
   });
 
@@ -895,6 +895,13 @@ async getInvoiceById(invoiceId: number): Promise<any> {
   }
 
   const cust = invoice.customer;
+
+  // helper: safe number or null (prevents 0/NaN leaks)
+  const toNumOrNull = (v: any): number | null => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
 
   return {
     // ===== Invoice (top-level) =====
@@ -961,54 +968,62 @@ async getInvoiceById(invoiceId: number): Promise<any> {
       : null,
 
     // ===== Items =====
-    items: invoice.items.map((item) => {
-      const variant = item.itemVariant;
+    items: (invoice.items || []).map((item) => {
+      const variant = (item as any).itemVariant;
       const thickness = variant?.thickness;
-      const itemData = thickness?.item; // <-- Item table
-      const batch = (item as any).itemBatch;
-      const sqmpieceId = item.sqmPieceId;
+      const itemData = thickness?.item; // Item table
+      const batch = (item as any).itemBatch ?? null;
 
-      const itemType = itemData?.type; // 'box' | 'sheet' | 'sqm' | 'unit'
-      const stockMode = (itemData as any)?.stockMode ?? null; // ✅ from Item table (REAL)
+      // ✅ itemType + stockMode (from Item table)
+      const itemType = itemData?.type ?? null; // 'box' | 'sheet' | 'sqm' | 'unit'
+      const stockMode = (itemData as any)?.stockMode ?? null;
 
-      // snapshots stored on invoice_items (we ONLY use these)
+      // ✅ snapshots stored on invoice_items (we ONLY use these)
       const rawLen = (item as any).length;
       const rawWid = (item as any).width;
       const rawSpb = (item as any).sheetsPerBox;
 
-      const length =
-        rawLen !== null && rawLen !== undefined && !Number.isNaN(Number(rawLen))
-          ? Number(rawLen)
-          : null;
-
-      const width =
-        rawWid !== null && rawWid !== undefined && !Number.isNaN(Number(rawWid))
-          ? Number(rawWid)
-          : null;
+      const length = toNumOrNull(rawLen);
+      const width = toNumOrNull(rawWid);
 
       let sheetsPerBox: number | null = null;
-      if (itemType === "box") {
-        sheetsPerBox =
-          rawSpb !== null && rawSpb !== undefined && !Number.isNaN(Number(rawSpb))
-            ? Number(rawSpb)
-            : null;
+      if (String(itemType || "").toLowerCase() === "box") {
+        sheetsPerBox = toNumOrNull(rawSpb);
       }
 
-      // ORIGINAL from variant
-      const originalLength = (variant as any)?.length != null ? Number((variant as any).length) : null;
-      const originalWidth = (variant as any)?.width != null ? Number((variant as any).width) : null;
+      // ✅ ORIGINAL from variant
+      const originalLength = toNumOrNull((variant as any)?.length);
+      const originalWidth = toNumOrNull((variant as any)?.width);
       const originalSheetsPerBox =
-        itemType === "box" && variant?.sheetsPerBox != null ? Number(variant.sheetsPerBox) : null;
+        String(itemType || "").toLowerCase() === "box" ? toNumOrNull((variant as any)?.sheetsPerBox) : null;
 
-      // totalSheets
+      // ✅ totalSheets
       let totalSheets: number | null = null;
-      if (itemType === "box") {
-        const qty = Number(item.quantity) || 0;
-        const spb = sheetsPerBox || 0;
-        totalSheets = qty * spb;
-      } else if (itemType === "sheet" || itemType === "unit") {
-        totalSheets = Number(item.quantity) || 0;
+      const qty = Number((item as any)?.quantity ?? 0) || 0;
+      if (String(itemType || "").toLowerCase() === "box") {
+        totalSheets = qty * (Number(sheetsPerBox ?? 0) || 0);
+      } else if (String(itemType || "").toLowerCase() === "sheet" || String(itemType || "").toLowerCase() === "unit") {
+        totalSheets = qty;
       }
+
+      // ✅ FIX: itemBatchId must be correct (units too)
+      const fkBatchId = toNumOrNull((item as any).itemBatchId);
+      const relBatchId = toNumOrNull(batch?.id);
+      const itemBatchId = fkBatchId ?? relBatchId ?? null;
+
+      if (!itemBatchId) {
+        // helpful debug: you'll see if DB row has null OR relation didn't load
+        console.warn("⚠️ Invoice item missing itemBatchId:", {
+          invoiceId: invoice.id,
+          invoiceItemId: (item as any)?.id,
+          itemVariantId: (item as any)?.itemVariantId,
+          fkItemBatchId: (item as any)?.itemBatchId,
+          relBatchId: batch?.id,
+          itemType,
+        });
+      }
+
+      const sqmpieceId = (item as any).sqmPieceId ?? null;
 
       return {
         invoiceItemId: item.id,
@@ -1018,14 +1033,14 @@ async getInvoiceById(invoiceId: number): Promise<any> {
         vat: item.vat,
         quantity: item.quantity,
 
-        itemBatchId: (item as any).itemBatchId ?? batch?.id ?? null,
+        itemBatchId, // ✅ fixed (works for units too)
 
-        itemVariantId: variant?.id,
-        itemName: itemData?.itemName,
+        itemVariantId: variant?.id ?? null,
+        itemName: itemData?.itemName ?? null,
         itemType,
-        stockMode, // ✅ ADD THIS
+        stockMode,
 
-        thickness: thickness?.thickness,
+        thickness: thickness?.thickness ?? null,
 
         length,
         width,
@@ -1065,6 +1080,7 @@ async getInvoiceById(invoiceId: number): Promise<any> {
     }),
   };
 }
+
 
 
  async getFilteredInvoices(

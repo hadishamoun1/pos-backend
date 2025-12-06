@@ -5,7 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, EntityManager, IsNull } from 'typeorm';
+import { Repository, EntityManager, IsNull, In } from 'typeorm';
 import { Transfer } from '../entities/inventory/transfer.entity';
 import { TransferItem } from '../entities/inventory/transferItem.entity';
 import { Settings } from '../entities/settings.entity';
@@ -17,6 +17,7 @@ import { Item } from 'src/entities/inventory/item.entity';
 import { InventoryTransactionGateway } from '../inventroy-transactions/inventory-transaction.gateway';
 import { InventoryTransactionService } from '../inventroy-transactions/inventroy-transactions.service';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { InvoiceItem } from 'src/entities/invoiceItem.entity';
 
 @Injectable()
 export class TransfersService {
@@ -41,6 +42,9 @@ export class TransfersService {
 
     @InjectRepository(ItemBatch)
     private readonly ItemBatch: Repository<ItemBatch>,
+
+      @InjectRepository(InvoiceItem)
+    private readonly InvoiceItemRepo: Repository<InvoiceItem>,
 
     private readonly inventoryTransactionService: InventoryTransactionService,
     private readonly inventoryTransactionGateway: InventoryTransactionGateway,
@@ -1051,4 +1055,365 @@ if (data.location === 'FJ') {
       order: { id: 'DESC' },
     });
   }
+
+
+
+   async getCutsQueue(opts?: {
+    page?: number;
+    limit?: number;
+    status?: 'pending' | 'resolved' | 'all';
+    from?: string; // YYYY-MM-DD
+    to?: string;   // YYYY-MM-DD
+    q?: string;
+  }) {
+    const page = Math.max(1, Number(opts?.page ?? 1));
+    const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
+    const start = (page - 1) * limit;
+
+    const status = String(opts?.status ?? 'pending').toLowerCase() as
+      | 'pending'
+      | 'resolved'
+      | 'all';
+
+    const q = String(opts?.q ?? '').trim();
+    const from = opts?.from ? String(opts.from).slice(0, 10) : null;
+    const to = opts?.to ? String(opts.to).slice(0, 10) : null;
+
+    // 1) build base query for IDs (avoid duplicates caused by sqmPieces joins)
+    const base = this.itemsRepo
+      .createQueryBuilder('ti')
+      .leftJoin('ti.transfer', 't')
+      .leftJoin('ti.itemVariant', 'v')
+      .leftJoin('v.thickness', 'th')
+      .leftJoin('th.item', 'item')
+      .leftJoin('ti.itemBatch', 'batch')
+      .leftJoin('ti.invoiceItem', 'ii')
+      .leftJoin('ii.invoice', 'inv')
+      .leftJoin('inv.customer', 'cust')
+      .where('ti.invoiceItemId IS NOT NULL'); // ✅ only “cuts” we can prove
+
+    // status
+    if (status === 'pending') {
+      base.andWhere('ti.sqmTrashUnallocated > 0');
+    } else if (status === 'resolved') {
+      base.andWhere('ti.sqmTrashUnallocated <= 0');
+    }
+
+    // date range (transfer.date)
+    if (from) base.andWhere('t.date >= :from', { from });
+    if (to) base.andWhere('t.date <= :to', { to });
+
+    // search
+    if (q) {
+      base.andWhere(
+        `(
+          inv.invoiceNumber LIKE :q
+          OR CAST(inv.id AS CHAR) LIKE :q
+          OR cust.customerName LIKE :q
+          OR item.itemName LIKE :q
+          OR v.origin LIKE :q
+          OR CAST(batch.id AS CHAR) LIKE :q
+        )`,
+        { q: `%${q}%` },
+      );
+    }
+
+    // count distinct ids
+    const countRow = await base
+      .clone()
+      .select('COUNT(DISTINCT ti.id)', 'cnt')
+      .getRawOne<{ cnt: string }>();
+
+    const total = Number(countRow?.cnt ?? 0);
+
+    // page ids
+const idRows = await base
+  .clone()
+  .select('ti.id', 'id')
+  .addSelect('t.date', 'tdate')     // ✅ include order-by column
+  .distinct(true)                  // ✅ keep distinct
+  .orderBy('t.date', 'DESC')
+  .addOrderBy('ti.id', 'DESC')
+  .offset(start)
+  .limit(limit)
+  .getRawMany<{ id: string; tdate: string }>();
+
+const ids = idRows
+  .map((r) => Number(r.id))
+  .filter((n) => Number.isFinite(n));
+
+    if (!ids.length) {
+      return {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+        hasMore: page * limit < total,
+        data: [],
+      };
+    }
+
+    // 2) load full rows with relations
+    const items = await this.itemsRepo.find({
+      where: { id: In(ids) },
+      relations: {
+        transfer: true,
+        itemVariant: { thickness: { item: true } },
+        itemBatch: true,
+        sqmPieces: true,
+        invoiceItem: { invoice: { customer: true } },
+      } as any,
+    });
+
+    // keep same order as ids
+    const byId = new Map(items.map((x) => [Number(x.id), x]));
+    const ordered = ids.map((id) => byId.get(id)).filter(Boolean) as TransferItem[];
+
+    const num = (v: any) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const data = ordered.map((ti) => {
+      const v: any = ti.itemVariant;
+      const item: any = v?.thickness?.item;
+
+      const ii: any = ti.invoiceItem;
+      const inv: any = ii?.invoice;
+      const cust: any = inv?.customer;
+
+      const original = {
+        length: num(v?.length),
+        width: num(v?.width),
+        sheetsPerBox: num(v?.sheetsPerBox),
+      };
+
+      const snapshot = {
+        length: ii?.length == null ? null : num(ii.length),
+        width: ii?.width == null ? null : num(ii.width),
+        sheetsPerBox: ii?.sheetsPerBox == null ? null : num(ii.sheetsPerBox),
+      };
+
+      const changed =
+        snapshot.length != null && snapshot.width != null
+          ? {
+              length: Math.abs(num(snapshot.length) - original.length) > 0.001,
+              width: Math.abs(num(snapshot.width) - original.width) > 0.001,
+              sheetsPerBox:
+                snapshot.sheetsPerBox != null &&
+                Math.abs(num(snapshot.sheetsPerBox) - original.sheetsPerBox) > 0.1,
+            }
+          : { length: false, width: false, sheetsPerBox: false };
+
+      const pieces = Array.isArray((ti as any).sqmPieces) ? (ti as any).sqmPieces : [];
+      const piecesSum = pieces.reduce((s: number, p: any) => s + num(p?.sqm), 0);
+
+      const remaining = num((ti as any).sqmTrashUnallocated);
+      const status =
+        remaining > 0 ? 'pending' : piecesSum > 0 ? 'stocked' : 'trashed';
+
+      return {
+        transferId: (ti as any).transferId ?? (ti as any).transfer?.id ?? null,
+        transferItemId: ti.id,
+        transferDate: (ti as any).transfer?.date ?? null,
+        transferNumber: (ti as any).transfer?.transferNumber ?? null,
+
+        invoiceId: inv?.id ?? null,
+        invoiceNumber: inv?.invoiceNumber ?? null,
+        invoiceDate: inv?.date ?? null,
+        customerName: cust?.customerName ?? null,
+
+        invoiceItemId: ii?.id ?? ti.invoiceItemId ?? null,
+
+        itemName: item?.itemName ?? null,
+        itemType: String(item?.type ?? '').toLowerCase(),          // box/sheet/sqm/unit
+        stockMode: String(item?.stockMode ?? '').toUpperCase(),    // SQM/QTY/NONE
+
+        itemVariantId: ti.itemVariantId ?? v?.id ?? null,
+        itemBatchId: ti.itemBatchId ?? (ti as any).itemBatch?.id ?? null,
+        origin: v?.origin ?? null,
+
+        sold: {
+          sqm: ii?.sqm == null ? null : num(ii.sqm),
+          quantity: ii?.quantity == null ? null : num(ii.quantity),
+          snapshotDims: snapshot,
+          originalDims: original,
+          changed,
+        },
+
+        stock: {
+          consumedSqm: num((ti as any).sqm),
+          remainingSqm: remaining,
+          piecesSum: Number(piecesSum.toFixed(4)),
+          pieces: pieces.map((p: any) => ({
+            id: p?.id ?? null,
+            sqm: num(p?.sqm),
+          })),
+          status,
+        },
+      };
+    });
+
+    return {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+      hasMore: page * limit < total,
+      data,
+    };
+  }
+
+
+  async getInvoiceDimChanges(opts?: {
+  page?: number;
+  limit?: number;
+  q?: string;
+}) {
+  const page = Math.max(1, Number(opts?.page ?? 1));
+  const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
+  const start = (page - 1) * limit;
+
+  const q = String(opts?.q ?? '').trim();
+
+  // tolerances (because decimals)
+  const tolLenWid = 0.001;
+  const tolSpb = 0.1;
+
+  const qb = this.InvoiceItemRepo
+    .createQueryBuilder('ii')
+    .leftJoin('ii.invoice', 'inv')
+    .leftJoin('inv.customer', 'cust')
+    .leftJoin('ii.itemVariant', 'v')
+    .leftJoin('v.thickness', 'th')
+    .leftJoin('th.item', 'item')
+    .where('ii.itemVariantId IS NOT NULL')
+    // only compare when snapshot fields are present
+    .andWhere(
+      `(
+        (ii.length IS NOT NULL AND ABS(ii.length - v.length) > :tolLenWid)
+        OR
+        (ii.width IS NOT NULL AND ABS(ii.width - v.width) > :tolLenWid)
+        OR
+        (ii.sheetsPerBox IS NOT NULL AND ABS(ii.sheetsPerBox - v.sheetsPerBox) > :tolSpb)
+      )`,
+      { tolLenWid, tolSpb },
+    );
+
+  if (q) {
+    qb.andWhere(
+      `(
+        inv.invoiceNumber LIKE :q
+        OR CAST(inv.id AS CHAR) LIKE :q
+        OR cust.customerName LIKE :q
+        OR item.itemName LIKE :q
+        OR v.origin LIKE :q
+        OR CAST(ii.id AS CHAR) LIKE :q
+      )`,
+      { q: `%${q}%` },
+    );
+  }
+
+  // total
+  const totalRow = await qb
+    .clone()
+    .select('COUNT(ii.id)', 'cnt')
+    .getRawOne<{ cnt: string }>();
+
+  const total = Number(totalRow?.cnt ?? 0);
+
+  // data
+  const rows = await qb
+    .clone()
+    .select([
+      'ii.id AS invoiceItemId',
+      'inv.id AS invoiceId',
+      'inv.invoiceNumber AS invoiceNumber',
+      'inv.date AS invoiceDate',
+      'cust.customerName AS customerName',
+
+      'item.id AS itemId',
+      'item.itemName AS itemName',
+      'item.type AS itemType',
+      'item.stockMode AS stockMode',
+
+      'v.id AS itemVariantId',
+      'v.origin AS origin',
+      'th.thickness AS thickness',
+
+      'ii.length AS snapLength',
+      'ii.width AS snapWidth',
+      'ii.sheetsPerBox AS snapSpb',
+      'v.length AS origLength',
+      'v.width AS origWidth',
+      'v.sheetsPerBox AS origSpb',
+
+      'ii.sqm AS soldSqm',
+      'ii.quantity AS soldQty',
+    ])
+    .orderBy('inv.date', 'DESC')
+    .addOrderBy('inv.id', 'DESC')
+    .addOrderBy('ii.id', 'DESC')
+    .offset(start)
+    .limit(limit)
+    .getRawMany<any>();
+
+  const num = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const data = rows.map((r) => {
+    const snapLength = num(r.snapLength);
+    const snapWidth = num(r.snapWidth);
+    const snapSpb = num(r.snapSpb);
+
+    const origLength = num(r.origLength) ?? 0;
+    const origWidth = num(r.origWidth) ?? 0;
+    const origSpb = num(r.origSpb) ?? 0;
+
+    const changed = {
+      length: snapLength != null ? Math.abs(snapLength - origLength) > tolLenWid : false,
+      width: snapWidth != null ? Math.abs(snapWidth - origWidth) > tolLenWid : false,
+      sheetsPerBox: snapSpb != null ? Math.abs(snapSpb - origSpb) > tolSpb : false,
+    };
+
+    return {
+      invoiceItemId: Number(r.invoiceItemId),
+      invoiceId: Number(r.invoiceId),
+      invoiceNumber: r.invoiceNumber ?? null,
+      invoiceDate: r.invoiceDate ?? null,
+      customerName: r.customerName ?? null,
+
+      itemName: r.itemName ?? null,
+      itemType: String(r.itemType ?? '').toLowerCase(),
+      stockMode: String(r.stockMode ?? '').toUpperCase(),
+
+      itemVariantId: Number(r.itemVariantId),
+      origin: r.origin ?? null,
+      thickness: num(r.thickness),
+
+      sold: {
+        sqm: num(r.soldSqm),
+        quantity: num(r.soldQty),
+      },
+
+      snapshotDims: { length: snapLength, width: snapWidth, sheetsPerBox: snapSpb },
+      originalDims: { length: origLength, width: origWidth, sheetsPerBox: origSpb },
+      changed,
+    };
+  });
+
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  return {
+    page,
+    limit,
+    total,
+    totalPages,
+    hasMore: page < totalPages,
+    data,
+  };
+}
+
 }

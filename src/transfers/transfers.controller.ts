@@ -6,6 +6,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Query,
 } from '@nestjs/common';
 import { TransfersService } from './transfers.service';
 import { Transfer } from '../entities/inventory/transfer.entity';
@@ -52,6 +53,27 @@ export class TransfersController {
       }),
     }));
   }
+   // GET /inventory/cuts?page=1&limit=50&status=pending&from=2025-01-01&to=2025-12-31&q=...
+  @Get('v1/cuts')
+  async getCuts(@Query() query: any) {
+    return this.svc.getCutsQueue({
+      page: query.page,
+      limit: query.limit,
+      status: query.status,
+      from: query.from,
+      to: query.to,
+      q: query.q,
+    });
+  }
+
+  @Get('v1/dim-changes')
+async getInvoiceDimChanges(@Query() q: any) {
+  return this.svc.getInvoiceDimChanges({
+    page: q.page,
+    limit: q.limit,
+    q: q.q,
+  });
+}
 
   @Get()
   findAll(): Promise<Transfer[]> {
@@ -62,4 +84,5 @@ export class TransfersController {
   findOne(@Param('id', ParseIntPipe) id: number): Promise<Transfer> {
     return this.svc.findOne(id);
   }
+
 }

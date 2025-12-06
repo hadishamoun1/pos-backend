@@ -12,6 +12,7 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransactionModule } from '../inventroy-transactions/inventroy-transactions.module';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
+import { InvoiceItem } from 'src/entities/invoiceItem.entity';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -22,7 +23,8 @@ import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
       Thickness,
       ItemVariant,
       ItemBatch,
-      SqmPiece
+      SqmPiece,
+      InvoiceItem
     ]),
     InventoryTransactionModule,
   ],
