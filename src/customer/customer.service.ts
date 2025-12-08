@@ -100,83 +100,98 @@ export class CustomerService {
    * Create customer with full support for new columns and area-based numbering.
    * If `customerAccountNumber` is provided explicitly in payload, we keep it; otherwise we generate one.
    */
-  async createCustomer(customerData: Partial<Customer>): Promise<Customer> {
-    const {
-      customerName,
-      currencyId,
-      firstName,
-      middleName,
-      paymentTerms,
-      area,
-      companyType,
-      address,
-      phoneNumber,
-      financialNumber,
-      invoiceType,
-      vat,
-      customerAccountNumber: providedNumber,
-      ...rest
-    } = customerData;
+ async createCustomer(customerData: Partial<Customer>): Promise<Customer> {
+  const {
+    customerName,
+    currencyId,
 
-    if (!customerName) {
-      throw new NotFoundException('customerName is required.');
-    }
-    if (!currencyId) {
-      throw new NotFoundException('currencyId is required.');
-    }
+    // ✅ new fields in your entity
+    firstName,
+    middleName,
+    lastName,
+    paymentTerms,
+    area,
+    companyType,
+    address,
+    phoneNumber,
+    financialNumber,
+    invoiceType,
+    vat,
 
-    // Validate currency
-    const currency = await this.currencyRepository.findOne({ where: { id: currencyId } });
-    if (!currency) {
-      throw new NotFoundException(`Currency with ID ${currencyId} not found.`);
-    }
+    // existing optional/manual account number
+    customerAccountNumber: providedNumber,
 
-    // Link to the 4111 parent account
-    const parentAccountNumber = '4111';
-    const account = await this.accountRepository.findOne({ where: { accountNumber: parentAccountNumber } });
-    if (!account) {
-      throw new NotFoundException(`Account with number ${parentAccountNumber} not found.`);
-    }
+    // any extra fields passed by caller (kept for compatibility)
+    ...rest
+  } = customerData;
 
-    // Account number: use provided or generate based on area bucket
-    const customerAccountNumber =
-      providedNumber && String(providedNumber).trim().length > 0
-        ? String(providedNumber).trim()
-        : await this.generateCustomerAccountNumber(area);
-
-    // Normalize invoice type if needed
-    const normalizedInvoiceType =
-      this.normalizeInvoiceType(invoiceType as any) ?? (invoiceType as any);
-
-    // Normalize area string for storage (keeps "beirut" | "south" | ...). If you prefer raw input, store `area` instead.
-    const areaNormalized = this.normalizeArea(area);
-
-    const customer = this.customerRepository.create({
-      customerAccountNumber,
-      customerName,
-
-      // NEW FIELDS
-      firstName,
-      middleName,
-      paymentTerms,
-      area: areaNormalized,                // stored normalized key
-      companyType,
-      address,
-      phoneNumber,
-      financialNumber,
-      invoiceType: normalizedInvoiceType,  // 'S' | 'G' | 'Both' | undefined
-      vat,
-
-      // relations
-      currency,
-      account,
-
-      // any extras from caller (kept for compatibility)
-      ...rest,
-    });
-
-    return this.customerRepository.save(customer);
+  if (!customerName) {
+    throw new NotFoundException('customerName is required.');
   }
+  if (!currencyId) {
+    throw new NotFoundException('currencyId is required.');
+  }
+
+  // Validate currency
+  const currency = await this.currencyRepository.findOne({
+    where: { id: currencyId },
+  });
+  if (!currency) {
+    throw new NotFoundException(`Currency with ID ${currencyId} not found.`);
+  }
+
+  // Link to the 4111 parent account
+  const parentAccountNumber = '4111';
+  const account = await this.accountRepository.findOne({
+    where: { accountNumber: parentAccountNumber },
+  });
+  if (!account) {
+    throw new NotFoundException(
+      `Account with number ${parentAccountNumber} not found.`,
+    );
+  }
+
+  // Account number: use provided or generate based on area bucket
+  const customerAccountNumber =
+    providedNumber && String(providedNumber).trim().length > 0
+      ? String(providedNumber).trim()
+      : await this.generateCustomerAccountNumber(area);
+
+  // Normalize invoice type if needed
+  const normalizedInvoiceType =
+    this.normalizeInvoiceType(invoiceType as any) ?? (invoiceType as any);
+
+  // Normalize area string for storage (you can store raw `area` if you prefer)
+  const areaNormalized = this.normalizeArea(area);
+
+  const customer = this.customerRepository.create({
+    customerAccountNumber,
+    customerName,
+
+    // ✅ NEW FIELDS
+    firstName,
+    middleName,
+    lastName,
+    paymentTerms,
+    area: areaNormalized,
+    companyType,
+    address,
+    phoneNumber,
+    financialNumber,
+    invoiceType: normalizedInvoiceType, // 'S' | 'G' | 'Both' | undefined
+    vat,
+
+    // relations
+    currency,
+    account,
+
+    // any extras from caller (kept for compatibility)
+    ...rest,
+  });
+
+  return this.customerRepository.save(customer);
+}
+
 
   async getAllCustomers(): Promise<Customer[]> {
     return this.customerRepository.find({ relations: ['currency', 'account'] });
@@ -193,40 +208,60 @@ export class CustomerService {
     return customer;
   }
 
-  async getCustomersPaginated(
-    page: number,
-    limit: number,
-  ): Promise<{ customers: Partial<Customer>[]; total: number }> {
-    const [customers, total] = await this.customerRepository.findAndCount({
-      select: [
-        'id',
-        'customerAccountNumber',
-        'customerName',
-        'address',
-        'phoneNumber',
-        'invoiceType',
-        'vat',
-        'financialNumber',
-      ],
-      relations: ['currency', 'account'],
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+async getCustomersPaginated(
+  page: number,
+  limit: number,
+): Promise<{ customers: Partial<Customer>[]; total: number }> {
+  const [customers, total] = await this.customerRepository.findAndCount({
+    select: [
+      'id',
+      'customerAccountNumber',
+      'customerName',
 
-    const filteredCustomers = customers.map((customer) => ({
-      id: customer.id,
-      customerAccountNumber: customer.customerAccountNumber,
-      customerName: customer.customerName,
-      address: customer.address,
-      phoneNumber: customer.phoneNumber,
-      invoiceType: customer.invoiceType,
-      vat: customer.vat,
-      currencyCode: customer.currency?.currencyCode,
-      financialNumber: customer.financialNumber,
-    }));
+      // ✅ NEW fields you added
+      'firstName',
+      'middleName',
+      'lastName',
+      'paymentTerms',
+      'area',
+      'companyType',
 
-    return { customers: filteredCustomers, total };
-  }
+      // existing
+      'address',
+      'phoneNumber',
+      'invoiceType',
+      'vat',
+      'financialNumber',
+    ],
+    relations: ['currency', 'account'],
+    skip: (page - 1) * limit,
+    take: limit,
+  });
+
+  const filteredCustomers = customers.map((customer) => ({
+    id: customer.id,
+    customerAccountNumber: customer.customerAccountNumber,
+    customerName: customer.customerName,
+
+    // ✅ NEW fields
+    firstName: customer.firstName ?? null,
+    middleName: customer.middleName ?? null,
+    lastName: customer.lastName ?? null,
+    paymentTerms: customer.paymentTerms ?? null,
+    area: customer.area ?? null,
+    companyType: customer.companyType ?? null,
+
+    // existing
+    address: customer.address,
+    phoneNumber: customer.phoneNumber,
+    invoiceType: customer.invoiceType,
+    vat: customer.vat,
+    currencyCode: customer.currency?.currencyCode,
+    financialNumber: customer.financialNumber,
+  }));
+
+  return { customers: filteredCustomers, total };
+}
 
 
 
