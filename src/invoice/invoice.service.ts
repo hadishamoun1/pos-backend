@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In, IsNull ,DeepPartial} from 'typeorm';
+import { Repository, DataSource, In, IsNull ,DeepPartial,Brackets } from 'typeorm';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { Invoice } from '../entities/invoice.entity';
@@ -758,7 +758,7 @@ console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
     details.push(
       this.journalVoucherDetailRepo.create({
         accountId: salesAccount.id,
-        description: 'Sales Revenue',
+        description: 'مبيعات خاضعة للضريبة على القيمة المضافة',
         currency: currencyCode,
         docNbr,
         ...getJVFields('cr', salesCrAmount, salesCrAmountLL),
@@ -769,7 +769,7 @@ console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
       details.push(
         this.journalVoucherDetailRepo.create({
           accountId: vatAccount.id,
-          description: 'VAT Payable',
+          description: 'ضريبة القيمة المضافة - مبيع VAT  ',
           currency: currencyCode,
           docNbr,
           ...getJVFields('cr', totalVAT, totalVATLL),
@@ -1989,27 +1989,25 @@ async searchFilteredInvoices(
   page: number,
   limit: number,
 ): Promise<{ data: any[]; total: number; totalPages: number }> {
-  const pageNum = Number.isFinite(page)  && page  > 0 ? page  : 1;
-  const take    = Number.isFinite(limit) && limit > 0 ? limit : 100;
-  const skip    = (pageNum - 1) * take;
+  const pageNum = Number.isFinite(page) && page > 0 ? page : 1;
+  const take = Number.isFinite(limit) && limit > 0 ? limit : 100;
+  const skip = (pageNum - 1) * take;
 
   const qb = this.invoiceRepository
-    .createQueryBuilder('inv')
-    .leftJoinAndSelect('inv.customer', 'customer')
-    .orderBy('inv.id', 'DESC')
+    .createQueryBuilder("inv")
+    .leftJoinAndSelect("inv.customer", "customer")
+    .orderBy("inv.id", "DESC")
     .skip(skip)
     .take(take);
 
-  // --- helpers ---
-  const norm = (s?: string) => (s ?? '').trim();
+  const norm = (s?: string) => (s ?? "").trim();
 
   // Normalize "YYYY/MM/DD" or "YYYY-MM-DD" to "YYYY-MM-DD"; return null if invalid
   const toYMD = (s: string): string | null => {
     if (!s) return null;
-    const t = s.replace(/\//g, '-');
+    const t = s.replace(/\//g, "-");
     const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!m) return null;
-    // validate date
     const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00.000Z`);
     if (Number.isNaN(d.getTime())) return null;
     return `${m[1]}-${m[2]}-${m[3]}`;
@@ -2018,7 +2016,6 @@ async searchFilteredInvoices(
   const QQ = norm(q);
 
   if (!QQ) {
-    // no query -> same as getFilteredInvoices pagination
     const [invoices, total] = await qb.getManyAndCount();
     return {
       data: invoices.map((invoice) => ({
@@ -2037,7 +2034,6 @@ async searchFilteredInvoices(
     };
   }
 
-  // --- decide how to filter based on QQ ---
   // Date range forms:
   //   "YYYY-MM-DD..YYYY-MM-DD"
   //   "YYYY/MM/DD..YYYY/MM/DD"
@@ -2045,40 +2041,52 @@ async searchFilteredInvoices(
   const range = QQ.match(
     /(\d{4}[-/]\d{2}[-/]\d{2})\s*(?:\.\.|to|-)\s*(\d{4}[-/]\d{2}[-/]\d{2})/i
   );
-  // Single date
   const single = QQ.match(/^(\d{4}[-/]\d{2}[-/]\d{2})$/);
-  // NEW: digits-only => search by numeric tail after the dash (e.g., "214" → "%-214", "14" → "%-014")
   const digitsOnly = /^\d+$/.test(QQ);
-  // Looks like an invoice string (has a dash, or prefix+year+dash)
-  const looksLikeInvoiceNumber =
-    /^[A-Za-z]?\d{2}-\d{1,}$/.test(QQ) || QQ.includes('-');
+
+  // helper: for each token, it must match ANY of these fields (AND across tokens)
+  const applyTokenSearch = (tokens: string[]) => {
+    tokens.forEach((tok, i) => {
+      const key = `t${i}`;
+      const val = `%${tok.toLowerCase()}%`;
+
+      qb.andWhere(
+        new Brackets((b) => {
+          b.where("LOWER(inv.invoiceNumber) LIKE :inv_" + key, { ["inv_" + key]: val })
+            .orWhere("LOWER(customer.customerName) LIKE :cname_" + key, { ["cname_" + key]: val })
+            .orWhere("LOWER(customer.firstName) LIKE :fn_" + key, { ["fn_" + key]: val })
+            .orWhere("LOWER(customer.middleName) LIKE :mn_" + key, { ["mn_" + key]: val })
+            .orWhere("LOWER(customer.lastName) LIKE :ln_" + key, { ["ln_" + key]: val });
+        })
+      );
+    });
+  };
 
   if (range) {
     const d1 = toYMD(range[1]);
     const d2 = toYMD(range[2]);
-    if (d1 && d2) {
-      qb.andWhere('inv.date BETWEEN :d1 AND :d2', { d1, d2 });
-    }
+    if (d1 && d2) qb.andWhere("inv.date BETWEEN :d1 AND :d2", { d1, d2 });
   } else if (single) {
     const d = toYMD(single[1]);
-    if (d) qb.andWhere('inv.date = :d', { d });
+    if (d) qb.andWhere("inv.date = :d", { d });
   } else if (digitsOnly) {
-    // e.g. "214" => "%-214", "14" => "%-014", "001" => "%-001"
-    const seq = QQ.length <= 3 ? QQ.padStart(3, '0') : QQ;
-    qb.andWhere('inv.invoiceNumber LIKE :tail', { tail: `%-${seq}` });
-  } else if (looksLikeInvoiceNumber) {
-    // MySQL: use LOWER + LIKE (no ILIKE)
-    qb.andWhere('LOWER(inv.invoiceNumber) LIKE :inv', {
-      inv: `%${QQ.toLowerCase()}%`,
-    });
+    // Keep your nice tail behavior, BUT also allow matching customer fields
+    const seq = QQ.length <= 3 ? QQ.padStart(3, "0") : QQ;
+
+    qb.andWhere(
+      new Brackets((b) => {
+        b.where("inv.invoiceNumber LIKE :tail", { tail: `%-${seq}` })
+          .orWhere("LOWER(inv.invoiceNumber) LIKE :inv", { inv: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.customerName) LIKE :cname", { cname: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.firstName) LIKE :fn", { fn: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.middleName) LIKE :mn", { mn: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.lastName) LIKE :ln", { ln: `%${QQ.toLowerCase()}%` });
+      })
+    );
   } else {
-    // Customer name tokens (AND them together), case-insensitive
+    // General search: split to tokens, AND them, each token can match invoiceNumber OR any name field
     const tokens = QQ.split(/\s+/).filter(Boolean);
-    tokens.forEach((t, i) => {
-      qb.andWhere(`LOWER(customer.customerName) LIKE :c${i}`, {
-        [`c${i}`]: `%${t.toLowerCase()}%`,
-      });
-    });
+    applyTokenSearch(tokens);
   }
 
   const [invoices, total] = await qb.getManyAndCount();
@@ -2855,7 +2863,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     jvDetailsForInvoice.push(
       jvDetailRepo.create({
         accountId: (salesAccount as any).id,
-        description: 'Sales Revenue',
+        description: 'مبيعات خاضعة للضريبة على القيمة المضافة',
         currency: currencyCode,
         docNbr,
         ...getJVFields('cr', salesCrAmount, salesCrAmountLL),
@@ -2866,7 +2874,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       jvDetailsForInvoice.push(
         jvDetailRepo.create({
           accountId: (vatAccount as any).id,
-          description: 'VAT Payable',
+          description: 'ضريبة القيمة المضافة - مبيع VAT',
           currency: currencyCode,
           docNbr,
           ...getJVFields('cr', totalVAT, totalVATLL),
@@ -2962,6 +2970,516 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     await queryRunner.release();
   }
 }
+
+
+async createReturnInvoice(
+  originalInvoiceId: number,
+  body: { date?: string; note?: string },
+): Promise<Invoice> {
+  const queryRunner = this.dataSource.createQueryRunner();
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
+  try {
+    const setting = await this.settingsRepo.findOneBy({ isActive: true });
+    if (!setting) throw new NotFoundException("Active year not found");
+    const yearSuffix = String(setting.year || "").slice(-2);
+
+    // 1) Load original invoice + items
+    const original = await queryRunner.manager.getRepository(Invoice).findOne({
+      where: { id: originalInvoiceId },
+      relations: ["customer", "items"],
+    });
+    if (!original) throw new NotFoundException(`Invoice ${originalInvoiceId} not found`);
+
+    if (original.invoiceType === "RTN") {
+      throw new BadRequestException("Cannot create a return from a RTN invoice.");
+    }
+
+    const baseType = original.invoiceType as "S" | "G" | "RVR";
+    const baseIsG = baseType === "G";
+    const baseIsRvr = baseType === "RVR";
+
+    // prevent duplicate return for same original
+    const existing = await queryRunner.manager.getRepository(Invoice).findOne({
+      where: { invoiceType: "RTN" as any, returnOfInvoiceId: original.id as any },
+    } as any);
+    if (existing) {
+      throw new BadRequestException(
+        `Return already created for invoice #${original.id} (${existing.invoiceNumber}).`,
+      );
+    }
+
+    // 2) Numbering rules:
+    //    - Return of G => RG25-001 (separate sequence)
+    //    - Return of S/RVR => R25-001 (shared sequence)
+    const rtnPrefix = baseIsG ? `RG${yearSuffix}-` : `R${yearSuffix}-`;
+
+    const lastRTN = await queryRunner.manager
+      .getRepository(Invoice)
+      .createQueryBuilder("inv")
+      .where("inv.invoiceType = :t", { t: "RTN" })
+      .andWhere("inv.invoiceNumber LIKE :prefix", { prefix: `${rtnPrefix}%` })
+      .orderBy("inv.id", "DESC")
+      .getOne();
+
+    let seq = 1;
+    if (lastRTN?.invoiceNumber) {
+      const parts = lastRTN.invoiceNumber.split("-");
+      seq = (parseInt(parts[1], 10) || 0) + 1;
+    }
+
+    const rtnNumber = `${rtnPrefix}${String(seq).padStart(3, "0")}`;
+
+    // 3) Create RTN invoice header
+    const invRepo = queryRunner.manager.getRepository(Invoice);
+
+    const rtn: Invoice = invRepo.create({
+      customerId: original.customerId,
+      date: body?.date ? new Date(body.date) : new Date(),
+      invoiceType: "RTN",
+      invoiceNumber: rtnNumber,
+      documentNumber: rtnNumber,
+      branchId: original.branchId,
+      currencyId: original.currencyId,
+      totalWithoutVAT: original.totalWithoutVAT,
+      totalVAT: original.totalVAT,
+      grandTotal: original.grandTotal,
+      currencyRate: original.currencyRate,
+      vatPercentage: original.vatPercentage,
+      returnOfInvoiceId: original.id,
+    } as DeepPartial<Invoice>) as Invoice;
+
+    const savedRTN = await invRepo.save(rtn);
+
+    // 4) Create RTN items (FULL RETURN = copy original items)
+    const invItemRepo = queryRunner.manager.getRepository(InvoiceItem);
+
+    const rtnItems = (original.items || []).map((it) =>
+      invItemRepo.create({
+        invoiceId: savedRTN.id,
+        itemVariantId: it.itemVariantId,
+        itemBatchId: it.itemBatchId,
+        sqmPieceId: it.sqmPieceId ?? null,
+
+        length: it.length ?? null,
+        width: it.width ?? null,
+        sheetsPerBox: it.sheetsPerBox ?? null,
+
+        sqm: Number(it.sqm) || 0,
+        unitPrice: Number(it.unitPrice) || 0,
+        totalAmount: Number(it.totalAmount) || 0,
+        vat: Number(it.vat) || 0,
+        quantity: Number(it.quantity) || 0,
+
+        averageCost: it.averageCost ?? null,
+        averageCostC: it.averageCostC ?? null,
+        averageCostVM: it.averageCostVM ?? null,
+        averageCostCVM: it.averageCostCVM ?? null,
+        lastCost: it.lastCost ?? null,
+        lastCostC: it.lastCostC ?? null,
+        lastCostVM: it.lastCostVM ?? null,
+        lastCostCVM: it.lastCostCVM ?? null,
+
+        // ✅ OPTIONAL (recommended if these columns exist on InvoiceItem):
+        // itemType: it.itemType ?? null,
+        // stockMode: it.stockMode ?? null,
+      }),
+    );
+
+    const savedRTNItems: InvoiceItem[] = await invItemRepo.save(rtnItems);
+
+    // 5) SQM PIECES: add sqm back (reverse sold/remaining)
+    const sqmPieceRepo = queryRunner.manager.getRepository(SqmPiece);
+
+    for (const it of savedRTNItems) {
+      if (!it.sqmPieceId) continue;
+
+      const lineSqm = Number(it.sqm) || 0;
+      if (lineSqm <= 0) continue;
+
+      const piece = await sqmPieceRepo.findOne({ where: { id: it.sqmPieceId } });
+      if (!piece) throw new BadRequestException(`SQM piece ${it.sqmPieceId} not found.`);
+
+      const remainingBefore = Number(piece.sqmRemaining ?? 0);
+      const soldBefore = Number(piece.sqmSold ?? 0);
+
+      const newSoldRaw = soldBefore - lineSqm;
+      if (newSoldRaw < -0.0001) {
+        throw new BadRequestException(`Return sqm exceeds sold sqm for SQM piece #${it.sqmPieceId}.`);
+      }
+
+      const newSold = newSoldRaw <= 0.0001 ? 0 : Number(newSoldRaw.toFixed(4));
+      const newRemaining = Number((remainingBefore + lineSqm).toFixed(4));
+
+      piece.sqmSold = newSold;
+      piece.sqmRemaining = newRemaining;
+      if (newRemaining > 0) piece.isActive = true;
+
+      await sqmPieceRepo.save(piece);
+    }
+
+    // 6) INVENTORY TRANSACTIONS: reverse base invoice effect (mode aware)
+    const variantIds = Array.from(
+      new Set(
+        savedRTNItems
+          .map((x) => Number(x.itemVariantId))
+          .filter((n) => Number.isFinite(n) && n > 0),
+      ),
+    );
+
+    const stockModeMap = new Map<number, string>();
+    if (variantIds.length) {
+      const rows = await queryRunner.manager
+        .getRepository(ItemVariant)
+        .createQueryBuilder("v")
+        .leftJoin("v.thickness", "th")
+        .leftJoin("th.item", "item")
+        .select("v.id", "id")
+        .addSelect("item.stockMode", "stockMode")
+        .where("v.id IN (:...ids)", { ids: variantIds })
+        .getRawMany();
+
+      for (const r of rows) {
+        const id = Number((r as any)?.id);
+        const mode = String((r as any)?.stockMode ?? "").trim().toLowerCase();
+        if (Number.isFinite(id) && id > 0) stockModeMap.set(id, mode);
+      }
+    }
+
+    // ✅ FIX: treat NONE as "none" and do not default it to sqm
+    const normalizeStockMode = (m: any) => {
+      const s = String(m ?? "").trim().toLowerCase();
+      if (s === "unit") return "qty";
+      if (s === "none") return "none"; // ✅
+      return s || "sqm";
+    };
+
+    const invTxRepo = queryRunner.manager.getRepository(InventoryTransaction);
+    const invTxs: InventoryTransaction[] = [];
+
+    for (const it of savedRTNItems) {
+      const vId = Number(it.itemVariantId);
+      const mode = normalizeStockMode(stockModeMap.get(vId));
+
+      // ✅ FIX: stockMode NONE -> no inventory transaction at all
+      if (mode === "none") continue;
+
+      const qtyLine = Number(it.quantity) || 0;
+      const sqmLine = Number(it.sqm) || 0;
+
+      let quantity = 0,
+        sqm = 0,
+        quantityofr = 0,
+        sqmofr = 0;
+
+      if (mode === "qty") {
+        if (baseType === "S") {
+          quantity = +qtyLine;
+          quantityofr = +qtyLine;
+        } else if (baseType === "G") {
+          quantityofr = +qtyLine;
+        } else if (baseType === "RVR") {
+          quantity = +qtyLine;
+        }
+      } else {
+        if (baseType === "S") {
+          quantity = +qtyLine;
+          sqm = +sqmLine;
+          quantityofr = +qtyLine;
+          sqmofr = +sqmLine;
+        } else if (baseType === "G") {
+          quantityofr = +qtyLine;
+          sqmofr = +sqmLine;
+        } else if (baseType === "RVR") {
+          quantity = +qtyLine;
+          sqm = +sqmLine;
+        }
+      }
+
+      if (quantity === 0 && sqm === 0 && quantityofr === 0 && sqmofr === 0) continue;
+
+      invTxs.push(
+        invTxRepo.create({
+          transactionType: "Sales Return",
+          itemVariantId: it.itemVariantId,
+          itemBatchId: it.itemBatchId,
+          invoiceItemId: it.id,
+          quantity,
+          sqm,
+          quantityofr,
+          sqmofr,
+          transactionDate: new Date(),
+          dateForEachInvoice: new Date(savedRTN.date),
+        }),
+      );
+    }
+
+    if (invTxs.length) await invTxRepo.save(invTxs);
+
+    // 7) UPDATE BATCHES (reverse original effect) + recompute balances
+    const batchRepo = queryRunner.manager.getRepository(ItemBatch);
+    const affectedVariantIds = new Set<number>();
+
+    for (const it of savedRTNItems) {
+      const vId = Number(it.itemVariantId);
+      const mode = normalizeStockMode(stockModeMap.get(vId));
+
+      // ✅ FIX: stockMode NONE -> do not touch batches/balances
+      if (mode === "none") continue;
+
+      const batch = await batchRepo.findOne({
+        where: { id: it.itemBatchId },
+        relations: ["itemVariant"],
+      });
+      if (!batch) throw new NotFoundException(`ItemBatch ${it.itemBatchId} not found`);
+
+      const variantId = Number(batch.itemVariant?.id ?? it.itemVariantId);
+      if (Number.isFinite(variantId) && variantId > 0) affectedVariantIds.add(variantId);
+
+      const qtySqm = Number(it.sqm) || 0;
+
+      if (baseType === "S") {
+        batch.out = Number(batch.out ?? 0) - qtySqm;
+        batch.outOFR = Number(batch.outOFR ?? 0) - qtySqm;
+      } else if (baseType === "G") {
+        batch.outOFR = Number(batch.outOFR ?? 0) - qtySqm;
+      } else if (baseType === "RVR") {
+        batch.in = Number(batch.in ?? 0) - qtySqm;
+      }
+
+      const keys = ["in", "out", "inOFR", "outOFR"] as const;
+      for (const k of keys) {
+        if (Number(batch[k] ?? 0) < -0.0001) {
+          throw new BadRequestException(`Batch ${batch.id} would go negative on ${k} after return.`);
+        }
+        if (Number(batch[k] ?? 0) < 0) (batch as any)[k] = 0;
+      }
+
+      const start = Number(batch.start ?? 0);
+      const inStd = Number(batch.in ?? 0);
+      const outStd = Number(batch.out ?? 0);
+      const startOfr = Number(batch.startOFR ?? 0);
+      const inOfr = Number(batch.inOFR ?? 0);
+      const outOfr = Number(batch.outOFR ?? 0);
+
+      batch.balance = Number((start + inStd - outStd).toFixed(2));
+      batch.balanceOFR = Number((startOfr + inOfr - outOfr).toFixed(2));
+
+      await batchRepo.save(batch);
+    }
+
+    // 8) RECOMPUTE VARIANT TOTALS FROM BATCHES
+    const variantRepo = queryRunner.manager.getRepository(ItemVariant);
+
+    for (const variantId of affectedVariantIds) {
+      const variant = await variantRepo.findOne({
+        where: { id: variantId },
+        relations: ["batches"],
+      });
+      if (!variant) continue;
+
+      let totalStart = 0,
+        totalIn = 0,
+        totalOut = 0,
+        totalStartOFR = 0,
+        totalInOFR = 0,
+        totalOutOFR = 0;
+
+      for (const b of variant.batches ?? []) {
+        totalStart += Number(b.start || 0);
+        totalIn += Number(b.in || 0);
+        totalOut += Number(b.out || 0);
+        totalStartOFR += Number(b.startOFR || 0);
+        totalInOFR += Number(b.inOFR || 0);
+        totalOutOFR += Number(b.outOFR || 0);
+      }
+
+      variant.totalStart = Number(totalStart.toFixed(2));
+      variant.totalIn = Number(totalIn.toFixed(2));
+      variant.totalOut = Number(totalOut.toFixed(2));
+      variant.totalBalance = Number((totalStart + totalIn - totalOut).toFixed(2));
+
+      variant.totalStartOFR = Number(totalStartOFR.toFixed(2));
+      variant.totalInOFR = Number(totalInOFR.toFixed(2));
+      variant.totalOutOFR = Number(totalOutOFR.toFixed(2));
+      variant.totalBalanceOFR = Number((totalStartOFR + totalInOFR - totalOutOFR).toFixed(2));
+
+      await variantRepo.save(variant);
+    }
+
+    // 9) JOURNAL VOUCHER for RTN (NO deletion of original JV)
+    const jvPrefix = baseIsG ? "JVG" : "JV";
+
+    const lastJV = await queryRunner.manager
+      .getRepository(JournalVoucher)
+      .createQueryBuilder("jv")
+      .where("jv.jvNumber LIKE :prefix", { prefix: `${jvPrefix}${yearSuffix}-%` })
+      .orderBy("jv.id", "DESC")
+      .getOne();
+
+    const jvSeq = lastJV?.jvNumber ? parseInt(lastJV.jvNumber.split("-")[1]) + 1 : 1;
+    const jvNumber = `${jvPrefix}${yearSuffix}-${String(jvSeq).padStart(3, "0")}`;
+
+    const currencyCode = original.currencyId === 2 ? "LL" : "USD";
+    const rate = Number(original.currencyRate);
+    const useVAT = Number(original.vatPercentage) > 0;
+
+    let salesAccNumber = "";
+    let vatAccNumber = "";
+
+    if (useVAT) {
+      salesAccNumber = currencyCode === "USD" ? "701101" : "701102";
+      vatAccNumber = currencyCode === "USD" ? "443101" : "443102";
+    } else {
+      salesAccNumber = "701103";
+    }
+
+    const salesAccount = await queryRunner.manager
+      .getRepository(this.accountRepo.target as any)
+      .findOneBy({ accountNumber: salesAccNumber });
+
+    if (!salesAccount) throw new NotFoundException(`Sales account ${salesAccNumber} not found`);
+
+    const vatAccount = useVAT
+      ? await queryRunner.manager
+          .getRepository(this.accountRepo.target as any)
+          .findOneBy({ accountNumber: vatAccNumber })
+      : null;
+
+    if (useVAT && !vatAccount && !baseIsG) {
+      throw new NotFoundException(`VAT account ${vatAccNumber} not found`);
+    }
+
+    const total = Number(original.grandTotal);
+    const totalWithoutVAT2 = Number(original.totalWithoutVAT);
+    const totalVAT2 = Number(original.totalVAT);
+
+    const totalLL = total * rate;
+    const totalWithoutVATLL = totalWithoutVAT2 * rate;
+    const totalVATLL = totalVAT2 * rate;
+
+    const salesAmount = baseIsG ? totalWithoutVAT2 + totalVAT2 : totalWithoutVAT2;
+    const salesAmountLL = baseIsG ? totalWithoutVATLL + totalVATLL : totalWithoutVATLL;
+
+    const getJVFields = (type: "dr" | "cr", val: number, valLL: number) => {
+      const fields: any = {
+        dr: 0,
+        drUSD: 0,
+        drLL: 0,
+        drOFR: 0,
+        drUSDOFR: 0,
+        drLLOFR: 0,
+        cr: 0,
+        crUSD: 0,
+        crLL: 0,
+        crOFR: 0,
+        crUSDOFR: 0,
+        crLLOFR: 0,
+      };
+
+      if (type === "dr") {
+        if (baseIsG) {
+          fields.drOFR = val;
+          fields.drUSDOFR = val;
+          fields.drLLOFR = valLL;
+        } else if (baseIsRvr) {
+          fields.dr = val;
+          fields.drUSD = val;
+          fields.drLL = valLL;
+        } else {
+          fields.dr = val;
+          fields.drUSD = val;
+          fields.drLL = valLL;
+          fields.drOFR = val;
+          fields.drUSDOFR = val;
+          fields.drLLOFR = valLL;
+        }
+      } else {
+        if (baseIsG) {
+          fields.crOFR = val;
+          fields.crUSDOFR = val;
+          fields.crLLOFR = valLL;
+        } else if (baseIsRvr) {
+          fields.cr = val;
+          fields.crUSD = val;
+          fields.crLL = valLL;
+        } else {
+          fields.cr = val;
+          fields.crUSD = val;
+          fields.crLL = valLL;
+          fields.crOFR = val;
+          fields.crUSDOFR = val;
+          fields.crLLOFR = valLL;
+        }
+      }
+      return fields;
+    };
+
+    const detailPartials: Array<Partial<JournalVoucherDetail>> = [
+      {
+        customerId: original.customerId,
+        description: "فاتورة مرتجع",
+        currency: currencyCode,
+        docNbr: rtnNumber,
+        ...getJVFields("cr", total, totalLL),
+      },
+      {
+        accountId: salesAccount.id,
+        description: "مرتجع مبيعات",
+        currency: currencyCode,
+        docNbr: rtnNumber,
+        ...getJVFields("dr", salesAmount, salesAmountLL),
+      },
+    ];
+
+    if (useVAT && vatAccount && !baseIsG) {
+      detailPartials.push({
+        accountId: vatAccount.id,
+        description: "مرتجع ضريبة القيمة المضافة",
+        currency: currencyCode,
+        docNbr: rtnNumber,
+        ...getJVFields("dr", totalVAT2, totalVATLL),
+      });
+    }
+
+    const details = this.journalVoucherDetailRepo.create(detailPartials);
+
+    const sum = (field: keyof JournalVoucherDetail) =>
+      details.reduce((acc, entry) => acc + Number((entry as any)[field] || 0), 0);
+
+    const journalVoucher = this.journalVoucherRepo.create({
+      jvNumber,
+      jvType: "RTN",
+      date: savedRTN.date,
+      totalDr: sum("dr"),
+      totalDrUSD: sum("drUSD"),
+      totalDrLL: sum("drLL"),
+      totalDrOFR: sum("drOFR"),
+      totalDrUSDOFR: sum("drUSDOFR"),
+      totalDrLLOFR: sum("drLLOFR"),
+      totalCr: sum("cr"),
+      totalCrUSD: sum("crUSD"),
+      totalCrLL: sum("crLL"),
+      totalCrOFR: sum("crOFR"),
+      totalCrUSDOFR: sum("crUSDOFR"),
+      totalCrLLOFR: sum("crLLOFR"),
+      details,
+    });
+
+    await queryRunner.manager.save(JournalVoucher, journalVoucher);
+
+    await queryRunner.commitTransaction();
+    return savedRTN;
+  } catch (e: any) {
+    await queryRunner.rollbackTransaction();
+    throw new BadRequestException(e?.message || "Return invoice creation failed");
+  } finally {
+    await queryRunner.release();
+  }
+}
+
+
 
 
 

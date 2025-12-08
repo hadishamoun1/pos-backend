@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like, In,DataSource } from 'typeorm';
+import { Repository, Like, In,DataSource,Brackets  } from 'typeorm';
 import { Request } from '../entities/request.entity';
 import { RequestDetail } from '../entities/requestDetails.entity';
 import { Customer } from '../entities/customer.entity';
@@ -395,7 +395,7 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
 
   // requests search list
 
-  async searchFilteredRequests(
+async searchFilteredRequests(
   q: string | undefined,
   page: number = 1,
   limit: number = 100,
@@ -415,9 +415,9 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
   totalPages: number;
 }> {
   // ---- pagination guards ----
-  const pageNum  = Math.max(1, Number(page)  || 1);
-  const take     = Math.min(500, Math.max(1, Number(limit) || 100));
-  const skip     = (pageNum - 1) * take;
+  const pageNum = Math.max(1, Number(page) || 1);
+  const take = Math.min(500, Math.max(1, Number(limit) || 100));
+  const skip = (pageNum - 1) * take;
 
   // ---- helpers ----
   const norm = (s?: string) => (s ?? "").trim();
@@ -432,13 +432,8 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
     return Number.isNaN(d.getTime()) ? null : `${m[1]}-${m[2]}-${m[3]}`;
   };
 
-  // Detect numeric-only query (e.g., "37") for suffix search
   const isNumericOnly = (s: string) => /^\d+$/.test(s);
-
-  // Detect "looks like a request number" (any letters/digits with a hyphen or space)
-  // e.g., REQ25-12, REQ25 - 12, REQ-12, etc. We’ll search with LIKE after removing spaces.
-  const looksLikeRequestNo = (s: string) =>
-    /[A-Za-z]/.test(s) || s.includes("-");
+  const looksLikeRequestNo = (s: string) => /[A-Za-z]/.test(s) || s.includes("-");
 
   // ---- base query ----
   const qb = this.requestRepo
@@ -449,10 +444,9 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
     .take(take);
 
   if (!QQ) {
-    // no query => normal pagination
     const [rows, total] = await qb.getManyAndCount();
     return {
-      data: rows.map(r => ({
+      data: rows.map((r) => ({
         id: r.id,
         requestNumber: r.requestNumber,
         requestDate: r.requestDate,
@@ -469,46 +463,73 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
   }
 
   // ---- parse the query ----
-  // 1) Date range: "YYYY-MM-DD..YYYY-MM-DD" (also allows "to" or a single hyphen between)
-  const rangeMatch =
-    QQ.match(/(\d{4}[-/]\d{2}[-/]\d{2})\s*(?:\.\.|to|-)\s*(\d{4}[-/]\d{2}[-/]\d{2})/i);
-  // 2) Single date: "YYYY-MM-DD"
+  const rangeMatch = QQ.match(
+    /(\d{4}[-/]\d{2}[-/]\d{2})\s*(?:\.\.|to|-)\s*(\d{4}[-/]\d{2}[-/]\d{2})/i
+  );
   const singleDateMatch = QQ.match(/^(\d{4}[-/]\d{2}[-/]\d{2})$/);
 
+  // helper: AND across tokens, but each token can match ANY field (OR)
+  const applyTokenSearch = (tokens: string[]) => {
+    tokens.forEach((tok, i) => {
+      const key = `t${i}`;
+      const val = `%${tok.toLowerCase()}%`;
+
+      qb.andWhere(
+        new Brackets((b) => {
+          b.where("LOWER(req.requestNumber) LIKE :rn_" + key, { ["rn_" + key]: val })
+            .orWhere("LOWER(customer.customerName) LIKE :cname_" + key, { ["cname_" + key]: val })
+            .orWhere("LOWER(customer.firstName) LIKE :fn_" + key, { ["fn_" + key]: val })
+            .orWhere("LOWER(customer.middleName) LIKE :mn_" + key, { ["mn_" + key]: val })
+            .orWhere("LOWER(customer.lastName) LIKE :ln_" + key, { ["ln_" + key]: val });
+        })
+      );
+    });
+  };
+
   if (rangeMatch) {
-    const d1 = asDate(rangeMatch[1])!;
-    const d2 = asDate(rangeMatch[2])!;
-    if (d1 && d2) {
-      qb.andWhere("req.requestDate BETWEEN :d1 AND :d2", { d1, d2 });
-    }
+    const d1 = asDate(rangeMatch[1]);
+    const d2 = asDate(rangeMatch[2]);
+    if (d1 && d2) qb.andWhere("req.requestDate BETWEEN :d1 AND :d2", { d1, d2 });
   } else if (singleDateMatch) {
-    const d = asDate(singleDateMatch[1])!;
+    const d = asDate(singleDateMatch[1]);
     if (d) qb.andWhere("req.requestDate = :d", { d });
   } else if (isNumericOnly(QQ)) {
-    // Numeric-only => match the numeric suffix after " - "
-    // MySQL: CAST(SUBSTRING_INDEX(requestNumber, ' - ', -1) AS UNSIGNED)
+    // Keep your numeric suffix behavior, BUT also allow matching customer fields / requestNumber generally
     qb.andWhere(
-      "CAST(SUBSTRING_INDEX(req.requestNumber, ' - ', -1) AS UNSIGNED) = :seq",
-      { seq: Number(QQ) }
+      new Brackets((b) => {
+        b.where(
+          "CAST(SUBSTRING_INDEX(req.requestNumber, ' - ', -1) AS UNSIGNED) = :seq",
+          { seq: Number(QQ) }
+        )
+          .orWhere("LOWER(req.requestNumber) LIKE :rn", { rn: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.customerName) LIKE :cname", { cname: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.firstName) LIKE :fn", { fn: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.middleName) LIKE :mn", { mn: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.lastName) LIKE :ln", { ln: `%${QQ.toLowerCase()}%` });
+      })
     );
   } else if (looksLikeRequestNo(QQ)) {
-    // Looks like a request number => be flexible about spaces around hyphen
-    // Compare after removing spaces from DB field:
-    // REPLACE(req.requestNumber, ' ', '') LIKE %REQLike%
-    const pat = `%${QQ.replace(/\s+/g, "")}%`;
-    qb.andWhere("REPLACE(req.requestNumber, ' ', '') LIKE :pat", { pat });
+    // request number search (spaces-insensitive) OR names
+    const pat = `%${QQ.replace(/\s+/g, "").toLowerCase()}%`;
+
+    qb.andWhere(
+      new Brackets((b) => {
+        b.where("LOWER(REPLACE(req.requestNumber, ' ', '')) LIKE :pat", { pat })
+          .orWhere("LOWER(customer.customerName) LIKE :cname", { cname: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.firstName) LIKE :fn", { fn: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.middleName) LIKE :mn", { mn: `%${QQ.toLowerCase()}%` })
+          .orWhere("LOWER(customer.lastName) LIKE :ln", { ln: `%${QQ.toLowerCase()}%` });
+      })
+    );
   } else {
-    // Customer name tokens (AND across tokens)
     const tokens = QQ.split(/\s+/).filter(Boolean);
-    tokens.forEach((t, i) => {
-      qb.andWhere(`customer.customerName LIKE :c${i}`, { [`c${i}`]: `%${t}%` });
-    });
+    applyTokenSearch(tokens);
   }
 
   const [rows, total] = await qb.getManyAndCount();
 
   return {
-    data: rows.map(r => ({
+    data: rows.map((r) => ({
       id: r.id,
       requestNumber: r.requestNumber,
       requestDate: r.requestDate,

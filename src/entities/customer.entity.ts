@@ -29,6 +29,11 @@ export class Customer {
   @Column({ type: 'varchar', length: 100, nullable: true })
   middleName?: string;
 
+  // customers.entity.ts
+@Column({ type: "varchar", length: 100, nullable: true })
+lastName?: string;
+
+
     @Column({ type: 'varchar', length: 100, nullable: true })
   paymentTerms?: string;
 

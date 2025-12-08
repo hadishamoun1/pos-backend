@@ -11,6 +11,7 @@ import { Settings } from '../entities/settings.entity';
 import { RecievablesGateway } from './recievables.broadcast';
 import { Sequence } from 'mysql2/typings/mysql/lib/protocol/sequences/Sequence';
 import { Currency } from 'src/entities/currency.entity';
+import { Invoice } from '../entities/invoice.entity';
 
 type ReceiptType = 'G' | 'S' | 'RVR';
 
@@ -37,6 +38,9 @@ export class RecievablesService {
      @InjectRepository(Currency)
   private readonly currencyRepo: Repository<Currency>,
 
+     @InjectRepository(Invoice)
+    private readonly invoiceRepo: Repository<Invoice>,
+
     private readonly gateway: RecievablesGateway,
   ) {}
 
@@ -53,7 +57,7 @@ private normalizeCurrencyCode(raw: string): 'USD' | 'LL' | 'EURO' | string {
 async create(data: {
   customerId: number;
   date: Date;
-  invoiceId?: string;
+ invoiceId?: number | null;
   cashNumber: number;
   currency: 'USD' | 'LL';
   exchangeRate?: number;
@@ -279,7 +283,7 @@ const exRateEUROToUSD = currencyCode === 'EURO' ? exRateUSD : 0;
     data: {
       customerId: number;
       date: Date;
-      invoiceId?: string;
+      invoiceId?: number | null;
       cashNumber: number;
       currency: 'USD' | 'LL';
       exchangeRate?: number;
@@ -516,6 +520,91 @@ async delete(id: number): Promise<{ ok: true; id: number }> {
 
   return { ok: true, id };
 }
+
+
+
+ async listInvoicesForReceivablesByCustomer(params: {
+    customerId: number;
+    q?: string;
+    type?: 'S' | 'G' | 'RVR' | 'RTN' | 'ALL';
+    from?: string; // 'YYYY-MM-DD'
+    to?: string;   // 'YYYY-MM-DD'
+    page?: number;
+    limit?: number;
+  }) {
+    const {
+      customerId,
+      q,
+      type = 'ALL',
+      from,
+      to,
+      page = 1,
+      limit = 50,
+    } = params;
+
+    if (!Number.isFinite(customerId) || customerId <= 0) {
+      throw new BadRequestException('Invalid customerId');
+    }
+
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.min(200, Math.max(1, Number(limit) || 50));
+    const skip = (safePage - 1) * safeLimit;
+
+    const qb = this.invoiceRepo
+      .createQueryBuilder('inv')
+      .leftJoin('inv.customer', 'c')
+      .where('inv.customerId = :customerId', { customerId })
+      .select([
+        'inv.id AS id',
+        'inv.invoiceNumber AS invoiceNumber',
+        'inv.date AS date',
+        'inv.totalWithoutVAT AS totalWithoutVAT',
+        'inv.totalVAT AS totalVAT',
+        'inv.grandTotal AS grandTotal',
+        'inv.invoiceType AS invoiceType',
+        'inv.customerId AS customerId',
+      ])
+      // change to c.name if your column is `name`
+      .addSelect('c.customerName', 'customerName')
+      .orderBy('inv.date', 'DESC')
+      .addOrderBy('inv.id', 'DESC');
+
+    if (type !== 'ALL') qb.andWhere('inv.invoiceType = :type', { type });
+    if (from) qb.andWhere('inv.date >= :from', { from });
+    if (to) qb.andWhere('inv.date <= :to', { to });
+
+    const term = (q || '').trim();
+    if (term) {
+      qb.andWhere('(inv.invoiceNumber LIKE :term)', { term: `%${term}%` });
+      // (customer filter already applied, so name search usually unnecessary)
+    }
+
+    const total = await qb.getCount();
+
+    const rows = await qb.offset(skip).limit(safeLimit).getRawMany();
+
+    const data = rows.map((r: any) => ({
+      id: Number(r.id),
+      invoiceNumber: r.invoiceNumber ?? null,
+      customerId: Number(r.customerId),
+      customerName: r.customerName ?? null,
+      date: r.date, // DATE column -> usually 'YYYY-MM-DD'
+      totalWithoutVAT: Number(r.totalWithoutVAT ?? 0),
+      totalVAT: Number(r.totalVAT ?? 0),
+      grandTotal: Number(r.grandTotal ?? 0),
+      invoiceType: r.invoiceType ?? null,
+    }));
+
+    return {
+      data,
+      meta: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        pages: Math.ceil(total / safeLimit),
+      },
+    };
+  }
 
 
 }

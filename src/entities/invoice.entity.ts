@@ -27,8 +27,8 @@ export class Invoice {
   @Column({ type: 'date' })
   date: Date;
 
-  @Column({ type: 'enum', enum: ['S', 'G', 'RVR'] })
-  invoiceType: 'S' | 'G' | 'RVR'; 
+  @Column({ type: 'enum', enum: ['S', 'G', 'RVR', 'RTN'] })
+  invoiceType: 'S' | 'G' | 'RVR' | 'RTN';
 
   @Column({ type: 'varchar', length: 50 })
   invoiceNumber: string;
@@ -77,6 +77,19 @@ export class Invoice {
 
   @Column({ nullable: true })
   sqmPieceId?: number | null;
+
+   @ManyToOne(() => Invoice, (inv) => inv.returnInvoices, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
+  @JoinColumn({ name: 'returnOfInvoiceId' })
+  returnOfInvoice?: Invoice | null;
+
+  @OneToMany(() => Invoice, (inv) => inv.returnOfInvoice)
+  returnInvoices?: Invoice[];
+
+  @Column({ type: 'int', nullable: true })
+  returnOfInvoiceId?: number | null;
 
 
 

@@ -142,6 +142,14 @@ async searchFiltered(
     return this.invoiceService.getFilteredInvoices(page, limit);
   }
 
+   @Post(':id/return')
+  createReturnInvoice(
+    @Param('id') id: string,
+    @Body() body: { date?: string; note?: string },
+  ) {
+    return this.invoiceService.createReturnInvoice(Number(id), body);
+  }
+
 @Put("v1/invoice-display-names/fill-defaults")
 fillDefaults() {
   return this.invoiceService.fillMissingInvoiceDisplayNames();

@@ -10,6 +10,7 @@ import {
 import { Customer } from './customer.entity';
 import { JournalVoucher } from './Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from './Vouchers/journalVoucherDetails.entity';
+import { Invoice } from "./invoice.entity";
 
 @Entity('receipt_entries')
 export class ReceiptEntry {
@@ -29,9 +30,12 @@ export class ReceiptEntry {
   @Column({ type: 'date' })
   date: Date;
 
-  @Column({ type: 'varchar', length: 50, nullable: true })
-  invoiceId: string;
+  @ManyToOne(() => Invoice, { nullable: true, onDelete: "SET NULL" })
+  @JoinColumn({ name: "invoiceId" })
+  invoice?: Invoice | null;
 
+  @Column({ type: "int", nullable: true })
+  invoiceId: number | null;
   @Column({ type: 'decimal', precision: 20, scale: 2 })
   cashNumber: number;
 

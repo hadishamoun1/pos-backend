@@ -11,6 +11,7 @@ import { Account } from '../entities/account.entity';
 import { Settings } from '../entities/settings.entity';
 import { RecievablesGateway } from './recievables.broadcast';
 import { Currency } from 'src/entities/currency.entity';
+import { Invoice } from '../entities/invoice.entity';
 
 @Module({
   imports: [
@@ -21,7 +22,8 @@ import { Currency } from 'src/entities/currency.entity';
       Customer,
       Account,
       Settings,
-      Currency
+      Currency,
+      Invoice
     ]),
   ],
   controllers: [RecievablesController],

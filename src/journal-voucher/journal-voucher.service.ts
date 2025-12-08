@@ -412,8 +412,8 @@ async getCustomerStatementOFR(params: {
     return `${y}-${m}-${day}`;
   };
 
-  const fromStart = from ? ymdToStart(from) : null;           // inclusive
-  const toNext = to ? ymdToStart(nextYMD(to)) : null;         // exclusive (next day 00:00:00)
+  const fromStart = from ? ymdToStart(from) : null; // inclusive
+  const toNext = to ? ymdToStart(nextYMD(to)) : null; // exclusive (next day 00:00:00)
 
   // 1) Load customer & infer currency
   const customer = await this.customerRepo.findOne({
@@ -428,7 +428,6 @@ async getCustomerStatementOFR(params: {
     currencyCode = (customer as any).currencyId === 2 ? "LL" : "USD";
   }
 
-  // surface customer's account number / invoice type
   const customerAccountNumber: string | null =
     (customer as any)?.customerAccountNumber ?? (customer as any)?.accountNumber ?? null;
 
@@ -466,19 +465,30 @@ async getCustomerStatementOFR(params: {
     };
   };
 
+  // ✅ NEW: robust doc prefix detection
+  const getRowKindFromDoc = (docNbr?: string | null, jvType?: string | null): RowKind => {
+    const doc = String(docNbr ?? "").trim().toUpperCase();
+    // Offer/Quotation docs and their returns:
+    if (jvType === "G") return "G";
+    if (doc.startsWith("G") || doc.startsWith("RG")) return "G"; // ✅ RG treated as G
+    return "S"; // includes S, R, RTN of S/RVR, etc.
+  };
+
   // 3) Type filter
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
     if (type === "S") {
-      qb.andWhere("(jv.jvType = :tS OR d.docNbr LIKE :sPrefix)", {
-        tS: "S",
-        sPrefix: "S%",
-      });
+      // ✅ include Sales + Returns of Sales (R...), but exclude RG...
+      qb.andWhere(
+        "((d.docNbr LIKE :sPrefix) OR (d.docNbr LIKE :rPrefix)) AND (d.docNbr NOT LIKE :rgPrefix)",
+        { sPrefix: "S%", rPrefix: "R%", rgPrefix: "RG%" }
+      );
     } else if (type === "G") {
-      qb.andWhere("(jv.jvType = :tG OR d.docNbr LIKE :gPrefix)", {
-        tG: "G",
+      // ✅ include G + RG
+      qb.andWhere("(d.docNbr LIKE :gPrefix OR d.docNbr LIKE :rgPrefix)", {
         gPrefix: "G%",
+        rgPrefix: "RG%",
       });
     }
     return qb;
@@ -492,7 +502,7 @@ async getCustomerStatementOFR(params: {
     .where("d.customerId = :customerId", { customerId });
 
   if (fromStart) qb.andWhere("jv.date >= :fromStart", { fromStart });
-  if (toNext) qb.andWhere("jv.date < :toNext", { toNext }); // ✅ exclusive end
+  if (toNext) qb.andWhere("jv.date < :toNext", { toNext }); // exclusive end
 
   applyTypeFilter(qb);
   qb.orderBy("jv.date", "ASC").addOrderBy("d.id", "ASC");
@@ -500,12 +510,11 @@ async getCustomerStatementOFR(params: {
   const rows = await qb.getMany();
 
   // 5) Opening balance (everything BEFORE fromStart)
-  // ✅ FIX: we must select journalVoucher, not just join, because you read r.journalVoucher?.jvType
   let openingBalance = 0;
   if (fromStart) {
     const beforeQb = this.journalVoucherDetailRepository
       .createQueryBuilder("d")
-      .leftJoinAndSelect("d.journalVoucher", "jv") // ✅ important
+      .leftJoinAndSelect("d.journalVoucher", "jv")
       .where("d.customerId = :customerId", { customerId })
       .andWhere("jv.date < :fromStart", { fromStart });
 
@@ -517,8 +526,7 @@ async getCustomerStatementOFR(params: {
     let openingCr = 0;
 
     for (const r of beforeRows) {
-      const isG = r.journalVoucher?.jvType === "G" || (r.docNbr?.startsWith("G") ?? false);
-      const rowKind: RowKind = isG ? "G" : "S";
+      const rowKind = getRowKindFromDoc(r.docNbr, r.journalVoucher?.jvType ?? null);
       const { drCol, crCol } = getColsFor(rowKind);
 
       openingDr += Number((r as any)[drCol] || 0);
@@ -532,8 +540,7 @@ async getCustomerStatementOFR(params: {
   let running = openingBalance;
 
   const items = rows.map((r) => {
-    const isG = r.journalVoucher?.jvType === "G" || (r.docNbr?.startsWith("G") ?? false);
-    const rowKind: RowKind = isG ? "G" : "S";
+    const rowKind = getRowKindFromDoc(r.docNbr, r.journalVoucher?.jvType ?? null);
 
     const { drCol, crCol } = getColsFor(rowKind);
     const debit = Number((r as any)[drCol] || 0);
@@ -575,8 +582,8 @@ async getCustomerStatementOFR(params: {
       debitColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).dr,
       creditColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).cr,
     },
-    selection: type, // S | G | ALL
-    range: { fromStart, toNext }, // ✅ helpful debug
+    selection: type,
+    range: { fromStart, toNext },
   };
 
   return {
@@ -593,6 +600,7 @@ async getCustomerStatementOFR(params: {
     basis,
   };
 }
+
 
 
 

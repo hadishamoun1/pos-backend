@@ -122,8 +122,6 @@ async getSummary(
 
    // Example:
   // /journal-vouchers/statements/customers/1?currency=USD
-  // /journal-vouchers/statements/customers/1?currency=LL&from=2025-01-01&to=2025-12-31
-  // /journal-vouchers/statements/customers/1?currency=EURO
 @Get('statements/customers/:customerId')
 async getCustomerStmt(
   @Param('customerId', ParseIntPipe) customerId: number,
