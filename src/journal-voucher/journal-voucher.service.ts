@@ -5,7 +5,7 @@ import {
   Logger
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like, Brackets } from 'typeorm';
+import { Repository, Like, Brackets, SelectQueryBuilder } from 'typeorm';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
@@ -13,7 +13,10 @@ import { CurrencyRate } from '../entities/currencyRate.entity';
 import { Customer } from 'src/entities/customer.entity';
 import { Settings } from 'src/entities/settings.entity'; 
 import { QueryFailedError } from 'typeorm';
-
+import { Invoice } from '../entities/invoice.entity';
+import { ReceiptEntry } from '../entities/recievables.entities'; // ✅ adjust path
+import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity'; // ✅ adjust path
+import { Supplier } from '../entities/supplier.entity'; // ✅ adjust path
 
 
 
@@ -278,12 +281,26 @@ async createJournalVoucher(data: {
     await this.journalVoucherRepository.remove(journalVoucher);
   }
 
+
 async getVoucherSummary(params?: {
   page?: number;
-  limit?: number;   // we’ll hard-cap to 100
+  limit?: number; // hard-cap 100
   q?: string;
 }): Promise<{
-  data: { id: number; date: Date; jvNumber: string; jvType: string; description: string }[];
+  data: {
+    id: number;
+    date: Date;
+    jvNumber: string;
+    jvType: string;
+    description: string;
+
+    name: string;
+    kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'JV';
+    customerName?: string | null;
+    invoiceNumber?: string | null;
+    invoiceId?: number | null;
+    receiptCurrency?: string | null;
+  }[];
   page: number;
   limit: number;
   total: number;
@@ -292,27 +309,67 @@ async getVoucherSummary(params?: {
 }> {
   const page = Math.max(1, Number(params?.page ?? 1));
   const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 100)));
-  const q = (params?.q ?? '').trim();
+  const qRaw = (params?.q ?? '').trim();
+  const like = `%${qRaw}%`;
+  const likeLower = `%${qRaw.toLowerCase()}%`;
 
-  // ---------- 1) COUNT DISTINCT (for total/hasMore) ----------
-  const countQb = this.journalVoucherRepository
-    .createQueryBuilder('jv')
-    .leftJoin('jv.details', 'd');
+  const applyJoins = (qb: SelectQueryBuilder<JournalVoucher>) => {
+    return qb
+      // JV details (explicit join condition, MySQL-safe)
+      .leftJoin(JournalVoucherDetail, 'd', 'd.journalVoucherId = jv.id')
 
-  if (q) {
-    const like = `%${q}%`;
-    countQb.andWhere(new Brackets((w) => {
-      w.where('jv.jvNumber ILIKE :like', { like })
-       .orWhere('jv.jvType ILIKE :like', { like })
-       .orWhere('d.description ILIKE :like', { like });
-    }));
-  }
+      // receivable tables (use table names for customer/invoice to avoid relation-path issues)
+      .leftJoin(ReceiptEntry, 're', 're.journalVoucherId = jv.id')
+      .leftJoin('customers', 'rcust', 'rcust.id = re.customerId')
+      .leftJoin('invoices', 'sinv', 'sinv.id = re.invoiceId')
+      .leftJoin('customers', 'sinvCust', 'sinvCust.id = sinv.customerId')
 
-  const { cnt } = await countQb
+      // purchase invoice (explicit FK join; does NOT require jv.invoice relation)
+      .leftJoin(PurchaseInvoice, 'pinv', 'pinv.id = jv.purchaseInvoiceId')
+      .leftJoin(Supplier, 'psup', 'psup.id = pinv.supplierId')
+
+      // ✅ IMPORTANT: detect ANY sales invoice type (S/G/RVR/RTN) using docNbr
+      .leftJoin('invoices', 'dinv', 'dinv.invoiceNumber = d.docNbr')
+      .leftJoin('customers', 'dinvCust', 'dinvCust.id = dinv.customerId');
+  };
+
+  const applySearch = (qb: SelectQueryBuilder<JournalVoucher>) => {
+    if (!qRaw) return;
+
+    qb.andWhere(
+      new Brackets((w) => {
+        // Use LOWER(... ) LIKE ... to be safe cross-collation
+        w.where('LOWER(jv.jvNumber) LIKE :likeLower', { likeLower })
+          .orWhere('LOWER(jv.jvType) LIKE :likeLower', { likeLower })
+          .orWhere('LOWER(d.description) LIKE :likeLower', { likeLower })
+
+          // receivable
+          .orWhere('LOWER(rcust.customerName) LIKE :likeLower', { likeLower })
+          .orWhere('LOWER(sinv.invoiceNumber) LIKE :likeLower', { likeLower })
+          .orWhere('LOWER(sinvCust.customerName) LIKE :likeLower', { likeLower })
+
+          // purchase
+          .orWhere('LOWER(pinv.invoiceNumber) LIKE :likeLower', { likeLower })
+          .orWhere('LOWER(psup.supplierName) LIKE :likeLower', { likeLower })
+
+          // docNbr invoice
+          .orWhere('LOWER(dinv.invoiceNumber) LIKE :likeLower', { likeLower })
+          .orWhere('LOWER(dinvCust.customerName) LIKE :likeLower', { likeLower });
+      }),
+    );
+  };
+
+  // -----------------------------
+  // 1) COUNT DISTINCT (total)
+  // -----------------------------
+  const countQb = applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'));
+  applySearch(countQb);
+
+  const countRow = await countQb
     .select('COUNT(DISTINCT jv.id)', 'cnt')
     .getRawOne<{ cnt: string }>();
 
-  const total = Number(cnt || 0);
+  const total = Number(countRow?.cnt || 0);
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const hasMore = page < totalPages;
 
@@ -320,51 +377,64 @@ async getVoucherSummary(params?: {
     return { data: [], page, limit, total, totalPages, hasMore: false };
   }
 
-  // ---------- 2) PAGE OF IDS (ONLY ids, ordered, offset/limit) ----------
-  const idQb = this.journalVoucherRepository
-    .createQueryBuilder('jv')
-    .leftJoin('jv.details', 'd')
+  // -----------------------------
+  // 2) PAGE OF IDS
+  // -----------------------------
+  const idQb = applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'))
     .select('jv.id', 'id');
 
-  if (q) {
-    const like = `%${q}%`;
-    idQb.andWhere(new Brackets((w) => {
-      w.where('jv.jvNumber ILIKE :like', { like })
-       .orWhere('jv.jvType ILIKE :like', { like })
-       .orWhere('d.description ILIKE :like', { like });
-    }));
-  }
+  applySearch(idQb);
 
   const idRows = await idQb
     .groupBy('jv.id')
     .orderBy('jv.date', 'DESC')
     .addOrderBy('jv.id', 'DESC')
-    .offset((page - 1) * limit)   // <-- true OFFSET/LIMIT
-    .limit(limit)
+    .skip((page - 1) * limit)
+    .take(limit)
     .getRawMany<{ id: number }>();
 
-  const ids = idRows.map(r => Number(r.id));
+  const ids = idRows.map((r) => Number(r.id));
   if (ids.length === 0) {
     return { data: [], page, limit, total, totalPages, hasMore };
   }
 
-  // ---------- 3) FETCH FIELDS FOR JUST THOSE IDS ----------
-  const rows = await this.journalVoucherRepository
-    .createQueryBuilder('jv')
-    .leftJoin('jv.details', 'd')
-    .select([
-      'jv.id AS id',
-      'jv.date AS date',
-      'jv.jvNumber AS "jvNumber"',
-      'jv.jvType AS "jvType"',
-    ])
+  // -----------------------------
+  // 3) FETCH FIELDS FOR THOSE IDS
+  // -----------------------------
+  const rows = await applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'))
+    .select('jv.id', 'id')
+    .addSelect('jv.date', 'date')
+    .addSelect('jv.jvNumber', 'jvNumber')
+    .addSelect('jv.jvType', 'jvType')
     .addSelect('MIN(CASE WHEN d.dr > 0 THEN d.description END)', 'description')
+
+    // receivable fields
+    .addSelect('MAX(re.id)', 'receiptEntryId')
+    .addSelect('MAX(re.currency)', 'receiptCurrency')
+    .addSelect('MAX(rcust.customerName)', 'receiptCustomerName')
+
+    // receipt->invoice (optional)
+    .addSelect('MAX(sinv.id)', 'receiptInvoiceId')
+    .addSelect('MAX(sinv.invoiceNumber)', 'receiptInvoiceNumber')
+    .addSelect('MAX(sinv.invoiceType)', 'receiptInvoiceType')
+    .addSelect('MAX(sinvCust.customerName)', 'receiptInvoiceCustomerName')
+
+    // ✅ docNbr -> invoice (this fixes G/RTN/RVR)
+    .addSelect('MAX(dinv.id)', 'docInvoiceId')
+    .addSelect('MAX(dinv.invoiceNumber)', 'docInvoiceNumber')
+    .addSelect('MAX(dinv.invoiceType)', 'docInvoiceType')
+    .addSelect('MAX(dinvCust.customerName)', 'docInvoiceCustomerName')
+
+    // purchase
+    .addSelect('MAX(pinv.id)', 'purchaseInvoiceId')
+    .addSelect('MAX(pinv.invoiceNumber)', 'purchaseInvoiceNumber')
+    .addSelect('MAX(psup.supplierName)', 'purchaseSupplierName')
+
     .where('jv.id IN (:...ids)', { ids })
     .groupBy('jv.id')
     .addGroupBy('jv.date')
     .addGroupBy('jv.jvNumber')
     .addGroupBy('jv.jvType')
-    // keep the same order as the id page (date desc, id desc)
     .orderBy('jv.date', 'DESC')
     .addOrderBy('jv.id', 'DESC')
     .getRawMany<{
@@ -373,20 +443,96 @@ async getVoucherSummary(params?: {
       jvNumber: string;
       jvType: string;
       description: string | null;
+
+      receiptEntryId: number | null;
+      receiptCurrency: string | null;
+      receiptCustomerName: string | null;
+
+      receiptInvoiceId: number | null;
+      receiptInvoiceNumber: string | null;
+      receiptInvoiceType: 'S' | 'G' | 'RVR' | 'RTN' | null;
+      receiptInvoiceCustomerName: string | null;
+
+      docInvoiceId: number | null;
+      docInvoiceNumber: string | null;
+      docInvoiceType: 'S' | 'G' | 'RVR' | 'RTN' | null;
+      docInvoiceCustomerName: string | null;
+
+      purchaseInvoiceId: number | null;
+      purchaseInvoiceNumber: string | null;
+      purchaseSupplierName: string | null;
     }>();
 
-  // ---------- 4) Normalize ----------
-  const data = rows.map(r => ({
-    id: Number(r.id),
-    date: r.date,
-    jvNumber: r.jvNumber,
-    jvType: r.jvType,
-    description: r.description ?? 'No Description',
-    
-  }));
+  // -----------------------------
+  // 4) Normalize + build label
+  // -----------------------------
+  const data = rows.map((r) => {
+    const receiptEntryId = r.receiptEntryId != null ? Number(r.receiptEntryId) : null;
+
+    // prefer receipt-linked invoice, else docNbr-linked invoice
+    const invoiceId =
+      (r.receiptInvoiceId != null ? Number(r.receiptInvoiceId) : null) ??
+      (r.docInvoiceId != null ? Number(r.docInvoiceId) : null) ??
+      null;
+
+    const invoiceNumber = r.receiptInvoiceNumber ?? r.docInvoiceNumber ?? null;
+    const invoiceType = r.receiptInvoiceType ?? r.docInvoiceType ?? null;
+    const invoiceCustomerName =
+      r.receiptInvoiceCustomerName ?? r.docInvoiceCustomerName ?? null;
+
+    const purchaseInvoiceId =
+      r.purchaseInvoiceId != null ? Number(r.purchaseInvoiceId) : null;
+
+    let kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'JV' = 'JV';
+    let name = `قيد يومية - ${r.jvNumber}`.trim();
+    let customerName: string | null = null;
+
+    if (invoiceId && invoiceNumber) {
+      kind = 'INVOICE';
+      customerName = invoiceCustomerName ?? null;
+
+      if (invoiceType === 'RTN') {
+        name = `مرتجع - ${customerName ?? ''} - ${invoiceNumber}`.trim();
+      } else {
+        // show type so G/RVR is clear
+        const tag = invoiceType ? ` ${invoiceType}` : '';
+        name = `فاتورة${tag} - ${customerName ?? ''} - ${invoiceNumber}`.trim();
+      }
+    } else if (receiptEntryId) {
+      kind = 'RECEIVABLE';
+      customerName = r.receiptCustomerName ?? null;
+
+      const cur = (r.receiptCurrency ?? '').toUpperCase();
+      const payTag = cur === 'USD' ? 'دفعة $$' : cur === 'LL' ? 'دفعة LL' : 'دفعة';
+      name = `${payTag} - ${customerName ?? ''} - ${r.jvNumber}`.trim();
+    } else if (purchaseInvoiceId && r.purchaseInvoiceNumber) {
+      kind = 'PURCHASE';
+      customerName = r.purchaseSupplierName ?? null;
+      name = `فاتورة شراء - ${customerName ?? ''} - ${r.purchaseInvoiceNumber}`.trim();
+    } else {
+      kind = 'JV';
+      name = `قيد يومية - ${r.jvNumber}`.trim();
+    }
+
+    return {
+      id: Number(r.id),
+      date: r.date,
+      jvNumber: r.jvNumber,
+      jvType: r.jvType,
+      description: r.description ?? 'No Description',
+
+      name,
+      kind,
+      customerName,
+      invoiceNumber,
+      invoiceId,
+      receiptCurrency: r.receiptCurrency ?? null,
+    };
+  });
 
   return { data, page, limit, total, totalPages, hasMore };
 }
+
 
 
 
