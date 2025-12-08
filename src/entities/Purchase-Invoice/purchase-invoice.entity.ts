@@ -38,6 +38,18 @@ export class PurchaseInvoice {
   @Column({ type: 'date', nullable: true })
   poDate: string; // normal date
 
+  
+@Column({
+  type: 'date',
+  nullable: true,
+  transformer: {
+    to: (value: Date | string) =>
+      value instanceof Date ? value.toISOString().slice(0, 10) : value,
+    from: (value: string) => (value ? new Date(value + 'T00:00:00.000Z') : null),
+  },
+})
+jvDate: Date | null;
+
   @Column({ type: 'date', nullable: true })
   expectedArrivalDate: Date;
 
