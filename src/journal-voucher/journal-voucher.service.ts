@@ -891,67 +891,196 @@ private static readonly TRAILING_DIGITS_EXPR =
     `substring(jv."jvNumber" from '([0-9]+)$')`;
 
 
-async searchBySeq(params?: { seq?: string; page?: number; limit?: number }) {
-  const page  = Math.max(1, Number(params?.page ?? 1));
+
+
+async searchBySeq(params?: {
+  seq?: string;
+  page?: number;
+  limit?: number;
+  type?: string; // ✅ NEW: 'INVOICE'|'RECEIVABLE'|'JV' OR Arabic: 'فاتورة'|'دفعة'|'قيد يومي'
+}): Promise<{
+  data: {
+    id: number;
+    date: Date;
+    jvNumber: string;
+    jvType: string;
+    description: string;
+
+    name: string;
+    kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'JV';
+    customerName?: string | null;
+    invoiceNumber?: string | null;
+    invoiceId?: number | null;
+    receiptCurrency?: string | null;
+  }[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasMore: boolean;
+}> {
+  const page = Math.max(1, Number(params?.page ?? 1));
   const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 100)));
 
   const seqDigits = (params?.seq ?? '').replace(/\D+/g, '');
+  const seqExpr = "REGEXP_SUBSTR(jv.jvNumber, '[0-9]+$')";
 
-  if (!seqDigits) {
-    return this.getVoucherSummary({ page, limit });
-  }
+  // ✅ normalize type filter (Arabic/English)
+  const rawType = (params?.type ?? '').trim();
+  const normType = (() => {
+    if (!rawType) return '';
+    const t = rawType.toUpperCase();
 
-  const seqExpr = 'REGEXP_SUBSTR(jv.jvNumber, "[0-9]+$")';
+    if (t === 'INVOICE') return 'INVOICE';
+    if (t === 'RECEIVABLE') return 'RECEIVABLE';
+    if (t === 'JV') return 'JV';
 
+    // Arabic mapping
+    if (rawType.includes('فات')) return 'INVOICE';
+    if (rawType.includes('دف')) return 'RECEIVABLE';
+    if (rawType.includes('قيد')) return 'JV';
+
+    return t;
+  })();
+
+  const applyJoins = (qb: SelectQueryBuilder<JournalVoucher>) => {
+    return qb
+      // Details (explicit join, MySQL-safe)
+      .leftJoin(JournalVoucherDetail, 'd', 'd.journalVoucherId = jv.id')
+
+      // Receivable
+      .leftJoin(ReceiptEntry, 're', 're.journalVoucherId = jv.id')
+      .leftJoin('customers', 'rcust', 'rcust.id = re.customerId')
+
+      // Receipt -> Invoice (sales)
+      .leftJoin('invoices', 'sinv', 'sinv.id = re.invoiceId')
+      .leftJoin('customers', 'sinvCust', 'sinvCust.id = sinv.customerId')
+
+      // Purchase invoice
+      .leftJoin(PurchaseInvoice, 'pinv', 'pinv.id = jv.purchaseInvoiceId')
+      .leftJoin(Supplier, 'psup', 'psup.id = pinv.supplierId')
+
+      // ✅ DocNbr -> Invoice (fixes G / RTN / RVR)
+      .leftJoin('invoices', 'dinv', 'dinv.invoiceNumber = d.docNbr')
+      .leftJoin('customers', 'dinvCust', 'dinvCust.id = dinv.customerId');
+  };
+
+  const applySeqFilter = (qb: SelectQueryBuilder<JournalVoucher>) => {
+    if (!seqDigits) return;
+    qb.andWhere(
+      `(${seqExpr}) = :seq OR CAST((${seqExpr}) AS UNSIGNED) = :seqNum`,
+      { seq: seqDigits, seqNum: Number(seqDigits) },
+    );
+  };
+
+  // ✅ Type filter aligned with your summary priority:
+  // INVOICE if (receiptInvoice OR docInvoice OR purchaseInvoice)
+  // RECEIVABLE only if receiptEntry exists AND no invoice linked
+  // JV only if none of the above
+  const applyTypeFilter = (qb: SelectQueryBuilder<JournalVoucher>) => {
+    if (!normType) return;
+
+    if (normType === 'INVOICE') {
+      qb.andWhere(
+        new Brackets((w) => {
+          w.where('sinv.id IS NOT NULL')
+            .orWhere('dinv.id IS NOT NULL')
+            .orWhere('pinv.id IS NOT NULL');
+        }),
+      );
+      return;
+    }
+
+    if (normType === 'RECEIVABLE') {
+      qb.andWhere('re.id IS NOT NULL')
+        .andWhere('sinv.id IS NULL')
+        .andWhere('dinv.id IS NULL')
+        .andWhere('pinv.id IS NULL');
+      return;
+    }
+
+    if (normType === 'JV') {
+      qb.andWhere('re.id IS NULL')
+        .andWhere('sinv.id IS NULL')
+        .andWhere('dinv.id IS NULL')
+        .andWhere('pinv.id IS NULL');
+      return;
+    }
+  };
+
+  // -----------------------------
   // 1) COUNT
-  const countQb = this.journalVoucherRepository.createQueryBuilder('jv');
-  countQb.andWhere(
-    `(${seqExpr}) = :seq OR CAST((${seqExpr}) AS UNSIGNED) = :seqNum`,
-    { seq: seqDigits, seqNum: Number(seqDigits) }
-  );
-  const { cnt } = await countQb
+  // -----------------------------
+  const countQb = applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'));
+  applySeqFilter(countQb);
+  applyTypeFilter(countQb);
+
+  const countRow = await countQb
     .select('COUNT(DISTINCT jv.id)', 'cnt')
-    .getRawOne<{ cnt: string }>();
-  const total = Number(cnt || 0);
+    .getRawOne();
+
+  const total = Number(countRow?.cnt || 0);
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const hasMore = page < totalPages;
+
   if (total === 0) {
     return { data: [], page, limit, total, totalPages, hasMore: false };
   }
 
+  // -----------------------------
   // 2) PAGE OF IDS
-  const idQb = this.journalVoucherRepository
-    .createQueryBuilder('jv')
-    .select('jv.id', 'id')
-    .andWhere(
-      `(${seqExpr}) = :seq OR CAST((${seqExpr}) AS UNSIGNED) = :seqNum`,
-      { seq: seqDigits, seqNum: Number(seqDigits) }
-    );
+  // -----------------------------
+  const idQb = applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'))
+    .select('jv.id', 'id');
+
+  applySeqFilter(idQb);
+  applyTypeFilter(idQb);
 
   const idRows = await idQb
     .groupBy('jv.id')
     .orderBy('jv.date', 'DESC')
     .addOrderBy('jv.id', 'DESC')
-    .offset((page - 1) * limit)
-    .limit(limit)
-    .getRawMany<{ id: number }>();
+    .skip((page - 1) * limit)
+    .take(limit)
+    .getRawMany();
 
-  const ids = idRows.map(r => Number(r.id));
+  const ids = (idRows || []).map((r: any) => Number(r.id)).filter(Boolean);
   if (ids.length === 0) {
     return { data: [], page, limit, total, totalPages, hasMore };
   }
 
+  // -----------------------------
   // 3) FETCH FIELDS FOR THOSE IDS
-  const rows = await this.journalVoucherRepository
-    .createQueryBuilder('jv')
-    .leftJoin('jv.details', 'd')
-    .select([
-      'jv.id AS id',
-      'jv.date AS date',
-      'jv.jvNumber AS "jvNumber"',
-      'jv.jvType AS "jvType"',
-    ])
+  // -----------------------------
+  const rows = await applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'))
+    .select('jv.id', 'id')
+    .addSelect('jv.date', 'date')
+    .addSelect('jv.jvNumber', 'jvNumber')
+    .addSelect('jv.jvType', 'jvType')
     .addSelect('MIN(CASE WHEN d.dr > 0 THEN d.description END)', 'description')
+
+    // receivable
+    .addSelect('MAX(re.id)', 'receiptEntryId')
+    .addSelect('MAX(re.currency)', 'receiptCurrency')
+    .addSelect('MAX(rcust.customerName)', 'receiptCustomerName')
+
+    // receipt->invoice
+    .addSelect('MAX(sinv.id)', 'receiptInvoiceId')
+    .addSelect('MAX(sinv.invoiceNumber)', 'receiptInvoiceNumber')
+    .addSelect('MAX(sinv.invoiceType)', 'receiptInvoiceType')
+    .addSelect('MAX(sinvCust.customerName)', 'receiptInvoiceCustomerName')
+
+    // docNbr->invoice
+    .addSelect('MAX(dinv.id)', 'docInvoiceId')
+    .addSelect('MAX(dinv.invoiceNumber)', 'docInvoiceNumber')
+    .addSelect('MAX(dinv.invoiceType)', 'docInvoiceType')
+    .addSelect('MAX(dinvCust.customerName)', 'docInvoiceCustomerName')
+
+    // purchase
+    .addSelect('MAX(pinv.id)', 'purchaseInvoiceId')
+    .addSelect('MAX(pinv.invoiceNumber)', 'purchaseInvoiceNumber')
+    .addSelect('MAX(psup.supplierName)', 'purchaseSupplierName')
+
     .where('jv.id IN (:...ids)', { ids })
     .groupBy('jv.id')
     .addGroupBy('jv.date')
@@ -961,16 +1090,76 @@ async searchBySeq(params?: { seq?: string; page?: number; limit?: number }) {
     .addOrderBy('jv.id', 'DESC')
     .getRawMany();
 
-  const data = rows.map(r => ({
-    id: Number(r.id),
-    date: r.date,
-    jvNumber: r.jvNumber,
-    jvType: r.jvType,
-    description: r.description ?? 'No Description',
-  }));
+  // -----------------------------
+  // 4) Normalize + build label
+  // -----------------------------
+  const data = (rows || []).map((r: any) => {
+    const receiptEntryId = r.receiptEntryId != null ? Number(r.receiptEntryId) : null;
+
+    const receiptInvoiceId = r.receiptInvoiceId != null ? Number(r.receiptInvoiceId) : null;
+    const docInvoiceId = r.docInvoiceId != null ? Number(r.docInvoiceId) : null;
+    const purchaseInvoiceId = r.purchaseInvoiceId != null ? Number(r.purchaseInvoiceId) : null;
+
+    // ✅ invoice priority: receipt invoice -> docNbr invoice -> purchase invoice
+    const invoiceId = receiptInvoiceId ?? docInvoiceId ?? purchaseInvoiceId ?? null;
+    const invoiceNumber = r.receiptInvoiceNumber ?? r.docInvoiceNumber ?? r.purchaseInvoiceNumber ?? null;
+    const invoiceType = r.receiptInvoiceType ?? r.docInvoiceType ?? null;
+
+    const invoiceCustomerName =
+      r.receiptInvoiceCustomerName ?? r.docInvoiceCustomerName ?? null;
+
+    let kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'JV' = 'JV';
+    let name = `قيد يومية - ${r.jvNumber}`.trim();
+    let customerName: string | null = null;
+
+    if (invoiceId && invoiceNumber) {
+      // INVOICE or PURCHASE
+      if (purchaseInvoiceId && !receiptInvoiceId && !docInvoiceId) {
+        kind = 'PURCHASE';
+        customerName = r.purchaseSupplierName ?? null;
+        name = `فاتورة شراء - ${customerName ?? ''} - ${invoiceNumber}`.trim();
+      } else {
+        kind = 'INVOICE';
+        customerName = invoiceCustomerName ?? null;
+
+        if (invoiceType === 'RTN') {
+          name = `مرتجع - ${customerName ?? ''} - ${invoiceNumber}`.trim();
+        } else {
+          const tag = invoiceType ? ` ${invoiceType}` : '';
+          name = `فاتورة${tag} - ${customerName ?? ''} - ${invoiceNumber}`.trim();
+        }
+      }
+    } else if (receiptEntryId) {
+      kind = 'RECEIVABLE';
+      customerName = r.receiptCustomerName ?? null;
+
+      const cur = String(r.receiptCurrency ?? '').toUpperCase();
+      const payTag = cur === 'USD' ? 'دفعة $$' : cur === 'LL' ? 'دفعة LL' : 'دفعة';
+      name = `${payTag} - ${customerName ?? ''} - ${r.jvNumber}`.trim();
+    } else {
+      kind = 'JV';
+      name = `قيد يومية - ${r.jvNumber}`.trim();
+    }
+
+    return {
+      id: Number(r.id),
+      date: r.date,
+      jvNumber: r.jvNumber,
+      jvType: r.jvType,
+      description: r.description ?? 'No Description',
+
+      name,
+      kind,
+      customerName,
+      invoiceNumber,
+      invoiceId,
+      receiptCurrency: r.receiptCurrency ?? null,
+    };
+  });
 
   return { data, page, limit, total, totalPages, hasMore };
 }
+
 
 
 
