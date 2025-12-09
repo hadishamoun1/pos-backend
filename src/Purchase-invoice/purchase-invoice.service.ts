@@ -16,7 +16,29 @@ import { InventoryCount } from 'src/entities/inventory/count.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 import { InvoiceItem } from 'src/entities/invoiceItem.entity';
 
+type VariantMode = 'box' | 'sheet' | 'sqm' | 'unit';
+
+type VariantMeta = {
+  id: number;
+  itemNameDescriptionId: number | null;
+  thicknessMm: any; 
+  length: any;
+  width: any;
+  origin: string | null;
+  sheetsPerBox: number | null;
+  mode: VariantMode | null; 
+};
+
+type SiblingBucket = {
+  sheet: VariantMeta | null;
+  sqm: VariantMeta | null;
+  unit: VariantMeta | null;
+  boxBySpb: Map<number, VariantMeta>;
+};
+
 @Injectable()
+
+
 export class PurchaseInvoiceService {
   constructor(
     @InjectRepository(PurchaseInvoice)
@@ -81,7 +103,98 @@ export class PurchaseInvoiceService {
   }
   
 
-  
+  private async recomputeVariantCostsAfterPurchaseEdit(opts: {
+  cutoffDate: Date;
+  affectedVariantIds: number[];
+}) {
+  const { cutoffDate, affectedVariantIds } = opts;
+  if (!affectedVariantIds?.length) return;
+
+  const cut = new Date(cutoffDate);
+  cut.setHours(0, 0, 0, 0);
+
+  // include siblings (sheet/sqm/unit + matching box)
+  const expandedVariantIds = await this.expandAffectedVariantIds(affectedVariantIds);
+
+  // load metas so we can find siblings/families
+  const metas = await this.loadVariantMetas(expandedVariantIds);
+  const metaById = new Map<number, any>(metas.map(m => [Number(m.id), m]));
+  const siblingsByFamily = await this.resolveSiblingVariantsForBaseVariants(metas);
+
+  // pick the box sibling to read costs from (same logic as your sales recompute)
+  const pickBoxSource = (bucket: any, targetMeta: any) => {
+    if (!bucket?.boxBySpb || bucket.boxBySpb.size === 0) return null;
+
+    const targetSpb = Number(targetMeta?.sheetsPerBox ?? 0);
+
+    if (targetSpb > 1) {
+      const exact = bucket.boxBySpb.get(targetSpb);
+      if (exact?.id) return exact;
+    }
+
+    if (bucket.boxBySpb.size === 1) return Array.from(bucket.boxBySpb.values())[0] ?? null;
+
+    let best: any = null;
+    let bestSpb = -1;
+    for (const [spb, v] of bucket.boxBySpb.entries()) {
+      if (spb > bestSpb) {
+        bestSpb = spb;
+        best = v;
+      }
+    }
+    return best;
+  };
+
+  // update each target variant (variant + siblings) using costs as-of cutoff day
+  const dayKey = cut.toISOString().slice(0, 10);
+  const asOfUTC = new Date(dayKey + 'T00:00:00.000Z');
+
+  const costCache = new Map<number, any>();
+
+  for (const targetId of expandedVariantIds) {
+    const target = metaById.get(Number(targetId));
+    if (!target) continue;
+
+    const nonBoxKey = this.familyKey({
+      itemNameDescriptionId: target.itemNameDescriptionId ?? null,
+      thicknessMm: target.thicknessMm,
+      length: target.length,
+      width: target.width,
+      origin: target.origin ?? null,
+      sheetsPerBox: target.sheetsPerBox ?? null,
+      mode: 'sheet',
+    });
+
+    const bucket = siblingsByFamily.get(nonBoxKey);
+
+    // choose purchase source variant (box preferred)
+    let picked = target;
+    if (target.mode !== 'box') {
+      const boxSource = pickBoxSource(bucket, target);
+      if (boxSource?.id) picked = boxSource;
+    }
+
+    const pickedVariantId = Number(picked.id);
+
+    let costs = costCache.get(pickedVariantId);
+    if (!costs) {
+      costs = await this.getPurchaseAvgCostsAsOf(pickedVariantId, asOfUTC);
+      costCache.set(pickedVariantId, costs);
+    }
+
+    // write EXACT costs (no /spb)
+    await this.variantRepo.update(Number(targetId), {
+      averageCost: costs?.averageCost ?? null,
+      averageCostVM: costs?.averageCostVM ?? null,
+      // if your variant entity also has these columns, include them:
+      // averageCostC: costs?.averageCostC ?? null,
+      // averageCostCVM: costs?.averageCostCVM ?? null,
+    } as any);
+  }
+}
+
+
+
 
   async create(data: Partial<PurchaseInvoice>) {
     // 1) save invoice + items
@@ -4091,6 +4204,10 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'RVR') {
 }
 // 🔎 END: RVR Cost-calculation & logging block
 
+await this.recomputeVariantCostsAfterPurchaseEdit({
+  cutoffDate: savedInvoice.date,
+  affectedVariantIds: savedInvoice.items.map(i => Number(i.itemVariantId)).filter(Boolean),
+});
 
 
   }
@@ -4504,89 +4621,6 @@ private async rebuildInventoryForPurchaseInvoice(
 
 
 
-
-private async recomputeSalesInvoiceItemsAfterPurchaseEdit(opts: {
-  cutoffDate: Date;
-  affectedVariantIds: number[];
-}) {
-  const { cutoffDate, affectedVariantIds } = opts;
-
-  if (!affectedVariantIds?.length) return;
-
-  // normalize to day start (DATE columns behavior)
-  const cut = new Date(cutoffDate);
-  cut.setHours(0, 0, 0, 0);
-
-  console.log('🔁 [SALES-RECOMP] start', {
-    cut: cut.toISOString(),
-    affectedVariantIdsCount: affectedVariantIds.length,
-    affectedVariantIds,
-  });
-
-  const rows = await this.invoiceItemRepo
-    .createQueryBuilder('ii')
-    .innerJoin('ii.invoice', 'inv')
-    .where('inv.date >= :cut', { cut })
-    .andWhere('ii.itemVariantId IN (:...varIds)', { varIds: affectedVariantIds })
-    .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G'] }) // adjust if you want more
-    .select([
-      'ii.id AS id',
-      'ii.itemVariantId AS itemVariantId',
-      'inv.id AS invId',
-      'inv.date AS invoiceDate',
-      'inv.invoiceType AS invoiceType',
-    ])
-    .orderBy('inv.date', 'ASC')
-    .addOrderBy('ii.id', 'ASC')
-    .getRawMany<{
-      id: number;
-      itemVariantId: number;
-      invId: number;
-      invoiceDate: string | Date;
-      invoiceType: string;
-    }>();
-
-  console.log('🔁 [SALES-RECOMP] rows found', { count: rows.length });
-  if (!rows.length) return;
-
-  // cache by (variantId + invoiceDate)
-  const cache = new Map<string, any>();
-
-  for (const r of rows) {
-    const variantId = Number(r.itemVariantId);
-
-    const invDate =
-      typeof r.invoiceDate === 'string'
-        ? new Date(r.invoiceDate + 'T00:00:00.000Z')
-        : new Date(r.invoiceDate);
-
-    const key = `${variantId}|${invDate.toISOString().slice(0, 10)}`;
-
-    let costs = cache.get(key);
-    if (!costs) {
-      costs = await this.getPurchaseAvgCostsAsOf(variantId, invDate);
-      cache.set(key, costs);
-    }
-
-    console.log('🧾 [SALES-RECOMP] updating invoice_item', {
-      iiId: r.id,
-      invId: r.invId,
-      invoiceType: r.invoiceType,
-      variantId,
-      invDate: invDate.toISOString().slice(0, 10),
-      costs,
-    });
-
-    await this.invoiceItemRepo.update(Number(r.id), {
-      averageCost: costs.averageCost,
-      averageCostC: costs.averageCostC,
-      averageCostVM: costs.averageCostVM,
-      averageCostCVM: costs.averageCostCVM,
-    });
-  }
-
-  console.log('✅ [SALES-RECOMP] done');
-}
 
 
 
@@ -8314,6 +8348,510 @@ await this.recomputeSalesInvoiceItemsAfterPurchaseEdit({
 
 
 
+private async getPurchaseAvgCostsAsOfFromSet(
+  variantIds: number[],
+  asOfDate: Date,
+): Promise<{
+  pickedVariantId: number | null;
+  costs: { averageCost: number | null; averageCostC: number | null; averageCostVM: number | null; averageCostCVM: number | null };
+}> {
+  const uniq = Array.from(new Set((variantIds ?? []).map(Number).filter(Boolean)));
+  if (!uniq.length) {
+    return { pickedVariantId: null, costs: { averageCost: null, averageCostC: null, averageCostVM: null, averageCostCVM: null } };
+  }
+
+  // IMPORTANT: match your existing getPurchaseAvgCostsAsOf “end of day” logic
+  // (your log shows Beirut end-of-day => 21:59:59.999Z)
+  const cut = new Date(asOfDate);
+  cut.setHours(23, 59, 59, 999);
+
+  const row = await this.itemRepo
+    .createQueryBuilder('pii')
+    .innerJoin('pii.invoice', 'pi')
+    .select([
+      'pii.itemVariantId AS itemVariantId',
+      'pii.averageCost AS averageCost',
+      'pii.averageCostC AS averageCostC',
+      'pii.averageCostVM AS averageCostVM',
+      'pii.averageCostCVM AS averageCostCVM',
+      'pi.id AS piId',
+      'pi.date AS piDate',
+      'pi.type AS piType',
+      'pii.id AS piiId',
+    ])
+    .where('pii.itemVariantId IN (:...ids)', { ids: uniq })
+    .andWhere('pi.status = :st', { st: 'Recieved' })
+    .andWhere('pi.type IN (:...types)', { types: ['S', 'G', 'SR'] }) // adjust to your real ones
+    .andWhere('pi.date <= :cut', { cut })
+    .orderBy('pi.date', 'DESC')
+    .addOrderBy('pi.id', 'DESC')
+    .addOrderBy('pii.id', 'DESC')
+    .getRawOne<{
+      itemVariantId: number;
+      averageCost: any;
+      averageCostC: any;
+      averageCostVM: any;
+      averageCostCVM: any;
+    }>();
+
+  if (!row) {
+    return { pickedVariantId: null, costs: { averageCost: null, averageCostC: null, averageCostVM: null, averageCostCVM: null } };
+  }
+
+  const toNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  return {
+    pickedVariantId: Number(row.itemVariantId),
+    costs: {
+      averageCost: toNum(row.averageCost),
+      averageCostC: toNum(row.averageCostC),
+      averageCostVM: toNum(row.averageCostVM),
+      averageCostCVM: toNum(row.averageCostCVM),
+    },
+  };
+}
+
+
+
+private convertCostsBetweenModes(
+  costs: { averageCost: number | null; averageCostC: number | null; averageCostVM: number | null; averageCostCVM: number | null },
+  fromMode: VariantMode | null,
+  toMode: VariantMode | null,
+  sqmPerSheet: number,
+  spbFrom: number,
+  spbTo: number,
+) {
+  const mul = (v: number | null, k: number) => (v === null ? null : Number((v * k).toFixed(6)));
+  const div = (v: number | null, k: number) => (v === null ? null : (k > 0 ? Number((v / k).toFixed(6)) : null));
+
+  if (!fromMode || !toMode || fromMode === toMode) return costs;
+
+  // factors
+  const sqmPerBoxFrom = sqmPerSheet > 0 && spbFrom > 0 ? sqmPerSheet * spbFrom : 0;
+  const sqmPerBoxTo   = sqmPerSheet > 0 && spbTo > 0   ? sqmPerSheet * spbTo   : 0;
+
+  const apply = (fn: (x: number | null) => number | null) => ({
+    averageCost: fn(costs.averageCost),
+    averageCostC: fn(costs.averageCostC),
+    averageCostVM: fn(costs.averageCostVM),
+    averageCostCVM: fn(costs.averageCostCVM),
+  });
+
+  // box -> sheet/sqm
+  if (fromMode === 'box' && toMode === 'sheet') return apply(v => div(v, spbFrom));
+  if (fromMode === 'box' && toMode === 'sqm')   return apply(v => div(v, sqmPerBoxFrom));
+
+  // sheet -> box/sqm
+  if (fromMode === 'sheet' && toMode === 'box') return apply(v => mul(v, spbTo));
+  if (fromMode === 'sheet' && toMode === 'sqm') return apply(v => div(v, sqmPerSheet));
+
+  // sqm -> sheet/box
+  if (fromMode === 'sqm' && toMode === 'sheet') return apply(v => mul(v, sqmPerSheet));
+  if (fromMode === 'sqm' && toMode === 'box')   return apply(v => mul(v, sqmPerBoxTo));
+
+  // unit: no conversion (or define your own rules)
+  return costs;
+}
+
+
+
+
+private normalizeOrigin(origin: any): string {
+  return String(origin ?? '').trim().toLowerCase();
+}
+
+private numKey(v: any): string {
+  if (v === null || v === undefined) return '0';
+  const s = String(v).trim();
+  return s === '' ? '0' : s;
+}
+
+/**
+ * IMPORTANT:
+ * We use thicknessMm (value), NOT thicknessId,
+ * because box/sheet/sqm are different Items -> different Thickness rows (different IDs).
+ */
+private familyKey(v: {
+  itemNameDescriptionId: number | null;
+  thicknessMm: any;
+  length: any;
+  width: any;
+  origin: string | null;
+  sheetsPerBox: number | null;
+  mode: VariantMode | null;
+}) {
+  const base =
+    `${v.itemNameDescriptionId ?? 0}|${this.numKey(v.thicknessMm)}|${this.numKey(v.length)}|${this.numKey(v.width)}|${this.normalizeOrigin(v.origin)}`;
+
+  if (v.mode === 'box') return `${base}|box|${Number(v.sheetsPerBox ?? 0)}`;
+  return `${base}|nonbox`;
+}
+
+
+private sqmPerSheetFromVariant(v: { length: any; width: any }) {
+  const L = Number(v.length ?? 0);
+  const W = Number(v.width ?? 0);
+  // cm → m²
+  return L > 0 && W > 0 ? (L * W) / 10000 : 0;
+}
+
+/**
+ * Load variant meta + Item.type (mode) by variant IDs
+ * (matches your entities: origin is string, thickness is a joined value)
+ */
+private async loadVariantMetas(ids: number[]): Promise<VariantMeta[]> {
+  if (!ids?.length) return [];
+
+  return this.variantRepo
+    .createQueryBuilder('v')
+    .leftJoin('v.thickness', 't')
+    .leftJoin('t.item', 'it')
+    .select([
+      'v.id AS id',
+      'v.itemNameDescriptionId AS itemNameDescriptionId',
+      't.thickness AS thicknessMm',     
+      'v.length AS length',
+      'v.width AS width',
+      'v.origin AS origin',
+      'v.sheetsPerBox AS sheetsPerBox',
+      'it.type AS mode',
+    ])
+    .where('v.id IN (:...ids)', { ids })
+    .getRawMany<VariantMeta>();
+}
+
+
+/**
+ * Fetch sibling variants for each family:
+ * identity = itemNameDescriptionId + thickness(mm) + length + width + origin
+ * include sheet/sqm/unit always; include box only if sheetsPerBox matches base SPB
+ */
+private async resolveSiblingVariantsForBaseVariants(baseVariants: VariantMeta[]) {
+  const uniqueFamilies = new Map<string, VariantMeta>();
+
+  for (const v of baseVariants) {
+    const k = this.familyKey({
+      itemNameDescriptionId: v.itemNameDescriptionId,
+      thicknessMm: v.thicknessMm,
+      length: v.length,
+      width: v.width,
+      origin: v.origin,
+      sheetsPerBox: v.sheetsPerBox,
+      mode: 'sheet',
+    });
+    if (!uniqueFamilies.has(k)) uniqueFamilies.set(k, v);
+  }
+
+  const families = Array.from(uniqueFamilies.values());
+  if (!families.length) return new Map<string, SiblingBucket>();
+
+  const qb = this.variantRepo
+    .createQueryBuilder('v')
+    .leftJoin('v.thickness', 't')
+    .leftJoin('t.item', 'it')
+    .select([
+      'v.id AS id',
+      'v.itemNameDescriptionId AS itemNameDescriptionId',
+      't.thickness AS thicknessMm',      // ✅ IMPORTANT
+      'v.length AS length',
+      'v.width AS width',
+      'v.origin AS origin',
+      'v.sheetsPerBox AS sheetsPerBox',
+      'it.type AS mode',
+    ]);
+
+  const params: Record<string, any> = {};
+  const orParts: string[] = [];
+
+  families.forEach((f, i) => {
+    params[`d${i}`] = f.itemNameDescriptionId;
+    params[`tm${i}`] = f.thicknessMm;
+    params[`l${i}`] = f.length;
+    params[`w${i}`] = f.width;
+    params[`o${i}`] = this.normalizeOrigin(f.origin);
+    params[`spb${i}`] = Number(f.sheetsPerBox ?? 0);
+
+    const identity = `
+      (v.itemNameDescriptionId <=> :d${i})
+      AND (t.thickness = :tm${i})
+      AND (v.length = :l${i})
+      AND (v.width = :w${i})
+      AND (LOWER(TRIM(v.origin)) = :o${i})
+    `;
+
+    orParts.push(`
+      (
+        ${identity}
+        AND (
+          it.type IN ('sheet','sqm','unit')
+          OR (it.type = 'box' AND v.sheetsPerBox = :spb${i})
+        )
+      )
+    `);
+  });
+
+  const allCandidates = await qb.where(orParts.join(' OR '), params).getRawMany<VariantMeta>();
+
+  const byKey = new Map<string, SiblingBucket>();
+
+  for (const c of allCandidates) {
+    const keyNonBox = this.familyKey({
+      itemNameDescriptionId: c.itemNameDescriptionId,
+      thicknessMm: c.thicknessMm,
+      length: c.length,
+      width: c.width,
+      origin: c.origin,
+      sheetsPerBox: c.sheetsPerBox,
+      mode: 'sheet',
+    });
+
+    const bucket =
+      byKey.get(keyNonBox) ??
+      ({ sheet: null, sqm: null, unit: null, boxBySpb: new Map<number, VariantMeta>() } as SiblingBucket);
+
+    if (c.mode === 'sheet') bucket.sheet = c;
+    if (c.mode === 'sqm') bucket.sqm = c;
+    if (c.mode === 'unit') bucket.unit = c;
+    if (c.mode === 'box') bucket.boxBySpb.set(Number(c.sheetsPerBox ?? 0), c);
+
+    byKey.set(keyNonBox, bucket);
+  }
+
+  return byKey;
+}
+
+
+/** Expand affected variants to include sibling sheet/sqm/unit + matching box(spb) */
+private async expandAffectedVariantIds(affectedVariantIds: number[]) {
+  const baseVariants = await this.loadVariantMetas(Array.from(new Set(affectedVariantIds)));
+  if (!baseVariants.length) return Array.from(new Set(affectedVariantIds));
+
+  const siblingsByFamily = await this.resolveSiblingVariantsForBaseVariants(baseVariants);
+
+  // debug mapping (optional)
+  console.log('🧩 [SALES-RECOMP] sibling map for affected variants');
+  for (const b of baseVariants) {
+    const keyNonBox = this.familyKey({
+      itemNameDescriptionId: b.itemNameDescriptionId,
+      thicknessMm: b.thicknessMm,
+      length: b.length,
+      width: b.width,
+      origin: b.origin,
+      sheetsPerBox: b.sheetsPerBox,
+      mode: 'sheet',
+    });
+    const bucket = siblingsByFamily.get(keyNonBox);
+    console.log('   base', {
+      id: b.id,
+      mode: b.mode,
+      thicknessMm: String(b.thicknessMm),
+      L: String(b.length),
+      W: String(b.width),
+      origin: b.origin,
+      spb: Number(b.sheetsPerBox ?? 0),
+      found: bucket
+        ? {
+            sheet: bucket.sheet?.id ?? null,
+            sqm: bucket.sqm?.id ?? null,
+            unit: bucket.unit?.id ?? null,
+            boxSameSpb: bucket.boxBySpb.get(Number(b.sheetsPerBox ?? 0))?.id ?? null,
+          }
+        : null,
+    });
+  }
+
+  const out = new Set<number>();
+
+  for (const b of baseVariants) {
+    out.add(Number(b.id));
+
+    const keyNonBox = this.familyKey({
+      itemNameDescriptionId: b.itemNameDescriptionId,
+      thicknessMm: b.thicknessMm,
+      length: b.length,
+      width: b.width,
+      origin: b.origin,
+      sheetsPerBox: b.sheetsPerBox,
+      mode: 'sheet',
+    });
+
+    const bucket = siblingsByFamily.get(keyNonBox);
+    if (!bucket) continue;
+
+    if (bucket.sheet?.id) out.add(Number(bucket.sheet.id));
+    if (bucket.sqm?.id) out.add(Number(bucket.sqm.id));
+    if (bucket.unit?.id) out.add(Number(bucket.unit.id));
+
+    const spb = Number(b.sheetsPerBox ?? 0);
+    const box = bucket.boxBySpb.get(spb);
+    if (box?.id) out.add(Number(box.id));
+  }
+
+  return [...out];
+}
+
+private async recomputeSalesInvoiceItemsAfterPurchaseEdit(opts: {
+  cutoffDate: Date;
+  affectedVariantIds: number[];
+}) {
+  const { cutoffDate, affectedVariantIds } = opts;
+  if (!affectedVariantIds?.length) return;
+
+  const cut = new Date(cutoffDate);
+  cut.setHours(0, 0, 0, 0);
+
+  // 1) Expand affected variants to include siblings (sheet/sqm/unit + matching box)
+  const expandedVariantIds = await this.expandAffectedVariantIds(affectedVariantIds);
+
+  console.log('🔁 [SALES-RECOMP] start', {
+    cut: cut.toISOString(),
+    affectedVariantIdsCount: affectedVariantIds.length,
+    expandedVariantIdsCount: expandedVariantIds.length,
+    expandedVariantIds,
+  });
+
+  // 2) Load metas for expanded variants (so we know each variant's mode + family identity)
+  const metas = await this.loadVariantMetas(expandedVariantIds);
+  console.log('🔁 [SALES-RECOMP] expanded variants meta', { count: metas.length });
+
+  const metaById = new Map<number, any>(metas.map(m => [Number(m.id), m]));
+
+  // 3) Build sibling buckets per family
+  const siblingsByFamily = await this.resolveSiblingVariantsForBaseVariants(metas);
+
+  // 4) Find affected sales invoice_items after cutoff
+  const rows = await this.invoiceItemRepo
+    .createQueryBuilder('ii')
+    .innerJoin('ii.invoice', 'inv')
+    .where('inv.date >= :cut', { cut })
+    .andWhere('ii.itemVariantId IN (:...varIds)', { varIds: expandedVariantIds })
+    .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G'] })
+    .select([
+      'ii.id AS iiId',
+      'ii.itemVariantId AS variantId',
+      'inv.id AS invId',
+      'inv.date AS invoiceDate',
+      'inv.invoiceType AS invoiceType',
+    ])
+    .orderBy('inv.date', 'ASC')
+    .addOrderBy('ii.id', 'ASC')
+    .getRawMany<{
+      iiId: number;
+      variantId: number;
+      invId: number;
+      invoiceDate: string | Date;
+      invoiceType: string;
+    }>();
+
+  console.log('🔁 [SALES-RECOMP] invoice_items found', { count: rows.length });
+  if (!rows.length) return;
+
+  // 5) Cache purchase-cost lookups by (pickedVariantId|dayKey)
+  const costCache = new Map<string, any>();
+
+  // helper: pick a box sibling to use as the purchase-cost source
+  const pickBoxSource = (bucket: any, targetMeta: any) => {
+    if (!bucket?.boxBySpb || bucket.boxBySpb.size === 0) return null;
+
+    const targetSpb = Number(targetMeta?.sheetsPerBox ?? 0);
+
+    // if target has a meaningful spb and there's an exact box match, use it
+    if (targetSpb > 1) {
+      const exact = bucket.boxBySpb.get(targetSpb);
+      if (exact?.id) return exact;
+    }
+
+    // if only one box candidate exists, use it
+    if (bucket.boxBySpb.size === 1) {
+      return Array.from(bucket.boxBySpb.values())[0] ?? null;
+    }
+
+    // otherwise pick the largest spb (common case: multiple boxes, want the "real" box)
+    let best: any = null;
+    let bestSpb = -1;
+    for (const [spb, v] of bucket.boxBySpb.entries()) {
+      if (spb > bestSpb) {
+        bestSpb = spb;
+        best = v;
+      }
+    }
+    return best;
+  };
+
+  for (const r of rows) {
+    const iiId = Number(r.iiId);
+    const targetId = Number(r.variantId);
+
+    const target = metaById.get(targetId);
+    if (!target) continue;
+
+    const dayKey =
+      typeof r.invoiceDate === 'string'
+        ? String(r.invoiceDate).slice(0, 10)
+        : new Date(r.invoiceDate).toISOString().slice(0, 10);
+
+    const invDateUTC = new Date(dayKey + 'T00:00:00.000Z');
+
+    // Find family bucket
+    const nonBoxKey = this.familyKey({
+      itemNameDescriptionId: target.itemNameDescriptionId ?? null,
+      thicknessMm: target.thicknessMm,
+      length: target.length,
+      width: target.width,
+      origin: target.origin ?? null,
+      sheetsPerBox: target.sheetsPerBox ?? null,
+      mode: 'sheet',
+    });
+
+    const bucket = siblingsByFamily.get(nonBoxKey);
+
+    // ✅ Decide which variant to use to READ purchase costs
+    // If target is box -> itself
+    // If target is sheet/sqm/unit -> prefer the box sibling
+    let picked = target;
+    if (target.mode !== 'box') {
+      const boxSource = pickBoxSource(bucket, target);
+      if (boxSource?.id) picked = boxSource;
+    }
+
+    const pickedVariantId = Number(picked.id);
+
+    // ✅ get purchase costs (cached)
+    const costKey = `${pickedVariantId}|${dayKey}`;
+    let costs = costCache.get(costKey);
+    if (!costs) {
+      costs = await this.getPurchaseAvgCostsAsOf(pickedVariantId, invDateUTC);
+      costCache.set(costKey, costs);
+    }
+
+    console.log('🧾 [SALES-RECOMP] resolved purchase source', {
+      iiId,
+      targetId,
+      targetMode: target.mode,
+      dayKey,
+      pickedVariantId,
+      pickedMode: picked.mode,
+      pickedSpb: picked.sheetsPerBox ?? null,
+      candidateIdsCount: bucket?.boxBySpb?.size ?? 0,
+      costs,
+    });
+
+    // ✅ IMPORTANT: write costs EXACTLY AS-IS (NO division by spb, NO sqm conversion)
+    await this.invoiceItemRepo.update(iiId, {
+      averageCost: costs?.averageCost ?? null,
+      averageCostC: costs?.averageCostC ?? null,
+      averageCostVM: costs?.averageCostVM ?? null,
+      averageCostCVM: costs?.averageCostCVM ?? null,
+    });
+  }
+
+  console.log('✅ [SALES-RECOMP] done');
+}
+
+
 
 
 
@@ -8366,6 +8904,7 @@ async getCostAnalysisHistory(q?: string): Promise<any[]> {
       'inv.date AS invoiceDate',
 
       // 🔹 previous quantities
+
       'pii.previousQuantity AS previousQuantity',
       'pii.previousQuantityC AS previousQuantityC',
       'pii.previousQuantityVM AS previousQuantityVM',
@@ -8380,6 +8919,7 @@ async getCostAnalysisHistory(q?: string): Promise<any[]> {
       // 🔹 OFR price & final OFR
       'pii.priceOFR AS priceOFR',
       'pii.finalOFR AS finalOFR',
+      
 
       // 🔹 current averages
       'pii.averageCost AS averageCost',

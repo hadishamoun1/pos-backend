@@ -50,16 +50,16 @@ export class Invoice {
   @Column({ nullable: true })
   currencyId: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 50, scale: 2 })
   totalWithoutVAT: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 50, scale: 2 })
   totalVAT: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  @Column({ type: 'decimal', precision: 50, scale: 2 })
   grandTotal: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 4 })
+  @Column({ type: 'decimal', precision: 50, scale: 4 })
   currencyRate: number;
 
   @Column({ type: 'decimal', precision: 20, scale: 4 })

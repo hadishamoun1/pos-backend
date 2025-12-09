@@ -58,16 +58,16 @@ export class InvoiceItem {
   sheetsPerBox: number | null;
 
   // Keep only necessary fields (remove duplicate item info)
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 50, scale: 2 })
   sqm: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   unitPrice: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 50, scale: 2 })
   totalAmount: number;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  @Column({ type: 'decimal', precision: 50, scale: 2 })
   vat: number;
   @Column({ type: 'int', default: 1 })
   quantity: number;
