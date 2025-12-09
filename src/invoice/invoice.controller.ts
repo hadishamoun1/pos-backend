@@ -52,6 +52,21 @@ export class InvoiceController {
   }
 
 
+  @Get('details')
+  getAllDetails(
+    @Query('type') type?: 'S' | 'G' | 'RVR' | 'RTN',
+    @Query('from') from?: string, // YYYY-MM-DD
+    @Query('to') to?: string,     // YYYY-MM-DD
+    @Query('limit') limit?: string,
+  ) {
+    return this.invoiceService.getAllInvoiceDetailsForView({
+      type,
+      from,
+      to,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
   // ✅ NEW: browsing search 
   @Get('v1/browsing/:customerId/search')
   async searchBrowsingForCustomer(

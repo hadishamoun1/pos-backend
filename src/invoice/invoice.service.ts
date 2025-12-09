@@ -3482,8 +3482,129 @@ async createReturnInvoice(
 
 
 
+  async getAllInvoiceDetailsForView(opts?: {
+    type?: 'S' | 'G' | 'RVR' | 'RTN';
+    from?: string; // YYYY-MM-DD
+    to?: string;   // YYYY-MM-DD
+    limit?: number;
+  }) {
+    const qb = this.invoiceRepository
+      .createQueryBuilder('inv')
+      .leftJoinAndSelect('inv.customer', 'cust')
+      .leftJoinAndSelect('inv.branch', 'br')
+      .leftJoinAndSelect('inv.currency', 'cur')
+      .leftJoinAndSelect('inv.items', 'ii')
+      .leftJoinAndSelect('ii.itemVariant', 'iv')
+      .leftJoinAndSelect('iv.thickness', 'th')
+      .leftJoinAndSelect('iv.itemNameDescription', 'desc')
+      .orderBy('inv.date', 'DESC')
+      .addOrderBy('inv.id', 'DESC')
+      .addOrderBy('ii.id', 'ASC');
 
+    // ✅ default: only Sales/Glass (as you said before)
+    const types = opts?.type ? [opts.type] : ['S', 'G'];
+    qb.andWhere('inv.invoiceType IN (:...types)', { types });
 
+    // optional date filters (DATE column safe as strings)
+    if (opts?.from) qb.andWhere('inv.date >= :from', { from: opts.from });
+    if (opts?.to) qb.andWhere('inv.date <= :to', { to: opts.to });
+
+    if (opts?.limit && Number.isFinite(opts.limit) && opts.limit > 0) {
+      qb.take(opts.limit);
+    }
+
+    const invoices = await qb.getMany();
+
+    return invoices.map((inv: any) => ({
+      id: inv.id,
+      date: inv.date,
+      invoiceType: inv.invoiceType,
+      invoiceNumber: inv.invoiceNumber,
+
+      customer: inv.customer
+        ? { id: inv.customer.id, name: inv.customer.name ?? null }
+        : null,
+
+      branch: inv.branch
+        ? { id: inv.branch.id, name: inv.branch.name ?? null }
+        : null,
+
+      currency: inv.currency
+        ? { id: inv.currency.id, code: inv.currency.code ?? null }
+        : null,
+
+      totals: {
+        totalWithoutVAT: Number(inv.totalWithoutVAT),
+        totalVAT: Number(inv.totalVAT),
+        grandTotal: Number(inv.grandTotal),
+        currencyRate: Number(inv.currencyRate),
+        vatPercentage: Number(inv.vatPercentage),
+      },
+
+      items: (inv.items ?? []).map((ii: any) => {
+        const iv = ii.itemVariant;
+        const th = iv?.thickness;
+        const desc = iv?.itemNameDescription;
+
+        return {
+          id: ii.id,
+          invoiceItemId: ii.id,
+          itemVariantId: ii.itemVariantId,
+
+          itemName:
+            desc?.name ??
+            desc?.description ??
+            iv?.invoiceDisplayName ??
+            null,
+
+          thickness:
+            th?.value != null
+              ? Number(th.value)
+              : th?.thickness != null
+              ? Number(th.thickness)
+              : null,
+
+          length:
+            ii.length != null
+              ? Number(ii.length)
+              : iv?.length != null
+              ? Number(iv.length)
+              : null,
+
+          width:
+            ii.width != null
+              ? Number(ii.width)
+              : iv?.width != null
+              ? Number(iv.width)
+              : null,
+
+          sheetsPerBox:
+            ii.sheetsPerBox != null
+              ? Number(ii.sheetsPerBox)
+              : iv?.sheetsPerBox != null
+              ? Number(iv.sheetsPerBox)
+              : null,
+
+          quantity: Number(ii.quantity ?? 0),
+          sqm: Number(ii.sqm ?? 0),
+
+          unitPrice: Number(ii.unitPrice ?? 0),
+          totalAmount: Number(ii.totalAmount ?? 0),
+          vat: Number(ii.vat ?? 0),
+
+          averageCost: ii.averageCost != null ? Number(ii.averageCost) : null,
+          averageCostC: ii.averageCostC != null ? Number(ii.averageCostC) : null,
+          averageCostVM: ii.averageCostVM != null ? Number(ii.averageCostVM) : null,
+          averageCostCVM: ii.averageCostCVM != null ? Number(ii.averageCostCVM) : null,
+
+          lastCost: ii.lastCost != null ? Number(ii.lastCost) : null,
+          lastCostC: ii.lastCostC != null ? Number(ii.lastCostC) : null,
+          lastCostVM: ii.lastCostVM != null ? Number(ii.lastCostVM) : null,
+          lastCostCVM: ii.lastCostCVM != null ? Number(ii.lastCostCVM) : null,
+        };
+      }),
+    }));
+  }
 
 
 

@@ -14,6 +14,7 @@ import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { InventoryCount } from 'src/entities/inventory/count.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+import { InvoiceItem } from 'src/entities/invoiceItem.entity';
 
 @Injectable()
 export class PurchaseInvoiceService {
@@ -52,6 +53,9 @@ export class PurchaseInvoiceService {
 
     @InjectRepository(ItemNameDescription)
     private readonly descRepo: Repository<ItemNameDescription>,
+
+        @InjectRepository(InvoiceItem)
+    private readonly invoiceItemRepo: Repository<InvoiceItem>,
 
     
   ) {}
@@ -580,7 +584,7 @@ export class PurchaseInvoiceService {
       const jv = this.journalVoucherRepo.create({
         jvNumber,
         purchaseInvoiceId: savedInvoice.id,
-        date: savedInvoice.date,
+        date: savedInvoice.jvDate,
         jvType: savedInvoice.type,
         totalDr: hdrDr,
         totalDrUSD: hdrDrUSD,
@@ -4157,7 +4161,7 @@ private async rebuildInventoryForPurchaseInvoice(
   console.log(PREFIX, 'Start rebuild for invoice:', {
     id: savedInvoice.id,
     type: savedInvoice.type,
-    date: savedInvoice.date,
+    date: savedInvoice.jvDate,
     invoiceDate,
     itemsCount: items.length,
   });
@@ -4501,11 +4505,163 @@ private async rebuildInventoryForPurchaseInvoice(
 
 
 
+private async recomputeSalesInvoiceItemsAfterPurchaseEdit(opts: {
+  cutoffDate: Date;
+  affectedVariantIds: number[];
+}) {
+  const { cutoffDate, affectedVariantIds } = opts;
+
+  if (!affectedVariantIds?.length) return;
+
+  // normalize to day start (DATE columns behavior)
+  const cut = new Date(cutoffDate);
+  cut.setHours(0, 0, 0, 0);
+
+  console.log('🔁 [SALES-RECOMP] start', {
+    cut: cut.toISOString(),
+    affectedVariantIdsCount: affectedVariantIds.length,
+    affectedVariantIds,
+  });
+
+  const rows = await this.invoiceItemRepo
+    .createQueryBuilder('ii')
+    .innerJoin('ii.invoice', 'inv')
+    .where('inv.date >= :cut', { cut })
+    .andWhere('ii.itemVariantId IN (:...varIds)', { varIds: affectedVariantIds })
+    .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G'] }) // adjust if you want more
+    .select([
+      'ii.id AS id',
+      'ii.itemVariantId AS itemVariantId',
+      'inv.id AS invId',
+      'inv.date AS invoiceDate',
+      'inv.invoiceType AS invoiceType',
+    ])
+    .orderBy('inv.date', 'ASC')
+    .addOrderBy('ii.id', 'ASC')
+    .getRawMany<{
+      id: number;
+      itemVariantId: number;
+      invId: number;
+      invoiceDate: string | Date;
+      invoiceType: string;
+    }>();
+
+  console.log('🔁 [SALES-RECOMP] rows found', { count: rows.length });
+  if (!rows.length) return;
+
+  // cache by (variantId + invoiceDate)
+  const cache = new Map<string, any>();
+
+  for (const r of rows) {
+    const variantId = Number(r.itemVariantId);
+
+    const invDate =
+      typeof r.invoiceDate === 'string'
+        ? new Date(r.invoiceDate + 'T00:00:00.000Z')
+        : new Date(r.invoiceDate);
+
+    const key = `${variantId}|${invDate.toISOString().slice(0, 10)}`;
+
+    let costs = cache.get(key);
+    if (!costs) {
+      costs = await this.getPurchaseAvgCostsAsOf(variantId, invDate);
+      cache.set(key, costs);
+    }
+
+    console.log('🧾 [SALES-RECOMP] updating invoice_item', {
+      iiId: r.id,
+      invId: r.invId,
+      invoiceType: r.invoiceType,
+      variantId,
+      invDate: invDate.toISOString().slice(0, 10),
+      costs,
+    });
+
+    await this.invoiceItemRepo.update(Number(r.id), {
+      averageCost: costs.averageCost,
+      averageCostC: costs.averageCostC,
+      averageCostVM: costs.averageCostVM,
+      averageCostCVM: costs.averageCostCVM,
+    });
+  }
+
+  console.log('✅ [SALES-RECOMP] done');
+}
 
 
 
 
+private async getPurchaseAvgCostsAsOf(itemVariantId: number, asOfDate: Date) {
+  const reqId = `POCOST:${itemVariantId}:${asOfDate.toISOString().slice(0, 10)}:${Date.now()}`;
 
+  // inclusive same-day
+  const cut = new Date(asOfDate);
+  cut.setHours(23, 59, 59, 999);
+
+  console.log(`\n🔍 [${reqId}] getPurchaseAvgCostsAsOf START`, {
+    itemVariantId,
+    asOfDateISO: asOfDate.toISOString(),
+    cutISO: cut.toISOString(),
+    poTypes: ['S', 'G', 'SR'],
+  });
+
+  const qb = this.itemRepo
+    .createQueryBuilder('pii')
+    .innerJoin('pii.invoice', 'pi')
+    .where('pii.itemVariantId = :vid', { vid: itemVariantId })
+    .andWhere('pi.status = :st', { st: 'Recieved' })
+    .andWhere('pi.type IN (:...types)', { types: ['S', 'G', 'SR'] })
+    .andWhere('pi.date <= :cut', { cut })
+    .orderBy('pi.date', 'DESC')
+    .addOrderBy('pi.id', 'DESC')
+    .addOrderBy('pii.id', 'DESC')
+    .select([
+      'pii.averageCost AS averageCost',
+      'pii.averageCostC AS averageCostC',
+      'pii.averageCostVM AS averageCostVM',
+      'pii.averageCostCVM AS averageCostCVM',
+      'pi.id AS piId',
+      'pi.date AS piDate',
+      'pi.type AS piType',
+      'pii.id AS piiId',
+    ]);
+
+  try {
+    // @ts-ignore
+    console.log(`🧠 [${reqId}] SQL:`, qb.getSql?.() ?? '(sql not available)');
+    // @ts-ignore
+    console.log(`🧠 [${reqId}] Params:`, qb.getParameters?.() ?? '(params not available)');
+  } catch {}
+
+  const raw = await qb.getRawOne<{
+    averageCost?: string | number | null;
+    averageCostC?: string | number | null;
+    averageCostVM?: string | number | null;
+    averageCostCVM?: string | number | null;
+    piId?: number;
+    piDate?: Date;
+    piType?: string;
+    piiId?: number;
+  }>();
+
+  console.log(`📄 [${reqId}] Raw latest purchase row`, raw ?? null);
+
+  const result = {
+    averageCost: raw?.averageCost != null ? Number(raw.averageCost) : null,
+    averageCostC: raw?.averageCostC != null ? Number(raw.averageCostC) : null,
+    averageCostVM: raw?.averageCostVM != null ? Number(raw.averageCostVM) : null,
+    averageCostCVM: raw?.averageCostCVM != null ? Number(raw.averageCostCVM) : null,
+  };
+
+  console.log(`✅ [${reqId}] getPurchaseAvgCostsAsOf END`, {
+    pickedFrom: raw
+      ? { piId: raw.piId, piDate: raw.piDate, piType: raw.piType, piiId: raw.piiId }
+      : null,
+    result,
+  });
+
+  return result;
+}
   
   
 
@@ -8142,6 +8298,17 @@ if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'RVR') {
 
   console.log('🧾 RVR Cost Calc — End', { invoiceId: savedInvoice.id });
 }
+
+// affected variants MUST include removed items too:
+const prevVariantIds = (existing.items ?? []).map(x => Number(x.itemVariantId)).filter(Boolean);
+const newVariantIds  = (incomingItems ?? []).map(x => Number(x.itemVariantId)).filter(Boolean);
+const affectedVariantIds = Array.from(new Set([...prevVariantIds, ...newVariantIds]));
+
+await this.recomputeSalesInvoiceItemsAfterPurchaseEdit({
+  cutoffDate: new Date(savedInvoice.date),
+  affectedVariantIds,
+});
+
 
 }
 
