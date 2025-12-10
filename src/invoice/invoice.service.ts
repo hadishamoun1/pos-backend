@@ -920,6 +920,16 @@ private async fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
     return Number.isFinite(n) ? n : null;
   };
 
+  const safeNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const safeAvgOrNull = (sumVal: number, sumQty: number) => {
+    if (!Number.isFinite(sumVal) || !Number.isFinite(sumQty) || sumQty <= 0) return null;
+    return sumVal / sumQty;
+  };
+
   // 1) load meta for ALL variants in the invoice
   const metas = await queryRunner.manager
     .getRepository(ItemVariant)
@@ -995,9 +1005,39 @@ private async fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
   const variantRepo = queryRunner.manager.getRepository(ItemVariant);
   const piiRepo = queryRunner.manager.getRepository(PurchaseInvoiceItem);
   const iiRepo = queryRunner.manager.getRepository(InvoiceItem);
+  const icRepo = queryRunner.manager.getRepository(InventoryCount);
 
   // cache: familyKey -> costs
   const costCache = new Map<string, any>();
+
+  // helper: aggregate InventoryCount weighted sums for given variantIds
+  const getInvCountAggForVariantIds = async (ids: number[]) => {
+    if (!ids?.length) {
+      return { sumQtyOfr: 0, sumValOfr: 0, sumQtyVm: 0, sumValVm: 0 };
+    }
+
+    const raw = await icRepo
+      .createQueryBuilder("ic")
+      .leftJoin("ic.itemVariant", "iv")
+      .select("SUM(COALESCE(ic.sqmOfr,0))", "sumQtyOfr")
+      .addSelect("SUM(COALESCE(ic.sqmOfr,0) * COALESCE(ic.finalCostOfr,0))", "sumValOfr")
+      .addSelect("SUM(COALESCE(ic.sqm,0))", "sumQtyVm")
+      .addSelect("SUM(COALESCE(ic.sqm,0) * COALESCE(ic.finalCost,0))", "sumValVm")
+      .where("iv.id IN (:...ids)", { ids })
+      .getRawOne<{
+        sumQtyOfr?: string | number | null;
+        sumValOfr?: string | number | null;
+        sumQtyVm?: string | number | null;
+        sumValVm?: string | number | null;
+      }>();
+
+    return {
+      sumQtyOfr: safeNum(raw?.sumQtyOfr),
+      sumValOfr: safeNum(raw?.sumValOfr),
+      sumQtyVm: safeNum(raw?.sumQtyVm),
+      sumValVm: safeNum(raw?.sumValVm),
+    };
+  };
 
   for (const [fk, invoiceItemIds] of familyToInvoiceItemIds.entries()) {
     console.log(`${TAG} --- family loop ---`, { fk, invoiceItemIds });
@@ -1073,7 +1113,7 @@ private async fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
         ])
         .where("pii.itemVariantId IN (:...ids)", { ids: candidateIds })
         .andWhere("pi.status = :st", { st: "Recieved" })
-        .andWhere("pi.type IN (:...types)", { types: ["S", "G", "SR"] })
+        .andWhere("pi.type IN (:...types)", { types: ["S", "G", "SR","RVR"] })
         .andWhere("pi.date <= :cut", { cut })
         .orderBy("pi.date", "DESC")
         .addOrderBy("pi.id", "DESC")
@@ -1082,14 +1122,78 @@ private async fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
 
       console.log(`${TAG} latest PO row`, row);
 
-      costs = {
+      const poCostsParsed = {
         averageCost: toNumOrNull((row as any)?.averageCost),
         averageCostC: toNumOrNull((row as any)?.averageCostC),
         averageCostVM: toNumOrNull((row as any)?.averageCostVM),
         averageCostCVM: toNumOrNull((row as any)?.averageCostCVM),
       };
 
-      console.log(`${TAG} parsed costs`, { fk, costs });
+      const poRowMissing =
+        !row ||
+        (poCostsParsed.averageCost == null &&
+          poCostsParsed.averageCostC == null &&
+          poCostsParsed.averageCostVM == null &&
+          poCostsParsed.averageCostCVM == null);
+
+      // ✅ NEW: fallback to InventoryCount when NO PO found
+      if (poRowMissing) {
+        console.warn(`${TAG} NO PO FOUND for family → falling back to InventoryCount`, {
+          fk,
+          candidateIds,
+          descId: repMeta.itemNameDescriptionId ?? null,
+        });
+
+        // (A) variant-level fallback from InventoryCount for the sibling variants (candidateIds)
+        const aggVar = await getInvCountAggForVariantIds(candidateIds);
+
+        const avgOfrFromCounts = safeAvgOrNull(aggVar.sumValOfr, aggVar.sumQtyOfr);
+        const avgVmFromCounts = safeAvgOrNull(aggVar.sumValVm, aggVar.sumQtyVm);
+
+        console.log(`${TAG} InventoryCount VAR agg`, {
+          fk,
+          aggVar,
+          avgOfrFromCounts,
+          avgVmFromCounts,
+        });
+
+        // (B) description-level fallback from InventoryCount for ALL variants under same description
+        const descVariantRows = await variantRepo
+          .createQueryBuilder("v")
+          .select(["v.id AS id"])
+          .where("(v.itemNameDescriptionId <=> :d)", { d: repMeta.itemNameDescriptionId ?? null })
+          .getRawMany();
+
+        const descVariantIds = Array.from(
+          new Set((descVariantRows || []).map((r: any) => Number(r.id)).filter(Boolean)),
+        );
+
+        const aggDesc = await getInvCountAggForVariantIds(descVariantIds);
+
+        const avgCFromCounts = safeAvgOrNull(aggDesc.sumValOfr, aggDesc.sumQtyOfr);   // C uses OFR fields
+        const avgCvmFromCounts = safeAvgOrNull(aggDesc.sumValVm, aggDesc.sumQtyVm);   // CVM uses VM fields
+
+        console.log(`${TAG} InventoryCount DESC agg`, {
+          fk,
+          descId: repMeta.itemNameDescriptionId ?? null,
+          descVariantIdsCount: descVariantIds.length,
+          aggDesc,
+          avgCFromCounts,
+          avgCvmFromCounts,
+        });
+
+        costs = {
+          averageCost: avgOfrFromCounts,
+          averageCostVM: avgVmFromCounts,
+          averageCostC: avgCFromCounts,
+          averageCostCVM: avgCvmFromCounts,
+        };
+
+        console.log(`${TAG} costs resolved from InventoryCount fallback`, { fk, costs });
+      } else {
+        costs = poCostsParsed;
+        console.log(`${TAG} parsed costs from PO`, { fk, costs });
+      }
 
       costCache.set(fk, costs);
     } else {
@@ -1117,6 +1221,7 @@ private async fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
 
   console.log(`${TAG} END`);
 }
+
 
 
 
