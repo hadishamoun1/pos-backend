@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In, IsNull ,DeepPartial,Brackets } from 'typeorm';
+import { Repository, DataSource, In, IsNull ,DeepPartial,Brackets, QueryRunner } from 'typeorm';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { Invoice } from '../entities/invoice.entity';
@@ -179,6 +179,8 @@ async createInvoice(data: any): Promise<Invoice> {
       .getRepository(InvoiceItem)
       .save(items);
     console.log('✅ Saved invoice items:', savedItems.map((i) => i.id));
+
+
 
     // -------------- NEW: UPDATE SQM PIECES SOLD / REMAINING --------------
     // For each invoice line that has `sqmPieceId`, consume sqm from that piece group
@@ -385,6 +387,13 @@ async createInvoice(data: any): Promise<Invoice> {
 
     await queryRunner.manager.save(InvoiceItem, itemsWithCosts);
     console.log('✅ Cost fields populated on invoice items');
+    await this.fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
+  queryRunner,
+  new Date(savedInvoice.date),
+  savedItems, // or itemsWithCosts (ids must exist)
+);
+console.log('✅ Sibling PO average costs applied');
+
 
     // -------------- INVENTORY TRANSACTIONS --------------
 // -------------- INVENTORY TRANSACTIONS (with stockMode rules) --------------
@@ -863,6 +872,251 @@ if (data.requestId != null && String(data.requestId).trim() !== '') {
   }
 }
 
+
+
+private async fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
+  queryRunner: QueryRunner,
+  invoiceDate: Date,
+  savedItems: InvoiceItem[],
+) {
+  const TAG = `[AVG-SIB-PO]`;
+  console.log(`${TAG} START`, {
+    invoiceDate,
+    savedItemsCount: savedItems?.length ?? 0,
+    savedItemIds: (savedItems || []).map(x => x.id),
+  });
+
+  if (!savedItems?.length) {
+    console.log(`${TAG} EXIT: no savedItems`);
+    return;
+  }
+
+  const invDate = new Date(invoiceDate);
+  const cut = new Date(invDate);
+  cut.setHours(23, 59, 59, 999);
+
+  const uniqVariantIds = Array.from(
+    new Set(savedItems.map(i => Number(i.itemVariantId)).filter(Boolean)),
+  );
+
+  console.log(`${TAG} uniqVariantIds`, uniqVariantIds);
+
+  if (!uniqVariantIds.length) {
+    console.log(`${TAG} EXIT: no uniqVariantIds`);
+    return;
+  }
+
+  const normalizeOrigin = (o: any) => String(o ?? "").trim().toLowerCase();
+  const numKey = (v: any) => {
+    if (v === null || v === undefined) return "0";
+    const s = String(v).trim();
+    return s === "" ? "0" : s;
+  };
+  const familyKey = (v: any) =>
+    `${v.itemNameDescriptionId ?? 0}|${numKey(v.thicknessMm)}|${numKey(v.length)}|${numKey(v.width)}|${normalizeOrigin(v.origin)}`;
+
+  const toNumOrNull = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  // 1) load meta for ALL variants in the invoice
+  const metas = await queryRunner.manager
+    .getRepository(ItemVariant)
+    .createQueryBuilder("v")
+    .leftJoin("v.thickness", "t")
+    .select([
+      "v.id AS id",
+      "v.itemNameDescriptionId AS itemNameDescriptionId",
+      "t.thickness AS thicknessMm",
+      "v.length AS length",
+      "v.width AS width",
+      "v.origin AS origin",
+    ])
+    .where("v.id IN (:...ids)", { ids: uniqVariantIds })
+    .getRawMany();
+
+  console.log(`${TAG} metas loaded`, {
+    count: metas?.length ?? 0,
+    sample: (metas || []).slice(0, 5),
+  });
+
+  const metaById = new Map<number, any>((metas || []).map((m: any) => [Number(m.id), m]));
+
+  // show if any invoice variant had NO meta
+  for (const vid of uniqVariantIds) {
+    if (!metaById.has(Number(vid))) {
+      console.warn(`${TAG} WARN: meta missing for variant`, vid);
+    }
+  }
+
+  // 2) group invoice items by family key (so we do 1 PO lookup per family)
+  const familyToInvoiceItemIds = new Map<string, number[]>();
+
+  for (const ii of savedItems) {
+    const vid = Number(ii.itemVariantId);
+    const meta = metaById.get(vid);
+    if (!meta) {
+      console.warn(`${TAG} SKIP invoiceItem meta missing`, {
+        invoiceItemId: ii.id,
+        itemVariantId: ii.itemVariantId,
+      });
+      continue;
+    }
+
+    const fk = familyKey(meta);
+    if (!fk || fk.trim() === "") {
+      console.warn(`${TAG} SKIP fk empty`, { invoiceItemId: ii.id, meta });
+      continue;
+    }
+
+    const arr = familyToInvoiceItemIds.get(fk) ?? [];
+    arr.push(Number(ii.id));
+    familyToInvoiceItemIds.set(fk, arr);
+
+    console.log(`${TAG} mapped invoiceItem -> family`, {
+      invoiceItemId: ii.id,
+      variantId: ii.itemVariantId,
+      fk,
+      meta,
+    });
+  }
+
+  console.log(`${TAG} families`, {
+    count: familyToInvoiceItemIds.size,
+    keys: Array.from(familyToInvoiceItemIds.keys()),
+  });
+
+  if (!familyToInvoiceItemIds.size) {
+    console.log(`${TAG} EXIT: no families built`);
+    return;
+  }
+
+  const variantRepo = queryRunner.manager.getRepository(ItemVariant);
+  const piiRepo = queryRunner.manager.getRepository(PurchaseInvoiceItem);
+  const iiRepo = queryRunner.manager.getRepository(InvoiceItem);
+
+  // cache: familyKey -> costs
+  const costCache = new Map<string, any>();
+
+  for (const [fk, invoiceItemIds] of familyToInvoiceItemIds.entries()) {
+    console.log(`${TAG} --- family loop ---`, { fk, invoiceItemIds });
+
+    const repIiId = invoiceItemIds[0];
+    const repIi = savedItems.find(x => Number(x.id) === repIiId);
+    if (!repIi) {
+      console.warn(`${TAG} SKIP: rep invoice item not found`, repIiId);
+      continue;
+    }
+
+    const repMeta = metaById.get(Number(repIi.itemVariantId));
+    if (!repMeta) {
+      console.warn(`${TAG} SKIP: rep meta missing`, {
+        repIiId,
+        repVariantId: repIi.itemVariantId,
+      });
+      continue;
+    }
+
+    console.log(`${TAG} repMeta`, repMeta);
+
+    // 3) find ALL variant IDs that belong to this family
+    const candidateVariants = await variantRepo
+      .createQueryBuilder("v")
+      .leftJoin("v.thickness", "t")
+      .select(["v.id AS id"])
+      .where("(v.itemNameDescriptionId <=> :d)", { d: repMeta.itemNameDescriptionId ?? null })
+      .andWhere("t.thickness = :tm", { tm: repMeta.thicknessMm })
+      .andWhere("v.length = :l", { l: repMeta.length })
+      .andWhere("v.width = :w", { w: repMeta.width })
+      .andWhere("LOWER(TRIM(COALESCE(v.origin,''))) = :o", { o: normalizeOrigin(repMeta.origin) })
+      .getRawMany();
+
+    const candidateIds = Array.from(
+      new Set((candidateVariants || []).map((r: any) => Number(r.id)).filter(Boolean)),
+    );
+
+    console.log(`${TAG} candidateIds`, {
+      fk,
+      count: candidateIds.length,
+      ids: candidateIds,
+    });
+
+    if (!candidateIds.length) {
+      console.warn(`${TAG} WARN: no siblings found for family`, { fk, repMeta });
+      continue;
+    }
+
+    // 4) get latest PO costs among ANY sibling variant
+    let costs = costCache.get(fk);
+    if (!costs) {
+      console.log(`${TAG} querying latest PO cost`, {
+        fk,
+        cut,
+        candidateIds,
+      });
+
+      const row = await piiRepo
+        .createQueryBuilder("pii")
+        .innerJoin("pii.invoice", "pi")
+        .select([
+          "pi.id AS piId",
+          "pi.date AS piDate",
+          "pi.type AS piType",
+          "pi.status AS piStatus",
+          "pii.id AS piiId",
+          "pii.itemVariantId AS piiVariantId",
+          "pii.averageCost AS averageCost",
+          "pii.averageCostC AS averageCostC",
+          "pii.averageCostVM AS averageCostVM",
+          "pii.averageCostCVM AS averageCostCVM",
+        ])
+        .where("pii.itemVariantId IN (:...ids)", { ids: candidateIds })
+        .andWhere("pi.status = :st", { st: "Recieved" })
+        .andWhere("pi.type IN (:...types)", { types: ["S", "G", "SR"] })
+        .andWhere("pi.date <= :cut", { cut })
+        .orderBy("pi.date", "DESC")
+        .addOrderBy("pi.id", "DESC")
+        .addOrderBy("pii.id", "DESC")
+        .getRawOne();
+
+      console.log(`${TAG} latest PO row`, row);
+
+      costs = {
+        averageCost: toNumOrNull((row as any)?.averageCost),
+        averageCostC: toNumOrNull((row as any)?.averageCostC),
+        averageCostVM: toNumOrNull((row as any)?.averageCostVM),
+        averageCostCVM: toNumOrNull((row as any)?.averageCostCVM),
+      };
+
+      console.log(`${TAG} parsed costs`, { fk, costs });
+
+      costCache.set(fk, costs);
+    } else {
+      console.log(`${TAG} cache hit`, { fk, costs });
+    }
+
+    // 5) update all invoice items of that family
+    const res = await iiRepo.update(
+      { id: In(invoiceItemIds) },
+      {
+        averageCost: costs.averageCost,
+        averageCostC: costs.averageCostC,
+        averageCostVM: costs.averageCostVM,
+        averageCostCVM: costs.averageCostCVM,
+      } as any,
+    );
+
+    console.log(`${TAG} update result`, {
+      fk,
+      invoiceItemIds,
+      affected: (res as any)?.affected,
+      raw: res,
+    });
+  }
+
+  console.log(`${TAG} END`);
+}
 
 
 
@@ -2601,6 +2855,13 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
     await invoiceItemRepo.save(itemsWithCosts as any);
     console.log('✅ Cost fields populated on invoice items');
+    await this.fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
+  queryRunner,
+  new Date((savedInvoice as any).date),
+  savedItems as any,
+);
+console.log('✅ Sibling PO average costs applied');
+
 
     // ✅ meta map for NEW items (stockMode + itemType from DB)
     const metaMapNew = await buildVariantMetaMap(variantIds);
