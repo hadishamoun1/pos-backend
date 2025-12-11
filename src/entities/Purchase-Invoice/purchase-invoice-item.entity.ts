@@ -31,6 +31,8 @@ export class PurchaseInvoiceItem {
   quantity: number;
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   sqm: number;
+   @Column({ type: 'decimal', precision: 10, scale: 2 })
+  sqmOfr: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   unitPrice: number;

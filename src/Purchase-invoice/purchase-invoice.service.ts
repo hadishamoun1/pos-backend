@@ -1,6 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, Like, Raw } from 'typeorm';
+import {
+  Repository,
+  In,
+  Like,
+  Raw,
+  EntityManager,
+  SelectQueryBuilder, 
+    Brackets, 
+} from 'typeorm';
+
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
@@ -15,30 +24,483 @@ import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { InventoryCount } from 'src/entities/inventory/count.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 import { InvoiceItem } from 'src/entities/invoiceItem.entity';
+export type Chain = "OFR" | "VM";
 
-type VariantMode = 'box' | 'sheet' | 'sqm' | 'unit';
+export const DEBUG_PREV = true;
+export const DEBUG_PREV_QTY = true;
+// if you want ALL rows printed (can be huge), set true
+export const DEBUG_PREV_QTY_FULL = false;
 
-type VariantMeta = {
-  id: number;
-  itemNameDescriptionId: number | null;
-  thicknessMm: any; 
-  length: any;
-  width: any;
-  origin: string | null;
-  sheetsPerBox: number | null;
-  mode: VariantMode | null; 
-};
+export function dlog(scope: string, msg: string, data?: any) {
+  if (!DEBUG_PREV) return;
+  const t = new Date().toISOString();
+  if (data !== undefined) console.log(`[${t}] [${scope}] ${msg}`, data);
+  else console.log(`[${t}] [${scope}] ${msg}`);
+}
 
-type SiblingBucket = {
-  sheet: VariantMeta | null;
-  sqm: VariantMeta | null;
-  unit: VariantMeta | null;
-  boxBySpb: Map<number, VariantMeta>;
-};
+export const num = (v: any, fb = 0) =>
+  Number.isFinite(Number(v)) ? Number(v) : fb;
+
+
+
+
+/**
+ * Used by your other code (po rows calculations, weighted avgs, etc.)
+ */
+export const getItemQty = (it: any, chain: Chain) =>
+  chain === "OFR"
+    ? num(it?.sqmOfr ?? it?.sqmofr ?? it?.sqmOFR ?? 0) // supports different spellings
+    : num(it?.sqm ?? 0);
+
+export const getItemCost = (it: any, chain: Chain) =>
+  chain === "OFR" ? num(it?.finalOFR ?? 0) : num(it?.finalCost ?? 0);
+
+/**
+ * ✅ ids for siblings baseline:
+ * self + sheet + sqm siblings (same itemNameDescriptionId + thickness + length + width + origin)
+ */
+export async function getSheetSqmQtyVariantIds(
+  variantRepo: Repository<ItemVariant>,
+  variantId: number,
+) {
+  const scope = "PREV:getSheetSqmQtyVariantIds";
+  dlog(scope, "start", { variantId });
+
+  const base = await variantRepo.findOne({
+    where: { id: variantId } as any,
+    relations: ["thickness", "thickness.item"],
+  });
+
+  if (!base) {
+    dlog(scope, "base not found -> self only");
+    return [variantId];
+  }
+
+  // ✅ per your rule: use itemNameDescriptionId (NOT realDescriptionId)
+  const descId = base.itemNameDescriptionId ?? null;
+  const thk = base.thickness?.thickness ?? null;
+
+  if (!descId || thk == null) {
+    dlog(scope, "missing descId/thickness -> self only", { descId, thk });
+    return [variantId];
+  }
+
+  const qb = variantRepo
+    .createQueryBuilder("iv")
+    .innerJoin("iv.thickness", "th")
+    .innerJoin("th.item", "it")
+    .select("iv.id", "id")
+    .where("iv.itemNameDescriptionId = :descId", { descId })
+    .andWhere("iv.length = :len", { len: base.length })
+    .andWhere("iv.width = :wid", { wid: base.width })
+    .andWhere("th.thickness = :thk", { thk })
+    .andWhere("it.type IN (:...types)", { types: ["sheet", "sqm"] });
+
+  if (base.origin != null) qb.andWhere("iv.origin = :o", { o: base.origin });
+  else qb.andWhere("iv.origin IS NULL");
+
+  const rows = await qb.getRawMany<{ id: any }>();
+  const sibIds = rows
+    .map((r) => Number(r.id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  const ids = Array.from(new Set([variantId, ...sibIds]));
+  dlog(scope, "done", {
+    base: {
+      id: base.id,
+      descId,
+      thk,
+      length: base.length,
+      width: base.width,
+      origin: base.origin,
+    },
+    ids,
+  });
+
+  return ids;
+}
+
+/** ✅ fallback avg from counts: OFR->finalCostOfr, VM->finalCost */
+export async function countFallbackAvg(
+  invManager: EntityManager,
+  variantIds: number[],
+  chain: Chain,
+) {
+  const scope = "PREV:countFallbackAvg";
+  const field = chain === "OFR" ? "cnt.finalCostOfr" : "cnt.finalCost";
+
+  const qb = invManager
+    .getRepository(InventoryCount)
+    .createQueryBuilder("cnt")
+    .select(`${field}`, "cost")
+    .where("cnt.itemVariantId IN (:...ids)", { ids: variantIds })
+    .andWhere(`${field} IS NOT NULL`)
+    .orderBy("cnt.id", "DESC")
+    .limit(1);
+
+  const row = await qb.getRawOne() as { cost?: string | number | null } | undefined;
+  const cost = num(row?.cost, 0);
+
+  dlog(scope, "done", { cost, row });
+  return cost;
+}
+
+/**
+ * ✅ fallback prevQty from counts:
+ * - OFR MUST use sqmOfr strictly
+ * - VM uses sqm
+ */
+export async function countFallbackPrevQty(
+  invManager: EntityManager,
+  variantIds: number[],
+  chain: Chain,
+) {
+  const scope = "PREV:countFallbackPrevQty";
+  const qtyField = chain === "OFR" ? "cnt.sqmOfr" : "cnt.sqm";
+
+  const qb = invManager
+    .getRepository(InventoryCount)
+    .createQueryBuilder("cnt")
+    .select(`SUM(COALESCE(${qtyField},0))`, "sumQty")
+    .where("cnt.itemVariantId IN (:...ids)", { ids: variantIds });
+
+  const raw = (await qb.getRawOne()) as { sumQty?: string | number | null } | undefined;
+  const sumQty = num(raw?.sumQty, 0);
+
+  dlog(scope, "done", { chain, sumQty, raw });
+  return sumQty;
+}
+
+/**
+ * ✅ SUM tx before cutoff (sales negative, purchases positive)
+ * Returns { sum, txCount } so we can decide fallback when txCount==0
+ */
+async function sumTxQtyDetailed(
+  inventoryTxRepo: Repository<InventoryTransaction>,
+  variantIds: number[],
+  chain: Chain,
+  cutoff: Date,
+  currPiiIds: number[],
+): Promise<{ sum: number; txCount: number }> {
+  const scope = "PREV:sumTxQty";
+
+  // ⚠️ IMPORTANT:
+  // If your entity property is sqmofr (lowercase), change tx.sqmOfr -> tx.sqmofr in BOTH places below.
+  const col = chain === "OFR" ? "tx.sqmofr" : "tx.sqm";
+
+  const applyBase = (
+    qb: SelectQueryBuilder<InventoryTransaction>,
+  ): SelectQueryBuilder<InventoryTransaction> => {
+    qb.where("tx.itemVariantId IN (:...ids)", { ids: variantIds })
+      .andWhere("tx.dateForEachInvoice < :cut", { cut: cutoff });
+
+    if (currPiiIds.length) {
+      qb.andWhere(
+        "(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))",
+        { currIds: currPiiIds },
+      );
+    }
+    return qb;
+  };
+
+  // count rows
+  const qbCount = applyBase(
+    inventoryTxRepo.createQueryBuilder("tx").select("COUNT(*)", "cnt"),
+  );
+  const rawCount = (await qbCount.getRawOne()) as { cnt?: string | number } | undefined;
+  const txCount = num(rawCount?.cnt, 0);
+
+  // breakdown by transactionType
+  try {
+    const qbBreak = applyBase(
+      inventoryTxRepo
+        .createQueryBuilder("tx")
+        .select("tx.transactionType", "type")
+        .addSelect(`SUM(COALESCE(${col},0))`, "sum"),
+    ).groupBy("tx.transactionType");
+
+    const breakdown = await qbBreak.getRawMany();
+    dlog(scope, "breakdown by transactionType", breakdown);
+  } catch (e) {
+    dlog(scope, "breakdown failed (ignore)", String(e));
+  }
+
+  // group by variantId (super useful with siblings)
+  if (DEBUG_PREV_QTY) {
+    try {
+      const qbByVar = applyBase(
+        inventoryTxRepo
+          .createQueryBuilder("tx")
+          .select("tx.itemVariantId", "variantId")
+          .addSelect(`SUM(COALESCE(${col},0))`, "sum"),
+      )
+        .groupBy("tx.itemVariantId")
+        .orderBy("tx.itemVariantId", "ASC");
+
+      const byVar = await qbByVar.getRawMany();
+      dlog(scope, `SUM by variant (${chain})`, byVar);
+    } catch (e) {
+      dlog(scope, "by-variant failed (ignore)", String(e));
+    }
+  }
+
+  // row-level debug (details of quantities summed)
+  if (DEBUG_PREV_QTY) {
+    const qbRows = applyBase(
+      inventoryTxRepo
+        .createQueryBuilder("tx")
+        .select("tx.id", "id")
+        .addSelect("tx.itemVariantId", "variantId")
+        .addSelect("tx.transactionType", "type")
+        .addSelect("tx.dateForEachInvoice", "date")
+        .addSelect("tx.purchaseInvoiceItemId", "piiId")
+        .addSelect(`COALESCE(${col},0)`, "qty"),
+    )
+      .orderBy("tx.dateForEachInvoice", "ASC")
+      .addOrderBy("tx.id", "ASC");
+
+    // protect your console (limit)
+    qbRows.limit(300);
+
+    const rows = (await qbRows.getRawMany()) as Array<{
+      id: any;
+      variantId: any;
+      type: any;
+      date: any;
+      piiId: any;
+      qty: any;
+    }>;
+
+    const cleaned = rows.map((r) => ({
+      id: Number(r.id),
+      variantId: Number(r.variantId),
+      type: r.type,
+      date: r.date,
+      piiId: r.piiId == null ? null : Number(r.piiId),
+      qty: num(r.qty, 0), // ✅ THIS is what is being summed for prevQtyC / prevQtyVM
+    }));
+
+    const jsSum = cleaned.reduce((s, r) => s + r.qty, 0);
+
+    dlog(scope, `ROWS used for prevQty (${chain}) [${col}]`, {
+      cutoff: cutoff.toISOString(),
+      variantIds,
+      txCount,
+      returnedRows: cleaned.length,
+      jsSum,
+      sampleFirst10: cleaned.slice(0, 10),
+      sampleLast10: cleaned.slice(-10),
+    });
+
+    if (DEBUG_PREV_QTY_FULL) {
+      console.log(`[${scope}] FULL ROWS`, cleaned);
+    }
+  }
+
+  // authoritative SQL SUM
+  const qbSum = applyBase(
+    inventoryTxRepo
+      .createQueryBuilder("tx")
+      .select(`SUM(COALESCE(${col},0))`, "sum"),
+  );
+
+  const raw = (await qbSum.getRawOne()) as { sum?: string | number | null } | undefined;
+  const sum = num(raw?.sum, 0);
+
+  dlog(scope, "done", { txCount, sqlSum: sum, raw });
+  return { sum, txCount };
+}
+
+
+
+/**
+ * ✅ BACKWARD-COMPAT wrapper so your old calls compile:
+ * prevQtyC = sumTxQty(..., "OFR", ...)   -> sums sqmOfr
+ * prevQtyVM = sumTxQty(..., "VM", ...)  -> sums sqm
+ */
+export async function sumTxQty(
+  inventoryTxRepo: Repository<InventoryTransaction>,
+  variantIds: number[],
+  chain: Chain,
+  cutoff: Date,
+  currPiiIds: number[],
+) {
+  const { sum } = await sumTxQtyDetailed(
+    inventoryTxRepo,
+    variantIds,
+    chain,
+    cutoff,
+    currPiiIds,
+  );
+  return sum;
+}
+
+/**
+ * ✅ PREV for AverageCost / AverageCostVM for (variant + siblings)
+ * - prevQty from tx sum (OFR->sqmOfr, VM->sqm)
+ * - if NO tx rows exist, fallback prevQty to counts (OFR strictly sqmOfr)
+ * - prevAvg from latest previous PO among (variant + siblings)
+ * - if no PO => fallback avg from counts (OFR->finalCostOfr, VM->finalCost)
+ */
+export async function resolvePrevVariant(
+  itemRepo: Repository<PurchaseInvoiceItem>,
+  inventoryTxRepo: Repository<InventoryTransaction>,
+  invManager: EntityManager,
+  variantRepo: Repository<ItemVariant>,
+  variantId: number,
+  chain: Chain,
+  avgField: "averageCost" | "averageCostVM",
+  dayStart: Date,
+  currPiiIds: number[],
+) {
+  const scope = "PREV:resolvePrevVariant";
+  dlog(scope, "start", {
+    variantId,
+    chain,
+    avgField,
+    dayStart: dayStart.toISOString(),
+  });
+
+  const qtyVariantIds = await getSheetSqmQtyVariantIds(variantRepo, variantId);
+
+  const { sum: txSum, txCount } = await sumTxQtyDetailed(
+    inventoryTxRepo,
+    qtyVariantIds,
+    chain,
+    dayStart,
+    currPiiIds,
+  );
+
+  let prevQty = txSum;
+
+  // ✅ ONLY fallback when there are literally no tx rows
+  if (txCount === 0) {
+    const fbQty = await countFallbackPrevQty(invManager, qtyVariantIds, chain);
+    dlog(scope, "prevQty fallback from counts (txCount==0)", {
+      chain,
+      txSum,
+      fbQty,
+    });
+    prevQty = fbQty;
+  }
+
+ const prev = (await itemRepo
+  .createQueryBuilder("pii")
+  .innerJoin("pii.invoice", "inv")
+  .where("pii.itemVariantId IN (:...ids)", { ids: qtyVariantIds })
+  .andWhere("inv.status = :st", { st: "Recieved" })
+  .andWhere("inv.date < :cut", { cut: dayStart })
+  .andWhere(`pii.${avgField} IS NOT NULL`)
+  .orderBy("inv.date", "DESC")
+  .addOrderBy("pii.id", "DESC")
+  .select([
+    `pii.${avgField} AS avg`,
+    "pii.itemVariantId AS vid",
+    "inv.id AS invId",
+    "inv.date AS invDate",
+  ])
+  .getRawOne()) as
+  | { avg?: string | number | null; vid?: any; invId?: any; invDate?: any }
+  | undefined;
+
+    
+
+  let prevAvg = 0;
+  let avgFrom: "history" | "count" = "count";
+
+  if (prev?.avg != null) {
+    prevAvg = num(prev.avg, 0);
+    avgFrom = "history";
+  } else {
+    prevAvg = await countFallbackAvg(invManager, qtyVariantIds, chain);
+    avgFrom = "count";
+  }
+
+  dlog(scope, "done", {
+    prevQty,
+    prevAvg,
+    avgFrom,
+    qtyVariantIds,
+    historyPick: prev,
+  });
+
+  return { prevQty, prevAvg, avgFrom, qtyVariantIds };
+}
+
+/**
+ * Keep it available if you call it somewhere else.
+ */
+export async function openingsWeightedAvg(
+  invManager: EntityManager,
+  variantIds: number[],
+  chain: Chain,
+) {
+  const scope = "PREV:openingsWeightedAvg";
+  dlog(scope, "start", { chain, variantIdsCount: variantIds.length });
+
+  const qtyField = chain === "OFR" ? "cnt.sqmOfr" : "cnt.sqm";
+  const costField = chain === "OFR" ? "cnt.finalCostOfr" : "cnt.finalCost";
+
+  const qb = invManager
+    .getRepository(InventoryCount)
+    .createQueryBuilder("cnt")
+    .select(`COALESCE(${qtyField},0)`, "qty")
+    .addSelect(`COALESCE(${costField},0)`, "cost")
+    .where("cnt.itemVariantId IN (:...ids)", { ids: variantIds });
+
+  const rows = (await qb.getRawMany()) as Array<{ qty: any; cost: any }>;
+
+  const qty = rows.reduce((s, r) => s + num(r.qty, 0), 0);
+  const wsum = rows.reduce((s, r) => s + num(r.qty, 0) * num(r.cost, 0), 0);
+  const avg = qty > 0 ? wsum / qty : 0;
+
+  dlog(scope, "done", { rowsCount: rows.length, qty, wsum, avg });
+  return { qty, avg };
+}
+
+async function resolvePrevDesc(
+  itemRepo: Repository<PurchaseInvoiceItem>,
+  inventoryTxRepo: Repository<InventoryTransaction>,
+  invManager: EntityManager,
+  descId: number,
+  variantIdsForDesc: number[],
+  chain: Chain,
+  avgField: 'averageCostC' | 'averageCostCVM',
+  dayStart: Date,
+  currPiiIds: number[],
+) {
+  const prev = await itemRepo
+    .createQueryBuilder('pii')
+    .innerJoin('pii.invoice', 'inv')
+    .innerJoin('pii.itemVariant', 'iv')
+    .where('inv.status = :st', { st: 'Recieved' })
+    .andWhere('inv.date < :cut', { cut: dayStart })
+    .andWhere('iv.itemNameDescriptionId = :descId', { descId })
+    .andWhere(`pii.${avgField} IS NOT NULL`)
+    .orderBy('inv.date', 'DESC')
+    .addOrderBy('pii.id', 'DESC')
+    .select([`pii.${avgField} AS avg`])
+    .getRawOne<{ avg?: string | number | null }>();
+
+  if (prev?.avg != null) {
+    const prevQty = await sumTxQty(
+      inventoryTxRepo,
+      variantIdsForDesc,
+      chain,
+      dayStart,
+      currPiiIds,
+    );
+    return { prevQty, prevAvg: num(prev.avg, 0), from: 'history' as const };
+  }
+
+  const open = await openingsWeightedAvg(invManager, variantIdsForDesc, chain);
+  return { prevQty: open.qty, prevAvg: open.avg, from: 'openings' as const };
+}
+
+
+
 
 @Injectable()
-
-
 export class PurchaseInvoiceService {
   constructor(
     @InjectRepository(PurchaseInvoice)
@@ -46,6 +508,7 @@ export class PurchaseInvoiceService {
 
     @InjectRepository(InventoryTransaction)
     private readonly inventoryTxRepo: Repository<InventoryTransaction>,
+
     @InjectRepository(PurchaseVoucher)
     private readonly voucherRepo: Repository<PurchaseVoucher>,
 
@@ -76,11 +539,479 @@ export class PurchaseInvoiceService {
     @InjectRepository(ItemNameDescription)
     private readonly descRepo: Repository<ItemNameDescription>,
 
-        @InjectRepository(InvoiceItem)
+    @InjectRepository(InvoiceItem)
     private readonly invoiceItemRepo: Repository<InvoiceItem>,
-
-    
   ) {}
+
+
+
+  ///////////  IMPORTANT /////////////////
+// functions responsible for recompute purchase invoices //
+private clampPrevQty(raw: any, label: string, ctx: any = {}) {
+  let n = Number(raw);
+  if (!Number.isFinite(n)) n = 0;
+
+  if (n < 0) {
+    console.warn(`⚠️ ${label} was negative → clamped to 0`, { raw, n, ...ctx });
+    n = 0;
+  }
+
+  return n;
+}
+
+
+private startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+private nextDayStart(d: Date) {
+  const x = this.startOfDay(d);
+  x.setDate(x.getDate() + 1);
+  return x;
+}
+
+private uniqNums(xs: any[]) {
+  return Array.from(new Set(xs.map(Number).filter(n => Number.isFinite(n) && n > 0)));
+}
+
+private async expandWithSiblings(variantIds: number[]) {
+  const ids = this.uniqNums(variantIds);
+  const out = new Set<number>(ids);
+
+  for (const vid of ids) {
+    try {
+      const sibs = await getSheetSqmQtyVariantIds(this.variantRepo, vid);
+      for (const s of sibs) out.add(Number(s));
+    } catch {}
+  }
+  return Array.from(out);
+}
+
+private async getDescIdsForVariantIds(variantIds: number[]) {
+  const ids = this.uniqNums(variantIds);
+  if (!ids.length) return [];
+
+  const rows = await this.variantRepo.find({
+    where: { id: In(ids) },
+    select: ['id', 'itemNameDescriptionId'] as any,
+  });
+
+  return this.uniqNums(rows.map((r: any) => r.itemNameDescriptionId).filter(Boolean));
+}
+
+
+
+private async applyPurchaseCostsForInvoice(invoiceId: number) {
+  const scope = 'PO:COSTS';
+
+  const savedInvoice = await this.invoiceRepo.findOne({
+    where: { id: invoiceId },
+    relations: ['items'], // we need items
+  });
+
+  if (!savedInvoice) return;
+  if (savedInvoice.status !== 'Recieved') return;
+
+  const invDate = new Date(savedInvoice.date);
+  const dayStart = this.startOfDay(invDate);
+
+  const items = savedInvoice.items ?? [];
+  const currPiiIds = items
+    .map((i: any) => i.id)
+    .filter((x: any) => Number.isFinite(Number(x)));
+
+  console.log(`[${scope}] start`, {
+    invoiceId: savedInvoice.id,
+    invoiceDate: savedInvoice.date,
+    dayStart: dayStart.toISOString(),
+    itemsCount: items.length,
+  });
+
+  // ---------- group items by description (descId)
+  const itemVariantIds = this.uniqNums(items.map((i: any) => i.itemVariantId));
+  const variantRows = itemVariantIds.length
+    ? await this.variantRepo.find({
+        where: { id: In(itemVariantIds) },
+        select: ['id', 'itemNameDescriptionId'] as any,
+      })
+    : [];
+
+  const variantToDesc = new Map<number, number | null>(
+    variantRows.map((v: any) => [Number(v.id), v.itemNameDescriptionId ?? null]),
+  );
+
+  const itemsByDesc = new Map<number, any[]>();
+  for (const it of items) {
+    const descId = variantToDesc.get(Number(it.itemVariantId));
+    if (descId == null) continue;
+    if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
+    itemsByDesc.get(descId)!.push(it);
+  }
+  const descIds = Array.from(itemsByDesc.keys());
+
+  // ---------------------------
+  // A) Per-variant (variant + siblings)
+  // ---------------------------
+for (const it of items) {
+  const vid = Number(it.itemVariantId);
+  if (!Number.isFinite(vid) || vid <= 0) continue;
+
+  const prevOfr = await resolvePrevVariant(
+    this.itemRepo,
+    this.inventoryTxRepo,
+    this.invTransRepo.manager,
+    this.variantRepo,
+    vid,
+    'OFR',
+    'averageCost',
+    dayStart,
+    currPiiIds,
+  );
+
+  const prevVm = await resolvePrevVariant(
+    this.itemRepo,
+    this.inventoryTxRepo,
+    this.invTransRepo.manager,
+    this.variantRepo,
+    vid,
+    'VM',
+    'averageCostVM',
+    dayStart,
+    currPiiIds,
+  );
+
+  // ✅ clamp negatives to 0 before using in the formula
+  const prevQtyOfr = this.clampPrevQty(prevOfr.prevQty, 'VAR:prevQty:OFR', {
+    invoiceId: savedInvoice.id,
+    vid,
+  });
+  const prevQtyVm = this.clampPrevQty(prevVm.prevQty, 'VAR:prevQty:VM', {
+    invoiceId: savedInvoice.id,
+    vid,
+  });
+
+  const poQtyOfr = getItemQty(it, 'OFR');
+  const poCostOfr = getItemCost(it, 'OFR');
+
+  const poQtyVm = getItemQty(it, 'VM');
+  const poCostVm = getItemCost(it, 'VM');
+
+  const totalOfr = prevQtyOfr + poQtyOfr;
+  const newAvgOfr =
+    totalOfr > 0
+      ? (prevOfr.prevAvg * prevQtyOfr + poCostOfr * poQtyOfr) / totalOfr
+      : prevOfr.prevAvg;
+
+  const totalVm = prevQtyVm + poQtyVm;
+  const newAvgVm =
+    totalVm > 0
+      ? (prevVm.prevAvg * prevQtyVm + poCostVm * poQtyVm) / totalVm
+      : prevVm.prevAvg;
+
+
+
+    await this.itemRepo.update(it.id, {
+      previousQuantity: prevOfr.prevQty,
+      previousAverageCost: prevOfr.prevAvg,
+      averageCost: newAvgOfr,
+
+      previousQuantityVM: prevVm.prevQty,
+      previousAverageCostVM: prevVm.prevAvg,
+      averageCostVM: newAvgVm,
+    } as any);
+
+    await this.variantRepo.update(vid, {
+      averageCost: newAvgOfr,
+      lastCost: poCostOfr,
+
+      averageCostVM: newAvgVm,
+      lastCostVM: poCostVm,
+    } as any);
+  }
+
+  // ---------------------------
+  // B) Per-description (C + CVM)
+  // ---------------------------
+  for (const descId of descIds) {
+    const rows = itemsByDesc.get(descId) ?? [];
+    if (!rows.length) continue;
+
+    const variantIdsForDesc = (
+      await this.variantRepo.find({
+        where: { itemNameDescriptionId: descId } as any,
+        select: ['id'] as any,
+      })
+    )
+      .map((v: any) => Number(v.id))
+      .filter((n: number) => Number.isFinite(n) && n > 0);
+
+    if (!variantIdsForDesc.length) continue;
+
+    // prevQtyC = SUM(tx.sqmofr) before dayStart
+ const rawPrevQtyC = await sumTxQty(
+  this.inventoryTxRepo,
+  variantIdsForDesc,
+  'OFR',
+  dayStart,
+  currPiiIds,
+);
+const prevQtyC = this.clampPrevQty(rawPrevQtyC, 'DESC:prevQtyC', {
+  invoiceId: savedInvoice.id,
+  descId,
+});
+
+    const prevCRow = await this.itemRepo
+      .createQueryBuilder('pii')
+      .innerJoin('pii.invoice', 'inv')
+      .innerJoin('pii.itemVariant', 'iv')
+      .where('inv.status = :st', { st: 'Recieved' })
+      .andWhere('inv.date < :cut', { cut: dayStart })
+      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
+      .andWhere('pii.averageCostC IS NOT NULL')
+      .orderBy('inv.date', 'DESC')
+      .addOrderBy('pii.id', 'DESC')
+      .select(['pii.averageCostC AS avg'])
+      .getRawOne() as { avg?: string | number | null } | undefined;
+
+    const fbC = await openingsWeightedAvg(this.invTransRepo.manager, variantIdsForDesc, 'OFR');
+    const prevAvgC = prevCRow?.avg != null ? num(prevCRow.avg, 0) : fbC.avg;
+
+    const poQtyC = rows.reduce((s, r) => s + getItemQty(r, 'OFR'), 0);
+    const poWsumC = rows.reduce((s, r) => s + getItemQty(r, 'OFR') * getItemCost(r, 'OFR'), 0);
+    const poCostC = poQtyC > 0 ? poWsumC / poQtyC : 0;
+
+const totalC = prevQtyC + poQtyC;
+const newAvgC =
+  totalC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalC : prevAvgC;
+
+    // prevQtyCVM = SUM(tx.sqm) before dayStart
+const rawPrevQtyCVM = await sumTxQty(
+  this.inventoryTxRepo,
+  variantIdsForDesc,
+  'VM',
+  dayStart,
+  currPiiIds,
+);
+const prevQtyCVM = this.clampPrevQty(rawPrevQtyCVM, 'DESC:prevQtyCVM', {
+  invoiceId: savedInvoice.id,
+  descId,
+});
+
+    const prevCvmRow = await this.itemRepo
+      .createQueryBuilder('pii')
+      .innerJoin('pii.invoice', 'inv')
+      .innerJoin('pii.itemVariant', 'iv')
+      .where('inv.status = :st', { st: 'Recieved' })
+      .andWhere('inv.date < :cut', { cut: dayStart })
+      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
+      .andWhere('pii.averageCostCVM IS NOT NULL')
+      .orderBy('inv.date', 'DESC')
+      .addOrderBy('pii.id', 'DESC')
+      .select(['pii.averageCostCVM AS avg'])
+      .getRawOne() as { avg?: string | number | null } | undefined;
+
+    const fbCVM = await openingsWeightedAvg(this.invTransRepo.manager, variantIdsForDesc, 'VM');
+    const prevAvgCVM = prevCvmRow?.avg != null ? num(prevCvmRow.avg, 0) : fbCVM.avg;
+
+    const poQtyCVM = rows.reduce((s, r) => s + getItemQty(r, 'VM'), 0);
+    const poWsumCVM = rows.reduce((s, r) => s + getItemQty(r, 'VM') * getItemCost(r, 'VM'), 0);
+    const poCostCVM = poQtyCVM > 0 ? poWsumCVM / poQtyCVM : 0;
+
+const rawTotalCVM = prevQtyCVM + poQtyCVM;
+const totalCVM = rawTotalCVM < 0 ? 0 : rawTotalCVM;
+
+const newAvgCVM =
+  totalCVM > 0
+    ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalCVM
+    : prevAvgCVM;
+    for (const r of rows) {
+      await this.itemRepo.update(r.id, {
+        previousQuantityC: prevQtyC,
+        previousAverageCostC: prevAvgC,
+        averageCostC: newAvgC,
+
+        previousQuantityCVM: prevQtyCVM,
+        previousAverageCostCVM: prevAvgCVM,
+        averageCostCVM: newAvgCVM,
+      } as any);
+    }
+
+    const lastRow = rows[rows.length - 1] as any;
+    await this.descRepo.update(descId, {
+      averageCostC: newAvgC,
+      averageCostCVM: newAvgCVM,
+      lastCostC: getItemCost(lastRow, 'OFR'),
+      lastCostCVM: getItemCost(lastRow, 'VM'),
+    } as any);
+  }
+
+  console.log(`[${scope}] done`, { invoiceId: savedInvoice.id });
+}
+
+
+private async recomputePurchaseChainFrom(changedAtDate: Date, affectedVariantIds: number[]) {
+  const scope = 'RECOMP:PURCHASE';
+  const from = this.nextDayStart(changedAtDate); // ✅ only later days (because your logic uses dayStart)
+
+  const expanded = await this.expandWithSiblings(affectedVariantIds);
+  const affectedDescIds = await this.getDescIdsForVariantIds(expanded);
+
+  console.log(`[${scope}] start`, {
+    from: from.toISOString(),
+    affectedVariantIdsCount: expanded.length,
+    affectedDescIdsCount: affectedDescIds.length,
+  });
+
+  if (!expanded.length && !affectedDescIds.length) return;
+
+  const qb = this.invoiceRepo
+    .createQueryBuilder('pi')
+    .innerJoin('pi.items', 'pii')
+    .innerJoin('pii.itemVariant', 'iv')
+    .where('pi.status = :st', { st: 'Recieved' })
+    .andWhere('pi.date >= :from', { from })
+    .andWhere(
+      new Brackets((q) => {
+        if (expanded.length) q.where('pii.itemVariantId IN (:...vids)', { vids: expanded });
+        if (affectedDescIds.length) {
+          if (expanded.length) q.orWhere('iv.itemNameDescriptionId IN (:...dids)', { dids: affectedDescIds });
+          else q.where('iv.itemNameDescriptionId IN (:...dids)', { dids: affectedDescIds });
+        }
+      }),
+    )
+    .select(['pi.id AS id', 'pi.date AS date'])
+    .groupBy('pi.id')
+    .addGroupBy('pi.date')
+    .orderBy('pi.date', 'ASC')
+    .addOrderBy('pi.id', 'ASC');
+
+  const raw = await qb.getRawMany<{ id: any; date: any }>();
+  const invoiceIds = raw.map(r => Number(r.id)).filter(n => Number.isFinite(n) && n > 0);
+
+  console.log(`[${scope}] invoices to recompute`, { count: invoiceIds.length, invoiceIds: invoiceIds.slice(0, 50) });
+
+  for (const id of invoiceIds) {
+    console.log(`[${scope}] recompute invoice`, { id });
+    await this.applyPurchaseCostsForInvoice(id);
+  }
+
+  console.log(`[${scope}] done`, { recomputedCount: invoiceIds.length });
+}
+
+
+// 🧮 Recompute costs for sales invoice_items after a PO change
+private async recomputeSalesCostsFrom(
+  changedAtDate: Date,
+  affectedVariantIds: number[],
+) {
+  const scope = 'RECOMP:SALES';
+
+  const from = this.startOfDay(changedAtDate);
+  const vids = this.uniqNums(affectedVariantIds);
+
+  if (!vids.length) {
+    console.log(`[${scope}] no affected variants -> skip`);
+    return;
+  }
+
+  console.log(`[${scope}] start`, {
+    from: from.toISOString(),
+    affectedVariantIds: vids,
+  });
+
+  // Find all sales invoice items that:
+  //  - have one of the affected variants
+  //  - belong to invoices on/after the change date
+  const rows = await this.invoiceItemRepo
+    .createQueryBuilder('ii')
+    .innerJoin('ii.invoice', 'inv')
+    .where('ii.itemVariantId IN (:...vids)', { vids })
+    .andWhere('inv.date >= :from', { from })
+    .select([
+      'ii.id AS id',
+      'ii.itemVariantId AS itemVariantId',
+      'inv.id AS invoiceId',
+      'inv.date AS invoiceDate',
+    ])
+    .orderBy('inv.date', 'ASC')
+    .addOrderBy('inv.id', 'ASC')
+    .addOrderBy('ii.id', 'ASC')
+    .getRawMany<{
+      id: number;
+      itemVariantId: number;
+      invoiceId: number;
+      invoiceDate: Date;
+    }>();
+
+  console.log(`[${scope}] affected sales items`, {
+    count: rows.length,
+  });
+
+  if (!rows.length) {
+    console.log(`[${scope}] nothing to recompute -> done`);
+    return;
+  }
+
+  // Cache purchase avg costs per (variant, date) so we don't query 1000x
+  const costCache = new Map<
+    string,
+    {
+      averageCost: number | null;
+      averageCostC: number | null;
+      averageCostVM: number | null;
+      averageCostCVM: number | null;
+    }
+  >();
+
+  const updates: { id: number; data: Partial<InvoiceItem> }[] = [];
+
+  for (const r of rows) {
+    const vid = Number(r.itemVariantId);
+    if (!Number.isFinite(vid) || vid <= 0) continue;
+
+    const invDate = new Date(r.invoiceDate);
+    const dateKey = invDate.toISOString().slice(0, 10); // YYYY-MM-DD
+    const key = `${vid}:${dateKey}`;
+
+    if (!costCache.has(key)) {
+      // 🔎 Get the purchase-side averages as of this sales invoice date
+      const costs = await this.getPurchaseAvgCostsAsOf(vid, invDate);
+      costCache.set(key, costs);
+    }
+
+    const costs = costCache.get(key)!;
+
+    updates.push({
+      id: Number(r.id),
+      data: {
+        averageCost: costs.averageCost,
+        averageCostC: costs.averageCostC,
+        averageCostVM: costs.averageCostVM,
+        averageCostCVM: costs.averageCostCVM,
+
+        // For now we mirror lastCost* to the average at that date
+        lastCost: costs.averageCost,
+        lastCostC: costs.averageCostC,
+        lastCostVM: costs.averageCostVM,
+        lastCostCVM: costs.averageCostCVM,
+      },
+    });
+  }
+
+  // Apply updates
+  for (const u of updates) {
+    await this.invoiceItemRepo.update(u.id, u.data);
+  }
+
+  console.log(`[${scope}] done`, { updatedCount: updates.length });
+}
+
+
+
+
+
   private async getNextPvNumber(prefix: string): Promise<string> {
     // Find the last voucher whose pvNumber starts with e.g. "PVG-"
     const last = await this.voucherRepo
@@ -102,220 +1033,6 @@ export class PurchaseInvoiceService {
     return `${prefix}-${String(nextSeq).padStart(3, '0')}`;
   }
   
-
-  private async recomputeVariantCostsAfterPurchaseEdit(opts: {
-  cutoffDate: Date;
-  affectedVariantIds: number[];
-}) {
-  const { cutoffDate, affectedVariantIds } = opts;
-  if (!affectedVariantIds?.length) return;
-
-  const cut = new Date(cutoffDate);
-  cut.setHours(0, 0, 0, 0);
-
-  // include siblings (sheet/sqm/unit + matching box)
-  const expandedVariantIds = await this.expandAffectedVariantIds(affectedVariantIds);
-
-  // load metas so we can find siblings/families
-  const metas = await this.loadVariantMetas(expandedVariantIds);
-  const metaById = new Map<number, any>(metas.map(m => [Number(m.id), m]));
-  const siblingsByFamily = await this.resolveSiblingVariantsForBaseVariants(metas);
-
-  // pick the box sibling to read costs from (same logic as your sales recompute)
-  const pickBoxSource = (bucket: any, targetMeta: any) => {
-    if (!bucket?.boxBySpb || bucket.boxBySpb.size === 0) return null;
-
-    const targetSpb = Number(targetMeta?.sheetsPerBox ?? 0);
-
-    if (targetSpb > 1) {
-      const exact = bucket.boxBySpb.get(targetSpb);
-      if (exact?.id) return exact;
-    }
-
-    if (bucket.boxBySpb.size === 1) return Array.from(bucket.boxBySpb.values())[0] ?? null;
-
-    let best: any = null;
-    let bestSpb = -1;
-    for (const [spb, v] of bucket.boxBySpb.entries()) {
-      if (spb > bestSpb) {
-        bestSpb = spb;
-        best = v;
-      }
-    }
-    return best;
-  };
-
-  // update each target variant (variant + siblings) using costs as-of cutoff day
-  const dayKey = cut.toISOString().slice(0, 10);
-  const asOfUTC = new Date(dayKey + 'T00:00:00.000Z');
-
-  const costCache = new Map<number, any>();
-
-  for (const targetId of expandedVariantIds) {
-    const target = metaById.get(Number(targetId));
-    if (!target) continue;
-
-    const nonBoxKey = this.familyKey({
-      itemNameDescriptionId: target.itemNameDescriptionId ?? null,
-      thicknessMm: target.thicknessMm,
-      length: target.length,
-      width: target.width,
-      origin: target.origin ?? null,
-      sheetsPerBox: target.sheetsPerBox ?? null,
-      mode: 'sheet',
-    });
-
-    const bucket = siblingsByFamily.get(nonBoxKey);
-
-    // choose purchase source variant (box preferred)
-    let picked = target;
-    if (target.mode !== 'box') {
-      const boxSource = pickBoxSource(bucket, target);
-      if (boxSource?.id) picked = boxSource;
-    }
-
-    const pickedVariantId = Number(picked.id);
-
-    let costs = costCache.get(pickedVariantId);
-    if (!costs) {
-      costs = await this.getPurchaseAvgCostsAsOf(pickedVariantId, asOfUTC);
-      costCache.set(pickedVariantId, costs);
-    }
-
-    // write EXACT costs (no /spb)
-    await this.variantRepo.update(Number(targetId), {
-      averageCost: costs?.averageCost ?? null,
-      averageCostVM: costs?.averageCostVM ?? null,
-      // if your variant entity also has these columns, include them:
-      // averageCostC: costs?.averageCostC ?? null,
-      // averageCostCVM: costs?.averageCostCVM ?? null,
-    } as any);
-  }
-}
-
-private async recomputeSalesInvoiceItemCostsAfterBackdatedPurchase(opts: {
-  cutoffDate: Date;
-  affectedVariantIds: number[];
-}) {
-  const { cutoffDate, affectedVariantIds } = opts;
-  if (!affectedVariantIds?.length) return;
-
-  // cut dayKey (YYYY-MM-DD)
-  const cutLocal = new Date(cutoffDate);
-  cutLocal.setHours(0, 0, 0, 0);
-  const cutDayKey = cutLocal.toISOString().slice(0, 10);
-
-  // include siblings so box/sheet/sqm stay consistent
-  const expandedVariantIds = await this.expandAffectedVariantIds(affectedVariantIds);
-
-  // load metas & sibling buckets
-  const metas = await this.loadVariantMetas(expandedVariantIds);
-  const metaById = new Map<number, any>(metas.map(m => [Number(m.id), m]));
-  const siblingsByFamily = await this.resolveSiblingVariantsForBaseVariants(metas);
-
-  // pick box source
-  const pickBoxSource = (bucket: any, targetMeta: any) => {
-    if (!bucket?.boxBySpb || bucket.boxBySpb.size === 0) return null;
-
-    const targetSpb = Number(targetMeta?.sheetsPerBox ?? 0);
-
-    if (targetSpb > 1) {
-      const exact = bucket.boxBySpb.get(targetSpb);
-      if (exact?.id) return exact;
-    }
-
-    if (bucket.boxBySpb.size === 1) return Array.from(bucket.boxBySpb.values())[0] ?? null;
-
-    let best: any = null;
-    let bestSpb = -1;
-    for (const [spb, v] of bucket.boxBySpb.entries()) {
-      if (spb > bestSpb) {
-        bestSpb = spb;
-        best = v;
-      }
-    }
-    return best;
-  };
-
-  // 1) find SALES invoice_items after cutoff that include affected variants
-  const salesItems = await this.invoiceItemRepo
-    .createQueryBuilder('ii')
-    .innerJoin('ii.invoice', 'inv')
-    .select([
-      'ii.id as id',
-      'ii.itemVariantId as itemVariantId',
-      'inv.id as invoiceId',
-      'inv.date as invoiceDate',
-      'inv.invoiceType as invoiceType', // ✅ FIXED (was inv.type)
-      // add inv.status only if your SalesInvoice really has it:
-      // 'inv.status as invoiceStatus',
-    ])
-    .where('ii.itemVariantId IN (:...vids)', { vids: expandedVariantIds })
-    .andWhere('DATE(inv.date) >= :cutDayKey', { cutDayKey })
-    .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G','RVR'] }) // adjust if needed
-    .getRawMany<{
-      id: number;
-      itemVariantId: number;
-      invoiceId: number;
-      invoiceDate: string | Date;
-      invoiceType: string;
-    }>();
-
-  if (!salesItems.length) return;
-
-  const costCache = new Map<string, any>();
-
-  for (const row of salesItems) {
-    const targetId = Number(row.itemVariantId);
-    const targetMeta = metaById.get(targetId);
-    if (!targetMeta) continue;
-
-    // dayKey of the SALES invoice date
-    const dayKey =
-      typeof row.invoiceDate === 'string'
-        ? String(row.invoiceDate).slice(0, 10)
-        : new Date(row.invoiceDate).toISOString().slice(0, 10);
-
-    // pass a stable date for that day (your getPurchaseAvgCostsAsOf should use DATE(pi.date) <= :dayKey)
-    const asOf = new Date(dayKey + 'T00:00:00.000Z');
-
-    const nonBoxKey = this.familyKey({
-      itemNameDescriptionId: targetMeta.itemNameDescriptionId ?? null,
-      thicknessMm: targetMeta.thicknessMm,
-      length: targetMeta.length,
-      width: targetMeta.width,
-      origin: targetMeta.origin ?? null,
-      sheetsPerBox: targetMeta.sheetsPerBox ?? null,
-      mode: 'sheet',
-    });
-
-    const bucket = siblingsByFamily.get(nonBoxKey);
-
-    // choose purchase source (box preferred)
-    let picked = targetMeta;
-    if (targetMeta.mode !== 'box') {
-      const boxSource = pickBoxSource(bucket, targetMeta);
-      if (boxSource?.id) picked = boxSource;
-    }
-
-    const pickedId = Number(picked.id);
-    const cacheKey = `${pickedId}|${dayKey}`;
-
-    let costs = costCache.get(cacheKey);
-    if (!costs) {
-      costs = await this.getPurchaseAvgCostsAsOf(pickedId, asOf);
-      costCache.set(cacheKey, costs);
-    }
-
-    // 2) write costs into the SALES invoice item
-    await this.invoiceItemRepo.update(Number(row.id), {
-      averageCost: costs?.averageCost ?? null,
-      averageCostC: costs?.averageCostC ?? null,
-      averageCostVM: costs?.averageCostVM ?? null,
-      averageCostCVM: costs?.averageCostCVM ?? null,
-    } as any);
-  }
-}
 
 
 
@@ -685,6 +1402,8 @@ private async recomputeSalesInvoiceItemCostsAfterBackdatedPurchase(opts: {
 
       const debitLine = this.journalVoucherDetailRepo.create({
         accountId: expenseAcct.id,
+        description:"فاتورة شراء",
+        docNbr: jvNumber,
         dr: hdrDr,
         drUSD: hdrDrUSD,
         drLL: hdrDrLL,
@@ -703,6 +1422,8 @@ private async recomputeSalesInvoiceItemCostsAfterBackdatedPurchase(opts: {
 
       const creditLine = this.journalVoucherDetailRepo.create({
         supplierId: savedInvoice.supplierId,
+        description:"فاتورة شراء",
+        docNbr: jvNumber,
         dr: 0,
         drUSD: 0,
         drLL: 0,
@@ -781,6 +1502,8 @@ private async recomputeSalesInvoiceItemCostsAfterBackdatedPurchase(opts: {
 
           const drLine = this.journalVoucherDetailRepo.create({
             accountId: row.accountId ?? null,
+             description:"فاتورة شراء",
+            docNbr: jvNumber,
             dr,
             drUSD,
             drLL,
@@ -799,6 +1522,8 @@ private async recomputeSalesInvoiceItemCostsAfterBackdatedPurchase(opts: {
 
           const crLine = this.journalVoucherDetailRepo.create({
             supplierId: row.supplierId ?? null,
+             description:"فاتورة شراء",
+            docNbr: jvNumber,
             dr: 0,
             drUSD: 0,
             drLL: 0,
@@ -892,3475 +1617,267 @@ const clampPrevQty = (raw: any, label: string, ctx: any = {}) => {
 };
 
 
-if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'S') {
+
+
+if (savedInvoice.status === "Recieved") {
   const invDate = new Date(savedInvoice.date);
   const dayStart = new Date(invDate);
-  dayStart.setHours(0, 0, 0, 0); // exclude same calendar date for "previous" lookups
+  dayStart.setHours(0, 0, 0, 0);
 
-  console.log('🧾 PO Cost Calc — Start', {
-    invoiceId: savedInvoice.id,
-    invoiceDate: invDate.toISOString(),
-    cutoffForPrevious: dayStart.toISOString(),
-    itemCount: savedInvoice.items?.length ?? 0,
-  });
+  const items = savedInvoice.items ?? [];
+  const currPiiIds = items.map((i) => i.id).filter((x) => Number.isFinite(Number(x)));
 
-  const itemsByDesc = new Map<number, any[]>();
+  // --- preload variant -> descId for grouping ---
+  const variantIdsInInvoice = Array.from(
+    new Set(items.map((i) => Number(i.itemVariantId)).filter((n) => Number.isFinite(n) && n > 0)),
+  );
 
-  // NOT-IN for "previous" sums
-  const currPiiIds = (savedInvoice.items ?? []).map((it) => it.id);
-  const hasCurrPiiIds = currPiiIds.length > 0;
-  console.log('🔒 Excluding current PurchaseInvoiceItem IDs from prior sums:', currPiiIds);
+  const variantRows = variantIdsInInvoice.length
+    ? await this.variantRepo.find({
+        where: { id: In(variantIdsInInvoice) },
+        select: ["id", "itemNameDescriptionId"],
+      })
+    : [];
 
-  // Collect description IDs
-  const descIds = new Set<number>();
+  const variantToDesc = new Map<number, number | null>(
+    variantRows.map((v) => [Number(v.id), v.itemNameDescriptionId ?? null]),
+  );
 
-  /* ────────────────────────────────────────────────
-     PER-PII LOOP: STANDARD (OFR) + VM (VM)
-     ──────────────────────────────────────────────── */
-  for (const item of savedInvoice.items) {
-    // ───────── STANDARD COST TRACK ─────────
-    const variantt = await this.variantRepo.findOne({
-      where: { id: item.itemVariantId },
-      select: ['id', 'itemNameDescriptionId', 'averageCost', 'averageCostVM'],
-    });
-    if (!variantt) {
-      console.error(`❌ Variant ${item.itemVariantId} not found`);
-      continue;
-    }
-
-    const vid = variantt.id;
-    const descId = variantt.itemNameDescriptionId;
-
-    // collect this PII under its description
+  const itemsByDesc = new Map<number, PurchaseInvoiceItem[]>();
+  for (const it of items) {
+    const vid = Number(it.itemVariantId);
+    const descId = variantToDesc.get(vid);
+    if (!descId) continue;
     if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
-    itemsByDesc.get(descId)!.push(item);
-    descIds.add(descId);
+    itemsByDesc.get(descId)!.push(it);
+  }
+  const descIds = Array.from(itemsByDesc.keys());
 
-    console.log(
-      `\n[STANDARD] ► Processing PII ${item.id} (variantId=${vid}, descId=${descId}) on invoice ${savedInvoice.id}`,
+  // ------------------------------------------------------------------
+  // A) PER-VARIANT: averageCost (OFR) + averageCostVM (VM)
+  //    prevQty comes from inventory_transactions SUM before dayStart
+  //    prevAvg comes from last PO if exists, else InventoryCount fallback
+  // ------------------------------------------------------------------
+  for (const it of items) {
+    const vid = Number(it.itemVariantId);
+    if (!Number.isFinite(vid) || vid <= 0) continue;
+
+    // OFR chain (uses sqmofr)
+    const prevOfr = await resolvePrevVariant(
+      this.itemRepo,
+      this.inventoryTxRepo,
+      this.invTransRepo.manager,
+      this.variantRepo,
+      vid,
+      "OFR",
+      "averageCost",
+      dayStart,
+      currPiiIds,
     );
-    console.log(`[STANDARD]   invoice date (PO):`, invDate);
-    console.log('[STANDARD] row snapshot:', {
-      piiId: item.id,
-      itemVariantId: item.itemVariantId,
-      qty: Number(item.quantity),
-      sqm: Number(item.sqm),
-      sqmOfr: Number((item as any).sqm ?? 0),
-      finalOFR: Number((item as any).finalOFR),
-      finalCost: Number((item as any).finalCost),
-    });
 
-    // 0) Determine PREVIOUS AVERAGE (STANDARD / OFR chain)
-    const qbPrevPII = this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR','RVR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCost AS avg_cost',
-        'pii.averageCostVM AS avg_cost_vm',
-        'inv.id AS inv_id',
-        'inv.date AS inv_date',
-      ]);
-
-    try {
-      // @ts-ignore
-      console.log('[PREV PII] SQL:', qbPrevPII.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[PREV PII] Params:', qbPrevPII.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-
-    const prevPIIRaw = await qbPrevPII.getRawOne<{
-      pii_id?: number;
-      avg_cost?: string | number | null;
-      avg_cost_vm?: string | number | null;
-      inv_id?: number;
-      inv_date?: Date;
-    }>();
-
-    console.log('[PREV PII] raw result:', prevPIIRaw ?? null);
-
-    // 1) Sum prior sqm-OFR (EXCLUDING current invoice items) — inclusive cutoff
-    const qbPrev = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice < :d', { d: invDate });
-
-    if (hasCurrPiiIds) {
-      qbPrev.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[STANDARD] prevQty SQL:', qbPrev.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[STANDARD] prevQty Params:', qbPrev.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-// 1) Determine previous quantity logic based on whether a previous PII exists or not
-let prevQty = 0;
-
-if (prevPIIRaw) {
-  // There IS a previous settled PO → use historical inventory tx before this invoice
-  const { sum: rawPrev } = await qbPrev.getRawOne();
-  prevQty = Number(rawPrev) || 0;
-  console.log(`[STANDARD] Using historical qty (since previous PII exists): prevQty = ${prevQty}`);
-} else {
-  // NO previous invoice → use ONLY opening stock (if any)
-const openingRecord = await this.invTransRepo.manager
-  .getRepository(InventoryCount)
-  .createQueryBuilder('ic')
-  .select('ic.sqmOfr', 'sqmOfr')
-  .where('ic.itemVariantId = :vid', { vid: item.itemVariantId })
-  .limit(1)
-  .getRawOne();
-
-prevQty = Number(openingRecord?.sqmOfr ?? 0);
-console.log(`[STANDARD] No prior PII → using opening stock only: prevQty = ${prevQty}`);
-
-}
-// ✅ clamp negative to zero
-prevQty = clampPrevQty(prevQty, '[STANDARD] prevQty', {
-  vid: item.itemVariantId,
-  piiId: item.id,
-  invId: savedInvoice.id,
-});
-
-    // 2) Prev avg-OFR (STANDARD)
-    let prevAvg: number;
-    if (prevPIIRaw && prevPIIRaw.avg_cost != null) {
-      prevAvg = Number(prevPIIRaw.avg_cost);
-      console.log('[STANDARD] prevAvg from previous PII.averageCost:', {
-        prevAvg,
-        prevPiiId: prevPIIRaw.pii_id ?? null,
-        prevInvId: prevPIIRaw.inv_id ?? null,
-        prevInvDate: prevPIIRaw.inv_date ?? null,
-      });
-    } else {
-      console.log('[STANDARD] no previous PII; computing weighted openings from InventoryCount (OFR)…');
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({
-          where: { itemVariant: { id: item.itemVariantId } },
-          select: ['sqmOfr', 'finalCostOfr'],
-        });
-
-      const totalOpenQty = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0),
-        0,
-      );
-      const weightedSum = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-        0,
-      );
-      prevAvg = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-
-      console.log('[STANDARD] openings snapshot + resolved prevAvg (OFR):', {
-        openingsCount: openings.length,
-        totalOpenQty,
-        weightedSum,
-        prevAvg,
-      });
-    }
-
-    // 3) This PO’s sqmOfr & unitPrice (finalOFR)
-    const poQty = Number((item as any).sqm ?? 0);
-    const poCost = Number((item as any).finalOFR ?? 0);
-    console.log('[STANDARD] current PO contribution (OFR):', { poQty, poCost });
-
-    // 4) New blended avg-OFR
-    const totalQty = prevQty + poQty;
-    const lhs = prevAvg * prevQty; // previous value bucket
-    const rhs = poCost * poQty; // current row value bucket
-    const newAvg = totalQty > 0 ? (lhs + rhs) / totalQty : poCost;
-    console.log('[STANDARD] blend details (OFR):', {
-      formula: 'newAvg = (prevAvg*prevQty + poCost*poQty) / (prevQty + poQty)',
-      prevAvg,
-      prevQty,
-      poCost,
-      poQty,
-      lhs,
-      rhs,
-      totalQty,
-      newAvg,
-      guardWhenTotalQtyIsZero: totalQty === 0 ? '(used poCost)' : '(used blend)',
-    });
-
-    // 5) Persist STANDARD into PurchaseInvoiceItem & ItemVariant
-    const piiUpdateRes = await this.itemRepo.update(item.id, {
-      previousQuantity: prevQty,
-      previousAverageCost: prevAvg,
-      averageCost: newAvg,
-    });
-    console.log('✓ [STANDARD] PII update result (OFR):', {
-      piiId: item.id,
-      affected: piiUpdateRes?.affected ?? 'n/a',
-      set: { previousQuantity: prevQty, previousAverageCost: prevAvg, averageCost: newAvg },
-    });
-
-    const varUpdateResStd = await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvg,
-      lastCost: poCost,
-    });
-    console.log('✓ [STANDARD] Variant update result (OFR):', {
-      itemVariantId: item.itemVariantId,
-      affected: varUpdateResStd?.affected ?? 'n/a',
-      set: { averageCost: newAvg, lastCost: poCost },
-    });
-
-    // ───────── VM COST TRACK (VM chain) ─────────
-    const qbPrevVm = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqm)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-    if (hasCurrPiiIds) {
-      qbPrevVm.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[VM] prevQty SQL:', qbPrevVm.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[VM] prevQty Params:', qbPrevVm.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-    const { sum: rawPrevVm } = await qbPrevVm.getRawOne();
-    let prevQtyVM = Number(rawPrevVm) || 0;
-    prevQtyVM = clampPrevQty(prevQtyVM, '[VM] prevQtyVM', {
-  vid: item.itemVariantId,
-  piiId: item.id,
-  invId: savedInvoice.id,
-});
-    console.log('[VM] prevQtyVM result (VM chain):', { rawPrevVm, prevQtyVM });
-
-    
-
-    // Prev avg VM: from previous PII.averageCostVM; if none, 0
-    let prevAvgVM: number;
-    if (prevPIIRaw && prevPIIRaw.avg_cost_vm != null) {
-      prevAvgVM = Number(prevPIIRaw.avg_cost_vm);
-      console.log('[VM] prevAvgVM from previous PII.averageCostVM:', {
-        prevAvgVM,
-        prevPiiId: prevPIIRaw.pii_id ?? null,
-        prevInvId: prevPIIRaw.inv_id ?? null,
-        prevInvDate: prevPIIRaw.inv_date ?? null,
-      });
-    } else {
-      prevAvgVM = 0;
-      console.log('[VM] no previous PII found → prevAvgVM = 0');
-    }
-
-    const poQtyVM = Number(item.sqm);
-    const poCostVM = Number((item as any).finalCost);
-
-    const totalQtyVM = prevQtyVM + poQtyVM;
-    const lhsVM = prevAvgVM * prevQtyVM;
-    const rhsVM = poCostVM * poQtyVM;
-    const newAvgVM = totalQtyVM > 0 ? (lhsVM + rhsVM) / totalQtyVM : poCostVM;
-    console.log('[VM] blend details (VM):', {
-      formula: 'newAvgVM = (prevAvgVM*prevQtyVM + poCostVM*poQtyVM) / (prevQtyVM + poQtyVM)',
-      prevAvgVM,
-      prevQtyVM,
-      poCostVM,
-      poQtyVM,
-      lhsVM,
-      rhsVM,
-      totalQtyVM,
-      newAvgVM,
-      guardWhenTotalQtyVMIsZero: totalQtyVM === 0 ? '(used poCostVM)' : '(used blend)',
-    });
-
-    const piiUpdateResVM = await this.itemRepo.update(item.id, {
-      previousQuantityVM: prevQtyVM,
-      previousAverageCostVM: prevAvgVM,
-      averageCostVM: newAvgVM,
-    });
-    console.log('✓ [VM] PII update result (VM):', {
-      piiId: item.id,
-      affected: piiUpdateResVM?.affected ?? 'n/a',
-      set: {
-        previousQuantityVM: prevQtyVM,
-        previousAverageCostVM: prevAvgVM,
-        averageCostVM: newAvgVM,
-      },
-    });
-
-    const varUpdateResVM = await this.variantRepo.update(item.itemVariantId, {
-      averageCostVM: newAvgVM,
-      lastCostVM: poCostVM,
-    });
-    console.log('✓ [VM] Variant update result (VM):', {
-      itemVariantId: item.itemVariantId,
-      affected: varUpdateResVM?.affected ?? 'n/a',
-      set: { averageCostVM: newAvgVM, lastCostVM: poCostVM },
-    });
-  } // end per-PII loop (STANDARD/VM)
-
-  /* ────────────────────────────────────────────────
-     C-LEVEL (by description, current invoice) — OFR
-     ──────────────────────────────────────────────── */
-  console.log('\n📚 C-Level (by description) calculations start');
-  for (const descId of descIds) {
-    console.log(`\n[C] ► Description ${descId}`);
-
-    // all variants under this description
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-    console.log('[C] variantIdsForDesc:', variantIdsForDesc);
-    const dayStart = new Date(invDate);
-dayStart.setHours(0, 0, 0, 0);
-
-
-    // previous qty (OFR sum), up to & INCLUDING invDate; exclude current PO rows
-    const qbPrevC = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(COALESCE(tx.sqmofr, 0))', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-      .andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    try {
-      // @ts-ignore
-      console.log('[C] prevQtyC SQL:', qbPrevC.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[C] prevQtyC Params:', qbPrevC.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-    const { sum: rawPrevC } = await qbPrevC.getRawOne();
-    let prevQtyC = Number(rawPrevC) || 0;
-    prevQtyC = clampPrevQty(prevQtyC, '[C] prevQtyC', {
-  descId,
-  invId: savedInvoice.id,
-});
-    console.log('[C] prevQtyC result (OFR):', { rawPrevC, prevQtyC });
-
-    // previous avgC from last settled PII on/before invDate; else openings (OFR)
-    let prevAvgC: number;
-    const lastDescItem = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date <= :date', { date: invDate })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostC'])
-      .getOne();
-
-    if (lastDescItem && lastDescItem.averageCostC != null) {
-      prevAvgC = Number(lastDescItem.averageCostC);
-      console.log('[C] prevAvgC from last PII.averageCostC:', prevAvgC);
-    } else {
-      console.log('[C] no prior PII.averageCostC, compute from openings (OFR)…');
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({
-          where: { itemVariant: In(variantIdsForDesc) },
-          select: ['sqmOfr', 'finalCostOfr'],
-        });
-
-      const totalOpenQty = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0),
-        0,
-      );
-      const weightedSum = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-        0,
-      );
-      prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-      console.log('[C] openings snapshot (OFR):', {
-        openingsCount: openings.length,
-        totalOpenQty,
-        weightedSum,
-        prevAvgC,
-      });
-    }
-
-    // group CURRENT PO rows that share this description — OFR chain
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyC = poItemsSameDesc.reduce(
-      (s, it: any) => s + Number(it.sqm ?? 0),
-      0,
+    // VM chain (uses sqm)
+    const prevVm = await resolvePrevVariant(
+      this.itemRepo,
+      this.inventoryTxRepo,
+      this.invTransRepo.manager,
+      this.variantRepo,
+      vid,
+      "VM",
+      "averageCostVM",
+      dayStart,
+      currPiiIds,
     );
-    const weightedCostSum = poItemsSameDesc.reduce(
-      (s, it: any) =>
-        s + Number(it.sqm ?? 0) * Number(it.finalCost ?? 0),
-      0,
-    );
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-    console.log('[C] current PO group snapshot (OFR):', {
-      piiIds: poItemsSameDesc.map((x) => x.id),
-      perRow: poItemsSameDesc.map((x: any) => ({
-        piiId: x.id,
-        sqmOfr: Number(x.sqmOfr ?? 0),
-        finalOFR: Number(x.finalOFR ?? 0),
-      })),
-      poQtyC,
-      weightedCostSum,
-      poCostC,
+
+    // current PO qty & cost
+    const poQtyOfr = getItemQty(it, "OFR");      // sqmOfr
+    const poCostOfr = getItemCost(it, "OFR");    // finalOFR
+    const poQtyVm = getItemQty(it, "VM");        // sqm
+    const poCostVm = getItemCost(it, "VM");      // finalCost
+
+    // new avg OFR
+    const totalOfr = prevOfr.prevQty + poQtyOfr;
+    const newAvgOfr =
+      totalOfr > 0
+        ? (prevOfr.prevAvg * prevOfr.prevQty + poCostOfr * poQtyOfr) / totalOfr
+        : prevOfr.prevAvg;
+
+    // new avg VM
+    const totalVm = prevVm.prevQty + poQtyVm;
+    const newAvgVm =
+      totalVm > 0
+        ? (prevVm.prevAvg * prevVm.prevQty + poCostVm * poQtyVm) / totalVm
+        : prevVm.prevAvg;
+
+    // write into PurchaseInvoiceItem
+    await this.itemRepo.update(it.id, {
+      previousQuantity: prevOfr.prevQty,
+      previousAverageCost: prevOfr.prevAvg,
+      averageCost: newAvgOfr,
+
+      previousQuantityVM: prevVm.prevQty,
+      previousAverageCostVM: prevVm.prevAvg,
+      averageCostVM: newAvgVm,
     });
 
-    const totalQtyC = prevQtyC + poQtyC;
-    const lhsC = prevAvgC * prevQtyC;
-    const rhsC = poCostC * poQtyC;
-    const newAvgC = totalQtyC > 0 ? (lhsC + rhsC) / totalQtyC : poCostC;
-    console.log('[C] blend details (OFR):', {
-      formula: 'newAvgC = (prevAvgC*prevQtyC + poCostC*poQtyC) / (prevQtyC + poQtyC)',
-      prevAvgC,
-      prevQtyC,
-      poCostC,
-      poQtyC,
-      lhsC,
-      rhsC,
-      totalQtyC,
-      newAvgC,
-      guardWhenTotalQtyCIsZero: totalQtyC === 0 ? '(used poCostC)' : '(used blend)',
-    });
+    // mirror into ItemVariant
+    await this.variantRepo.update(vid, {
+      averageCost: newAvgOfr,
+      lastCost: poCostOfr,
 
-    // apply SAME C-values to ALL PII rows in this description on THIS PO
-    for (const it of poItemsSameDesc) {
-      const res = await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-      });
-      console.log('✓ [C] PII row updated with C-values (OFR):', {
-        piiId: it.id,
-        affected: res?.affected ?? 'n/a',
-        set: { previousQuantityC: prevQtyC, previousAverageCostC: prevAvgC, averageCostC: newAvgC },
-      });
-    }
+      averageCostVM: newAvgVm,
+      lastCostVM: poCostVm,
+    });
   }
 
-  /* ────────────────────────────────────────────────
-     CVM-LEVEL (by description, current invoice) — VM
-     ──────────────────────────────────────────────── */
-  console.log('\n📚 CVM-Level (by description) calculations start');
+  // ------------------------------------------------------------------
+  // B) PER-DESCRIPTION: averageCostC (OFR) + averageCostCVM (VM)
+  //    prevQtyC     = SUM(sqmofr) for ALL variants under descId
+  //    prevQtyCVM   = SUM(sqm)    for ALL variants under descId
+  //    prevAvgC     = last PO avgCostC if exists else InventoryCount fallback
+  //    prevAvgCVM   = last PO avgCostCVM if exists else InventoryCount fallback
+  // ------------------------------------------------------------------
   for (const descId of descIds) {
-    console.log(`\n[CVM] ► Description ${descId}`);
+    const rows = itemsByDesc.get(descId) ?? [];
+    if (!rows.length) continue;
 
     const variantIdsForDesc = (
       await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
+        where: { itemNameDescriptionId: descId } as any,
+        select: ["id"],
       })
-    ).map((v) => v.id);
-    console.log('[CVM] variantIdsForDesc:', variantIdsForDesc);
+    )
+      .map((v) => Number(v.id))
+      .filter((n) => Number.isFinite(n) && n > 0);
 
-    const qbPrevCVM = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqm)', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-      .andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
+    if (!variantIdsForDesc.length) continue;
 
-    try {
-      // @ts-ignore
-      console.log('[CVM] prevQtyCVM SQL:', qbPrevCVM.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[CVM] prevQtyCVM Params:', qbPrevCVM.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
+    // ---- prevQtyC (OFR) from inventory tx SUM(sqmofr) ----
+    const prevQtyC = await sumTxQty(
+      this.inventoryTxRepo,
+      variantIdsForDesc,
+      "OFR",
+      dayStart,
+      currPiiIds,
+    );
 
-    const { sum: rawPrevCVM } = await qbPrevCVM.getRawOne();
-    let prevQtyCVM = Number(rawPrevCVM) || 0;
-    prevQtyCVM = clampPrevQty(prevQtyCVM, '[CVM] prevQtyCVM', {
-  descId,
-  invId: savedInvoice.id,
-});
-    console.log('[CVM] prevQtyCVM result (VM):', { rawPrevCVM, prevQtyCVM });
+    // ---- prevAvgC (OFR) from last PO, else InventoryCount(finalCostOfr) ----
+    const prevCRow = await this.itemRepo
+      .createQueryBuilder("pii")
+      .innerJoin("pii.invoice", "inv")
+      .innerJoin("pii.itemVariant", "iv")
+      .where("inv.status = :st", { st: "Recieved" })
+      .andWhere("inv.date < :cut", { cut: dayStart })
+      .andWhere("iv.itemNameDescriptionId = :descId", { descId })
+      .andWhere("pii.averageCostC IS NOT NULL")
+      .orderBy("inv.date", "DESC")
+      .addOrderBy("pii.id", "DESC")
+      .select(["pii.averageCostC AS avg"])
+      .getRawOne<{ avg?: string | number | null }>();
 
-    let prevAvgCVM: number;
-    const lastDescItemCVM = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date < :date', { date: dayStart })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostCVM'])
-      .getOne();
+const fbC = await openingsWeightedAvg(this.invTransRepo.manager, variantIdsForDesc, "OFR");
+const prevAvgC =
+  prevCRow?.avg != null ? num(prevCRow.avg, 0) : fbC.avg;
 
-    if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-      prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-      console.log('[CVM] prevAvgCVM from last PII.averageCostCVM:', prevAvgCVM);
-    } else {
-      console.log('[CVM] no prior PII.averageCostCVM, compute from openings (VM)…');
-      const openingsVM = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({
-          where: { itemVariant: In(variantIdsForDesc) },
-          select: ['sqm', 'finalCost'],
-        });
 
-      const totalOpenQtyVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm ?? 0),
-        0,
-      );
-      const weightedSumVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-        0,
-      );
-      prevAvgCVM = totalOpenQtyVM > 0 ? weightedSumVM / totalOpenQtyVM : 0;
-      console.log('[CVM] openings snapshot (VM):', {
-        openingsCount: openingsVM.length,
-        totalOpenQtyVM,
-        weightedSumVM,
-        prevAvgCVM,
-      });
-    }
-
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyCVM = poItemsSameDesc.reduce(
-      (s, it) => s + Number(it.sqm),
+    // ---- current invoice (desc group) OFR weighted PO cost ----
+    const poQtyC = rows.reduce((s, r) => s + getItemQty(r, "OFR"), 0);
+    const poWsumC = rows.reduce(
+      (s, r) => s + getItemQty(r, "OFR") * getItemCost(r, "OFR"),
       0,
     );
-    const weightedCostSumVM = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalCost) * Number(it.sqm),
-      0,
-    );
-    const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
+    const poCostC = poQtyC > 0 ? poWsumC / poQtyC : 0;
 
-    console.log('[CVM] current PO group snapshot (VM):', {
-      piiIds: poItemsSameDesc.map((x) => x.id),
-      perRow: poItemsSameDesc.map((x) => ({
-        piiId: x.id,
-        sqm: Number(x.sqm),
-        finalCost: Number((x as any).finalCost),
-      })),
-      poQtyCVM,
-      weightedCostSumVM,
-      poCostCVM,
-    });
-
-    const totalQtyCVM = prevQtyCVM + poQtyCVM;
-    const lhsCVM = prevAvgCVM * prevQtyCVM;
-    const rhsCVM = poCostCVM * poQtyCVM;
-    const newAvgCVM = totalQtyCVM > 0 ? (lhsCVM + rhsCVM) / totalQtyCVM : poCostCVM;
-    console.log('[CVM] blend details (VM):', {
-      formula: 'newAvgCVM = (prevAvgCVM*prevQtyCVM + poCostCVM*poQtyCVM) / (prevQtyCVM + poQtyCVM)',
-      prevAvgCVM,
-      prevQtyCVM,
-      poCostCVM,
-      poQtyCVM,
-      lhsCVM,
-      rhsCVM,
-      totalQtyCVM,
-      newAvgCVM,
-      guardWhenTotalQtyCVMIsZero: totalQtyCVM === 0 ? '(used poCostCVM)' : '(used blend)',
-    });
-
-    for (const it of poItemsSameDesc) {
-      const res = await this.itemRepo.update(it.id, {
-        previousQuantityCVM: prevQtyCVM,
-        previousAverageCostCVM: prevAvgCVM,
-        averageCostCVM: newAvgCVM,
-      });
-      console.log('✓ [CVM] PII row updated with CVM-values (VM):', {
-        piiId: it.id,
-        affected: res?.affected ?? 'n/a',
-        set: {
-          previousQuantityCVM: prevQtyCVM,
-          previousAverageCostCVM: prevAvgCVM,
-          averageCostCVM: newAvgCVM,
-        },
-      });
-    }
-  }
-
- /* ────────────────────────────────────────────────
-     FINAL WRITE → UPDATE ItemNameDescription
-     (NO recalculation — use already computed values)
-   ──────────────────────────────────────────────── */
-
-console.log('\n🗂 Writing final ItemNameDescription costs…');
-
-for (const descId of descIds) {
-  const poRows = itemsByDesc.get(descId) ?? [];
-
-  if (!poRows.length) {
-    console.warn(`⚠️ No PO rows found for descId: ${descId}, skipping…`);
-    continue;
-  }
-
-  // Take any row of the same description — they all share SAME C & CVM values
-  const ref = poRows[0];
-
-// Reload one item from DB to get fresh updated values
-const fresh = await this.itemRepo.findOne({ where: { id: ref.id } });
-
-const finalWrite = {
-  averageCostC: Number(fresh?.averageCostC ?? 0),
-  averageCostCVM: Number(fresh?.averageCostCVM ?? 0),
-  lastCostC: Number((ref as any).finalOFR ?? 0),
-  lastCostCVM: Number((ref as any).finalCost ?? 0),
-};
-
-  console.log(`📝 Updating Description ${descId} with:`, finalWrite);
-
-  await this.descRepo.update(descId, finalWrite);
-
-  console.log(`✓ Updated ItemNameDescription ${descId}`);
-}
-
-console.log('🧾 ItemNameDescription update (final) completed.');
-
-
-  /* ────────────────────────────────────────────────
-     FORWARD RECOMPUTE FOR LATER POs
-     ──────────────────────────────────────────────── */
-  const affectedVariantIds = Array.from(
-    new Set((savedInvoice.items ?? []).map((it) => it.itemVariantId)),
-  );
-  const affectedDescIds = Array.from(descIds);
-
-  if (affectedVariantIds.length || affectedDescIds.length) {
-    console.log('🔁 Checking for later POs to recompute…', {
-      affectedVariantIds,
-      affectedDescIds,
-    });
-
-    const laterRaw = await this.invoiceRepo
-      .createQueryBuilder('inv')
-      .innerJoin('inv.items', 'pii')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :st', { st: 'Recieved' })
-      .andWhere('inv.type = :typ', { typ: 'S' })
-      .andWhere('inv.date > :cut', { cut: invDate })
-      .andWhere(`(iv.id IN (:...varIds) OR iv.itemNameDescriptionId IN (:...descIds))`, {
-        varIds: affectedVariantIds.length ? affectedVariantIds : [-1],
-        descIds: affectedDescIds.length ? affectedDescIds : [-1],
-      })
-      .select('inv.id', 'id')
-      .addSelect('inv.date', 'date')
-      .distinct(true)
-      .orderBy('inv.date', 'ASC')
-      .addOrderBy('inv.id', 'ASC')
-      .getRawMany<{ id: number; date: Date }>();
-
-    const laterIds = laterRaw.map((r) => r.id);
-    console.log('🔁 Later PO IDs to recompute:', laterIds);
-
-    const recomputeInvoice = async (targetId: number) => {
-      const targetInv = await this.invoiceRepo.findOne({
-        where: { id: targetId },
-        relations: ['items', 'items.itemVariant'],
-      });
-      if (!targetInv) {
-        console.warn('⚠️ Target invoice not found during forward recompute:', { targetId });
-        return;
-      }
-
-      const cutoffDate = new Date(targetInv.date);
-      const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-      const tHasCurrIds = tCurrPiiIds.length > 0;
-
-      console.log(
-        `\n🔁 Recomputing invoice ${targetInv.id} dated ${cutoffDate.toISOString().slice(0, 10)}`,
-        { itemCount: targetInv.items?.length ?? 0, tHasCurrIds, tCurrPiiIds },
-      );
-
-      const tItemsByDesc = new Map<number, any[]>();
-      const tDescIds = new Set<number>();
-
-      // ───────── RECOMP: per-PII STANDARD/VM ─────────
-      for (const item of targetInv.items) {
-        const iv =
-          item.itemVariant ??
-          (await this.variantRepo.findOne({
-            where: { id: item.itemVariantId },
-          }));
-        if (!iv) {
-          console.warn('⚠️ Variant missing during recompute for PII:', item.id);
-          continue;
-        }
-        const descId = iv.itemNameDescriptionId;
-
-        if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-        tItemsByDesc.get(descId)!.push(item);
-        tDescIds.add(descId);
-
-        // STANDARD (OFR chain)
-        const qbRPrev = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqmofr)', 'sum')
-          .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('tx.dateForEachInvoice < :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-        try {
-          // @ts-ignore
-          console.log('[RECOMP STD] prev SQL:', qbRPrev.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP STD] prev Params:', qbRPrev.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-        const { sum: rawPrev } = await qbRPrev.getRawOne();
-        let prevQty = Number(rawPrev) || 0;
-prevQty = clampPrevQty(prevQty, '[RECOMP STD] prevQty', {
-  targetInvId: targetInv.id,
-  vid: item.itemVariantId,
-  piiId: item.id,
-});
-        let prevAvg = iv.averageCost ?? 0; // baseline from current variant
-
-        const poQty = Number((item as any).sqm ?? 0);
-        const poCost = Number((item as any).finalOFR ?? 0);
-        const totalQty = prevQty + poQty;
-        const newAvg =
-          totalQty > 0 ? (prevAvg * prevQty + poCost * poQty) / totalQty : poCost;
-        console.log('[RECOMP STD] details (OFR):', {
-          piiId: item.id,
-          itemVariantId: item.itemVariantId,
-          prevQty,
-          prevAvg,
-          poQty,
-          poCost,
-          totalQty,
-          newAvg,
-        });
-
-        await this.itemRepo.update(item.id, {
-          previousQuantity: prevQty,
-          previousAverageCost: prevAvg,
-          averageCost: newAvg,
-        });
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCost: newAvg,
-          lastCost: poCost,
-        });
-
-        // VM
-        const qbRPrevVm = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqm)', 'sum')
-          .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-        try {
-          // @ts-ignore
-          console.log('[RECOMP VM] prev SQL:', qbRPrevVm.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP VM] prev Params:', qbRPrevVm.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-        const { sum: rawPrevVm } = await qbRPrevVm.getRawOne();
-        let prevQtyVM = Number(rawPrevVm) || 0;
-
-prevQtyVM = clampPrevQty(prevQtyVM, '[RECOMP VM] prevQtyVM', {
-  targetInvId: targetInv.id,
-  vid: item.itemVariantId,
-  piiId: item.id,
-});
-
-        let prevAvgVM = iv.averageCostVM ?? 0;
-        const poQtyVM = Number(item.sqm);
-        const poCostVM = Number((item as any).finalCost);
-        const totalQtyVM = prevQtyVM + poQtyVM;
-        const newAvgVM =
-          totalQtyVM > 0
-            ? (prevAvgVM * prevQtyVM + poCostVM * poQtyVM) / totalQtyVM
-            : poCostVM;
-        console.log('[RECOMP VM] details (VM):', {
-          piiId: item.id,
-          itemVariantId: item.itemVariantId,
-          prevQtyVM,
-          prevAvgVM,
-          poQtyVM,
-          poCostVM,
-          totalQtyVM,
-          newAvgVM,
-        });
-
-        await this.itemRepo.update(item.id, {
-          previousQuantityVM: prevQtyVM,
-          previousAverageCostVM: prevAvgVM,
-          averageCostVM: newAvgVM,
-        });
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCostVM: newAvgVM,
-          lastCostVM: poCostVM,
-        });
-      } // end per-PII in target
-
-      // ───────── RECOMP C-LEVEL (OFR) ─────────
-      console.log('\n[RECOMP C] start for invoice:', targetInv.id);
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({
-            where: { itemNameDescriptionId: descId },
-            select: ['id'],
-          })
-        ).map((v) => v.id);
-
-        const qbRPrevC = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(COALESCE(tx.sqmofr, 0))', 'sum')
-          .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-        try {
-          // @ts-ignore
-          console.log('[RECOMP C] prevQtyC SQL:', qbRPrevC.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP C] prevQtyC Params:', qbRPrevC.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-        const { sum: rawPrevC } = await qbRPrevC.getRawOne();
-        let prevQtyC = Number(rawPrevC) || 0;
-
-prevQtyC = clampPrevQty(prevQtyC, '[RECOMP C] prevQtyC', {
-  targetInvId: targetInv.id,
-  descId,
-});
-
-        let prevAvgC: number;
-        const lastDescItem = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-          .andWhere('inv.date <= :date', { date: cutoffDate })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostC'])
-          .getOne();
-
-        if (lastDescItem && lastDescItem.averageCostC != null) {
-          prevAvgC = Number(lastDescItem.averageCostC);
-        } else {
-          const openings = await this.invTransRepo.manager
-            .getRepository(InventoryCount)
-            .find({
-              where: { itemVariant: In(variantIdsForDesc) },
-              select: ['sqmOfr', 'finalCostOfr'],
-            });
-          const totalOpenQty = openings.reduce(
-            (s, o) => s + Number(o.sqmOfr ?? 0),
-            0,
-          );
-          const weightedSum = openings.reduce(
-            (s, o) =>
-              s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-            0,
-          );
-          prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-        }
-
-        const poItemsSameDesc = tItemsByDesc.get(descId) ?? [];
-        const poQtyC = poItemsSameDesc.reduce(
-          (s, it: any) => s + Number(it.sqm ?? 0),
-          0,
-        );
-        const weightedCostSum = poItemsSameDesc.reduce(
-          (s, it: any) =>
-            s + Number(it.sqm ?? 0) * Number(it.finalOFR ?? 0),
-          0,
-        );
-        const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-        const totalQtyC = prevQtyC + poQtyC;
-        const newAvgC =
-          totalQtyC > 0
-            ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC
-            : poCostC;
-        console.log('[RECOMP C] details (OFR):', {
-          descId,
-          prevQtyC,
-          prevAvgC,
-          poQtyC,
-          weightedCostSum,
-          poCostC,
-          totalQtyC,
-          newAvgC,
-        });
-
-        for (const it of poItemsSameDesc) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityC: prevQtyC,
-            previousAverageCostC: prevAvgC,
-            averageCostC: newAvgC,
-          });
-        }
-      }
-
-      // ───────── RECOMP CVM-LEVEL (VM) ─────────
-      console.log('\n[RECOMP CVM] start for invoice:', targetInv.id);
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({
-            where: { itemNameDescriptionId: descId },
-            select: ['id'],
-          })
-        ).map((v) => v.id);
-
-        const qbRPrevCVM = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqm)', 'sum')
-          .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-
-        try {
-          // @ts-ignore
-          console.log('[RECOMP CVM] prevQtyCVM SQL:', qbRPrevCVM.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP CVM] prevQtyCVM Params:', qbRPrevCVM.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */ }
-
-        const { sum: rawPrevCVM } = await qbRPrevCVM.getRawOne();
-     let prevQtyCVM = Number(rawPrevCVM) || 0;
-
-prevQtyCVM = clampPrevQty(prevQtyCVM, '[RECOMP CVM] prevQtyCVM', {
-  targetInvId: targetInv.id,
-  descId,
-});
-
-        let prevAvgCVM = 0;
-        const lastDescItemCVM = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['RVR', 'S', 'SR'] })
-          .andWhere('inv.date <= :date', { date: cutoffDate })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostCVM'])
-          .getOne();
-
-        if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-          prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-        } else {
-          const openingsVM = await this.invTransRepo.manager
-            .getRepository(InventoryCount)
-            .find({
-              where: { itemVariant: In(variantIdsForDesc) },
-              select: ['sqm', 'finalCost'],
-            });
-
-          const totalOpenQtyVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm ?? 0),
-            0,
-          );
-          const weightedSumVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-            0,
-          );
-          prevAvgCVM = totalOpenQtyVM > 0 ? weightedSumVM / totalOpenQtyVM : 0;
-        }
-
-        const poItemsSameDesc = tItemsByDesc.get(descId) ?? [];
-        const poQtyCVM = poItemsSameDesc.reduce(
-          (s, it) => s + Number(it.sqm),
-          0,
-        );
-        const weightedCostSumVM = poItemsSameDesc.reduce(
-          (s, it) => s + Number((it as any).finalCost) * Number(it.sqm),
-          0,
-        );
-        const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-        const totalQtyCVM = prevQtyCVM + poQtyCVM;
-        const newAvgCVM =
-          totalQtyCVM > 0
-            ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM
-            : poCostCVM;
-
-        console.log('[RECOMP CVM] details (VM):', {
-          descId,
-          prevQtyCVM,
-          prevAvgCVM,
-          poQtyCVM,
-          weightedCostSumVM,
-          poCostCVM,
-          totalQtyCVM,
-          newAvgCVM,
-        });
-
-        for (const it of poItemsSameDesc) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityCVM: prevQtyCVM,
-            previousAverageCostCVM: prevAvgCVM,
-            averageCostCVM: newAvgCVM,
-          });
-        }
-      }
-
-    // ───────── RECOMP ItemNameDescription UPDATE (NO recalculation) ─────────
-console.log('\n[RECOMP DESC] Updating ItemNameDescription based on final recomputed rows…');
-
-for (const descId of tDescIds) {
-  const rows = tItemsByDesc.get(descId) ?? [];
-  if (!rows.length) {
-    console.warn(`⚠️ No matching rows for descId ${descId} during recompute.`);
-    continue;
-  }
-
-  // Any row of the same description — they all share same cost after recompute
-  const ref = rows[0];
-
-  // 🔹 IMPORTANT: reload fresh row from DB to get the recomputed averages
-  const fresh = await this.itemRepo.findOne({
-    where: { id: ref.id },
-  });
-
-  const updateValues = {
-    averageCostC: Number(fresh?.averageCostC ?? 0),
-    averageCostCVM: Number(fresh?.averageCostCVM ?? 0),
-    lastCostC: Number((ref as any).finalOFR ?? 0),
-    lastCostCVM: Number((ref as any).finalCost ?? 0),
-  };
-
-  console.log(`[RECOMP DESC] Writing to Description ${descId}:`, updateValues);
-
-  await this.descRepo.update(descId, updateValues);
-
-  console.log(`✓ Updated ItemNameDescription ${descId} (recompute apply)`);
-}
-
-
-    };
-
-    for (const id of laterIds) {
-      await recomputeInvoice(id);
-    }
-    console.log('🔁 Forward recompute complete.');
-  }
-
-  console.log('🧾 PO Cost Calc — End', { invoiceId: savedInvoice.id });
-}
-
-// 🔎 END: Cost-calculation & logging block
-
-// 🔎 BEGIN: Cost-calculation & logging block (prevAvg now pulled from last prior PO; VM fallback=0; STANDARD fallback=weighted openings)
-// 🔎 BEGIN: G-invoice cost-calculation & logging block (type-based history: G/S/SR; OFR-only; VM fields = NULL)
-if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'G') {
-  const invDate = new Date(savedInvoice.date);
-  const dayStart = new Date(invDate);
-  dayStart.setHours(0, 0, 0, 0); // exclude same calendar date for "previous" lookups
-
-  console.log('🧾 [G] PO Cost Calc — Start', {
-    invoiceId: savedInvoice.id,
-    invoiceType: savedInvoice.type,
-    invoiceDateISO: invDate.toISOString(),
-    cutoffForPreviousISO: dayStart.toISOString(),
-    itemCount: savedInvoice.items?.length ?? 0,
-    priorTypes: ['G', 'S', 'SR'],
-  });
-
-  const itemsByDesc = new Map<number, any[]>();
-
-  // NOT-IN for "previous" sums
-  const currPiiIds = (savedInvoice.items ?? []).map((it) => it.id);
-  const hasCurrPiiIds = currPiiIds.length > 0;
-  console.log('🔒 [G] Excluding current PurchaseInvoiceItem IDs from prior sums:', currPiiIds);
-
-  // Collect description IDs
-  const descIds = new Set<number>();
-
-  for (const item of savedInvoice.items) {
-    // ───────── STANDARD (OFR) COST TRACK — G invoices use OFR only ─────────
-    const variantt = await this.variantRepo.findOne({
-      where: { id: item.itemVariantId },
-      select: ['id', 'itemNameDescriptionId'],
-    });
-    if (!variantt) {
-      console.error(`❌ [G] Variant ${item.itemVariantId} not found`);
-      continue;
-    }
-
-    const vid = variantt.id;
-    const descId = variantt.itemNameDescriptionId;
-
-    // collect this PII under its description
-    if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
-    itemsByDesc.get(descId)!.push(item);
-    descIds.add(descId);
-
-    console.log(
-      `\n[STANDARD:G] ► Processing PII ${item.id} (variantId=${vid}, descId=${descId}) on invoice ${savedInvoice.id}`,
-    );
-    console.log('[STANDARD:G] row snapshot:', {
-      piiId: item.id,
-      itemVariantId: item.itemVariantId,
-      qty: Number(item.quantity),
-      sqm: Number(item.sqm),
-      finalOFR: Number((item as any).finalOFR),
-      finalCost: Number((item as any).finalCost),
-    });
-
-    // 0) Determine PREVIOUS AVERAGE (NEW: type-based search G/S/SR; exclude same day)
-    const priorTypes = ['G', 'S', 'SR'] as const;
-    const qbPrevPII = this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: priorTypes })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCost AS avg_cost',
-        'pii.averageCostC AS avg_cost_c',
-        'inv.id AS inv_id',
-        'inv.date AS inv_date',
-        'inv.type AS inv_type',
-      ]);
-
-    try {
-      // @ts-ignore
-      console.log('[PREV PII:G] SQL:', qbPrevPII.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[PREV PII:G] Params:', qbPrevPII.getParameters?.() ?? '(params not available)');
-    } catch { /* noop */ }
-
-    const prevPIIRaw = await qbPrevPII.getRawOne<{
-      pii_id?: number;
-      avg_cost?: string | number | null;
-      avg_cost_c?: string | number | null;
-      inv_id?: number;
-      inv_date?: Date;
-      inv_type?: string;
-    }>();
-    console.log('[PREV PII:G] raw result:', prevPIIRaw ?? null);
-
-    // 1) Sum prior quantity — OFR ONLY, inclusive cutoff (<= invDate), exclude current PII
-    const qbPrevQty = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-    if (hasCurrPiiIds) {
-      qbPrevQty.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[STANDARD:G] prevQty (OFR) SQL:', qbPrevQty.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[STANDARD:G] prevQty (OFR) Params:', qbPrevQty.getParameters?.() ?? '(params not available)');
-    } catch { /* noop */ }
-
-    const { sum: rawPrevOfr } = await qbPrevQty.getRawOne();
-    let prevQty = Number(rawPrevOfr) || 0;
-
-prevQty = clampPrevQty(prevQty, '[STANDARD:G] prevQty', {
-  vid: item.itemVariantId,
-  piiId: item.id,
-  invId: savedInvoice.id,
-});
-    console.log('[STANDARD:G] prevQty (OFR) result:', { rawPrevOfr, prevQty });
-
-    // 2) Prev avg-OFR — from previous PII.averageCost across types G/S/SR; else openings (OFR)
-    let prevAvg: number;
-    if (prevPIIRaw && prevPIIRaw.avg_cost != null) {
-      prevAvg = Number(prevPIIRaw.avg_cost);
-      console.log('[STANDARD:G] prevAvg from previous PII.averageCost:', {
-        prevAvg,
-        prevPiiId: prevPIIRaw.pii_id ?? null,
-        prevInv: {
-          id: prevPIIRaw.inv_id ?? null,
-          type: prevPIIRaw.inv_type ?? null,
-          date: prevPIIRaw.inv_date ?? null,
-        },
-      });
-    } else {
-      console.log('[STANDARD:G] no previous PII; computing weighted openings from InventoryCount (OFR)…');
-      const openings = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: { id: item.itemVariantId } },
-        select: ['sqmOfr', 'finalCostOfr'],
-      });
-      const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqmOfr), 0);
-      const weightedSum = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr) * Number(o.finalCostOfr),
-        0,
-      );
-      prevAvg = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-
-      console.log('[STANDARD:G] openings snapshot + resolved prevAvg:', {
-        openingsCount: openings.length,
-        totalOpenQty,
-        weightedSum,
-        prevAvg,
-      });
-    }
-
-    // 3) Current PO — OFR inputs only
-    const poQty = Number(item.sqm);
-    const poCost = Number((item as any).finalOFR);
-    console.log('[STANDARD:G] current PO contribution (OFR):', { poQty, poCost });
-
-    // 4) Blend (OFR)
-    const totalQty = prevQty + poQty;
-    const lhs = prevAvg * prevQty; // value of stock before
-    const rhs = poCost * poQty;    // value of current receipt
-    const newAvg = totalQty > 0 ? (lhs + rhs) / totalQty : poCost;
-    console.log('[STANDARD:G] blend details (OFR):', {
-      formula: 'newAvg = (prevAvg*prevQty + poCost*poQty) / (prevQty + poQty)',
-      prevAvg,
-      prevQty,
-      poCost,
-      poQty,
-      lhs,
-      rhs,
-      totalQty,
-      newAvg,
-      guardWhenTotalQtyIsZero: totalQty === 0 ? '(used poCost)' : '(used blend)',
-    });
-
-    // 5) Persist — STANDARD fields + explicitly NULL out VM/CVM "previous" fields
-    const piiUpdatePayload: any = {
-      previousQuantity: prevQty,
-      previousAverageCost: prevAvg,
-      averageCost: newAvg,
-
-      // VM track is NOT used for G → set NULLs
-      previousQuantityVM: null,
-      previousAverageCostVM: null,
-
-      // If your schema has CVM "previous" fields, we also null them out:
-      previousQuantityCVM: null,
-      previousAverageCostCVM: null,
-    };
-
-    const piiUpdateRes = await this.itemRepo.update(item.id, piiUpdatePayload);
-    console.log('✓ [STANDARD:G] PII update result:', {
-      piiId: item.id,
-      affected: piiUpdateRes?.affected ?? 'n/a',
-      set: piiUpdatePayload,
-    });
-
-    // Update variant — OFR stats only; do NOT touch VM stats
-    const varUpdateResStd = await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvg,
-      lastCost: poCost,
-    });
-    console.log('✓ [STANDARD:G] Variant update result (OFR only):', {
-      itemVariantId: item.itemVariantId,
-      affected: varUpdateResStd?.affected ?? 'n/a',
-      set: { averageCost: newAvg, lastCost: poCost },
-      note: 'VM stats untouched for G invoices',
-    });
-
-    // (No VM track for G)
-    console.log('ⓘ [G] VM calculation skipped. VM-related previous fields saved as NULL.');
-  } // end per-PII loop
-
-  // ───────── C-LEVEL (description) FOR CURRENT G INVOICE — ONCE PER DESCRIPTION ─────────
-  console.log('\n📚 [G] C-Level (by description) calculations start');
-  for (const descId of descIds) {
-    console.log(`\n[C:G] ► Description ${descId}`);
-
-    // all variants under this description
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-    console.log('[C:G] variantIdsForDesc:', variantIdsForDesc);
-
-    // previous qty (OFR ONLY), up to & INCLUDING invDate; exclude current PO rows
-    const qbPrevC = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-      .andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    try {
-      // @ts-ignore
-      console.log('[C:G] prevQtyC (OFR) SQL:', qbPrevC.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[C:G] prevQtyC (OFR) Params:', qbPrevC.getParameters?.() ?? '(params not available)');
-    } catch { /* noop */ }
-    const { sum: rawPrevC } = await qbPrevC.getRawOne();
-    let prevQtyC = Number(rawPrevC) || 0;
-
-prevQtyC = clampPrevQty(prevQtyC, '[C:G] prevQtyC', {
-  descId,
-  invId: savedInvoice.id,
-});
-    console.log('[C:G] prevQtyC (OFR) result:', { rawPrevC, prevQtyC });
-
-
-
-    console.log(`\n🔍 [C-DEBUG] Resolving previous average cost C for descId=${descId}`);
-
-const lastDescItemDebugQB = this.itemRepo
-  .createQueryBuilder('pii')
-  .innerJoin('pii.invoice', 'inv')
-  .innerJoin('pii.itemVariant', 'iv')
-  .where('inv.status = :status', { status: 'Recieved' })
-  .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-  .andWhere('inv.date < :date', { date: dayStart })
-  .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-  .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-  .orderBy('inv.date', 'DESC')
-  .addOrderBy('pii.id', 'DESC')
-  .select([
-    'pii.id AS pii_id',
-    'pii.averageCostC AS avg_cost_c',
-    'pii.averageCost AS avg_cost_ofr',
-    'pii.finalCost AS lastFinalCost',
-    'inv.id AS inv_id',
-    'inv.type AS inv_type',
-    'inv.date AS inv_date'
-  ]);
-
-try {
-  console.log('🧠 [C-DEBUG] SQL used to search for historical C:', lastDescItemDebugQB.getSql());
-  console.log('🧠 [C-DEBUG] Params:', lastDescItemDebugQB.getParameters());
-} catch {}
-
-const historyRows = await lastDescItemDebugQB.getRawMany();
-console.log(`📄 [C-DEBUG] Found ${historyRows.length} candidate rows:`);
-
-historyRows.forEach((row, i) =>
-  console.log(`   ➤ Row #${i+1}:`, {
-    piiId: row.pii_id,
-    invId: row.inv_id,
-    invoiceType: row.inv_type,
-    invoiceDate: row.inv_date,
-    averageCostC: row.avg_cost_c,
-    fallback_OFR: row.avg_cost_ofr,
-    fallback_lastCost: row.lastFinalCost
-  })
-);
-
-    // 🔽 Decision
-let prevAvgC: number;
-
-if (historyRows.length > 0) {
-  const firstValid = historyRows.find(r => r.avg_cost_c !== null);
-  if (firstValid) {
-    prevAvgC = Number(firstValid.avg_cost_c);
-    console.log(`🎯 [C-DEBUG] PREVIOUS AVERAGE FOUND → using averageCostC=${prevAvgC} from PII=${firstValid.pii_id}`);
-  } else {
-    console.log(`⚠️ [C-DEBUG] Historical rows exist, but NONE have averageCostC recorded.`);
-    console.log(`➡️ Fallback: Will compute from openings or finalOFR.`);
-
-    prevAvgC = null as any; // force fallback
-  }
-} else {
-  console.log(`❌ [C-DEBUG] No historical invoices match C-level rules.`);
-  prevAvgC = null as any; // trigger fallback
-}
-
-// ─────────────────────────────
-// 💾 OPENING STOCK FALLBACK
-// ─────────────────────────────
-if (prevAvgC === null) {
-  console.log(`🔁 [C-DEBUG] Computing fallback from InventoryCount (openings)…`);
-  const openings = await this.invTransRepo.manager
-    .getRepository(InventoryCount)
-    .find({
-      where: { itemVariant: In(variantIdsForDesc) },
-      select: ['sqmOfr', 'finalCostOfr'],
-    });
-
-  console.log(`📦 [C-DEBUG] Opening rows (${openings.length}):`);
-
-  openings.forEach((op, i) =>
-    console.log(`   ➤ Opening #${i+1}: sqmOfr=${op.sqmOfr}, cost=${op.finalCostOfr}`)
-  );
-
-  const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-  const weightedSum = openings.reduce(
-    (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-    0,
-  );
-
-  prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-
-  console.log(`📊 [C-DEBUG] Result of fallback calculation:`);
-  console.log({
-    totalOpenQty,
-    weightedSum,
-    computedAvg: prevAvgC
-  });
-
-  if (prevAvgC === 0) {
-    console.log(`⚠️ [C-DEBUG] Fallback avg=0 → meaning: no openings + no history → this invoice is first cost reference!`);
-  }
-}
-
-console.log(`✅ [C-DEBUG] FINAL selected prevAvgC=${prevAvgC}`);
-
-    // group CURRENT PO rows that share this description (OFR)
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyC = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-    const weightedCostSum = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalOFR) * Number(it.sqm),
-      0,
-    );
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-    console.log('[C:G] current PO group snapshot (OFR):', {
-      piiIds: poItemsSameDesc.map((x) => x.id),
-      perRow: poItemsSameDesc.map((x) => ({
-        piiId: x.id,
-        sqm: Number(x.sqm),
-        finalOFR: Number((x as any).finalOFR),
-      })),
-      poQtyC,
-      weightedCostSum,
-      poCostC,
-    });
-
-    const totalQtyC = prevQtyC + poQtyC;
-    const lhsC = prevAvgC * prevQtyC;
-    const rhsC = poCostC * poQtyC;
-    const newAvgC = totalQtyC > 0 ? (lhsC + rhsC) / totalQtyC : poCostC;
-    console.log('[C:G] blend details (OFR):', {
-      formula: 'newAvgC = (prevAvgC*prevQtyC + poCostC*poQtyC) / (prevQtyC + poQtyC)',
-      prevAvgC,
-      prevQtyC,
-      poCostC,
-      poQtyC,
-      lhsC,
-      rhsC,
-      totalQtyC,
-      newAvgC,
-      guardWhenTotalQtyCIsZero: totalQtyC === 0 ? '(used poCostC)' : '(used blend)',
-    });
-
-    // apply SAME C-values to ALL PII rows in this description on THIS PO
-    for (const it of poItemsSameDesc) {
-      const res = await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-
-        // If your schema carries CVM "previous" fields and you wish them NULL on G, you can also set:
-        previousQuantityCVM: null,
-        previousAverageCostCVM: null,
-      });
-      console.log('✓ [C:G] PII row updated with C-values:', {
-        piiId: it.id,
-        affected: res?.affected ?? 'n/a',
-        set: { previousQuantityC: prevQtyC, previousAverageCostC: prevAvgC, averageCostC: newAvgC },
-      });
-    }
-  }
-  // ───────── UPDATE ItemNameDescription TABLE (OFR-only) ─────────
-  console.log('\n🗂 [G] Updating ItemNameDescription table…');
-  for (const descId of descIds) {
-    console.log(`\n— [G] Updating ItemNameDescription ${descId} —`);
-
-    // 🔹 We ALREADY computed C-level averages above per description
-    //    and wrote them into the PII rows.
-    //    Here, we just mirror those values into ItemNameDescription.
-
-    // All current PO rows for this description on THIS invoice
-    const poItemsForDesc = itemsByDesc.get(descId) ?? [];
-    if (!poItemsForDesc.length) {
-      console.log('[C->Desc:G] No current PII rows for this description; skipping.');
-      continue;
-    }
-
-    // Any row of this description on this invoice has the same averageCostC
-    // (you set it in the previous C-level loop). We'll read from the first.
-    const samplePii = poItemsForDesc[0] as any;
-
-    const averageCostC = Number(samplePii.averageCostC ?? 0);
-
-    // lastCostC = finalOFR of the last row of this description in this PO
-    const lastRow = poItemsForDesc[poItemsForDesc.length - 1] as any;
-    const lastCostC = Number(lastRow?.finalOFR ?? 0);
-
-    console.log('[C->Desc:G] Mirroring C-values from PII into ItemNameDescription:', {
-      descId,
-      samplePiiId: samplePii.id,
-      averageCostC,
-      lastCostC,
-      piiIds: poItemsForDesc.map((x: any) => x.id),
-    });
-
-    const descUpdateRes = await this.descRepo.update(descId, {
-      averageCostC,
-      lastCostC,
-    });
-
-    console.log('✓ [C->Desc:G] ItemNameDescription update (NO recalculation):', {
-      descId,
-      affected: descUpdateRes?.affected ?? 'n/a',
-      set: { averageCostC, lastCostC },
-    });
-  }
-
-
-  // ─────────────────────────────
-  // ⚙️ Forward recompute for back-dated inserts
-  //   - If a later invoice is type G, use SAME prior rule (types IN G/S/SR, cutoff = that invoice day start)
-  //   - Keep VM NULL for G
-  // ─────────────────────────────
-  const affectedVariantIds = Array.from(
-    new Set((savedInvoice.items ?? []).map((it) => it.itemVariantId)),
-  );
-  const affectedDescIds = Array.from(descIds);
-
-  if (affectedVariantIds.length || affectedDescIds.length) {
-    console.log('🔁 [G] Checking for later POs to recompute…', {
-      affectedVariantIds,
-      affectedDescIds,
-    });
-
-    const laterRaw = await this.invoiceRepo
-      .createQueryBuilder('inv')
-      .innerJoin('inv.items', 'pii')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :st', { st: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] }) // recompute later invoices of these types (safe superset)
-      .andWhere('inv.date > :cut', { cut: dayStart })
-      .andWhere(`(iv.id IN (:...varIds) OR iv.itemNameDescriptionId IN (:...descIds))`, {
-        varIds: affectedVariantIds.length ? affectedVariantIds : [-1],
-        descIds: affectedDescIds.length ? affectedDescIds : [-1],
-      })
-      .select('inv.id', 'id')
-      .addSelect('inv.type', 'type')
-      .addSelect('inv.date', 'date')
-      .distinct(true)
-      .orderBy('inv.date', 'ASC')
-      .addOrderBy('inv.id', 'ASC')
-      .getRawMany<{ id: number; type: 'G' | 'S' | 'SR'; date: Date }>();
-const laterIds = laterRaw.map((r) => r.id);
-console.log('🔁 [G] Later PO IDs to recompute:', laterIds, { meta: laterRaw });
-
-/**
- * Recompute for a later G invoice (OFR-only; VM previous fields kept NULL)
- * — This is your existing G recompute body, kept intact.
- */
-const recomputeInvoiceG = async (targetId: number) => {
-  const targetInv = await this.invoiceRepo.findOne({
-    where: { id: targetId },
-    relations: ['items', 'items.itemVariant'],
-  });
-  if (!targetInv) {
-    console.warn('⚠️ Target invoice not found during forward recompute (G):', { targetId });
-    return;
-  }
-
-  const cutoffDate = new Date(targetInv.date);
-  const cutoffDayStart = new Date(cutoffDate);
-  cutoffDayStart.setHours(0, 0, 0, 0);
-
-  const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-  console.log(
-    `\n🔁 [RECOMP:G] Invoice ${targetInv.id} dated ${cutoffDate.toISOString().slice(0, 10)} (OFR-only)`,
-    { itemCount: targetInv.items?.length ?? 0, tCurrPiiIds },
-  );
-
-  const tItemsByDesc = new Map<number, any[]>();
-  const tDescIds = new Set<number>();
-
-  for (const item of targetInv.items) {
-    const iv =
-      item.itemVariant ??
-      (await this.variantRepo.findOne({
-        where: { id: item.itemVariantId },
-      }));
-    if (!iv) {
-      console.warn('⚠️ [RECOMP:G] Variant missing for PII:', item.id);
-      continue;
-    }
-    const descId = iv.itemNameDescriptionId;
-
-    if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-    tItemsByDesc.get(descId)!.push(item);
-    tDescIds.add(descId);
-
-    // prev qty (OFR)
-    const { sum: rawPrev } = await this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-      .andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-        { currIds: tCurrPiiIds },
-      )
-      .getRawOne();
-    let prevQty = Number(rawPrev) || 0;
-
-prevQty = clampPrevQty(prevQty, '[RECOMP:G] prevQty', {
-  targetInvId: targetInv.id,
-  vid: item.itemVariantId,
-  piiId: item.id,
-});
-
-    // prev avg from last prior PII among (G,S,SR) before that day’s start
-    let prevAvg = 0;
-    const prevPII = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: cutoffDayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCost AS avg_cost', 'pii.id AS pii_id', 'inv.id AS inv_id', 'inv.type AS inv_type', 'inv.date AS inv_date'])
-      .getRawOne<{ avg_cost?: number | string | null; pii_id?: number; inv_id?: number; inv_type?: string; inv_date?: Date }>();
-
-    if (prevPII?.avg_cost != null) {
-      prevAvg = Number(prevPII.avg_cost);
-      console.log('[RECOMP:G] prevAvg from prior PII.averageCost (G/S/SR):', {
-        itemId: item.id,
-        variantId: item.itemVariantId,
-        prevAvg,
-        prevPiiMeta: { piiId: prevPII.pii_id, invId: prevPII.inv_id, invType: prevPII.inv_type, invDate: prevPII.inv_date },
-      });
-    } else {
-      // openings fallback
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({ where: { itemVariant: { id: iv.id } }, select: ['sqmOfr', 'finalCostOfr'] });
-     const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-const weightedSum = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0), 0);
-      prevAvg = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-      console.log('[RECOMP:G] openings fallback → prevAvg:', { itemId: item.id, variantId: item.itemVariantId, totalOpenQty, weightedSum, prevAvg });
-    }
-
-    // blend (OFR)
-    const poQty = Number(item.sqm);
-    const poCost = Number((item as any).finalOFR);
-    const totalQty = prevQty + poQty;
-    const newAvg = totalQty > 0 ? (prevAvg * prevQty + poCost * poQty) / totalQty : poCost;
-
-    await this.itemRepo.update(item.id, {
-      previousQuantity: prevQty,
-      previousAverageCost: prevAvg,
-      averageCost: newAvg,
-      // ensure VM previous remain NULL for G invoices
-      previousQuantityVM: null,
-      previousAverageCostVM: null,
-      previousQuantityCVM: null,
-      previousAverageCostCVM: null,
-    });
-    await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvg,
-      lastCost: poCost,
-    });
-  }
-
-  // C-level (OFR-only)
-  console.log('\n[RECOMP C:G] start for invoice:', targetInv.id);
-  for (const descId of tDescIds) {
-    const variantIdsForDesc = (
-      await this.variantRepo.find({ where: { itemNameDescriptionId: descId }, select: ['id'] })
-    ).map((v) => v.id);
-
-    const { sum: rawPrevC } = await this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(COALESCE(tx.sqmofr, tx.sqm, 0))', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-      .andWhere('(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))', {
-        currIds: tCurrPiiIds,
-      })
-      .getRawOne();
-   let prevQtyC = Number(rawPrevC) || 0;
-
-prevQtyC = clampPrevQty(prevQtyC, '[RECOMP C:G] prevQtyC', {
-  targetInvId: targetInv.id,
-  descId,
-});
-
-    // prevAvgC from last prior PII among (G,S,SR) before that day’s start
-    let prevAvgC = 0;
-    const lastDescItem = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date <= :date', { date: cutoffDate })
-      .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostC'])
-      .getOne();
-    if (lastDescItem && (lastDescItem as any).averageCostC != null) {
-      prevAvgC = Number((lastDescItem as any).averageCostC);
-    } else {
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({ where: { itemVariant: In(variantIdsForDesc) }, select: ['sqm', 'finalCostOfr'] });
-      const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqm), 0);
-      const weightedSum = openings.reduce((s, o) => s + Number(o.sqm) * Number(o.finalCostOfr), 0);
-      prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-    }
-
-    const poItemsSameDesc = (targetInv.items ?? []).filter((it) => {
-      const v = it.itemVariant ?? null;
-      return v && v.itemNameDescriptionId === descId;
-    });
-    const poQtyC = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-    const weightedCostSum = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalOFR) * Number(it.sqm),
-      0,
-    );
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-
-    const totalQtyC = prevQtyC + poQtyC;
-    const newAvgC = totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
-
-    for (const it of poItemsSameDesc) {
-      await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-        // keep any CVM previous fields NULL if your schema has them
-        previousQuantityCVM: null,
-        previousAverageCostCVM: null,
-      });
-         // 🔹 NEW: Mirror to ItemNameDescription — NO extra calculations
-    if (poItemsSameDesc.length) {
-      const lastRow = poItemsSameDesc[poItemsSameDesc.length - 1] as any;
-      const lastCostC = Number(lastRow?.finalOFR ?? 0);
-
-      console.log('[RECOMP C:G -> Desc] Mirroring C-values into ItemNameDescription:', {
-        descId,
-        averageCostC: newAvgC,
-        lastCostC,
-      });
-
-      await this.descRepo.update(descId, {
-        averageCostC: newAvgC,
-        lastCostC,
-      });
-    }
-    }
-  }
-};
-
-/**
- * NEW: Recompute for a later S or SR invoice — Standard + C ONLY (skip VM)
- * Reason: a back-dated G changes only the OFR chain. VM chain (sqm/finalCost) is unaffected by G,
- * so we deliberately do not touch VM fields here.
- */
-const recomputeInvoiceSOrSR_StandardOnly = async (targetId: number) => {
-  const targetInv = await this.invoiceRepo.findOne({
-    where: { id: targetId },
-    relations: ['items', 'items.itemVariant'],
-  });
-  if (!targetInv) {
-    console.warn('⚠️ Target invoice not found during forward recompute (S/SR std-only):', { targetId });
-    return;
-  }
-
-  const cutoffDate = new Date(targetInv.date);
-  const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-  console.log(
-    `\n🔁 [RECOMP S/SR from G] Invoice ${targetInv.id} dated ${cutoffDate.toISOString().slice(0, 10)} — Standard + C ONLY (skip VM)`,
-    { type: targetInv.type, itemCount: targetInv.items?.length ?? 0, tCurrPiiIds },
-  );
-
-  // Group for C-level
-  const tItemsByDesc = new Map<number, any[]>();
-  const tDescIds = new Set<number>();
-
-  // STANDARD only per-PII
-  for (const item of targetInv.items) {
-    const iv =
-      item.itemVariant ??
-      (await this.variantRepo.findOne({
-        where: { id: item.itemVariantId },
-        select: ['id', 'itemNameDescriptionId', 'averageCost'],
-      }));
-    if (!iv) continue;
-
-    const descId = iv.itemNameDescriptionId;
-    if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-    tItemsByDesc.get(descId)!.push(item);
-    tDescIds.add(descId);
-
-    // prev qty STD = SUM(sqmofr) up to cutoff, excluding own rows
-    const { sum: rawPrevStd } = await this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-      .andWhere('(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))', {
-        currIds: tCurrPiiIds,
-      })
-      .getRawOne();
-    let prevQty = Number(rawPrevStd) || 0;
-
-prevQty = clampPrevQty(prevQty, '[RECOMP S/SR from G] prevQty', {
-  targetInvId: targetInv.id,
-  vid: item.itemVariantId,
-  piiId: item.id,
-});
-    const prevAvg = iv.averageCost ?? 0;
-
-    const poQty = Number(item.sqm);
-    const poCost = Number((item as any).finalOFR);
-    const totalQty = prevQty + poQty;
-    const newAvg = totalQty > 0 ? (prevAvg * prevQty + poCost * poQty) / totalQty : poCost;
-
-    await this.itemRepo.update(item.id, {
-      previousQuantity: prevQty,
-      previousAverageCost: prevAvg,
-      averageCost: newAvg,
-      // DO NOT touch any VM fields here
-    });
-    await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvg,
-      lastCost: poCost,
-    });
-  }
-
-  // C-level (same as your S logic; using OFR chain)
-  console.log('[RECOMP C from G] start for invoice:', targetInv.id);
-  for (const descId of tDescIds) {
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-
-    const { sum: rawPrevC } = await this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(COALESCE(tx.sqmofr, tx.sqm, 0))', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-      .andWhere('(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))', {
-        currIds: tCurrPiiIds,
-      })
-      .getRawOne();
-    let prevQtyC = Number(rawPrevC) || 0;
-
-prevQtyC = clampPrevQty(prevQtyC, '[RECOMP C from G] prevQtyC', {
-  targetInvId: targetInv.id,
-  descId,
-});
-
-    // previous avgC: keep your S-only baseline (or widen to S/SR if you want)
-    let prevAvgC = 0;
-    const lastDescItem = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G','S','SR'] })
-      .andWhere('inv.date <= :date', { date: cutoffDate })
-      .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostC'])
-      .getOne();
-    if (lastDescItem && (lastDescItem as any).averageCostC != null) {
-      prevAvgC = Number((lastDescItem as any).averageCostC);
-    } else {
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({
-          where: { itemVariant: In(variantIdsForDesc) },
-          select: ['sqm', 'finalCostOfr'],
-        });
-      const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqm), 0);
-      const weightedSum = openings.reduce((s, o) => s + Number(o.sqm) * Number(o.finalCostOfr), 0);
-      prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-    }
-
-    const poItemsSameDesc = tItemsByDesc.get(descId) ?? [];
-    const poQtyC = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-    const weightedCostSum = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalOFR) * Number(it.sqm),
-      0,
-    );
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-    const totalQtyC = prevQtyC + poQtyC;
-    const newAvgC = totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
-
-    for (const it of poItemsSameDesc) {
-      await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-        // DO NOT touch any VM fields here
-      });
-    }
-  }
-};
-
-// --- Dispatch based on later invoice type
-for (const r of laterRaw) {
-  
-  if (r.type === 'G') {
-    await recomputeInvoiceG(r.id);
-  } else if (r.type === 'S' || r.type === 'SR') {
-    await recomputeInvoiceSOrSR_StandardOnly(r.id); // ⬅️ Standard + C only, skip VM
-  }
-}
-console.log('🔁 [G] Forward recompute complete.');
-  }
-
-  console.log('🧾 [G] PO Cost Calc — End', { invoiceId: savedInvoice.id });
-}
-// 🔎 END: G-invoice block
-
-// 🔎 BEGIN: SR-invoice block (hybrid: G for OFR/C, S for VM/CVM)
-// ✅ SR = Hybrid (OFR like G + VM like S) WITH clampPrevQty everywhere
-if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'SR') {
-  const invDate = new Date(savedInvoice.date);
-  const dayStart = new Date(invDate);
-  dayStart.setHours(0, 0, 0, 0); // exclude same calendar date for "previous" lookups
-
-  // --- helpers (safe for S/SR + supports sqmOfr / sqmofr) ---
-  const getOfrQty = (it: any) =>
-    Number(it?.sqmOfr ?? it?.sqmofr ?? it?.sqmOFR ?? it?.sqm ?? 0) || 0;
-  const getOfrCost = (it: any) => Number(it?.finalOFR ?? 0) || 0;
-
-  const getVmQty = (it: any) => Number(it?.sqm ?? 0) || 0;
-  const getVmCost = (it: any) => Number(it?.finalCost ?? 0) || 0;
-
-  console.log('🧾 [SR] PO Cost Calc — Start', {
-    invoiceId: savedInvoice.id,
-    invoiceType: savedInvoice.type,
-    invoiceDateISO: invDate.toISOString(),
-    cutoffForPreviousISO: dayStart.toISOString(),
-    itemCount: savedInvoice.items?.length ?? 0,
-  });
-
-  const itemsByDesc = new Map<number, any[]>();
-
-  // NOT-IN for "previous" sums
-  const currPiiIds = (savedInvoice.items ?? []).map((it) => it.id);
-  const hasCurrPiiIds = currPiiIds.length > 0;
-  console.log('🔒 [SR] Excluding current PurchaseInvoiceItem IDs from prior sums:', currPiiIds);
-
-  // Collect description IDs
-  const descIds = new Set<number>();
-
-  /* ────────────────────────────────────────────────
-     PER-PII LOOP:
-       - OFR chain (avgCost) uses tx.sqmofr + finalOFR
-       - VM  chain (avgCostVM) uses tx.sqm    + finalCost
-     ──────────────────────────────────────────────── */
-  for (const item of savedInvoice.items ?? []) {
-    const variantt = await this.variantRepo.findOne({
-      where: { id: item.itemVariantId },
-      select: ['id', 'itemNameDescriptionId'],
-    });
-    if (!variantt) {
-      console.error(`❌ [SR] Variant ${item.itemVariantId} not found`);
-      continue;
-    }
-
-    const vid = variantt.id;
-    const descId = variantt.itemNameDescriptionId;
-
-    if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
-    itemsByDesc.get(descId)!.push(item);
-    descIds.add(descId);
-
-    console.log(`\n[SR] ► Processing PII ${item.id} (variantId=${vid}, descId=${descId}) on invoice ${savedInvoice.id}`);
-    console.log('[SR] row snapshot:', {
-      piiId: item.id,
-      itemVariantId: item.itemVariantId,
-      sqmVM: getVmQty(item),
-      sqmOFR: getOfrQty(item),
-      finalOFR: getOfrCost(item),
-      finalCost: getVmCost(item),
-    });
-
-    // =========================
-    //  A) OFR chain (G-style)
-    // =========================
-
-    // 0) previous avg OFR = last PII.averageCost from (G,S,SR) before dayStart
-    const prevPII_OFR = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCost AS avg_cost',
-        'inv.id AS inv_id',
-        'inv.type AS inv_type',
-        'inv.date AS inv_date',
-      ])
-      .getRawOne<{ pii_id?: number; avg_cost?: string | number | null; inv_id?: number; inv_type?: string; inv_date?: Date }>();
-
-    // 1) previous qty OFR:
-    //    - if history exists => SUM(tx.sqmofr) before dayStart (exclude current)
-    //    - else => openings qty (sqmOfr)
-    let prevQtyOFR = 0;
-    let prevAvgOFR = 0;
-
-    if (prevPII_OFR?.avg_cost != null) {
-      const qbPrevQtyOFR = this.inventoryTxRepo
-        .createQueryBuilder('tx')
-        .select('SUM(tx.sqmofr)', 'sum')
-        .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-        .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-      if (hasCurrPiiIds) {
-        qbPrevQtyOFR.andWhere(
-          '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-          { currPiiIds },
-        );
-      }
-
-      const { sum } = await qbPrevQtyOFR.getRawOne();
-      prevQtyOFR = Number(sum) || 0;
-      prevQtyOFR = clampPrevQty(prevQtyOFR, '[SR:OFR] prevQtyOFR', {
-        vid: item.itemVariantId,
-        piiId: item.id,
-        invId: savedInvoice.id,
-      });
-
-      prevAvgOFR = Number(prevPII_OFR.avg_cost);
-    } else {
-      const openingsOFR = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: { id: item.itemVariantId } },
-        select: ['sqmOfr', 'finalCostOfr'],
-      });
-
-      const openQty = openingsOFR.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-      const weighted = openingsOFR.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-        0,
-      );
-
-      prevQtyOFR = openQty;
-      prevQtyOFR = clampPrevQty(prevQtyOFR, '[SR:OFR] prevQtyOFR(openings)', {
-        vid: item.itemVariantId,
-        piiId: item.id,
-        invId: savedInvoice.id,
-      });
-
-      prevAvgOFR = openQty > 0 ? weighted / openQty : 0;
-    }
-
-    // 2) current PO OFR contribution (SR supports separate OFR qty/price)
-    const poQtyOFR = getOfrQty(item);
-    const poCostOFR = getOfrCost(item);
-
-    const totalQtyOFR = prevQtyOFR + poQtyOFR;
-    const newAvgOFR =
-      totalQtyOFR > 0 ? (prevAvgOFR * prevQtyOFR + poCostOFR * poQtyOFR) / totalQtyOFR : poCostOFR;
-
-    // 3) persist OFR chain
-    await this.itemRepo.update(item.id, {
-      previousQuantity: prevQtyOFR,
-      previousAverageCost: prevAvgOFR,
-      averageCost: newAvgOFR,
-    });
-
-    await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvgOFR,
-      lastCost: poCostOFR,
-    });
-
-    // =========================
-    //  B) VM chain (S-style)
-    // =========================
-
-    // 0) previous avg VM = last PII.averageCostVM from (S,SR,RVR) before dayStart
-    const prevPII_VM = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCostVM AS avg_cost_vm',
-        'inv.id AS inv_id',
-        'inv.type AS inv_type',
-        'inv.date AS inv_date',
-      ])
-      .getRawOne<{ pii_id?: number; avg_cost_vm?: string | number | null; inv_id?: number; inv_type?: string; inv_date?: Date }>();
-
-    // 1) previous qty VM:
-    //    - if history exists => SUM(tx.sqm) before dayStart (exclude current)
-    //    - else => openings qty (sqm)
-    let prevQtyVM = 0;
-    let prevAvgVM = 0;
-
-    if (prevPII_VM?.avg_cost_vm != null) {
-      const qbPrevVm = this.inventoryTxRepo
-        .createQueryBuilder('tx')
-        .select('SUM(tx.sqm)', 'sum')
-        .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-        .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-      if (hasCurrPiiIds) {
-        qbPrevVm.andWhere(
-          '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-          { currPiiIds },
-        );
-      }
-
-      const { sum } = await qbPrevVm.getRawOne();
-      prevQtyVM = Number(sum) || 0;
-      prevQtyVM = clampPrevQty(prevQtyVM, '[SR:VM] prevQtyVM', {
-        vid: item.itemVariantId,
-        piiId: item.id,
-        invId: savedInvoice.id,
-      });
-
-      prevAvgVM = Number(prevPII_VM.avg_cost_vm);
-    } else {
-      const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: { id: item.itemVariantId } },
-        select: ['sqm', 'finalCost'],
-      });
-
-      const openQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm ?? 0), 0);
-      const weightedVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-        0,
-      );
-
-      prevQtyVM = openQtyVM;
-      prevQtyVM = clampPrevQty(prevQtyVM, '[SR:VM] prevQtyVM(openings)', {
-        vid: item.itemVariantId,
-        piiId: item.id,
-        invId: savedInvoice.id,
-      });
-
-      prevAvgVM = openQtyVM > 0 ? weightedVM / openQtyVM : 0;
-    }
-
-    // 2) current PO VM contribution
-    const poQtyVM = getVmQty(item);
-    const poCostVM = getVmCost(item);
-
-    const totalQtyVM = prevQtyVM + poQtyVM;
-    const newAvgVM =
-      totalQtyVM > 0 ? (prevAvgVM * prevQtyVM + poCostVM * poQtyVM) / totalQtyVM : poCostVM;
-
-    // 3) persist VM chain
-    await this.itemRepo.update(item.id, {
-      previousQuantityVM: prevQtyVM,
-      previousAverageCostVM: prevAvgVM,
-      averageCostVM: newAvgVM,
-    });
-
-    await this.variantRepo.update(item.itemVariantId, {
-      averageCostVM: newAvgVM,
-      lastCostVM: poCostVM,
-    });
-  } // end per-PII loop
-
-  /* ────────────────────────────────────────────────
-     C-LEVEL (desc, OFR chain)
-     ──────────────────────────────────────────────── */
-  console.log('\n📚 [SR] C-Level (by description, OFR) calculations start');
-
-  for (const descId of descIds) {
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-
-    // last avgCostC from (G,S,SR) before dayStart
-    const lastDescItemC = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date < :date', { date: dayStart })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostC'])
-      .getOne();
-
-    let prevQtyC = 0;
-    let prevAvgC = 0;
-
-    if (lastDescItemC && (lastDescItemC as any).averageCostC != null) {
-      // qty from tx.sqmofr
-      const qbPrevC = this.inventoryTxRepo
-        .createQueryBuilder('tx')
-        .select('SUM(tx.sqmofr)', 'sum')
-        .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-        .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-        .andWhere(
-          '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-          { currPiiIds },
-        );
-
-      const { sum } = await qbPrevC.getRawOne();
-      prevQtyC = Number(sum) || 0;
-      prevQtyC = clampPrevQty(prevQtyC, '[SR:C] prevQtyC', { descId, invId: savedInvoice.id });
-
-      prevAvgC = Number((lastDescItemC as any).averageCostC);
-    } else {
-      // openings fallback (qty + avg)
-      const openings = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: In(variantIdsForDesc) },
-        select: ['sqmOfr', 'finalCostOfr'],
-      });
-
-      const openQty = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-      const weighted = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-        0,
-      );
-
-      prevQtyC = openQty;
-      prevQtyC = clampPrevQty(prevQtyC, '[SR:C] prevQtyC(openings)', { descId, invId: savedInvoice.id });
-
-      prevAvgC = openQty > 0 ? weighted / openQty : 0;
-    }
-
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyC = poItemsSameDesc.reduce((s, it) => s + getOfrQty(it), 0);
-    const weightedCostSum = poItemsSameDesc.reduce((s, it) => s + getOfrCost(it) * getOfrQty(it), 0);
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-
-    const totalQtyC = prevQtyC + poQtyC;
+    const totalC = prevQtyC + poQtyC;
     const newAvgC =
-      totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
+      totalC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalC : prevAvgC;
 
-    for (const it of poItemsSameDesc) {
-      await this.itemRepo.update(it.id, {
+    // ---- prevQtyCVM (VM) from inventory tx SUM(sqm) ----
+    const prevQtyCVM = await sumTxQty(
+      this.inventoryTxRepo,
+      variantIdsForDesc,
+      "VM",
+      dayStart,
+      currPiiIds,
+    );
+
+    // ---- prevAvgCVM (VM) from last PO, else InventoryCount(finalCost) ----
+    const prevCvmRow = await this.itemRepo
+      .createQueryBuilder("pii")
+      .innerJoin("pii.invoice", "inv")
+      .innerJoin("pii.itemVariant", "iv")
+      .where("inv.status = :st", { st: "Recieved" })
+      .andWhere("inv.date < :cut", { cut: dayStart })
+      .andWhere("iv.itemNameDescriptionId = :descId", { descId })
+      .andWhere("pii.averageCostCVM IS NOT NULL")
+      .orderBy("inv.date", "DESC")
+      .addOrderBy("pii.id", "DESC")
+      .select(["pii.averageCostCVM AS avg"])
+      .getRawOne<{ avg?: string | number | null }>();
+
+const fbCVM = await openingsWeightedAvg(this.invTransRepo.manager, variantIdsForDesc, "VM");
+const prevAvgCVM =
+  prevCvmRow?.avg != null ? num(prevCvmRow.avg, 0) : fbCVM.avg;
+
+
+    // ---- current invoice (desc group) VM weighted PO cost ----
+    const poQtyCVM = rows.reduce((s, r) => s + getItemQty(r, "VM"), 0);
+    const poWsumCVM = rows.reduce(
+      (s, r) => s + getItemQty(r, "VM") * getItemCost(r, "VM"),
+      0,
+    );
+    const poCostCVM = poQtyCVM > 0 ? poWsumCVM / poQtyCVM : 0;
+
+    const totalCVM = prevQtyCVM + poQtyCVM;
+    const newAvgCVM =
+      totalCVM > 0
+        ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalCVM
+        : prevAvgCVM;
+
+    // write C + CVM to all rows of this desc in THIS invoice
+    for (const r of rows) {
+      await this.itemRepo.update(r.id, {
         previousQuantityC: prevQtyC,
         previousAverageCostC: prevAvgC,
         averageCostC: newAvgC,
-      });
-    }
-  }
 
-  /* ────────────────────────────────────────────────
-     CVM-LEVEL (desc, VM chain)
-     ──────────────────────────────────────────────── */
-  console.log('\n📚 [SR] CVM-Level (by description, VM) calculations start');
-
-  for (const descId of descIds) {
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-
-    // last avgCostCVM from (S,SR,RVR) before dayStart
-    const lastDescItemCVM = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-      .andWhere('inv.date < :date', { date: dayStart })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostCVM'])
-      .getOne();
-
-    let prevQtyCVM = 0;
-    let prevAvgCVM = 0;
-
-    if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-      // qty from tx.sqm
-      const qbPrevCVM = this.inventoryTxRepo
-        .createQueryBuilder('tx')
-        .select('SUM(tx.sqm)', 'sum')
-        .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-        .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-        .andWhere(
-          '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-          { currPiiIds },
-        );
-
-      const { sum } = await qbPrevCVM.getRawOne();
-      prevQtyCVM = Number(sum) || 0;
-      prevQtyCVM = clampPrevQty(prevQtyCVM, '[SR:CVM] prevQtyCVM', { descId, invId: savedInvoice.id });
-
-      prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-    } else {
-      // openings fallback (qty + avg)
-      const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: In(variantIdsForDesc) },
-        select: ['sqm', 'finalCost'],
-      });
-
-      const openQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm ?? 0), 0);
-      const weightedVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-        0,
-      );
-
-      prevQtyCVM = openQtyVM;
-      prevQtyCVM = clampPrevQty(prevQtyCVM, '[SR:CVM] prevQtyCVM(openings)', { descId, invId: savedInvoice.id });
-
-      prevAvgCVM = openQtyVM > 0 ? weightedVM / openQtyVM : 0;
-    }
-
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyCVM = poItemsSameDesc.reduce((s, it: any) => s + getVmQty(it), 0);
-    const weightedCostSumVM = poItemsSameDesc.reduce((s, it: any) => s + getVmCost(it) * getVmQty(it), 0);
-    const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-    const totalQtyCVM = prevQtyCVM + poQtyCVM;
-    const newAvgCVM =
-      totalQtyCVM > 0 ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM : poCostCVM;
-
-    for (const it of poItemsSameDesc) {
-      await this.itemRepo.update(it.id, {
         previousQuantityCVM: prevQtyCVM,
         previousAverageCostCVM: prevAvgCVM,
         averageCostCVM: newAvgCVM,
       });
     }
-  }
 
-  /* ────────────────────────────────────────────────
-     FINAL WRITE → ItemNameDescription (mirror from PII, no recalculation)
-     ──────────────────────────────────────────────── */
-  console.log('\n🗂 [SR] Writing final ItemNameDescription costs…');
-
-  for (const descId of descIds) {
-    const poRows = itemsByDesc.get(descId) ?? [];
-    if (!poRows.length) continue;
-
-    const ref = poRows[0] as any;
-    const fresh = await this.itemRepo.findOne({ where: { id: ref.id } });
-
-    const lastRow = poRows[poRows.length - 1] as any;
-
+    // mirror into ItemNameDescription
+    const lastRow = rows[rows.length - 1] as any;
     await this.descRepo.update(descId, {
-      averageCostC: Number((fresh as any)?.averageCostC ?? 0),
-      averageCostCVM: Number((fresh as any)?.averageCostCVM ?? 0),
-      lastCostC: getOfrCost(lastRow),
-      lastCostCVM: getVmCost(lastRow),
+      averageCostC: newAvgC,
+      averageCostCVM: newAvgCVM,
+      lastCostC: getItemCost(lastRow, "OFR"),
+      lastCostCVM: getItemCost(lastRow, "VM"),
     });
   }
-
-  console.log('🧾 [SR] ItemNameDescription update (final) completed.');
-
-  /* ────────────────────────────────────────────────
-     FORWARD RECOMPUTE for later S/SR (SR affects BOTH chains)
-     ──────────────────────────────────────────────── */
-  const affectedVariantIds = Array.from(new Set((savedInvoice.items ?? []).map((it) => it.itemVariantId)));
-  const affectedDescIds = Array.from(descIds);
-
-  if (affectedVariantIds.length || affectedDescIds.length) {
-    const laterRaw = await this.invoiceRepo
-      .createQueryBuilder('inv')
-      .innerJoin('inv.items', 'pii')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :st', { st: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['S', 'SR'] })
-      .andWhere('inv.date > :cut', { cut: dayStart })
-      .andWhere(`(iv.id IN (:...varIds) OR iv.itemNameDescriptionId IN (:...descIds))`, {
-        varIds: affectedVariantIds.length ? affectedVariantIds : [-1],
-        descIds: affectedDescIds.length ? affectedDescIds : [-1],
-      })
-      .select('inv.id', 'id')
-      .addSelect('inv.type', 'type')
-      .addSelect('inv.date', 'date')
-      .distinct(true)
-      .orderBy('inv.date', 'ASC')
-      .addOrderBy('inv.id', 'ASC')
-      .getRawMany<{ id: number; type: 'S' | 'SR'; date: Date }>();
-
-    const recomputeInvoiceHybrid = async (targetId: number) => {
-      const targetInv = await this.invoiceRepo.findOne({
-        where: { id: targetId },
-        relations: ['items', 'items.itemVariant'],
-      });
-      if (!targetInv) return;
-
-      const cutoffDate = new Date(targetInv.date);
-      const tDayStart = new Date(cutoffDate);
-      tDayStart.setHours(0, 0, 0, 0);
-
-      const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-
-      const tItemsByDesc = new Map<number, any[]>();
-      const tDescIds = new Set<number>();
-
-      for (const item of targetInv.items ?? []) {
-        const iv =
-          item.itemVariant ??
-          (await this.variantRepo.findOne({
-            where: { id: item.itemVariantId },
-            select: ['id', 'itemNameDescriptionId'],
-          }));
-        if (!iv) continue;
-
-        const descId = (iv as any).itemNameDescriptionId;
-        if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-        tItemsByDesc.get(descId)!.push(item);
-        tDescIds.add(descId);
-
-        // ---- OFR prev PII ----
-        const prevPII_OFR = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-          .andWhere('inv.date < :cutoff', { cutoff: tDayStart })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCost AS avg_cost'])
-          .getRawOne<{ avg_cost?: string | number | null }>();
-
-        let prevQtyOFR = 0;
-        let prevAvgOFR = 0;
-
-        if (prevPII_OFR?.avg_cost != null) {
-          const { sum } = await this.inventoryTxRepo
-            .createQueryBuilder('tx')
-            .select('SUM(tx.sqmofr)', 'sum')
-            .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-            .andWhere('tx.dateForEachInvoice < :d', { d: tDayStart })
-            .andWhere(
-              '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-              { currIds: tCurrPiiIds },
-            )
-            .getRawOne();
-
-          prevQtyOFR = Number(sum) || 0;
-          prevQtyOFR = clampPrevQty(prevQtyOFR, '[RECOMP SR:OFR] prevQtyOFR', {
-            targetInvId: targetInv.id,
-            vid: item.itemVariantId,
-            piiId: item.id,
-          });
-
-          prevAvgOFR = Number(prevPII_OFR.avg_cost);
-        } else {
-          const openingsOFR = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: { id: item.itemVariantId } },
-            select: ['sqmOfr', 'finalCostOfr'],
-          });
-
-          const openQty = openingsOFR.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-          const weighted = openingsOFR.reduce(
-            (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-            0,
-          );
-
-          prevQtyOFR = openQty;
-          prevQtyOFR = clampPrevQty(prevQtyOFR, '[RECOMP SR:OFR] prevQtyOFR(openings)', {
-            targetInvId: targetInv.id,
-            vid: item.itemVariantId,
-            piiId: item.id,
-          });
-
-          prevAvgOFR = openQty > 0 ? weighted / openQty : 0;
-        }
-
-        const poQtyOFR = getOfrQty(item);
-        const poCostOFR = getOfrCost(item);
-        const totalQtyOFR = prevQtyOFR + poQtyOFR;
-        const newAvgOFR =
-          totalQtyOFR > 0 ? (prevAvgOFR * prevQtyOFR + poCostOFR * poQtyOFR) / totalQtyOFR : poCostOFR;
-
-        await this.itemRepo.update(item.id, {
-          previousQuantity: prevQtyOFR,
-          previousAverageCost: prevAvgOFR,
-          averageCost: newAvgOFR,
-        });
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCost: newAvgOFR,
-          lastCost: poCostOFR,
-        });
-
-        // ---- VM prev PII ----
-        const prevPII_VM = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-          .andWhere('inv.date < :cutoff', { cutoff: tDayStart })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostVM AS avg_cost_vm'])
-          .getRawOne<{ avg_cost_vm?: string | number | null }>();
-
-        let prevQtyVM = 0;
-        let prevAvgVM = 0;
-
-        if (prevPII_VM?.avg_cost_vm != null) {
-          const { sum } = await this.inventoryTxRepo
-            .createQueryBuilder('tx')
-            .select('SUM(tx.sqm)', 'sum')
-            .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-            .andWhere('tx.dateForEachInvoice < :d', { d: tDayStart })
-            .andWhere(
-              '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-              { currIds: tCurrPiiIds },
-            )
-            .getRawOne();
-
-          prevQtyVM = Number(sum) || 0;
-          prevQtyVM = clampPrevQty(prevQtyVM, '[RECOMP SR:VM] prevQtyVM', {
-            targetInvId: targetInv.id,
-            vid: item.itemVariantId,
-            piiId: item.id,
-          });
-
-          prevAvgVM = Number(prevPII_VM.avg_cost_vm);
-        } else {
-          const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: { id: item.itemVariantId } },
-            select: ['sqm', 'finalCost'],
-          });
-
-          const openQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm ?? 0), 0);
-          const weightedVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-            0,
-          );
-
-          prevQtyVM = openQtyVM;
-          prevQtyVM = clampPrevQty(prevQtyVM, '[RECOMP SR:VM] prevQtyVM(openings)', {
-            targetInvId: targetInv.id,
-            vid: item.itemVariantId,
-            piiId: item.id,
-          });
-
-          prevAvgVM = openQtyVM > 0 ? weightedVM / openQtyVM : 0;
-        }
-
-        const poQtyVM = getVmQty(item);
-        const poCostVM = getVmCost(item);
-        const totalQtyVM = prevQtyVM + poQtyVM;
-        const newAvgVM =
-          totalQtyVM > 0 ? (prevAvgVM * prevQtyVM + poCostVM * poQtyVM) / totalQtyVM : poCostVM;
-
-        await this.itemRepo.update(item.id, {
-          previousQuantityVM: prevQtyVM,
-          previousAverageCostVM: prevAvgVM,
-          averageCostVM: newAvgVM,
-        });
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCostVM: newAvgVM,
-          lastCostVM: poCostVM,
-        });
-      }
-
-      // ---- C-level recompute (OFR) ----
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({ where: { itemNameDescriptionId: descId }, select: ['id'] })
-        ).map((v) => v.id);
-
-        const lastDescItemC = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-          .andWhere('inv.date < :date', { date: tDayStart })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostC'])
-          .getOne();
-
-        let prevQtyC = 0;
-        let prevAvgC = 0;
-
-        if (lastDescItemC && (lastDescItemC as any).averageCostC != null) {
-          const { sum } = await this.inventoryTxRepo
-            .createQueryBuilder('tx')
-            .select('SUM(tx.sqmofr)', 'sum')
-            .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-            .andWhere('tx.dateForEachInvoice < :d', { d: tDayStart })
-            .andWhere(
-              '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-              { currIds: tCurrPiiIds },
-            )
-            .getRawOne();
-
-          prevQtyC = Number(sum) || 0;
-          prevQtyC = clampPrevQty(prevQtyC, '[RECOMP SR:C] prevQtyC', { targetInvId: targetInv.id, descId });
-
-          prevAvgC = Number((lastDescItemC as any).averageCostC);
-        } else {
-          const openings = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: In(variantIdsForDesc) },
-            select: ['sqmOfr', 'finalCostOfr'],
-          });
-
-          const openQty = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-          const weighted = openings.reduce(
-            (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-            0,
-          );
-
-          prevQtyC = openQty;
-          prevQtyC = clampPrevQty(prevQtyC, '[RECOMP SR:C] prevQtyC(openings)', { targetInvId: targetInv.id, descId });
-
-          prevAvgC = openQty > 0 ? weighted / openQty : 0;
-        }
-
-        const rows = tItemsByDesc.get(descId) ?? [];
-        const poQtyC = rows.reduce((s, it) => s + getOfrQty(it), 0);
-        const weightedCostSum = rows.reduce((s, it) => s + getOfrCost(it) * getOfrQty(it), 0);
-        const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-
-        const totalQtyC = prevQtyC + poQtyC;
-        const newAvgC =
-          totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
-
-        for (const it of rows) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityC: prevQtyC,
-            previousAverageCostC: prevAvgC,
-            averageCostC: newAvgC,
-          });
-        }
-      }
-
-      // ---- CVM-level recompute (VM) ----
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({ where: { itemNameDescriptionId: descId }, select: ['id'] })
-        ).map((v) => v.id);
-
-        const lastDescItemCVM = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-          .andWhere('inv.date < :date', { date: tDayStart })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostCVM'])
-          .getOne();
-
-        let prevQtyCVM = 0;
-        let prevAvgCVM = 0;
-
-        if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-          const { sum } = await this.inventoryTxRepo
-            .createQueryBuilder('tx')
-            .select('SUM(tx.sqm)', 'sum')
-            .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-            .andWhere('tx.dateForEachInvoice < :d', { d: tDayStart })
-            .andWhere(
-              '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-              { currIds: tCurrPiiIds },
-            )
-            .getRawOne();
-
-          prevQtyCVM = Number(sum) || 0;
-          prevQtyCVM = clampPrevQty(prevQtyCVM, '[RECOMP SR:CVM] prevQtyCVM', { targetInvId: targetInv.id, descId });
-
-          prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-        } else {
-          const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: In(variantIdsForDesc) },
-            select: ['sqm', 'finalCost'],
-          });
-
-          const openQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm ?? 0), 0);
-          const weightedVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-            0,
-          );
-
-          prevQtyCVM = openQtyVM;
-          prevQtyCVM = clampPrevQty(prevQtyCVM, '[RECOMP SR:CVM] prevQtyCVM(openings)', { targetInvId: targetInv.id, descId });
-
-          prevAvgCVM = openQtyVM > 0 ? weightedVM / openQtyVM : 0;
-        }
-
-        const rows = tItemsByDesc.get(descId) ?? [];
-        const poQtyCVM = rows.reduce((s, it) => s + getVmQty(it), 0);
-        const weightedCostSumVM = rows.reduce((s, it) => s + getVmCost(it) * getVmQty(it), 0);
-        const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-        const totalQtyCVM = prevQtyCVM + poQtyCVM;
-        const newAvgCVM =
-          totalQtyCVM > 0 ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM : poCostCVM;
-
-        for (const it of rows) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityCVM: prevQtyCVM,
-            previousAverageCostCVM: prevAvgCVM,
-            averageCostCVM: newAvgCVM,
-          });
-        }
-      }
-
-      // mirror into ItemNameDescription
-      for (const descId of tDescIds) {
-        const rows = tItemsByDesc.get(descId) ?? [];
-        if (!rows.length) continue;
-
-        const fresh = await this.itemRepo.findOne({ where: { id: rows[0].id } });
-        const lastRow = rows[rows.length - 1] as any;
-
-        await this.descRepo.update(descId, {
-          averageCostC: Number((fresh as any)?.averageCostC ?? 0),
-          averageCostCVM: Number((fresh as any)?.averageCostCVM ?? 0),
-          lastCostC: getOfrCost(lastRow),
-          lastCostCVM: getVmCost(lastRow),
-        });
-      }
-    };
-
-    for (const row of laterRaw) {
-      await recomputeInvoiceHybrid(row.id);
-    }
-
-    console.log('🔁 [SR] Forward recompute complete.');
-  }
-
-  console.log('🧾 [SR] PO Cost Calc — End', { invoiceId: savedInvoice.id });
 }
 
-// 🔎 END: SR-invoice block
 
+   // 🔁 Re-apply purchase-side averages for THIS invoice
+  await this.applyPurchaseCostsForInvoice(savedInvoice.id);
 
-
-// 🔎 BEGIN: RVR Cost-calculation & logging block (VM + CVM)
-// NOTE: This block computes per-PII VM and per-description CVM for RVR invoices.
-//       Forward recompute covers RVR (VM + CVM) and S/SR (your full logic).
-if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'RVR') {
-  const invDate = new Date(savedInvoice.date);
-  const dayStart = new Date(invDate);
-  dayStart.setHours(0, 0, 0, 0); // exclude same calendar date for "previous PII" lookups
-
-  console.log('🧾 RVR Cost Calc — Start', {
-    invoiceId: savedInvoice.id,
-    invoiceType: savedInvoice.type,
-    invoiceDate: invDate.toISOString(),
-    cutoffForPreviousPII: dayStart.toISOString(),
-    itemCount: savedInvoice.items?.length ?? 0,
-  });
-
-  // NOT-IN for "previous" sums
-  const currPiiIds = (savedInvoice.items ?? []).map((it) => it.id);
-  const hasCurrPiiIds = currPiiIds.length > 0;
-  console.log('🔒 Excluding current PurchaseInvoiceItem IDs from prior sums:', currPiiIds);
-
-  // Track affected variants for forward recompute
-  const affectedVariantIds = Array.from(
-    new Set((savedInvoice.items ?? []).map((it) => it.itemVariantId)),
+  // 🔁 Build affected variant list (for this invoice)
+  const affected = Array.from(
+    new Set(
+      (savedInvoice.items ?? [])
+        .map((it: any) => Number(it.itemVariantId))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    ),
   );
 
-  // For CVM: collect items by description for THIS invoice
-  const itemsByDesc = new Map<number, any[]>();
-  const descIds = new Set<number>();
-
-  // ─────────────────────────────────────────────────────────
-  // Per-PII: VM track (RVR)
-  // ─────────────────────────────────────────────────────────
-  for (const item of savedInvoice.items) {
-    // Need description id to group later for CVM
-    const variant = await this.variantRepo.findOne({
-      where: { id: item.itemVariantId },
-      select: ['id', 'itemNameDescriptionId'],
-    });
-    if (!variant) {
-      console.error(`❌ Variant ${item.itemVariantId} not found`);
-      continue;
-    }
-
-    // collect for CVM grouping
-    const descId = variant.itemNameDescriptionId;
-    if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
-    itemsByDesc.get(descId)!.push(item);
-    descIds.add(descId);
-
-    console.log(
-      `\n[RVR:VM] ► Processing PII ${item.id} (variantId=${variant.id}, descId=${descId}) on invoice ${savedInvoice.id}`,
-    );
-    console.log('[RVR:VM] row snapshot:', {
-      piiId: item.id,
-      itemVariantId: item.itemVariantId,
-      qty: Number(item.quantity),
-      sqm: Number(item.sqm),
-      finalCost: Number((item as any).finalCost),
-    });
-
-    // 0) Previous AVERAGE VM from last settled PII before dayStart across S/SR/RVR
-    const qbPrevPIIVM = this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCostVM AS avg_cost_vm',
-        'inv.id AS inv_id',
-        'inv.type AS inv_type',
-        'inv.date AS inv_date',
-      ]);
-
-    try {
-      // @ts-ignore
-      console.log('[RVR:VM prevPII] SQL:', qbPrevPIIVM.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[RVR:VM prevPII] Params:', qbPrevPIIVM.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-
-    const prevPIIVMRaw = await qbPrevPIIVM.getRawOne<{
-      pii_id?: number;
-      avg_cost_vm?: string | number | null;
-      inv_id?: number;
-      inv_type?: string;
-      inv_date?: Date;
-    }>();
-
-    console.log('[RVR:VM prevPII] raw result:', prevPIIVMRaw ?? null);
-
-    // 1) Previous qty (VM uses SUM(tx.sqm)) — < dayStart, excluding current invoice rows
-    const qbPrevVm = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqm)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-    if (hasCurrPiiIds) {
-      qbPrevVm.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[RVR:VM prevQty] SQL:', qbPrevVm.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[RVR:VM prevQty] Params:', qbPrevVm.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-
-    const { sum: rawPrevVm } = await qbPrevVm.getRawOne();
-    let prevQtyVM = Number(rawPrevVm) || 0;
-
-    // ✅ CLAMP FIX
-    prevQtyVM = clampPrevQty(prevQtyVM, '[RVR:VM] prevQtyVM', {
-      invId: savedInvoice.id,
-      piiId: item.id,
-      vid: item.itemVariantId,
-    });
-
-    console.log('[RVR:VM prevQty] result:', { rawPrevVm, prevQtyVM });
-
-    // 2) Previous avg VM
-    let prevAvgVM: number;
-    if (prevPIIVMRaw && prevPIIVMRaw.avg_cost_vm != null) {
-      prevAvgVM = Number(prevPIIVMRaw.avg_cost_vm);
-      console.log('[RVR:VM prevAvg] from previous PII.averageCostVM:', {
-        prevAvgVM,
-        prevPiiId: prevPIIVMRaw.pii_id ?? null,
-        prevInvId: prevPIIVMRaw.inv_id ?? null,
-        prevInvType: prevPIIVMRaw.inv_type ?? null,
-        prevInvDate: prevPIIVMRaw.inv_date ?? null,
-      });
-    } else {
-      prevAvgVM = 0;
-      console.log('[RVR:VM prevAvg] no previous PII found → prevAvgVM = 0');
-    }
-
-    // 3) Current row (VM)
-    const poQtyVM = Number(item.sqm);
-    const poCostVM = Number((item as any).finalCost);
-    console.log('[RVR:VM current PO contribution:', { poQtyVM, poCostVM });
-
-    // 4) Blend (VM)
-    const totalQtyVM = prevQtyVM + poQtyVM;
-    const lhsVM = prevAvgVM * prevQtyVM;
-    const rhsVM = poCostVM * poQtyVM;
-    const newAvgVM = totalQtyVM > 0 ? (lhsVM + rhsVM) / totalQtyVM : poCostVM;
-    console.log('[RVR:VM blend details]', {
-      formula: 'newAvgVM = (prevAvgVM*prevQtyVM + poCostVM*poQtyVM) / (prevQtyVM + poQtyVM)',
-      prevAvgVM,
-      prevQtyVM,
-      poCostVM,
-      poQtyVM,
-      lhsVM,
-      rhsVM,
-      totalQtyVM,
-      newAvgVM,
-      guardWhenTotalQtyVMIsZero: totalQtyVM === 0 ? '(used poCostVM)' : '(used blend)',
-    });
-
-    // 5) Persist PII: VM filled; Standard & C cleared for RVR
-    const piiUpdateRes = await this.itemRepo.update(item.id, {
-      previousQuantity: null,
-      previousAverageCost: null,
-      // keep averageCost as-is (or null it if you want)
-      previousQuantityC: null,
-      previousAverageCostC: null,
-      averageCostC: null,
-
-      previousQuantityVM: prevQtyVM,
-      previousAverageCostVM: prevAvgVM,
-      averageCostVM: newAvgVM,
-    });
-    console.log('✓ [RVR:VM] PII update result:', {
-      piiId: item.id,
-      affected: piiUpdateRes?.affected ?? 'n/a',
-      set: {
-        previousQuantity: null,
-        previousAverageCost: null,
-        previousQuantityC: null,
-        previousAverageCostC: null,
-        averageCostC: null,
-        previousQuantityVM: prevQtyVM,
-        previousAverageCostVM: prevAvgVM,
-        averageCostVM: newAvgVM,
-      },
-    });
-
-    // 6) Persist Variant (VM only)
-    const varUpdateResVM = await this.variantRepo.update(item.itemVariantId, {
-      averageCostVM: newAvgVM,
-      lastCostVM: poCostVM,
-    });
-    console.log('✓ [RVR:VM] Variant update result:', {
-      itemVariantId: item.itemVariantId,
-      affected: varUpdateResVM?.affected ?? 'n/a',
-      set: { averageCostVM: newAvgVM, lastCostVM: poCostVM },
-    });
-  } // end per-PII VM loop
-
-  // ─────────────────────────────────────────────────────────
-  // CVM-LEVEL (by description) for CURRENT RVR invoice
-  // Uses SUM(tx.sqm) and finalCost; prev avg from last PII.averageCostCVM across RVR/S/SR
-  // ─────────────────────────────────────────────────────────
-  console.log('\n📚 CVM-Level (by description) calculations start (RVR)');
-  for (const descId of descIds) {
-    console.log(`\n[CVM] ► Description ${descId}`);
-
-    // variants under this description
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-    console.log('[CVM] variantIdsForDesc:', variantIdsForDesc);
-
-    // previous qty (VM chain): SUM(tx.sqm) before dayStart; exclude current PO rows
-    const qbPrevCVM = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqm)', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-    if (hasCurrPiiIds) {
-      qbPrevCVM.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[CVM] prevQtyCVM SQL:', qbPrevCVM.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[CVM] prevQtyCVM Params:', qbPrevCVM.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-
-    const { sum: rawPrevCVM } = await qbPrevCVM.getRawOne();
-    let prevQtyCVM = Number(rawPrevCVM) || 0;
-
-    // ✅ CLAMP FIX
-    prevQtyCVM = clampPrevQty(prevQtyCVM, '[RVR:CVM] prevQtyCVM', {
-      invId: savedInvoice.id,
-      descId,
-    });
-
-    console.log('[CVM] prevQtyCVM result:', { rawPrevCVM, prevQtyCVM });
-
-    // previous avgCVM from last settled PII.averageCostCVM (RVR/S/SR) before dayStart (exclude current invoice)
-    let prevAvgCVM: number;
-    const lastDescItemCVM = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['RVR', 'S', 'SR'] })
-      .andWhere('inv.date < :date', { date: dayStart })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostCVM'])
-      .getOne();
-
-    if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-      prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-      console.log('[CVM] prevAvgCVM from last PII.averageCostCVM:', prevAvgCVM);
-    } else {
-      console.log('[CVM] no prior PII.averageCostCVM, compute from openings (VM)…');
-      const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: In(variantIdsForDesc) },
-        select: ['sqm', 'finalCost'],
-      });
-
-      const totalOpenQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm), 0);
-      const weightedSumVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm) * Number((o as any).finalCost ?? 0),
-        0,
-      );
-      prevAvgCVM = totalOpenQtyVM > 0 ? weightedSumVM / totalOpenQtyVM : 0;
-      console.log('[CVM] openings snapshot:', {
-        openingsCount: openingsVM.length,
-        totalOpenQtyVM,
-        weightedSumVM,
-        prevAvgCVM,
-      });
-    }
-
-    // group CURRENT RVR rows of this description — VM chain: sqm + finalCost
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyCVM = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-    const weightedCostSumVM = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalCost) * Number(it.sqm),
-      0,
-    );
-    const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-    console.log('[CVM] current PO group snapshot (VM):', {
-      piiIds: poItemsSameDesc.map((x) => x.id),
-      perRow: poItemsSameDesc.map((x) => ({
-        piiId: x.id,
-        sqm: Number(x.sqm),
-        finalCost: Number((x as any).finalCost),
-      })),
-      poQtyCVM,
-      weightedCostSumVM,
-      poCostCVM,
-    });
-
-    // blend (weighted-average) for CVM
-    const totalQtyCVM = prevQtyCVM + poQtyCVM;
-    const lhsCVM = prevAvgCVM * prevQtyCVM;
-    const rhsCVM = poCostCVM * poQtyCVM;
-    const newAvgCVM = totalQtyCVM > 0 ? (lhsCVM + rhsCVM) / totalQtyCVM : poCostCVM;
-    console.log('[CVM] blend details:', {
-      formula: 'newAvgCVM = (prevAvgCVM*prevQtyCVM + poCostCVM*poQtyCVM) / (prevQtyCVM + poQtyCVM)',
-      prevAvgCVM,
-      prevQtyCVM,
-      poCostCVM,
-      poQtyCVM,
-      lhsCVM,
-      rhsCVM,
-      totalQtyCVM,
-      newAvgCVM,
-      guardWhenTotalQtyCVMIsZero: totalQtyCVM === 0 ? '(used poCostCVM)' : '(used blend)',
-    });
-
-    // write SAME CVM values to ALL PII rows of this description on THIS RVR invoice
-    for (const it of poItemsSameDesc) {
-      const res = await this.itemRepo.update(it.id, {
-        previousQuantityCVM: prevQtyCVM,
-        previousAverageCostCVM: prevAvgCVM,
-        averageCostCVM: newAvgCVM,
-      });
-      console.log('✓ [CVM] PII row updated with CVM-values:', {
-        piiId: it.id,
-        affected: res?.affected ?? 'n/a',
-        set: {
-          previousQuantityCVM: prevQtyCVM,
-          previousAverageCostCVM: prevAvgCVM,
-          averageCostCVM: newAvgCVM,
-        },
-      });
-    }
-  } // end CVM loop
-
-  // ─────────────────────────────
-  // ⚙️ Forward recompute for back-dated inserts: later invoices of types RVR/S/SR
-  // ─────────────────────────────
-  if (affectedVariantIds.length) {
-    console.log('🔁 Checking for later invoices to recompute…', {
-      affectedVariantIds,
-      includeTypes: ['RVR', 'S', 'SR'],
-    });
-
-    const laterRaw = await this.invoiceRepo
-      .createQueryBuilder('inv')
-      .innerJoin('inv.items', 'pii')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :st', { st: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['RVR', 'S', 'SR'] })
-      .andWhere('inv.date > :cut', { cut: invDate })
-      .andWhere('iv.id IN (:...varIds)', { varIds: affectedVariantIds })
-      .select(['inv.id AS id', 'inv.date AS date', 'inv.type AS type'])
-      .distinct(true)
-      .orderBy('inv.date', 'ASC')
-      .addOrderBy('inv.id', 'ASC')
-      .getRawMany<{ id: number; date: Date; type: 'RVR' | 'S' | 'SR' }>();
-
-    const laterIds = laterRaw.map((r) => r.id);
-    console.log('🔁 Later invoice IDs to recompute (RVR/S/SR):', laterIds);
-
-    // Helper: recompute VM + CVM for a later RVR invoice
-    const recomputeInvoiceRVR = async (targetId: number) => {
-      const targetInv = await this.invoiceRepo.findOne({
-        where: { id: targetId },
-        relations: ['items', 'items.itemVariant'],
-      });
-      if (!targetInv) {
-        console.warn('⚠️ Target invoice not found during forward recompute (RVR):', { targetId });
-        return;
-      }
-      const cutoffDate = new Date(targetInv.date);
-      const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-
-      console.log(
-        `\n🔁 [RVR:VM] Recomputing invoice ${targetInv.id} dated ${cutoffDate
-          .toISOString()
-          .slice(0, 10)} (VM + CVM)`,
-        { itemCount: targetInv.items?.length ?? 0 },
-      );
-
-      // Collect for CVM grouping
-      const tItemsByDesc = new Map<number, any[]>();
-      const tDescIds = new Set<number>();
-
-      // Per-PII VM recompute
-      for (const item of targetInv.items) {
-        // Only if variant was affected
-        if (!affectedVariantIds.includes(item.itemVariantId)) continue;
-
-        const descId = item.itemVariant?.itemNameDescriptionId;
-        if (descId != null) {
-          if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-          tItemsByDesc.get(descId)!.push(item);
-          tDescIds.add(descId);
-        }
-
-        // prev qty VM
-        const qbRPrevVm = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqm)', 'sum')
-          .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-
-        try {
-          // @ts-ignore
-          console.log('[RECOMP RVR:VM prevQty] SQL:', qbRPrevVm.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP RVR:VM prevQty] Params:', qbRPrevVm.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-
-        const { sum: rawPrevVm } = await qbRPrevVm.getRawOne();
-        let prevQtyVM = Number(rawPrevVm) || 0;
-
-        // ✅ CLAMP FIX
-        prevQtyVM = clampPrevQty(prevQtyVM, '[RECOMP RVR:VM] prevQtyVM', {
-          targetInvId: targetInv.id,
-          piiId: item.id,
-          vid: item.itemVariantId,
-        });
-
-        // prev avg VM from previous PII among S/SR/RVR (before this target date)
-        const qbPrevPIIVM2 = this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-          .andWhere('inv.date < :cutoff', { cutoff: cutoffDate })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select([
-            'pii.averageCostVM AS avg_cost_vm',
-            'inv.id AS inv_id',
-            'inv.type AS inv_type',
-            'inv.date AS inv_date',
-          ]);
-
-        const prevPIIVM2 = await qbPrevPIIVM2.getRawOne<{ avg_cost_vm?: number | string | null }>();
-        let prevAvgVM = prevPIIVM2?.avg_cost_vm != null ? Number(prevPIIVM2.avg_cost_vm) : 0;
-
-        // blend VM
-        const poQtyVM = Number(item.sqm);
-        const poCostVM = Number((item as any).finalCost);
-        const totalQtyVM = prevQtyVM + poQtyVM;
-        const newAvgVM =
-          totalQtyVM > 0 ? (prevAvgVM * prevQtyVM + poCostVM * poQtyVM) / totalQtyVM : poCostVM;
-
-        console.log('[RECOMP RVR:VM details]', {
-          piiId: item.id,
-          itemVariantId: item.itemVariantId,
-          prevQtyVM,
-          prevAvgVM,
-          poQtyVM,
-          poCostVM,
-          totalQtyVM,
-          newAvgVM,
-        });
-
-        await this.itemRepo.update(item.id, {
-          // enforce nulls for Standard & C in RVR
-          previousQuantity: null,
-          previousAverageCost: null,
-          previousQuantityC: null,
-          previousAverageCostC: null,
-          averageCostC: null,
-
-          // VM fields
-          previousQuantityVM: prevQtyVM,
-          previousAverageCostVM: prevAvgVM,
-          averageCostVM: newAvgVM,
-        });
-
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCostVM: newAvgVM,
-          lastCostVM: poCostVM,
-        });
-      } // end per-PII VM recompute
-
-      // CVM recompute (by description) for this later RVR
-      console.log('\n[RECOMP CVM] start for invoice:', targetInv.id);
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({
-            where: { itemNameDescriptionId: descId },
-            select: ['id'],
-          })
-        ).map((v) => v.id);
-
-        // previous qty CVM (VM chain)
-        const qbRPrevCVM = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqm)', 'sum')
-          .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-        try {
-          // @ts-ignore
-          console.log('[RECOMP CVM] prevQtyCVM SQL:', qbRPrevCVM.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP CVM] prevQtyCVM Params:', qbRPrevCVM.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-
-        const { sum: rawPrevCVM } = await qbRPrevCVM.getRawOne();
-        let prevQtyCVM = Number(rawPrevCVM) || 0;
-
-        // ✅ CLAMP FIX
-        prevQtyCVM = clampPrevQty(prevQtyCVM, '[RECOMP RVR:CVM] prevQtyCVM', {
-          targetInvId: targetInv.id,
-          descId,
-        });
-
-        // previous avgCVM from last PII.averageCostCVM across RVR/S/SR on/before cutoffDate (exclude current)
-        let prevAvgCVM = 0;
-        const lastDescItemCVM = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['RVR', 'S', 'SR'] })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('inv.date <= :date', { date: cutoffDate })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostCVM'])
-          .getOne();
-
-        if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-          prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-        } else {
-          const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: In(variantIdsForDesc) },
-            select: ['sqm', 'finalCost'],
-          });
-
-          const totalOpenQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm), 0);
-          const weightedSumVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm) * Number((o as any).finalCost ?? 0),
-            0,
-          );
-          prevAvgCVM = totalOpenQtyVM > 0 ? weightedSumVM / totalOpenQtyVM : 0;
-        }
-
-        const poItemsSameDesc = tItemsByDesc.get(descId) ?? [];
-        const poQtyCVM = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-        const weightedCostSumVM = poItemsSameDesc.reduce(
-          (s, it) => s + Number((it as any).finalCost) * Number(it.sqm),
-          0,
-        );
-        const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-        const totalQtyCVM = prevQtyCVM + poQtyCVM;
-        const newAvgCVM =
-          totalQtyCVM > 0 ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM : poCostCVM;
-
-        console.log('[RECOMP CVM] details:', {
-          descId,
-          prevQtyCVM,
-          prevAvgCVM,
-          poQtyCVM,
-          weightedCostSumVM,
-          poCostCVM,
-          totalQtyCVM,
-          newAvgCVM,
-        });
-
-        // Persist to all PII in this description (on the target RVR invoice)
-        for (const it of poItemsSameDesc) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityCVM: prevQtyCVM,
-            previousAverageCostCVM: prevAvgCVM,
-            averageCostCVM: newAvgCVM,
-          });
-        }
-      } // end RECOMP CVM loop
-    };
-
-    // Helper: recompute S/SR invoice (kept as you wrote it)
-    const recomputeInvoiceSOrSR = async (targetId: number) => {
-      // ... (unchanged from your snippet)
-      // If you also want CVM on S/SR here, mirror the CVM loop used above.
-      // (You already added CVM in your S block elsewhere.)
-      // -- omitted for brevity --
-    };
-
-    for (const r of laterRaw) {
-      if (r.type === 'RVR') {
-        await recomputeInvoiceRVR(r.id);
-      } else if (r.type === 'S' || r.type === 'SR') {
-        await recomputeInvoiceSOrSR(r.id);
-      }
-    }
-    console.log('🔁 Forward recompute complete for later RVR/S/SR invoices.');
-  }
-
-  console.log('🧾 RVR Cost Calc — End', { invoiceId: savedInvoice.id });
+  // 1) Recompute purchase chain for later POs of these variants
+  await this.recomputePurchaseChainFrom(new Date(savedInvoice.date), affected);
+
+  // 2) Recompute sales invoice items that use these variants
+  await this.recomputeSalesCostsFrom(new Date(savedInvoice.date), affected);
 }
 
-// 🔎 END: RVR Cost-calculation & logging block
-
-
-
-const affectedVariantIds = Array.from(
-  new Set(
-    (savedInvoice.items ?? [])
-      .map(i => Number(i.itemVariantId))
-      .filter(Boolean)
-  )
-);
-
-await this.recomputeVariantCostsAfterPurchaseEdit({
-  cutoffDate: savedInvoice.date,
-  affectedVariantIds,
-});
-
-await this.recomputeSalesInvoiceItemCostsAfterBackdatedPurchase({
-  cutoffDate: savedInvoice.date,
-  affectedVariantIds,
-});
-
-  }
+  
 
   
 
@@ -4415,22 +1932,28 @@ await this.recomputeSalesInvoiceItemCostsAfterBackdatedPurchase({
 
 private async rebuildInventoryForPurchaseInvoice(
   savedInvoice: PurchaseInvoice,
+  extraBatchIds: number[] = [],   // ✅ batches touched by OLD items / OLD txs
 ): Promise<void> {
   const PREFIX = '[rebuildInventoryForPurchaseInvoice]';
 
-  if (!savedInvoice || savedInvoice.status !== 'Recieved') return;
+  if (!savedInvoice) return;
+
+  const isPosted = savedInvoice.status === 'Recieved';
 
   const items = savedInvoice.items ?? [];
-  if (!items.length) return;
+  // if we have no items *and* no extra batches to fix, nothing to do
+  if (!items.length && !extraBatchIds.length) return;
 
   const invoiceDate = new Date(savedInvoice.date);
 
   console.log(PREFIX, 'Start rebuild for invoice:', {
     id: savedInvoice.id,
     type: savedInvoice.type,
+    status: savedInvoice.status,
     date: savedInvoice.jvDate,
     invoiceDate,
     itemsCount: items.length,
+    extraBatchIds,
   });
 
   const itemIds = items.map((it: any) => it.id);
@@ -4440,9 +1963,11 @@ private async rebuildInventoryForPurchaseInvoice(
   // 0) Remove old inventory tx rows for this invoice
   //    but remember which batchId each item used
   // ─────────────────────────────────────────────
-  const existingTxs = await this.inventoryTxRepo.find({
-    where: { purchaseInvoiceItemId: In(itemIds) },
-  });
+  const existingTxs = itemIds.length
+    ? await this.inventoryTxRepo.find({
+        where: { purchaseInvoiceItemId: In(itemIds) },
+      })
+    : [];
   console.log(PREFIX, 'Existing inventory txs for this invoice:', {
     count: existingTxs.length,
   });
@@ -4469,151 +1994,184 @@ private async rebuildInventoryForPurchaseInvoice(
 
   // ─────────────────────────────────────────────
   // 1) (Re)create inventory_transaction rows
+  //    ONLY if invoice is posted (status = Recieved)
   // ─────────────────────────────────────────────
-  for (const item of items) {
-    const itemId = (item as any).id;
-    let existingBatchId = batchIdByItemId.get(itemId) ?? null;
+  if (isPosted && items.length) {
+    for (const item of items) {
+      const itemId = (item as any).id;
+      let existingBatchId = batchIdByItemId.get(itemId) ?? null;
 
-    console.log(PREFIX, '--- Item loop start ---', {
-      purchaseInvoiceItemId: itemId,
-      itemVariantId: item.itemVariantId,
-      existingBatchId,
-      rawSqm: (item as any).sqm,
-      rawSqmOfr: (item as any).sqmofr,
-      rawQty: item.quantity,
-    });
-
-    // If we had a batch before, reuse it; if not, try to find one
-    if (!existingBatchId) {
-      const condition = (item as any).condition || 'Clean';
-
-      const fallbackBatch = await this.itemBatchRepo.findOne({
-        where: {
-          itemVariant: { id: item.itemVariantId },
-          condition,
-          dateReceived: null, // you are storing dateReceived as NULL
-        },
+      console.log(PREFIX, '--- Item loop start ---', {
+        purchaseInvoiceItemId: itemId,
+        itemVariantId: item.itemVariantId,
+        existingBatchId,
+        rawSqm: (item as any).sqm,
+        rawSqmOfr: (item as any).sqmofr,
+        rawQty: item.quantity,
       });
 
-      if (fallbackBatch) {
-        existingBatchId = fallbackBatch.id;
-        console.log(PREFIX, 'Found fallback batch by variant+condition:', {
-          purchaseInvoiceItemId: itemId,
-          variantId: item.itemVariantId,
-          condition,
-          batchId: fallbackBatch.id,
+      // If we had a batch before, reuse it; if not, try to find one
+      if (!existingBatchId) {
+        const condition = (item as any).condition || 'Clean';
+
+        const fallbackBatch = await this.itemBatchRepo.findOne({
+          where: {
+            itemVariant: { id: item.itemVariantId },
+            condition,
+            dateReceived: null, // you are storing dateReceived as NULL
+          },
         });
-      } else {
-        console.warn(
-          PREFIX,
-          'No existing tx batch and no fallback batch found. Skipping item.',
-          { purchaseInvoiceItemId: itemId, variantId: item.itemVariantId },
-        );
-        continue;
+
+        if (fallbackBatch) {
+          existingBatchId = fallbackBatch.id;
+          console.log(PREFIX, 'Found fallback batch by variant+condition:', {
+            purchaseInvoiceItemId: itemId,
+            variantId: item.itemVariantId,
+            condition,
+            batchId: fallbackBatch.id,
+          });
+        } else {
+          console.warn(
+            PREFIX,
+            'No existing tx batch and no fallback batch found. Skipping item.',
+            { purchaseInvoiceItemId: itemId, variantId: item.itemVariantId },
+          );
+          continue;
+        }
       }
+
+      const sqft = Number((item as any).sqm ?? item.sqm ?? 0); // VM
+      const sqftOFR = Number((item as any).sqmofr ?? sqft ?? 0); // OFR
+
+      let qty = Number(item.quantity ?? 0);
+      let qtyOfr = qty;
+      let sqm = sqft;
+      let sqmOfr = sqftOFR;
+
+      console.log(PREFIX, 'Before type switch:', {
+        qty,
+        qtyOfr,
+        sqm,
+        sqmOfr,
+        invoiceType: savedInvoice.type,
+      });
+
+      switch (savedInvoice.type) {
+        case 'S':
+        case 'SR':
+          // normal PO → everything goes as OFR & VM
+          qtyOfr = qty;
+          sqmOfr = sqm;
+          break;
+
+        case 'G':
+          // G invoice → OFR only
+          qtyOfr = qty;
+          sqmOfr = sqm;
+          qty = 0;
+          sqm = 0;
+          console.log(PREFIX, 'Type G logic applied');
+          break;
+
+        case 'RVR':
+          // RVR → VM only
+          qtyOfr = 0;
+          sqmOfr = 0;
+          break;
+      }
+
+      console.log(PREFIX, 'After type switch:', {
+        qty,
+        qtyOfr,
+        sqm,
+        sqmOfr,
+      });
+
+      const tx = this.inventoryTxRepo.create({
+        itemVariantId: item.itemVariantId,
+        itemBatchId: existingBatchId,
+        transactionType: 'purchase',
+        quantity: qty,
+        sqm: sqm,
+        quantityofr: qtyOfr,
+        sqmofr: sqmOfr,
+        finalcost: Number((item as any).finalCost ?? 0),
+        finalcostofr: Number((item as any).finalOFR ?? 0),
+        purchaseInvoiceItemId: itemId,
+        invoiceItemId: null,
+        dateForEachInvoice: invoiceDate,
+      });
+
+      console.log(PREFIX, 'Created inventory_tx (not saved yet):', {
+        itemVariantId: tx.itemVariantId,
+        itemBatchId: tx.itemBatchId,
+        quantity: tx.quantity,
+        sqm: tx.sqm,
+        quantityofr: tx.quantityofr,
+        sqmofr: tx.sqmofr,
+        finalcost: tx.finalcost,
+        finalcostofr: tx.finalcostofr,
+        purchaseInvoiceItemId: tx.purchaseInvoiceItemId,
+      });
+
+      invTxs.push(tx);
+      console.log(PREFIX, '--- Item loop end ---');
     }
 
-    const sqft = Number((item as any).sqm ?? item.sqm ?? 0); // VM
-    const sqftOFR = Number((item as any).sqmofr ?? sqft ?? 0); // OFR
-
-    let qty = Number(item.quantity ?? 0);
-    let qtyOfr = qty;
-    let sqm = sqft;
-    let sqmOfr = sqftOFR;
-
-    console.log(PREFIX, 'Before type switch:', {
-      qty,
-      qtyOfr,
-      sqm,
-      sqmOfr,
-      invoiceType: savedInvoice.type,
-    });
-
-    switch (savedInvoice.type) {
-      case 'S':
-      case 'SR':
-        // normal PO → everything goes as OFR & VM
-        qtyOfr = qty;
-        sqmOfr = sqm;
-        break;
-
-      case 'G':
-        // G invoice → OFR only
-        qtyOfr = qty;
-        sqmOfr = sqm;
-        qty = 0;
-        sqm = 0;
-        console.log(PREFIX, 'Type G logic applied');
-        break;
-
-      case 'RVR':
-        // RVR → VM only
-        qtyOfr = 0;
-        sqmOfr = 0;
-        break;
+    if (invTxs.length) {
+      console.log(
+        PREFIX,
+        'Saving new inventory transactions:',
+        invTxs.length,
+      );
+      await this.inventoryTxRepo.save(invTxs);
     }
-
-    console.log(PREFIX, 'After type switch:', {
-      qty,
-      qtyOfr,
-      sqm,
-      sqmOfr,
-    });
-
-    const tx = this.inventoryTxRepo.create({
-      itemVariantId: item.itemVariantId,
-      itemBatchId: existingBatchId,
-      transactionType: 'purchase',
-      quantity: qty,
-      sqm: sqm,
-      quantityofr: qtyOfr,
-      sqmofr: sqmOfr,
-      finalcost: Number((item as any).finalCost ?? 0),
-      finalcostofr: Number((item as any).finalOFR ?? 0),
-      purchaseInvoiceItemId: itemId,
-      invoiceItemId: null,
-      dateForEachInvoice: invoiceDate,
-    });
-
-    console.log(PREFIX, 'Created inventory_tx (not saved yet):', {
-      itemVariantId: tx.itemVariantId,
-      itemBatchId: tx.itemBatchId,
-      quantity: tx.quantity,
-      sqm: tx.sqm,
-      quantityofr: tx.quantityofr,
-      sqmofr: tx.sqmofr,
-      finalcost: tx.finalcost,
-      finalcostofr: tx.finalcostofr,
-      purchaseInvoiceItemId: tx.purchaseInvoiceItemId,
-    });
-
-    invTxs.push(tx);
-    console.log(PREFIX, '--- Item loop end ---');
-  }
-
-  if (invTxs.length) {
-    console.log(
-      PREFIX,
-      'Saving new inventory transactions:',
-      invTxs.length,
-    );
-    await this.inventoryTxRepo.save(invTxs);
   }
 
   // ─────────────────────────────────────────────
   // 2) Recalculate batch totals FROM inventory_transaction
   //    ❗ ONLY FROM PURCHASE TXs (not start counts etc.)
+  //    We include:
+  //      - batches touched by NEW txs (invTxs)
+  //      - batches passed in extraBatchIds (from OLD items / OLD status)
   // ─────────────────────────────────────────────
   const affectedBatchIds = Array.from(
-    new Set(invTxs.map((tx) => tx.itemBatchId).filter((id) => id != null) as number[]),
+    new Set(
+      [
+        ...(invTxs
+          .map((tx) => tx.itemBatchId)
+          .filter((id) => id != null) as number[]),
+        ...extraBatchIds,
+      ].map((id) => Number(id)),
+    ),
   );
-  console.log(PREFIX, 'Affected batch IDs:', affectedBatchIds);
+  console.log(PREFIX, 'Affected batch IDs (with extras):', affectedBatchIds);
+
+  // We’ll collect variantIds from:
+  //   - current invoice items
+  //   - variants owning affected batches (important for deleted items)
+  const variantIdSet = new Set<number>(
+    items
+      .map((it: any) => Number(it.itemVariantId))
+      .filter((n) => Number.isFinite(n) && n > 0),
+  );
 
   for (const batchId of affectedBatchIds) {
-    const batch = await this.itemBatchRepo.findOne({ where: { id: batchId } });
+    const batch = await this.itemBatchRepo.findOne({
+      where: { id: batchId },
+      relations: ['itemVariant'],
+    });
     if (!batch) {
       console.warn(PREFIX, 'Batch not found when recomputing:', { batchId });
       continue;
+    }
+
+    const variantIdFromBatch =
+      (batch as any).itemVariantId ??
+      (batch.itemVariant ? Number(batch.itemVariant.id) : null);
+
+    if (Number.isFinite(variantIdFromBatch) && variantIdFromBatch! > 0) {
+      variantIdSet.add(Number(variantIdFromBatch));
     }
 
     // debug: list all tx for this batch
@@ -4688,11 +2246,10 @@ private async rebuildInventoryForPurchaseInvoice(
 
   // ─────────────────────────────────────────────
   // 3) Recalculate ItemVariant totals from batches
+  //    (for variants in current items + variants owning affected batches)
   // ─────────────────────────────────────────────
-  const affectedVariantIds = Array.from(
-    new Set(items.map((it: any) => Number(it.itemVariantId)).filter(Boolean)),
-  );
-  console.log(PREFIX, 'Affected variant IDs:', affectedVariantIds);
+  const affectedVariantIds = Array.from(variantIdSet);
+  console.log(PREFIX, 'Affected variant IDs (final):', affectedVariantIds);
 
   if (!affectedVariantIds.length) return;
 
@@ -4769,12 +2326,6 @@ private async rebuildInventoryForPurchaseInvoice(
 
 
 
-
-
-
-
-
-
 private async getPurchaseAvgCostsAsOf(itemVariantId: number, asOfDate: Date) {
   const reqId = `POCOST:${itemVariantId}:${asOfDate.toISOString().slice(0, 10)}:${Date.now()}`;
 
@@ -4847,7 +2398,288 @@ private async getPurchaseAvgCostsAsOf(itemVariantId: number, asOfDate: Date) {
   return result;
 }
   
-  
+
+private async createOrRebuildJVForPurchaseInvoice(
+  invoice: PurchaseInvoice,
+  items: PurchaseInvoiceItem[],
+  unitPriceRows: any[] | undefined,
+) {
+  if (
+    invoice.status !== 'Recieved' ||
+    !['G', 'S', 'SR'].includes(invoice.type as any)
+  ) {
+    return;
+  }
+
+  const expenseAcct = await this.accountRepo.findOne({
+    where: { accountNumber: '6011' },
+  });
+  if (!expenseAcct) {
+    throw new Error('GL account 6011 not found');
+  }
+
+  let normalTotal = 0;
+  let ofrTotal = 0;
+
+  if (invoice.type === 'G') {
+    for (const row of items) {
+      ofrTotal += Number(row.totalOFR);
+    }
+  } else if (invoice.type === 'S') {
+    for (const row of items) {
+      normalTotal += Number(row.totalAmount);
+      ofrTotal += Number(row.totalAmount);
+    }
+  } else {
+    for (const row of items) {
+      normalTotal += Number(row.totalAmount);
+      ofrTotal += Number(row.totalOFR);
+    }
+  }
+
+  const rate = Number(invoice.exchangeRate);
+  const normalLL = normalTotal * rate;
+  const ofrLL = ofrTotal * rate;
+
+  let prefix = 'PV';
+  if (invoice.type === 'G') prefix = 'PVG';
+
+  const last = await this.journalVoucherRepo
+    .find({
+      where: { jvNumber: Like(`${prefix} - %`) },
+      order: { jvNumber: 'DESC' },
+      take: 1,
+    })
+    .then((arr) => arr[0]);
+
+  const seq = last ? parseInt(last.jvNumber.split(' - ')[1], 10) + 1 : 1;
+  const jvNumber = `${prefix} - ${String(seq).padStart(5, '0')}`;
+
+  let hdrDr = 0,
+    hdrDrUSD = 0,
+    hdrDrLL = 0;
+  let hdrDrOFR = 0,
+    hdrDrUSDOFR = 0,
+    hdrDrLLOFR = 0;
+  let hdrCr = 0,
+    hdrCrUSD = 0,
+    hdrCrLL = 0;
+  let hdrCrOFR = 0,
+    hdrCrUSDOFR = 0,
+    hdrCrLLOFR = 0;
+
+  if (invoice.type === 'G') {
+    hdrDrOFR = ofrTotal;
+    hdrDrUSDOFR = ofrTotal;
+    hdrDrLLOFR = ofrLL;
+
+    hdrCrOFR = ofrTotal;
+    hdrCrUSDOFR = ofrTotal;
+    hdrCrLLOFR = ofrLL;
+  } else if (invoice.type === 'S') {
+    hdrDr = normalTotal;
+    hdrDrUSD = normalTotal;
+    hdrDrLL = normalLL;
+    hdrDrOFR = normalTotal;
+    hdrDrUSDOFR = normalTotal;
+    hdrDrLLOFR = normalLL;
+
+    hdrCr = normalTotal;
+    hdrCrUSD = normalTotal;
+    hdrCrLL = normalLL;
+    hdrCrOFR = normalTotal;
+    hdrCrUSDOFR = normalTotal;
+    hdrCrLLOFR = normalLL;
+  } else {
+    hdrDr = normalTotal;
+    hdrDrUSD = normalTotal;
+    hdrDrLL = normalLL;
+    hdrDrOFR = ofrTotal;
+    hdrDrUSDOFR = ofrTotal;
+    hdrDrLLOFR = ofrLL;
+
+    hdrCr = normalTotal;
+    hdrCrUSD = normalTotal;
+    hdrCrLL = normalLL;
+    hdrCrOFR = ofrTotal;
+    hdrCrUSDOFR = ofrTotal;
+    hdrCrLLOFR = ofrLL;
+  }
+
+  const debitLine = this.journalVoucherDetailRepo.create({
+    accountId: expenseAcct.id,
+    description: 'فاتورة شراء',
+    docNbr: jvNumber, // ✅ PV/JV number in docNbr
+
+    dr: hdrDr,
+    drUSD: hdrDrUSD,
+    drLL: hdrDrLL,
+    drOFR: hdrDrOFR,
+    drUSDOFR: hdrDrUSDOFR,
+    drLLOFR: hdrDrLLOFR,
+    cr: 0,
+    crUSD: 0,
+    crLL: 0,
+    crOFR: 0,
+    crUSDOFR: 0,
+    crLLOFR: 0,
+    exchangeRateAcc: null,
+    exchangeRateUSD: null,
+  });
+
+  const creditLine = this.journalVoucherDetailRepo.create({
+    supplierId: invoice.supplierId,
+    description: 'فاتورة شراء',
+    docNbr: jvNumber, // ✅ here too
+
+    dr: 0,
+    drUSD: 0,
+    drLL: 0,
+    drOFR: 0,
+    drUSDOFR: 0,
+    drLLOFR: 0,
+    cr: hdrCr,
+    crUSD: hdrCrUSD,
+    crLL: hdrCrLL,
+    crOFR: hdrCrOFR,
+    crUSDOFR: hdrCrUSDOFR,
+    crLLOFR: hdrCrLLOFR,
+    exchangeRateAcc: null,
+    exchangeRateUSD: null,
+  });
+
+  const extraJVDetails: JournalVoucherDetail[] = [];
+
+  if (unitPriceRows?.length) {
+    for (const row of unitPriceRows) {
+      const value = Number(row.value || 0);
+      const valueOFR = Number(row.valueOFR || 0);
+      const valueLL = value * invoice.exchangeRate;
+      const valueOFRLL = valueOFR * invoice.exchangeRate;
+
+      let dr = 0,
+        drUSD = 0,
+        drLL = 0,
+        drOFR = 0,
+        drUSDOFR = 0,
+        drLLOFR = 0;
+
+      let cr = 0,
+        crUSD = 0,
+        crLL = 0,
+        crOFR = 0,
+        crUSDOFR = 0,
+        crLLOFR = 0;
+
+      if (invoice.type === 'G') {
+        drOFR = valueOFR;
+        drUSDOFR = valueOFR;
+        drLLOFR = valueOFRLL;
+
+        crOFR = valueOFR;
+        crUSDOFR = valueOFR;
+        crLLOFR = valueOFRLL;
+      } else if (invoice.type === 'S') {
+        dr = value;
+        drUSD = value;
+        drLL = valueLL;
+        drOFR = value;
+        drUSDOFR = value;
+        drLLOFR = valueLL;
+
+        cr = value;
+        crUSD = value;
+        crLL = valueLL;
+        crOFR = value;
+        crUSDOFR = value;
+        crLLOFR = valueLL;
+      } else if (invoice.type === 'SR') {
+        dr = value;
+        drUSD = value;
+        drLL = valueLL;
+        drOFR = valueOFR;
+        drUSDOFR = valueOFR;
+        drLLOFR = valueOFRLL;
+
+        cr = value;
+        crUSD = value;
+        crLL = valueLL;
+        crOFR = valueOFR;
+        crUSDOFR = valueOFR;
+        crLLOFR = valueOFRLL;
+      }
+
+      const drLine = this.journalVoucherDetailRepo.create({
+        accountId: row.accountId ?? null,
+        docNbr: jvNumber, // ✅
+        description:"فاتورة شراء",
+        dr,
+        drUSD,
+        drLL,
+        drOFR,
+        drUSDOFR,
+        drLLOFR,
+        cr: 0,
+        crUSD: 0,
+        crLL: 0,
+        crOFR: 0,
+        crUSDOFR: 0,
+        crLLOFR: 0,
+        exchangeRateAcc: null,
+        exchangeRateUSD: null,
+      });
+
+      const crLine = this.journalVoucherDetailRepo.create({
+        supplierId: row.supplierId ?? null,
+        docNbr: jvNumber, // ✅
+ description:"فاتورة شراء",
+        dr: 0,
+        drUSD: 0,
+        drLL: 0,
+        drOFR: 0,
+        drUSDOFR: 0,
+        drLLOFR: 0,
+        cr,
+        crUSD,
+        crLL,
+        crOFR,
+        crUSDOFR,
+        crLLOFR,
+        exchangeRateAcc: null,
+        exchangeRateUSD: null,
+      });
+
+      extraJVDetails.push(drLine, crLine);
+    }
+  }
+
+  const jv = this.journalVoucherRepo.create({
+    jvNumber,
+    purchaseInvoiceId: invoice.id,
+    date: invoice.jvDate,
+    jvType: invoice.type,
+    totalDr: hdrDr,
+    totalDrUSD: hdrDrUSD,
+    totalDrLL: hdrDrLL,
+    totalDrOFR: hdrDrOFR,
+    totalDrUSDOFR: hdrDrUSDOFR,
+    totalDrLLOFR: hdrDrLLOFR,
+    totalCr: hdrCr,
+    totalCrUSD: hdrCrUSD,
+    totalCrLL: hdrCrLL,
+    totalCrOFR: hdrCrOFR,
+    totalCrUSDOFR: hdrCrUSDOFR,
+    totalCrLLOFR: hdrCrLLOFR,
+    exchangeRateAcc: null,
+    exchangeRateUSD: null,
+    details: [debitLine, creditLine, ...extraJVDetails],
+  });
+
+  await this.journalVoucherRepo.save(jv);
+}
+
+
+
 
 async update(id: number, data: Partial<PurchaseInvoice>) {
   // 0) Load existing invoice
@@ -4864,6 +2696,34 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   const prevDate = new Date(existing.date);
   const prevItemIds = (existing.items ?? []).map((it) => it.id);
 
+  // ✅ capture variantIds that were on this invoice BEFORE change
+  const prevVariantIds = Array.from(
+    new Set(
+      (existing.items ?? [])
+        .map((it: any) => Number(it.itemVariantId))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    ),
+  );
+
+  // 🔹 Capture old batchIds from ALL previous txs for this invoice
+  let oldBatchIds: number[] = [];
+  if (prevItemIds.length) {
+    const oldTxs = await this.inventoryTxRepo.find({
+      where: { purchaseInvoiceItemId: In(prevItemIds) },
+    });
+
+    oldBatchIds = Array.from(
+      new Set(
+        oldTxs
+          .map((tx) => tx.itemBatchId)
+          .filter((id) => Number.isFinite(Number(id)))
+          .map((id) => Number(id)),
+      ),
+    );
+
+    console.log('[UPDATE] oldBatchIds from previous txs:', oldBatchIds);
+  }
+
   // 0.1) Split payload
   const {
     items: incomingItemsPayload,
@@ -4876,7 +2736,9 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   (existing as any).unitPriceRows = undefined;
 
   // 2) Upsert items
-  const incomingItems = (incomingItemsPayload ?? []).map((it: any) => ({ ...it }));
+  const incomingItems = (incomingItemsPayload ?? []).map((it: any) => ({
+    ...it,
+  }));
   const incomingItemIdSet = new Set<number>(
     incomingItems.filter((i) => i.id).map((i) => Number(i.id)),
   );
@@ -4932,6 +2794,7 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   // 4.0) Sync inventory transactions
   //      - delete ALL old txs for this invoice's items
   //      - rebuild them from the updated invoice
+  //      - BUT we also pass oldBatchIds so batches from deleted items are fixed
   // ─────────────────────────────────────────────
   if (prevItemIds.length) {
     await this.inventoryTxRepo.delete({
@@ -4940,19 +2803,46 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   }
 
   // Use existing (which already has items) to rebuild inventory
-  await this.rebuildInventoryForPurchaseInvoice({
-    ...(savedInvoice as any),
-    items: existing.items,
-  } as PurchaseInvoice);
+  await this.rebuildInventoryForPurchaseInvoice(
+    {
+      ...(savedInvoice as any),
+      items: existing.items,
+    } as PurchaseInvoice,
+    oldBatchIds, // ✅ also recompute batches that were touched by OLD txs
+  );
 
   // ─────────────────────────────────────────────
   // 4.2) delete/rebuild JV (if you want JV to follow edits as well)
-  //      - here you would delete existing JV(s) for this invoice
-  //      - then call the same JV creation logic you use in `create`
   // ─────────────────────────────────────────────
-  // e.g.:
-  // await this.journalVoucherRepo.delete({ purchaseInvoiceId: savedInvoice.id });
-  // await this.createOrRebuildJVForPurchaseInvoice(savedInvoice, existing.items, incomingUnitPriceRowsPayload);
+  const existingJvs = await this.journalVoucherRepo.find({
+    where: { purchaseInvoiceId: savedInvoice.id },
+  });
+
+  if (existingJvs.length) {
+    const jvIds = existingJvs
+      .map((j) => j.id)
+      .filter((x) => Number.isFinite(Number(x)))
+      .map((x) => Number(x));
+
+    if (jvIds.length) {
+      // 1) delete details rows referencing these JVs
+      await this.journalVoucherDetailRepo.delete({
+        journalVoucherId: In(jvIds),
+      } as any);
+
+      // 2) delete JV header rows themselves
+      await this.journalVoucherRepo.delete({
+        id: In(jvIds),
+      } as any);
+    }
+  }
+
+  // 3) recreate JV based on the NEW invoice + NEW unitPriceRows payload
+  await this.createOrRebuildJVForPurchaseInvoice(
+    { ...(savedInvoice as any), items: existing.items } as PurchaseInvoice,
+    existing.items,
+    incomingUnitPriceRowsPayload,
+  );
 
   // 4.3) delete old unit_price_modal_rows for this invoice
   console.log('[UNITPRICE][DELETE] deleting all unit price rows by invoiceId', {
@@ -5026,3986 +2916,284 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
     await this.rowRepo.save(rowsToSave);
   }
 
- 
-const clampPrevQty = (raw: any, label: string, ctx: any = {}) => {
-  let n = Number(raw);
-  if (!Number.isFinite(n)) n = 0;
+  // …after your inventory transactions and variant‐totals logic…
+  const clampPrevQty = (raw: any, label: string, ctx: any = {}) => {
+    let n = Number(raw);
+    if (!Number.isFinite(n)) n = 0;
 
-  if (n < 0) {
-    console.warn(`⚠️ ${label} was negative → clamped to 0`, { raw, n, ...ctx });
-    return 0;
-  }
-  return n;
-};
-
-
-
-  // ─────────────────────────────────────────────────────────
-  // 7) COST-CALCULATION BLOCKS (EXACTLY your create’s logic)
-  //    S / G / RVR with forward recompute
-  // ─────────────────────────────────────────────────────────
-
-if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'S') {
-  const invDate = new Date(savedInvoice.date);
-  const dayStart = new Date(invDate);
-  dayStart.setHours(0, 0, 0, 0); // exclude same calendar date for "previous" lookups
-
-  console.log('🧾 PO Cost Calc — Start', {
-    invoiceId: savedInvoice.id,
-    invoiceDate: invDate.toISOString(),
-    cutoffForPrevious: dayStart.toISOString(),
-    itemCount: savedInvoice.items?.length ?? 0,
-  });
-
-  const itemsByDesc = new Map<number, any[]>();
-
-  // NOT-IN for "previous" sums
-  const currPiiIds = (savedInvoice.items ?? []).map((it) => it.id);
-  const hasCurrPiiIds = currPiiIds.length > 0;
-  console.log('🔒 Excluding current PurchaseInvoiceItem IDs from prior sums:', currPiiIds);
-
-  // Collect description IDs
-  const descIds = new Set<number>();
-
-  /* ────────────────────────────────────────────────
-     PER-PII LOOP: STANDARD (OFR) + VM (VM)
-     ──────────────────────────────────────────────── */
-  for (const item of savedInvoice.items) {
-    // ───────── STANDARD COST TRACK ─────────
-    const variantt = await this.variantRepo.findOne({
-      where: { id: item.itemVariantId },
-      select: ['id', 'itemNameDescriptionId', 'averageCost', 'averageCostVM'],
-    });
-    if (!variantt) {
-      console.error(`❌ Variant ${item.itemVariantId} not found`);
-      continue;
+    if (n < 0) {
+      console.warn(`⚠️ ${label} was negative → clamped to 0`, { raw, n, ...ctx });
+      return 0;
     }
+    return n;
+  };
 
-    const vid = variantt.id;
-    const descId = variantt.itemNameDescriptionId;
-
-    // collect this PII under its description
-    if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
-    itemsByDesc.get(descId)!.push(item);
-    descIds.add(descId);
-
-    console.log(
-      `\n[STANDARD] ► Processing PII ${item.id} (variantId=${vid}, descId=${descId}) on invoice ${savedInvoice.id}`,
-    );
-    console.log(`[STANDARD]   invoice date (PO):`, invDate);
-    console.log('[STANDARD] row snapshot:', {
-      piiId: item.id,
-      itemVariantId: item.itemVariantId,
-      qty: Number(item.quantity),
-      sqm: Number(item.sqm),
-      sqmOfr: Number((item as any).sqm ?? 0),
-      finalOFR: Number((item as any).finalOFR),
-      finalCost: Number((item as any).finalCost),
-    });
-
-    // 0) Determine PREVIOUS AVERAGE (STANDARD / OFR chain)
-    const qbPrevPII = this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR','RVR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCost AS avg_cost',
-        'pii.averageCostVM AS avg_cost_vm',
-        'inv.id AS inv_id',
-        'inv.date AS inv_date',
-      ]);
-
-    try {
-      // @ts-ignore
-      console.log('[PREV PII] SQL:', qbPrevPII.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[PREV PII] Params:', qbPrevPII.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-
-    const prevPIIRaw = await qbPrevPII.getRawOne<{
-      pii_id?: number;
-      avg_cost?: string | number | null;
-      avg_cost_vm?: string | number | null;
-      inv_id?: number;
-      inv_date?: Date;
-    }>();
-
-    console.log('[PREV PII] raw result:', prevPIIRaw ?? null);
-
-    // 1) Sum prior sqm-OFR (EXCLUDING current invoice items) — inclusive cutoff
-    const qbPrev = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice < :d', { d: invDate });
-
-    if (hasCurrPiiIds) {
-      qbPrev.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[STANDARD] prevQty SQL:', qbPrev.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[STANDARD] prevQty Params:', qbPrev.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-// 1) Determine previous quantity logic based on whether a previous PII exists or not
-let prevQty = 0;
-
-if (prevPIIRaw) {
-  // There IS a previous settled PO → use historical inventory tx before this invoice
-  const { sum: rawPrev } = await qbPrev.getRawOne();
-  prevQty = Number(rawPrev) || 0;
-  console.log(`[STANDARD] Using historical qty (since previous PII exists): prevQty = ${prevQty}`);
-} else {
-  // NO previous invoice → use ONLY opening stock (if any)
-const openingRecord = await this.invTransRepo.manager
-  .getRepository(InventoryCount)
-  .createQueryBuilder('ic')
-  .select('ic.sqmOfr', 'sqmOfr')
-  .where('ic.itemVariantId = :vid', { vid: item.itemVariantId })
-  .limit(1)
-  .getRawOne();
-
-prevQty = Number(openingRecord?.sqmOfr ?? 0);
-console.log(`[STANDARD] No prior PII → using opening stock only: prevQty = ${prevQty}`);
-
-}
-// ✅ clamp negative to zero
-prevQty = clampPrevQty(prevQty, '[STANDARD] prevQty', {
-  vid: item.itemVariantId,
-  piiId: item.id,
-  invId: savedInvoice.id,
-});
-
-    // 2) Prev avg-OFR (STANDARD)
-    let prevAvg: number;
-    if (prevPIIRaw && prevPIIRaw.avg_cost != null) {
-      prevAvg = Number(prevPIIRaw.avg_cost);
-      console.log('[STANDARD] prevAvg from previous PII.averageCost:', {
-        prevAvg,
-        prevPiiId: prevPIIRaw.pii_id ?? null,
-        prevInvId: prevPIIRaw.inv_id ?? null,
-        prevInvDate: prevPIIRaw.inv_date ?? null,
-      });
-    } else {
-      console.log('[STANDARD] no previous PII; computing weighted openings from InventoryCount (OFR)…');
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({
-          where: { itemVariant: { id: item.itemVariantId } },
-          select: ['sqmOfr', 'finalCostOfr'],
-        });
-
-      const totalOpenQty = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0),
-        0,
-      );
-      const weightedSum = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-        0,
-      );
-      prevAvg = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-
-      console.log('[STANDARD] openings snapshot + resolved prevAvg (OFR):', {
-        openingsCount: openings.length,
-        totalOpenQty,
-        weightedSum,
-        prevAvg,
-      });
-    }
-
-    // 3) This PO’s sqmOfr & unitPrice (finalOFR)
-    const poQty = Number((item as any).sqm ?? 0);
-    const poCost = Number((item as any).finalOFR ?? 0);
-    console.log('[STANDARD] current PO contribution (OFR):', { poQty, poCost });
-
-    // 4) New blended avg-OFR
-    const totalQty = prevQty + poQty;
-    const lhs = prevAvg * prevQty; // previous value bucket
-    const rhs = poCost * poQty; // current row value bucket
-    const newAvg = totalQty > 0 ? (lhs + rhs) / totalQty : poCost;
-    console.log('[STANDARD] blend details (OFR):', {
-      formula: 'newAvg = (prevAvg*prevQty + poCost*poQty) / (prevQty + poQty)',
-      prevAvg,
-      prevQty,
-      poCost,
-      poQty,
-      lhs,
-      rhs,
-      totalQty,
-      newAvg,
-      guardWhenTotalQtyIsZero: totalQty === 0 ? '(used poCost)' : '(used blend)',
-    });
-
-    // 5) Persist STANDARD into PurchaseInvoiceItem & ItemVariant
-    const piiUpdateRes = await this.itemRepo.update(item.id, {
-      previousQuantity: prevQty,
-      previousAverageCost: prevAvg,
-      averageCost: newAvg,
-    });
-    console.log('✓ [STANDARD] PII update result (OFR):', {
-      piiId: item.id,
-      affected: piiUpdateRes?.affected ?? 'n/a',
-      set: { previousQuantity: prevQty, previousAverageCost: prevAvg, averageCost: newAvg },
-    });
-
-    const varUpdateResStd = await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvg,
-      lastCost: poCost,
-    });
-    console.log('✓ [STANDARD] Variant update result (OFR):', {
-      itemVariantId: item.itemVariantId,
-      affected: varUpdateResStd?.affected ?? 'n/a',
-      set: { averageCost: newAvg, lastCost: poCost },
-    });
-
-    // ───────── VM COST TRACK (VM chain) ─────────
-    const qbPrevVm = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqm)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-    if (hasCurrPiiIds) {
-      qbPrevVm.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[VM] prevQty SQL:', qbPrevVm.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[VM] prevQty Params:', qbPrevVm.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-    const { sum: rawPrevVm } = await qbPrevVm.getRawOne();
-    let prevQtyVM = Number(rawPrevVm) || 0;
-    prevQtyVM = clampPrevQty(prevQtyVM, '[VM] prevQtyVM', {
-  vid: item.itemVariantId,
-  piiId: item.id,
-  invId: savedInvoice.id,
-});
-    console.log('[VM] prevQtyVM result (VM chain):', { rawPrevVm, prevQtyVM });
-
-    
-
-    // Prev avg VM: from previous PII.averageCostVM; if none, 0
-    let prevAvgVM: number;
-    if (prevPIIRaw && prevPIIRaw.avg_cost_vm != null) {
-      prevAvgVM = Number(prevPIIRaw.avg_cost_vm);
-      console.log('[VM] prevAvgVM from previous PII.averageCostVM:', {
-        prevAvgVM,
-        prevPiiId: prevPIIRaw.pii_id ?? null,
-        prevInvId: prevPIIRaw.inv_id ?? null,
-        prevInvDate: prevPIIRaw.inv_date ?? null,
-      });
-    } else {
-      prevAvgVM = 0;
-      console.log('[VM] no previous PII found → prevAvgVM = 0');
-    }
-
-    const poQtyVM = Number(item.sqm);
-    const poCostVM = Number((item as any).finalCost);
-
-    const totalQtyVM = prevQtyVM + poQtyVM;
-    const lhsVM = prevAvgVM * prevQtyVM;
-    const rhsVM = poCostVM * poQtyVM;
-    const newAvgVM = totalQtyVM > 0 ? (lhsVM + rhsVM) / totalQtyVM : poCostVM;
-    console.log('[VM] blend details (VM):', {
-      formula: 'newAvgVM = (prevAvgVM*prevQtyVM + poCostVM*poQtyVM) / (prevQtyVM + poQtyVM)',
-      prevAvgVM,
-      prevQtyVM,
-      poCostVM,
-      poQtyVM,
-      lhsVM,
-      rhsVM,
-      totalQtyVM,
-      newAvgVM,
-      guardWhenTotalQtyVMIsZero: totalQtyVM === 0 ? '(used poCostVM)' : '(used blend)',
-    });
-
-    const piiUpdateResVM = await this.itemRepo.update(item.id, {
-      previousQuantityVM: prevQtyVM,
-      previousAverageCostVM: prevAvgVM,
-      averageCostVM: newAvgVM,
-    });
-    console.log('✓ [VM] PII update result (VM):', {
-      piiId: item.id,
-      affected: piiUpdateResVM?.affected ?? 'n/a',
-      set: {
-        previousQuantityVM: prevQtyVM,
-        previousAverageCostVM: prevAvgVM,
-        averageCostVM: newAvgVM,
-      },
-    });
-
-    const varUpdateResVM = await this.variantRepo.update(item.itemVariantId, {
-      averageCostVM: newAvgVM,
-      lastCostVM: poCostVM,
-    });
-    console.log('✓ [VM] Variant update result (VM):', {
-      itemVariantId: item.itemVariantId,
-      affected: varUpdateResVM?.affected ?? 'n/a',
-      set: { averageCostVM: newAvgVM, lastCostVM: poCostVM },
-    });
-  } // end per-PII loop (STANDARD/VM)
-
-  /* ────────────────────────────────────────────────
-     C-LEVEL (by description, current invoice) — OFR
-     ──────────────────────────────────────────────── */
-  console.log('\n📚 C-Level (by description) calculations start');
-  for (const descId of descIds) {
-    console.log(`\n[C] ► Description ${descId}`);
-
-    // all variants under this description
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-    console.log('[C] variantIdsForDesc:', variantIdsForDesc);
+  if (savedInvoice.status === 'Recieved') {
+    const scope = 'PO:COSTS';
+    const invDate = new Date(savedInvoice.date);
     const dayStart = new Date(invDate);
-dayStart.setHours(0, 0, 0, 0);
+    dayStart.setHours(0, 0, 0, 0);
 
+    const items = savedInvoice.items ?? [];
+    const currPiiIds = items
+      .map((i) => i.id)
+      .filter((x) => Number.isFinite(Number(x)));
 
-    // previous qty (OFR sum), up to & INCLUDING invDate; exclude current PO rows
-    const qbPrevC = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(COALESCE(tx.sqmofr, 0))', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-      .andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    try {
-      // @ts-ignore
-      console.log('[C] prevQtyC SQL:', qbPrevC.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[C] prevQtyC Params:', qbPrevC.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-    const { sum: rawPrevC } = await qbPrevC.getRawOne();
-    let prevQtyC = Number(rawPrevC) || 0;
-    prevQtyC = clampPrevQty(prevQtyC, '[C] prevQtyC', {
-  descId,
-  invId: savedInvoice.id,
-});
-    console.log('[C] prevQtyC result (OFR):', { rawPrevC, prevQtyC });
-
-    // previous avgC from last settled PII on/before invDate; else openings (OFR)
-    let prevAvgC: number;
-    const lastDescItem = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date <= :date', { date: invDate })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostC'])
-      .getOne();
-
-    if (lastDescItem && lastDescItem.averageCostC != null) {
-      prevAvgC = Number(lastDescItem.averageCostC);
-      console.log('[C] prevAvgC from last PII.averageCostC:', prevAvgC);
-    } else {
-      console.log('[C] no prior PII.averageCostC, compute from openings (OFR)…');
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({
-          where: { itemVariant: In(variantIdsForDesc) },
-          select: ['sqmOfr', 'finalCostOfr'],
-        });
-
-      const totalOpenQty = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0),
-        0,
-      );
-      const weightedSum = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-        0,
-      );
-      prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-      console.log('[C] openings snapshot (OFR):', {
-        openingsCount: openings.length,
-        totalOpenQty,
-        weightedSum,
-        prevAvgC,
-      });
-    }
-
-    // group CURRENT PO rows that share this description — OFR chain
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyC = poItemsSameDesc.reduce(
-      (s, it: any) => s + Number(it.sqm ?? 0),
-      0,
-    );
-    const weightedCostSum = poItemsSameDesc.reduce(
-      (s, it: any) =>
-        s + Number(it.sqm ?? 0) * Number(it.finalCost ?? 0),
-      0,
-    );
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-    console.log('[C] current PO group snapshot (OFR):', {
-      piiIds: poItemsSameDesc.map((x) => x.id),
-      perRow: poItemsSameDesc.map((x: any) => ({
-        piiId: x.id,
-        sqmOfr: Number(x.sqmOfr ?? 0),
-        finalOFR: Number(x.finalOFR ?? 0),
-      })),
-      poQtyC,
-      weightedCostSum,
-      poCostC,
+    console.log(`[${scope}] start`, {
+      invoiceId: savedInvoice.id,
+      invoiceDate: savedInvoice.date,
+      dayStart: dayStart.toISOString(),
+      itemsCount: items.length,
+      currPiiIdsCount: currPiiIds.length,
     });
 
-    const totalQtyC = prevQtyC + poQtyC;
-    const lhsC = prevAvgC * prevQtyC;
-    const rhsC = poCostC * poQtyC;
-    const newAvgC = totalQtyC > 0 ? (lhsC + rhsC) / totalQtyC : poCostC;
-    console.log('[C] blend details (OFR):', {
-      formula: 'newAvgC = (prevAvgC*prevQtyC + poCostC*poQtyC) / (prevQtyC + poQtyC)',
-      prevAvgC,
-      prevQtyC,
-      poCostC,
-      poQtyC,
-      lhsC,
-      rhsC,
-      totalQtyC,
-      newAvgC,
-      guardWhenTotalQtyCIsZero: totalQtyC === 0 ? '(used poCostC)' : '(used blend)',
-    });
+    // --- preload variant -> descId for grouping ---
+    const variantIdsInInvoice = Array.from(
+      new Set(
+        items
+          .map((i) => Number(i.itemVariantId))
+          .filter((n) => Number.isFinite(n) && n > 0),
+      ),
+    );
 
-    // apply SAME C-values to ALL PII rows in this description on THIS PO
-    for (const it of poItemsSameDesc) {
-      const res = await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-      });
-      console.log('✓ [C] PII row updated with C-values (OFR):', {
-        piiId: it.id,
-        affected: res?.affected ?? 'n/a',
-        set: { previousQuantityC: prevQtyC, previousAverageCostC: prevAvgC, averageCostC: newAvgC },
-      });
+    const variantRows = variantIdsInInvoice.length
+      ? await this.variantRepo.find({
+          where: { id: In(variantIdsInInvoice) },
+          select: ['id', 'itemNameDescriptionId'],
+        })
+      : [];
+
+    const variantToDesc = new Map<number, number | null>(
+      variantRows.map((v: any) => [Number(v.id), v.itemNameDescriptionId ?? null]),
+    );
+
+    const itemsByDesc = new Map<number, PurchaseInvoiceItem[]>();
+    for (const it of items) {
+      const vid = Number(it.itemVariantId);
+      const descId = variantToDesc.get(vid);
+      if (!descId) continue;
+      if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
+      itemsByDesc.get(descId)!.push(it);
     }
-  }
+    const descIds = Array.from(itemsByDesc.keys());
 
-  /* ────────────────────────────────────────────────
-     CVM-LEVEL (by description, current invoice) — VM
-     ──────────────────────────────────────────────── */
-  console.log('\n📚 CVM-Level (by description) calculations start');
-  for (const descId of descIds) {
-    console.log(`\n[CVM] ► Description ${descId}`);
+    // ------------------------------------------------------------------
+    // A) PER-VARIANT: averageCost (OFR) + averageCostVM (VM)
+    // ------------------------------------------------------------------
+    for (const it of items) {
+      const vid = Number(it.itemVariantId);
+      if (!Number.isFinite(vid) || vid <= 0) continue;
 
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-    console.log('[CVM] variantIdsForDesc:', variantIdsForDesc);
-
-    const qbPrevCVM = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqm)', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-      .andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
+      const prevOfr = await resolvePrevVariant(
+        this.itemRepo,
+        this.inventoryTxRepo,
+        this.invTransRepo.manager,
+        this.variantRepo,
+        vid,
+        'OFR',
+        'averageCost',
+        dayStart,
+        currPiiIds,
       );
 
-    try {
-      // @ts-ignore
-      console.log('[CVM] prevQtyCVM SQL:', qbPrevCVM.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[CVM] prevQtyCVM Params:', qbPrevCVM.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
+      const prevVm = await resolvePrevVariant(
+        this.itemRepo,
+        this.inventoryTxRepo,
+        this.invTransRepo.manager,
+        this.variantRepo,
+        vid,
+        'VM',
+        'averageCostVM',
+        dayStart,
+        currPiiIds,
+      );
+
+      const poQtyOfr = getItemQty(it, 'OFR');
+      const poCostOfr = getItemCost(it, 'OFR');
+      const poQtyVm = getItemQty(it, 'VM');
+      const poCostVm = getItemCost(it, 'VM');
+
+      const totalOfr = prevOfr.prevQty + poQtyOfr;
+      const newAvgOfr =
+        totalOfr > 0
+          ? (prevOfr.prevAvg * prevOfr.prevQty + poCostOfr * poQtyOfr) / totalOfr
+          : prevOfr.prevAvg;
+
+      const totalVm = prevVm.prevQty + poQtyVm;
+      const newAvgVm =
+        totalVm > 0
+          ? (prevVm.prevAvg * prevVm.prevQty + poCostVm * poQtyVm) / totalVm
+          : prevVm.prevAvg;
+
+      await this.itemRepo.update(it.id, {
+        previousQuantity: prevOfr.prevQty,
+        previousAverageCost: prevOfr.prevAvg,
+        averageCost: newAvgOfr,
+
+        previousQuantityVM: prevVm.prevQty,
+        previousAverageCostVM: prevVm.prevAvg,
+        averageCostVM: newAvgVm,
+      });
+
+      await this.variantRepo.update(vid, {
+        averageCost: newAvgOfr,
+        lastCost: poCostOfr,
+
+        averageCostVM: newAvgVm,
+        lastCostVM: poCostVm,
+      });
     }
 
-    const { sum: rawPrevCVM } = await qbPrevCVM.getRawOne();
-    let prevQtyCVM = Number(rawPrevCVM) || 0;
-    prevQtyCVM = clampPrevQty(prevQtyCVM, '[CVM] prevQtyCVM', {
-  descId,
-  invId: savedInvoice.id,
-});
-    console.log('[CVM] prevQtyCVM result (VM):', { rawPrevCVM, prevQtyCVM });
+    // ------------------------------------------------------------------
+    // B) PER-DESCRIPTION: averageCostC (OFR) + averageCostCVM (VM)
+    // ------------------------------------------------------------------
+    for (const descId of descIds) {
+      const rows = itemsByDesc.get(descId) ?? [];
+      if (!rows.length) continue;
 
-    let prevAvgCVM: number;
-    const lastDescItemCVM = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date < :date', { date: dayStart })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostCVM'])
-      .getOne();
+      const variantIdsForDesc = (
+        await this.variantRepo.find({
+          where: { itemNameDescriptionId: descId } as any,
+          select: ['id'],
+        })
+      )
+        .map((v) => Number(v.id))
+        .filter((n) => Number.isFinite(n) && n > 0);
 
-    if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-      prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-      console.log('[CVM] prevAvgCVM from last PII.averageCostCVM:', prevAvgCVM);
-    } else {
-      console.log('[CVM] no prior PII.averageCostCVM, compute from openings (VM)…');
-      const openingsVM = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({
-          where: { itemVariant: In(variantIdsForDesc) },
-          select: ['sqm', 'finalCost'],
-        });
+      if (!variantIdsForDesc.length) continue;
 
-      const totalOpenQtyVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm ?? 0),
+      const prevQtyC = await sumTxQty(
+        this.inventoryTxRepo,
+        variantIdsForDesc,
+        'OFR',
+        dayStart,
+        currPiiIds,
+      );
+
+      const prevCRow = await this.itemRepo
+        .createQueryBuilder('pii')
+        .innerJoin('pii.invoice', 'inv')
+        .innerJoin('pii.itemVariant', 'iv')
+        .where('inv.status = :st', { st: 'Recieved' })
+        .andWhere('inv.date < :cut', { cut: dayStart })
+        .andWhere('iv.itemNameDescriptionId = :descId', { descId })
+        .andWhere('pii.averageCostC IS NOT NULL')
+        .orderBy('inv.date', 'DESC')
+        .addOrderBy('pii.id', 'DESC')
+        .select(['pii.averageCostC AS avg'])
+        .getRawOne<{ avg?: string | number | null }>();
+
+      const fbC = await openingsWeightedAvg(this.invTransRepo.manager, variantIdsForDesc, 'OFR');
+      const prevAvgC =
+        prevCRow?.avg != null ? num(prevCRow.avg, 0) : fbC.avg;
+
+      const poQtyC = rows.reduce((s, r) => s + getItemQty(r, 'OFR'), 0);
+      const poWsumC = rows.reduce(
+        (s, r) => s + getItemQty(r, 'OFR') * getItemCost(r, 'OFR'),
         0,
       );
-      const weightedSumVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
+      const poCostC = poQtyC > 0 ? poWsumC / poQtyC : 0;
+
+      const totalC = prevQtyC + poQtyC;
+      const newAvgC =
+        totalC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalC : prevAvgC;
+
+      const prevQtyCVM = await sumTxQty(
+        this.inventoryTxRepo,
+        variantIdsForDesc,
+        'VM',
+        dayStart,
+        currPiiIds,
+      );
+
+      const prevCvmRow = await this.itemRepo
+        .createQueryBuilder('pii')
+        .innerJoin('pii.invoice', 'inv')
+        .innerJoin('pii.itemVariant', 'iv')
+        .where('inv.status = :st', { st: 'Recieved' })
+        .andWhere('inv.date < :cut', { cut: dayStart })
+        .andWhere('iv.itemNameDescriptionId = :descId', { descId })
+        .andWhere('pii.averageCostCVM IS NOT NULL')
+        .orderBy('inv.date', 'DESC')
+        .addOrderBy('pii.id', 'DESC')
+        .select(['pii.averageCostCVM AS avg'])
+        .getRawOne<{ avg?: string | number | null }>();
+
+      const fbCVM = await openingsWeightedAvg(this.invTransRepo.manager, variantIdsForDesc, 'VM');
+      const prevAvgCVM =
+        prevCvmRow?.avg != null ? num(prevCvmRow.avg, 0) : fbCVM.avg;
+
+      const poQtyCVM = rows.reduce((s, r) => s + getItemQty(r, 'VM'), 0);
+      const poWsumCVM = rows.reduce(
+        (s, r) => s + getItemQty(r, 'VM') * getItemCost(r, 'VM'),
         0,
       );
-      prevAvgCVM = totalOpenQtyVM > 0 ? weightedSumVM / totalOpenQtyVM : 0;
-      console.log('[CVM] openings snapshot (VM):', {
-        openingsCount: openingsVM.length,
-        totalOpenQtyVM,
-        weightedSumVM,
-        prevAvgCVM,
-      });
-    }
+      const poCostCVM = poQtyCVM > 0 ? poWsumCVM / poQtyCVM : 0;
 
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyCVM = poItemsSameDesc.reduce(
-      (s, it) => s + Number(it.sqm),
-      0,
-    );
-    const weightedCostSumVM = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalCost) * Number(it.sqm),
-      0,
-    );
-    const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
+      const rawTotalCVM = prevQtyCVM + poQtyCVM;
+      const totalCVM = rawTotalCVM < 0 ? 0 : rawTotalCVM;
 
-    console.log('[CVM] current PO group snapshot (VM):', {
-      piiIds: poItemsSameDesc.map((x) => x.id),
-      perRow: poItemsSameDesc.map((x) => ({
-        piiId: x.id,
-        sqm: Number(x.sqm),
-        finalCost: Number((x as any).finalCost),
-      })),
-      poQtyCVM,
-      weightedCostSumVM,
-      poCostCVM,
-    });
+      const newAvgCVM =
+        totalCVM > 0
+          ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalCVM
+          : prevAvgCVM;
 
-    const totalQtyCVM = prevQtyCVM + poQtyCVM;
-    const lhsCVM = prevAvgCVM * prevQtyCVM;
-    const rhsCVM = poCostCVM * poQtyCVM;
-    const newAvgCVM = totalQtyCVM > 0 ? (lhsCVM + rhsCVM) / totalQtyCVM : poCostCVM;
-    console.log('[CVM] blend details (VM):', {
-      formula: 'newAvgCVM = (prevAvgCVM*prevQtyCVM + poCostCVM*poQtyCVM) / (prevQtyCVM + poQtyCVM)',
-      prevAvgCVM,
-      prevQtyCVM,
-      poCostCVM,
-      poQtyCVM,
-      lhsCVM,
-      rhsCVM,
-      totalQtyCVM,
-      newAvgCVM,
-      guardWhenTotalQtyCVMIsZero: totalQtyCVM === 0 ? '(used poCostCVM)' : '(used blend)',
-    });
+      for (const r of rows) {
+        await this.itemRepo.update(r.id, {
+          previousQuantityC: prevQtyC,
+          previousAverageCostC: prevAvgC,
+          averageCostC: newAvgC,
 
-    for (const it of poItemsSameDesc) {
-      const res = await this.itemRepo.update(it.id, {
-        previousQuantityCVM: prevQtyCVM,
-        previousAverageCostCVM: prevAvgCVM,
-        averageCostCVM: newAvgCVM,
-      });
-      console.log('✓ [CVM] PII row updated with CVM-values (VM):', {
-        piiId: it.id,
-        affected: res?.affected ?? 'n/a',
-        set: {
           previousQuantityCVM: prevQtyCVM,
           previousAverageCostCVM: prevAvgCVM,
           averageCostCVM: newAvgCVM,
-        },
-      });
-    }
-  }
-
- /* ────────────────────────────────────────────────
-     FINAL WRITE → UPDATE ItemNameDescription
-     (NO recalculation — use already computed values)
-   ──────────────────────────────────────────────── */
-
-console.log('\n🗂 Writing final ItemNameDescription costs…');
-
-for (const descId of descIds) {
-  const poRows = itemsByDesc.get(descId) ?? [];
-
-  if (!poRows.length) {
-    console.warn(`⚠️ No PO rows found for descId: ${descId}, skipping…`);
-    continue;
-  }
-
-  // Take any row of the same description — they all share SAME C & CVM values
-  const ref = poRows[0];
-
-// Reload one item from DB to get fresh updated values
-const fresh = await this.itemRepo.findOne({ where: { id: ref.id } });
-
-const finalWrite = {
-  averageCostC: Number(fresh?.averageCostC ?? 0),
-  averageCostCVM: Number(fresh?.averageCostCVM ?? 0),
-  lastCostC: Number((ref as any).finalOFR ?? 0),
-  lastCostCVM: Number((ref as any).finalCost ?? 0),
-};
-
-  console.log(`📝 Updating Description ${descId} with:`, finalWrite);
-
-  await this.descRepo.update(descId, finalWrite);
-
-  console.log(`✓ Updated ItemNameDescription ${descId}`);
-}
-
-console.log('🧾 ItemNameDescription update (final) completed.');
-
-
-  /* ────────────────────────────────────────────────
-     FORWARD RECOMPUTE FOR LATER POs
-     ──────────────────────────────────────────────── */
-  const affectedVariantIds = Array.from(
-    new Set((savedInvoice.items ?? []).map((it) => it.itemVariantId)),
-  );
-  const affectedDescIds = Array.from(descIds);
-
-  if (affectedVariantIds.length || affectedDescIds.length) {
-    console.log('🔁 Checking for later POs to recompute…', {
-      affectedVariantIds,
-      affectedDescIds,
-    });
-
-    const laterRaw = await this.invoiceRepo
-      .createQueryBuilder('inv')
-      .innerJoin('inv.items', 'pii')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :st', { st: 'Recieved' })
-      .andWhere('inv.type = :typ', { typ: 'S' })
-      .andWhere('inv.date > :cut', { cut: invDate })
-      .andWhere(`(iv.id IN (:...varIds) OR iv.itemNameDescriptionId IN (:...descIds))`, {
-        varIds: affectedVariantIds.length ? affectedVariantIds : [-1],
-        descIds: affectedDescIds.length ? affectedDescIds : [-1],
-      })
-      .select('inv.id', 'id')
-      .addSelect('inv.date', 'date')
-      .distinct(true)
-      .orderBy('inv.date', 'ASC')
-      .addOrderBy('inv.id', 'ASC')
-      .getRawMany<{ id: number; date: Date }>();
-
-    const laterIds = laterRaw.map((r) => r.id);
-    console.log('🔁 Later PO IDs to recompute:', laterIds);
-
-    const recomputeInvoice = async (targetId: number) => {
-      const targetInv = await this.invoiceRepo.findOne({
-        where: { id: targetId },
-        relations: ['items', 'items.itemVariant'],
-      });
-      if (!targetInv) {
-        console.warn('⚠️ Target invoice not found during forward recompute:', { targetId });
-        return;
+        } as any);
       }
 
-      const cutoffDate = new Date(targetInv.date);
-      const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-      const tHasCurrIds = tCurrPiiIds.length > 0;
-
-      console.log(
-        `\n🔁 Recomputing invoice ${targetInv.id} dated ${cutoffDate.toISOString().slice(0, 10)}`,
-        { itemCount: targetInv.items?.length ?? 0, tHasCurrIds, tCurrPiiIds },
-      );
-
-      const tItemsByDesc = new Map<number, any[]>();
-      const tDescIds = new Set<number>();
-
-      // ───────── RECOMP: per-PII STANDARD/VM ─────────
-      for (const item of targetInv.items) {
-        const iv =
-          item.itemVariant ??
-          (await this.variantRepo.findOne({
-            where: { id: item.itemVariantId },
-          }));
-        if (!iv) {
-          console.warn('⚠️ Variant missing during recompute for PII:', item.id);
-          continue;
-        }
-        const descId = iv.itemNameDescriptionId;
-
-        if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-        tItemsByDesc.get(descId)!.push(item);
-        tDescIds.add(descId);
-
-        // STANDARD (OFR chain)
-        const qbRPrev = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqmofr)', 'sum')
-          .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('tx.dateForEachInvoice < :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-        try {
-          // @ts-ignore
-          console.log('[RECOMP STD] prev SQL:', qbRPrev.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP STD] prev Params:', qbRPrev.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-        const { sum: rawPrev } = await qbRPrev.getRawOne();
-        let prevQty = Number(rawPrev) || 0;
-prevQty = clampPrevQty(prevQty, '[RECOMP STD] prevQty', {
-  targetInvId: targetInv.id,
-  vid: item.itemVariantId,
-  piiId: item.id,
-});
-        let prevAvg = iv.averageCost ?? 0; // baseline from current variant
-
-        const poQty = Number((item as any).sqm ?? 0);
-        const poCost = Number((item as any).finalOFR ?? 0);
-        const totalQty = prevQty + poQty;
-        const newAvg =
-          totalQty > 0 ? (prevAvg * prevQty + poCost * poQty) / totalQty : poCost;
-        console.log('[RECOMP STD] details (OFR):', {
-          piiId: item.id,
-          itemVariantId: item.itemVariantId,
-          prevQty,
-          prevAvg,
-          poQty,
-          poCost,
-          totalQty,
-          newAvg,
-        });
-
-        await this.itemRepo.update(item.id, {
-          previousQuantity: prevQty,
-          previousAverageCost: prevAvg,
-          averageCost: newAvg,
-        });
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCost: newAvg,
-          lastCost: poCost,
-        });
-
-        // VM
-        const qbRPrevVm = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqm)', 'sum')
-          .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-        try {
-          // @ts-ignore
-          console.log('[RECOMP VM] prev SQL:', qbRPrevVm.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP VM] prev Params:', qbRPrevVm.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-        const { sum: rawPrevVm } = await qbRPrevVm.getRawOne();
-        let prevQtyVM = Number(rawPrevVm) || 0;
-
-prevQtyVM = clampPrevQty(prevQtyVM, '[RECOMP VM] prevQtyVM', {
-  targetInvId: targetInv.id,
-  vid: item.itemVariantId,
-  piiId: item.id,
-});
-
-        let prevAvgVM = iv.averageCostVM ?? 0;
-        const poQtyVM = Number(item.sqm);
-        const poCostVM = Number((item as any).finalCost);
-        const totalQtyVM = prevQtyVM + poQtyVM;
-        const newAvgVM =
-          totalQtyVM > 0
-            ? (prevAvgVM * prevQtyVM + poCostVM * poQtyVM) / totalQtyVM
-            : poCostVM;
-        console.log('[RECOMP VM] details (VM):', {
-          piiId: item.id,
-          itemVariantId: item.itemVariantId,
-          prevQtyVM,
-          prevAvgVM,
-          poQtyVM,
-          poCostVM,
-          totalQtyVM,
-          newAvgVM,
-        });
-
-        await this.itemRepo.update(item.id, {
-          previousQuantityVM: prevQtyVM,
-          previousAverageCostVM: prevAvgVM,
-          averageCostVM: newAvgVM,
-        });
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCostVM: newAvgVM,
-          lastCostVM: poCostVM,
-        });
-      } // end per-PII in target
-
-      // ───────── RECOMP C-LEVEL (OFR) ─────────
-      console.log('\n[RECOMP C] start for invoice:', targetInv.id);
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({
-            where: { itemNameDescriptionId: descId },
-            select: ['id'],
-          })
-        ).map((v) => v.id);
-
-        const qbRPrevC = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(COALESCE(tx.sqmofr, 0))', 'sum')
-          .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-        try {
-          // @ts-ignore
-          console.log('[RECOMP C] prevQtyC SQL:', qbRPrevC.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP C] prevQtyC Params:', qbRPrevC.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-        const { sum: rawPrevC } = await qbRPrevC.getRawOne();
-        let prevQtyC = Number(rawPrevC) || 0;
-
-prevQtyC = clampPrevQty(prevQtyC, '[RECOMP C] prevQtyC', {
-  targetInvId: targetInv.id,
-  descId,
-});
-
-        let prevAvgC: number;
-        const lastDescItem = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-          .andWhere('inv.date <= :date', { date: cutoffDate })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostC'])
-          .getOne();
-
-        if (lastDescItem && lastDescItem.averageCostC != null) {
-          prevAvgC = Number(lastDescItem.averageCostC);
-        } else {
-          const openings = await this.invTransRepo.manager
-            .getRepository(InventoryCount)
-            .find({
-              where: { itemVariant: In(variantIdsForDesc) },
-              select: ['sqmOfr', 'finalCostOfr'],
-            });
-          const totalOpenQty = openings.reduce(
-            (s, o) => s + Number(o.sqmOfr ?? 0),
-            0,
-          );
-          const weightedSum = openings.reduce(
-            (s, o) =>
-              s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-            0,
-          );
-          prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-        }
-
-        const poItemsSameDesc = tItemsByDesc.get(descId) ?? [];
-        const poQtyC = poItemsSameDesc.reduce(
-          (s, it: any) => s + Number(it.sqm ?? 0),
-          0,
-        );
-        const weightedCostSum = poItemsSameDesc.reduce(
-          (s, it: any) =>
-            s + Number(it.sqm ?? 0) * Number(it.finalOFR ?? 0),
-          0,
-        );
-        const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-        const totalQtyC = prevQtyC + poQtyC;
-        const newAvgC =
-          totalQtyC > 0
-            ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC
-            : poCostC;
-        console.log('[RECOMP C] details (OFR):', {
-          descId,
-          prevQtyC,
-          prevAvgC,
-          poQtyC,
-          weightedCostSum,
-          poCostC,
-          totalQtyC,
-          newAvgC,
-        });
-
-        for (const it of poItemsSameDesc) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityC: prevQtyC,
-            previousAverageCostC: prevAvgC,
-            averageCostC: newAvgC,
-          });
-        }
-      }
-
-      // ───────── RECOMP CVM-LEVEL (VM) ─────────
-      console.log('\n[RECOMP CVM] start for invoice:', targetInv.id);
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({
-            where: { itemNameDescriptionId: descId },
-            select: ['id'],
-          })
-        ).map((v) => v.id);
-
-        const qbRPrevCVM = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqm)', 'sum')
-          .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-
-        try {
-          // @ts-ignore
-          console.log('[RECOMP CVM] prevQtyCVM SQL:', qbRPrevCVM.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP CVM] prevQtyCVM Params:', qbRPrevCVM.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */ }
-
-        const { sum: rawPrevCVM } = await qbRPrevCVM.getRawOne();
-     let prevQtyCVM = Number(rawPrevCVM) || 0;
-
-prevQtyCVM = clampPrevQty(prevQtyCVM, '[RECOMP CVM] prevQtyCVM', {
-  targetInvId: targetInv.id,
-  descId,
-});
-
-        let prevAvgCVM = 0;
-        const lastDescItemCVM = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['RVR', 'S', 'SR'] })
-          .andWhere('inv.date <= :date', { date: cutoffDate })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostCVM'])
-          .getOne();
-
-        if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-          prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-        } else {
-          const openingsVM = await this.invTransRepo.manager
-            .getRepository(InventoryCount)
-            .find({
-              where: { itemVariant: In(variantIdsForDesc) },
-              select: ['sqm', 'finalCost'],
-            });
-
-          const totalOpenQtyVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm ?? 0),
-            0,
-          );
-          const weightedSumVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-            0,
-          );
-          prevAvgCVM = totalOpenQtyVM > 0 ? weightedSumVM / totalOpenQtyVM : 0;
-        }
-
-        const poItemsSameDesc = tItemsByDesc.get(descId) ?? [];
-        const poQtyCVM = poItemsSameDesc.reduce(
-          (s, it) => s + Number(it.sqm),
-          0,
-        );
-        const weightedCostSumVM = poItemsSameDesc.reduce(
-          (s, it) => s + Number((it as any).finalCost) * Number(it.sqm),
-          0,
-        );
-        const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-        const totalQtyCVM = prevQtyCVM + poQtyCVM;
-        const newAvgCVM =
-          totalQtyCVM > 0
-            ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM
-            : poCostCVM;
-
-        console.log('[RECOMP CVM] details (VM):', {
-          descId,
-          prevQtyCVM,
-          prevAvgCVM,
-          poQtyCVM,
-          weightedCostSumVM,
-          poCostCVM,
-          totalQtyCVM,
-          newAvgCVM,
-        });
-
-        for (const it of poItemsSameDesc) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityCVM: prevQtyCVM,
-            previousAverageCostCVM: prevAvgCVM,
-            averageCostCVM: newAvgCVM,
-          });
-        }
-      }
-
-    // ───────── RECOMP ItemNameDescription UPDATE (NO recalculation) ─────────
-console.log('\n[RECOMP DESC] Updating ItemNameDescription based on final recomputed rows…');
-
-for (const descId of tDescIds) {
-  const rows = tItemsByDesc.get(descId) ?? [];
-  if (!rows.length) {
-    console.warn(`⚠️ No matching rows for descId ${descId} during recompute.`);
-    continue;
-  }
-
-  // Any row of the same description — they all share same cost after recompute
-  const ref = rows[0];
-
-  // 🔹 IMPORTANT: reload fresh row from DB to get the recomputed averages
-  const fresh = await this.itemRepo.findOne({
-    where: { id: ref.id },
-  });
-
-  const updateValues = {
-    averageCostC: Number(fresh?.averageCostC ?? 0),
-    averageCostCVM: Number(fresh?.averageCostCVM ?? 0),
-    lastCostC: Number((ref as any).finalOFR ?? 0),
-    lastCostCVM: Number((ref as any).finalCost ?? 0),
-  };
-
-  console.log(`[RECOMP DESC] Writing to Description ${descId}:`, updateValues);
-
-  await this.descRepo.update(descId, updateValues);
-
-  console.log(`✓ Updated ItemNameDescription ${descId} (recompute apply)`);
-}
-
-
-    };
-
-    for (const id of laterIds) {
-      await recomputeInvoice(id);
-    }
-    console.log('🔁 Forward recompute complete.');
-  }
-
-  console.log('🧾 PO Cost Calc — End', { invoiceId: savedInvoice.id });
-}
-
-// 🔎 END: Cost-calculation & logging block
-
-// 🔎 BEGIN: Cost-calculation & logging block (prevAvg now pulled from last prior PO; VM fallback=0; STANDARD fallback=weighted openings)
-// 🔎 BEGIN: G-invoice cost-calculation & logging block (type-based history: G/S/SR; OFR-only; VM fields = NULL)
-if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'G') {
-  const invDate = new Date(savedInvoice.date);
-  const dayStart = new Date(invDate);
-  dayStart.setHours(0, 0, 0, 0); // exclude same calendar date for "previous" lookups
-
-  console.log('🧾 [G] PO Cost Calc — Start', {
-    invoiceId: savedInvoice.id,
-    invoiceType: savedInvoice.type,
-    invoiceDateISO: invDate.toISOString(),
-    cutoffForPreviousISO: dayStart.toISOString(),
-    itemCount: savedInvoice.items?.length ?? 0,
-    priorTypes: ['G', 'S', 'SR'],
-  });
-
-  const itemsByDesc = new Map<number, any[]>();
-
-  // NOT-IN for "previous" sums
-  const currPiiIds = (savedInvoice.items ?? []).map((it) => it.id);
-  const hasCurrPiiIds = currPiiIds.length > 0;
-  console.log('🔒 [G] Excluding current PurchaseInvoiceItem IDs from prior sums:', currPiiIds);
-
-  // Collect description IDs
-  const descIds = new Set<number>();
-
-  for (const item of savedInvoice.items) {
-    // ───────── STANDARD (OFR) COST TRACK — G invoices use OFR only ─────────
-    const variantt = await this.variantRepo.findOne({
-      where: { id: item.itemVariantId },
-      select: ['id', 'itemNameDescriptionId'],
-    });
-    if (!variantt) {
-      console.error(`❌ [G] Variant ${item.itemVariantId} not found`);
-      continue;
-    }
-
-    const vid = variantt.id;
-    const descId = variantt.itemNameDescriptionId;
-
-    // collect this PII under its description
-    if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
-    itemsByDesc.get(descId)!.push(item);
-    descIds.add(descId);
-
-    console.log(
-      `\n[STANDARD:G] ► Processing PII ${item.id} (variantId=${vid}, descId=${descId}) on invoice ${savedInvoice.id}`,
-    );
-    console.log('[STANDARD:G] row snapshot:', {
-      piiId: item.id,
-      itemVariantId: item.itemVariantId,
-      qty: Number(item.quantity),
-      sqm: Number(item.sqm),
-      finalOFR: Number((item as any).finalOFR),
-      finalCost: Number((item as any).finalCost),
-    });
-
-    // 0) Determine PREVIOUS AVERAGE (NEW: type-based search G/S/SR; exclude same day)
-    const priorTypes = ['G', 'S', 'SR'] as const;
-    const qbPrevPII = this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: priorTypes })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCost AS avg_cost',
-        'pii.averageCostC AS avg_cost_c',
-        'inv.id AS inv_id',
-        'inv.date AS inv_date',
-        'inv.type AS inv_type',
-      ]);
-
-    try {
-      // @ts-ignore
-      console.log('[PREV PII:G] SQL:', qbPrevPII.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[PREV PII:G] Params:', qbPrevPII.getParameters?.() ?? '(params not available)');
-    } catch { /* noop */ }
-
-    const prevPIIRaw = await qbPrevPII.getRawOne<{
-      pii_id?: number;
-      avg_cost?: string | number | null;
-      avg_cost_c?: string | number | null;
-      inv_id?: number;
-      inv_date?: Date;
-      inv_type?: string;
-    }>();
-    console.log('[PREV PII:G] raw result:', prevPIIRaw ?? null);
-
-    // 1) Sum prior quantity — OFR ONLY, inclusive cutoff (<= invDate), exclude current PII
-    const qbPrevQty = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-    if (hasCurrPiiIds) {
-      qbPrevQty.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[STANDARD:G] prevQty (OFR) SQL:', qbPrevQty.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[STANDARD:G] prevQty (OFR) Params:', qbPrevQty.getParameters?.() ?? '(params not available)');
-    } catch { /* noop */ }
-
-    const { sum: rawPrevOfr } = await qbPrevQty.getRawOne();
-    let prevQty = Number(rawPrevOfr) || 0;
-
-prevQty = clampPrevQty(prevQty, '[STANDARD:G] prevQty', {
-  vid: item.itemVariantId,
-  piiId: item.id,
-  invId: savedInvoice.id,
-});
-    console.log('[STANDARD:G] prevQty (OFR) result:', { rawPrevOfr, prevQty });
-
-    // 2) Prev avg-OFR — from previous PII.averageCost across types G/S/SR; else openings (OFR)
-    let prevAvg: number;
-    if (prevPIIRaw && prevPIIRaw.avg_cost != null) {
-      prevAvg = Number(prevPIIRaw.avg_cost);
-      console.log('[STANDARD:G] prevAvg from previous PII.averageCost:', {
-        prevAvg,
-        prevPiiId: prevPIIRaw.pii_id ?? null,
-        prevInv: {
-          id: prevPIIRaw.inv_id ?? null,
-          type: prevPIIRaw.inv_type ?? null,
-          date: prevPIIRaw.inv_date ?? null,
-        },
-      });
-    } else {
-      console.log('[STANDARD:G] no previous PII; computing weighted openings from InventoryCount (OFR)…');
-      const openings = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: { id: item.itemVariantId } },
-        select: ['sqmOfr', 'finalCostOfr'],
-      });
-      const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqmOfr), 0);
-      const weightedSum = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr) * Number(o.finalCostOfr),
-        0,
-      );
-      prevAvg = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-
-      console.log('[STANDARD:G] openings snapshot + resolved prevAvg:', {
-        openingsCount: openings.length,
-        totalOpenQty,
-        weightedSum,
-        prevAvg,
-      });
-    }
-
-    // 3) Current PO — OFR inputs only
-    const poQty = Number(item.sqm);
-    const poCost = Number((item as any).finalOFR);
-    console.log('[STANDARD:G] current PO contribution (OFR):', { poQty, poCost });
-
-    // 4) Blend (OFR)
-    const totalQty = prevQty + poQty;
-    const lhs = prevAvg * prevQty; // value of stock before
-    const rhs = poCost * poQty;    // value of current receipt
-    const newAvg = totalQty > 0 ? (lhs + rhs) / totalQty : poCost;
-    console.log('[STANDARD:G] blend details (OFR):', {
-      formula: 'newAvg = (prevAvg*prevQty + poCost*poQty) / (prevQty + poQty)',
-      prevAvg,
-      prevQty,
-      poCost,
-      poQty,
-      lhs,
-      rhs,
-      totalQty,
-      newAvg,
-      guardWhenTotalQtyIsZero: totalQty === 0 ? '(used poCost)' : '(used blend)',
-    });
-
-    // 5) Persist — STANDARD fields + explicitly NULL out VM/CVM "previous" fields
-    const piiUpdatePayload: any = {
-      previousQuantity: prevQty,
-      previousAverageCost: prevAvg,
-      averageCost: newAvg,
-
-      // VM track is NOT used for G → set NULLs
-      previousQuantityVM: null,
-      previousAverageCostVM: null,
-
-      // If your schema has CVM "previous" fields, we also null them out:
-      previousQuantityCVM: null,
-      previousAverageCostCVM: null,
-    };
-
-    const piiUpdateRes = await this.itemRepo.update(item.id, piiUpdatePayload);
-    console.log('✓ [STANDARD:G] PII update result:', {
-      piiId: item.id,
-      affected: piiUpdateRes?.affected ?? 'n/a',
-      set: piiUpdatePayload,
-    });
-
-    // Update variant — OFR stats only; do NOT touch VM stats
-    const varUpdateResStd = await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvg,
-      lastCost: poCost,
-    });
-    console.log('✓ [STANDARD:G] Variant update result (OFR only):', {
-      itemVariantId: item.itemVariantId,
-      affected: varUpdateResStd?.affected ?? 'n/a',
-      set: { averageCost: newAvg, lastCost: poCost },
-      note: 'VM stats untouched for G invoices',
-    });
-
-    // (No VM track for G)
-    console.log('ⓘ [G] VM calculation skipped. VM-related previous fields saved as NULL.');
-  } // end per-PII loop
-
-  // ───────── C-LEVEL (description) FOR CURRENT G INVOICE — ONCE PER DESCRIPTION ─────────
-  console.log('\n📚 [G] C-Level (by description) calculations start');
-  for (const descId of descIds) {
-    console.log(`\n[C:G] ► Description ${descId}`);
-
-    // all variants under this description
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-    console.log('[C:G] variantIdsForDesc:', variantIdsForDesc);
-
-    // previous qty (OFR ONLY), up to & INCLUDING invDate; exclude current PO rows
-    const qbPrevC = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-      .andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    try {
-      // @ts-ignore
-      console.log('[C:G] prevQtyC (OFR) SQL:', qbPrevC.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[C:G] prevQtyC (OFR) Params:', qbPrevC.getParameters?.() ?? '(params not available)');
-    } catch { /* noop */ }
-    const { sum: rawPrevC } = await qbPrevC.getRawOne();
-    let prevQtyC = Number(rawPrevC) || 0;
-
-prevQtyC = clampPrevQty(prevQtyC, '[C:G] prevQtyC', {
-  descId,
-  invId: savedInvoice.id,
-});
-    console.log('[C:G] prevQtyC (OFR) result:', { rawPrevC, prevQtyC });
-
-
-
-    console.log(`\n🔍 [C-DEBUG] Resolving previous average cost C for descId=${descId}`);
-
-const lastDescItemDebugQB = this.itemRepo
-  .createQueryBuilder('pii')
-  .innerJoin('pii.invoice', 'inv')
-  .innerJoin('pii.itemVariant', 'iv')
-  .where('inv.status = :status', { status: 'Recieved' })
-  .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-  .andWhere('inv.date < :date', { date: dayStart })
-  .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-  .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-  .orderBy('inv.date', 'DESC')
-  .addOrderBy('pii.id', 'DESC')
-  .select([
-    'pii.id AS pii_id',
-    'pii.averageCostC AS avg_cost_c',
-    'pii.averageCost AS avg_cost_ofr',
-    'pii.finalCost AS lastFinalCost',
-    'inv.id AS inv_id',
-    'inv.type AS inv_type',
-    'inv.date AS inv_date'
-  ]);
-
-try {
-  console.log('🧠 [C-DEBUG] SQL used to search for historical C:', lastDescItemDebugQB.getSql());
-  console.log('🧠 [C-DEBUG] Params:', lastDescItemDebugQB.getParameters());
-} catch {}
-
-const historyRows = await lastDescItemDebugQB.getRawMany();
-console.log(`📄 [C-DEBUG] Found ${historyRows.length} candidate rows:`);
-
-historyRows.forEach((row, i) =>
-  console.log(`   ➤ Row #${i+1}:`, {
-    piiId: row.pii_id,
-    invId: row.inv_id,
-    invoiceType: row.inv_type,
-    invoiceDate: row.inv_date,
-    averageCostC: row.avg_cost_c,
-    fallback_OFR: row.avg_cost_ofr,
-    fallback_lastCost: row.lastFinalCost
-  })
-);
-
-    // 🔽 Decision
-let prevAvgC: number;
-
-if (historyRows.length > 0) {
-  const firstValid = historyRows.find(r => r.avg_cost_c !== null);
-  if (firstValid) {
-    prevAvgC = Number(firstValid.avg_cost_c);
-    console.log(`🎯 [C-DEBUG] PREVIOUS AVERAGE FOUND → using averageCostC=${prevAvgC} from PII=${firstValid.pii_id}`);
-  } else {
-    console.log(`⚠️ [C-DEBUG] Historical rows exist, but NONE have averageCostC recorded.`);
-    console.log(`➡️ Fallback: Will compute from openings or finalOFR.`);
-
-    prevAvgC = null as any; // force fallback
-  }
-} else {
-  console.log(`❌ [C-DEBUG] No historical invoices match C-level rules.`);
-  prevAvgC = null as any; // trigger fallback
-}
-
-// ─────────────────────────────
-// 💾 OPENING STOCK FALLBACK
-// ─────────────────────────────
-if (prevAvgC === null) {
-  console.log(`🔁 [C-DEBUG] Computing fallback from InventoryCount (openings)…`);
-  const openings = await this.invTransRepo.manager
-    .getRepository(InventoryCount)
-    .find({
-      where: { itemVariant: In(variantIdsForDesc) },
-      select: ['sqmOfr', 'finalCostOfr'],
-    });
-
-  console.log(`📦 [C-DEBUG] Opening rows (${openings.length}):`);
-
-  openings.forEach((op, i) =>
-    console.log(`   ➤ Opening #${i+1}: sqmOfr=${op.sqmOfr}, cost=${op.finalCostOfr}`)
-  );
-
-  const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-  const weightedSum = openings.reduce(
-    (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-    0,
-  );
-
-  prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-
-  console.log(`📊 [C-DEBUG] Result of fallback calculation:`);
-  console.log({
-    totalOpenQty,
-    weightedSum,
-    computedAvg: prevAvgC
-  });
-
-  if (prevAvgC === 0) {
-    console.log(`⚠️ [C-DEBUG] Fallback avg=0 → meaning: no openings + no history → this invoice is first cost reference!`);
-  }
-}
-
-console.log(`✅ [C-DEBUG] FINAL selected prevAvgC=${prevAvgC}`);
-
-    // group CURRENT PO rows that share this description (OFR)
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyC = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-    const weightedCostSum = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalOFR) * Number(it.sqm),
-      0,
-    );
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-    console.log('[C:G] current PO group snapshot (OFR):', {
-      piiIds: poItemsSameDesc.map((x) => x.id),
-      perRow: poItemsSameDesc.map((x) => ({
-        piiId: x.id,
-        sqm: Number(x.sqm),
-        finalOFR: Number((x as any).finalOFR),
-      })),
-      poQtyC,
-      weightedCostSum,
-      poCostC,
-    });
-
-    const totalQtyC = prevQtyC + poQtyC;
-    const lhsC = prevAvgC * prevQtyC;
-    const rhsC = poCostC * poQtyC;
-    const newAvgC = totalQtyC > 0 ? (lhsC + rhsC) / totalQtyC : poCostC;
-    console.log('[C:G] blend details (OFR):', {
-      formula: 'newAvgC = (prevAvgC*prevQtyC + poCostC*poQtyC) / (prevQtyC + poQtyC)',
-      prevAvgC,
-      prevQtyC,
-      poCostC,
-      poQtyC,
-      lhsC,
-      rhsC,
-      totalQtyC,
-      newAvgC,
-      guardWhenTotalQtyCIsZero: totalQtyC === 0 ? '(used poCostC)' : '(used blend)',
-    });
-
-    // apply SAME C-values to ALL PII rows in this description on THIS PO
-    for (const it of poItemsSameDesc) {
-      const res = await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-
-        // If your schema carries CVM "previous" fields and you wish them NULL on G, you can also set:
-        previousQuantityCVM: null,
-        previousAverageCostCVM: null,
-      });
-      console.log('✓ [C:G] PII row updated with C-values:', {
-        piiId: it.id,
-        affected: res?.affected ?? 'n/a',
-        set: { previousQuantityC: prevQtyC, previousAverageCostC: prevAvgC, averageCostC: newAvgC },
-      });
-    }
-  }
-  // ───────── UPDATE ItemNameDescription TABLE (OFR-only) ─────────
-  console.log('\n🗂 [G] Updating ItemNameDescription table…');
-  for (const descId of descIds) {
-    console.log(`\n— [G] Updating ItemNameDescription ${descId} —`);
-
-    // 🔹 We ALREADY computed C-level averages above per description
-    //    and wrote them into the PII rows.
-    //    Here, we just mirror those values into ItemNameDescription.
-
-    // All current PO rows for this description on THIS invoice
-    const poItemsForDesc = itemsByDesc.get(descId) ?? [];
-    if (!poItemsForDesc.length) {
-      console.log('[C->Desc:G] No current PII rows for this description; skipping.');
-      continue;
-    }
-
-    // Any row of this description on this invoice has the same averageCostC
-    // (you set it in the previous C-level loop). We'll read from the first.
-    const samplePii = poItemsForDesc[0] as any;
-
-    const averageCostC = Number(samplePii.averageCostC ?? 0);
-
-    // lastCostC = finalOFR of the last row of this description in this PO
-    const lastRow = poItemsForDesc[poItemsForDesc.length - 1] as any;
-    const lastCostC = Number(lastRow?.finalOFR ?? 0);
-
-    console.log('[C->Desc:G] Mirroring C-values from PII into ItemNameDescription:', {
-      descId,
-      samplePiiId: samplePii.id,
-      averageCostC,
-      lastCostC,
-      piiIds: poItemsForDesc.map((x: any) => x.id),
-    });
-
-    const descUpdateRes = await this.descRepo.update(descId, {
-      averageCostC,
-      lastCostC,
-    });
-
-    console.log('✓ [C->Desc:G] ItemNameDescription update (NO recalculation):', {
-      descId,
-      affected: descUpdateRes?.affected ?? 'n/a',
-      set: { averageCostC, lastCostC },
-    });
-  }
-
-
-  // ─────────────────────────────
-  // ⚙️ Forward recompute for back-dated inserts
-  //   - If a later invoice is type G, use SAME prior rule (types IN G/S/SR, cutoff = that invoice day start)
-  //   - Keep VM NULL for G
-  // ─────────────────────────────
-  const affectedVariantIds = Array.from(
-    new Set((savedInvoice.items ?? []).map((it) => it.itemVariantId)),
-  );
-  const affectedDescIds = Array.from(descIds);
-
-  if (affectedVariantIds.length || affectedDescIds.length) {
-    console.log('🔁 [G] Checking for later POs to recompute…', {
-      affectedVariantIds,
-      affectedDescIds,
-    });
-
-    const laterRaw = await this.invoiceRepo
-      .createQueryBuilder('inv')
-      .innerJoin('inv.items', 'pii')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :st', { st: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] }) // recompute later invoices of these types (safe superset)
-      .andWhere('inv.date > :cut', { cut: dayStart })
-      .andWhere(`(iv.id IN (:...varIds) OR iv.itemNameDescriptionId IN (:...descIds))`, {
-        varIds: affectedVariantIds.length ? affectedVariantIds : [-1],
-        descIds: affectedDescIds.length ? affectedDescIds : [-1],
-      })
-      .select('inv.id', 'id')
-      .addSelect('inv.type', 'type')
-      .addSelect('inv.date', 'date')
-      .distinct(true)
-      .orderBy('inv.date', 'ASC')
-      .addOrderBy('inv.id', 'ASC')
-      .getRawMany<{ id: number; type: 'G' | 'S' | 'SR'; date: Date }>();
-const laterIds = laterRaw.map((r) => r.id);
-console.log('🔁 [G] Later PO IDs to recompute:', laterIds, { meta: laterRaw });
-
-/**
- * Recompute for a later G invoice (OFR-only; VM previous fields kept NULL)
- * — This is your existing G recompute body, kept intact.
- */
-const recomputeInvoiceG = async (targetId: number) => {
-  const targetInv = await this.invoiceRepo.findOne({
-    where: { id: targetId },
-    relations: ['items', 'items.itemVariant'],
-  });
-  if (!targetInv) {
-    console.warn('⚠️ Target invoice not found during forward recompute (G):', { targetId });
-    return;
-  }
-
-  const cutoffDate = new Date(targetInv.date);
-  const cutoffDayStart = new Date(cutoffDate);
-  cutoffDayStart.setHours(0, 0, 0, 0);
-
-  const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-  console.log(
-    `\n🔁 [RECOMP:G] Invoice ${targetInv.id} dated ${cutoffDate.toISOString().slice(0, 10)} (OFR-only)`,
-    { itemCount: targetInv.items?.length ?? 0, tCurrPiiIds },
-  );
-
-  const tItemsByDesc = new Map<number, any[]>();
-  const tDescIds = new Set<number>();
-
-  for (const item of targetInv.items) {
-    const iv =
-      item.itemVariant ??
-      (await this.variantRepo.findOne({
-        where: { id: item.itemVariantId },
-      }));
-    if (!iv) {
-      console.warn('⚠️ [RECOMP:G] Variant missing for PII:', item.id);
-      continue;
-    }
-    const descId = iv.itemNameDescriptionId;
-
-    if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-    tItemsByDesc.get(descId)!.push(item);
-    tDescIds.add(descId);
-
-    // prev qty (OFR)
-    const { sum: rawPrev } = await this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-      .andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-        { currIds: tCurrPiiIds },
-      )
-      .getRawOne();
-    let prevQty = Number(rawPrev) || 0;
-
-prevQty = clampPrevQty(prevQty, '[RECOMP:G] prevQty', {
-  targetInvId: targetInv.id,
-  vid: item.itemVariantId,
-  piiId: item.id,
-});
-
-    // prev avg from last prior PII among (G,S,SR) before that day’s start
-    let prevAvg = 0;
-    const prevPII = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: cutoffDayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCost AS avg_cost', 'pii.id AS pii_id', 'inv.id AS inv_id', 'inv.type AS inv_type', 'inv.date AS inv_date'])
-      .getRawOne<{ avg_cost?: number | string | null; pii_id?: number; inv_id?: number; inv_type?: string; inv_date?: Date }>();
-
-    if (prevPII?.avg_cost != null) {
-      prevAvg = Number(prevPII.avg_cost);
-      console.log('[RECOMP:G] prevAvg from prior PII.averageCost (G/S/SR):', {
-        itemId: item.id,
-        variantId: item.itemVariantId,
-        prevAvg,
-        prevPiiMeta: { piiId: prevPII.pii_id, invId: prevPII.inv_id, invType: prevPII.inv_type, invDate: prevPII.inv_date },
-      });
-    } else {
-      // openings fallback
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({ where: { itemVariant: { id: iv.id } }, select: ['sqmOfr', 'finalCostOfr'] });
-     const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-const weightedSum = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0), 0);
-      prevAvg = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-      console.log('[RECOMP:G] openings fallback → prevAvg:', { itemId: item.id, variantId: item.itemVariantId, totalOpenQty, weightedSum, prevAvg });
-    }
-
-    // blend (OFR)
-    const poQty = Number(item.sqm);
-    const poCost = Number((item as any).finalOFR);
-    const totalQty = prevQty + poQty;
-    const newAvg = totalQty > 0 ? (prevAvg * prevQty + poCost * poQty) / totalQty : poCost;
-
-    await this.itemRepo.update(item.id, {
-      previousQuantity: prevQty,
-      previousAverageCost: prevAvg,
-      averageCost: newAvg,
-      // ensure VM previous remain NULL for G invoices
-      previousQuantityVM: null,
-      previousAverageCostVM: null,
-      previousQuantityCVM: null,
-      previousAverageCostCVM: null,
-    });
-    await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvg,
-      lastCost: poCost,
-    });
-  }
-
-  // C-level (OFR-only)
-  console.log('\n[RECOMP C:G] start for invoice:', targetInv.id);
-  for (const descId of tDescIds) {
-    const variantIdsForDesc = (
-      await this.variantRepo.find({ where: { itemNameDescriptionId: descId }, select: ['id'] })
-    ).map((v) => v.id);
-
-    const { sum: rawPrevC } = await this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(COALESCE(tx.sqmofr, tx.sqm, 0))', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-      .andWhere('(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))', {
-        currIds: tCurrPiiIds,
-      })
-      .getRawOne();
-   let prevQtyC = Number(rawPrevC) || 0;
-
-prevQtyC = clampPrevQty(prevQtyC, '[RECOMP C:G] prevQtyC', {
-  targetInvId: targetInv.id,
-  descId,
-});
-
-    // prevAvgC from last prior PII among (G,S,SR) before that day’s start
-    let prevAvgC = 0;
-    const lastDescItem = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date <= :date', { date: cutoffDate })
-      .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostC'])
-      .getOne();
-    if (lastDescItem && (lastDescItem as any).averageCostC != null) {
-      prevAvgC = Number((lastDescItem as any).averageCostC);
-    } else {
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({ where: { itemVariant: In(variantIdsForDesc) }, select: ['sqm', 'finalCostOfr'] });
-      const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqm), 0);
-      const weightedSum = openings.reduce((s, o) => s + Number(o.sqm) * Number(o.finalCostOfr), 0);
-      prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-    }
-
-    const poItemsSameDesc = (targetInv.items ?? []).filter((it) => {
-      const v = it.itemVariant ?? null;
-      return v && v.itemNameDescriptionId === descId;
-    });
-    const poQtyC = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-    const weightedCostSum = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalOFR) * Number(it.sqm),
-      0,
-    );
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-
-    const totalQtyC = prevQtyC + poQtyC;
-    const newAvgC = totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
-
-    for (const it of poItemsSameDesc) {
-      await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-        // keep any CVM previous fields NULL if your schema has them
-        previousQuantityCVM: null,
-        previousAverageCostCVM: null,
-      });
-         // 🔹 NEW: Mirror to ItemNameDescription — NO extra calculations
-    if (poItemsSameDesc.length) {
-      const lastRow = poItemsSameDesc[poItemsSameDesc.length - 1] as any;
-      const lastCostC = Number(lastRow?.finalOFR ?? 0);
-
-      console.log('[RECOMP C:G -> Desc] Mirroring C-values into ItemNameDescription:', {
-        descId,
-        averageCostC: newAvgC,
-        lastCostC,
-      });
-
+      const lastRow = rows[rows.length - 1] as any;
       await this.descRepo.update(descId, {
         averageCostC: newAvgC,
-        lastCostC,
-      });
+        averageCostCVM: newAvgCVM,
+        lastCostC: getItemCost(lastRow, 'OFR'),
+        lastCostCVM: getItemCost(lastRow, 'VM'),
+      } as any);
     }
-    }
-  }
-};
 
-/**
- * NEW: Recompute for a later S or SR invoice — Standard + C ONLY (skip VM)
- * Reason: a back-dated G changes only the OFR chain. VM chain (sqm/finalCost) is unaffected by G,
- * so we deliberately do not touch VM fields here.
- */
-const recomputeInvoiceSOrSR_StandardOnly = async (targetId: number) => {
-  const targetInv = await this.invoiceRepo.findOne({
-    where: { id: targetId },
-    relations: ['items', 'items.itemVariant'],
-  });
-  if (!targetInv) {
-    console.warn('⚠️ Target invoice not found during forward recompute (S/SR std-only):', { targetId });
-    return;
+    console.log(`[${scope}] done`, { invoiceId: savedInvoice.id });
   }
 
-  const cutoffDate = new Date(targetInv.date);
-  const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-  console.log(
-    `\n🔁 [RECOMP S/SR from G] Invoice ${targetInv.id} dated ${cutoffDate.toISOString().slice(0, 10)} — Standard + C ONLY (skip VM)`,
-    { type: targetInv.type, itemCount: targetInv.items?.length ?? 0, tCurrPiiIds },
+  // ✅ Keep your explicit call
+  await this.applyPurchaseCostsForInvoice(savedInvoice.id);
+
+  // ✅ include deleted variants in the affected set
+  const currentVariantIds = Array.from(
+    new Set(
+      (savedInvoice.items ?? [])
+        .map((it: any) => Number(it.itemVariantId))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    ),
   );
 
-  // Group for C-level
-  const tItemsByDesc = new Map<number, any[]>();
-  const tDescIds = new Set<number>();
-
-  // STANDARD only per-PII
-  for (const item of targetInv.items) {
-    const iv =
-      item.itemVariant ??
-      (await this.variantRepo.findOne({
-        where: { id: item.itemVariantId },
-        select: ['id', 'itemNameDescriptionId', 'averageCost'],
-      }));
-    if (!iv) continue;
-
-    const descId = iv.itemNameDescriptionId;
-    if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-    tItemsByDesc.get(descId)!.push(item);
-    tDescIds.add(descId);
-
-    // prev qty STD = SUM(sqmofr) up to cutoff, excluding own rows
-    const { sum: rawPrevStd } = await this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqmofr)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-      .andWhere('(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))', {
-        currIds: tCurrPiiIds,
-      })
-      .getRawOne();
-    let prevQty = Number(rawPrevStd) || 0;
-
-prevQty = clampPrevQty(prevQty, '[RECOMP S/SR from G] prevQty', {
-  targetInvId: targetInv.id,
-  vid: item.itemVariantId,
-  piiId: item.id,
-});
-    const prevAvg = iv.averageCost ?? 0;
-
-    const poQty = Number(item.sqm);
-    const poCost = Number((item as any).finalOFR);
-    const totalQty = prevQty + poQty;
-    const newAvg = totalQty > 0 ? (prevAvg * prevQty + poCost * poQty) / totalQty : poCost;
-
-    await this.itemRepo.update(item.id, {
-      previousQuantity: prevQty,
-      previousAverageCost: prevAvg,
-      averageCost: newAvg,
-      // DO NOT touch any VM fields here
-    });
-    await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvg,
-      lastCost: poCost,
-    });
-  }
-
-  // C-level (same as your S logic; using OFR chain)
-  console.log('[RECOMP C from G] start for invoice:', targetInv.id);
-  for (const descId of tDescIds) {
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-
-    const { sum: rawPrevC } = await this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(COALESCE(tx.sqmofr, tx.sqm, 0))', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-      .andWhere('(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))', {
-        currIds: tCurrPiiIds,
-      })
-      .getRawOne();
-    let prevQtyC = Number(rawPrevC) || 0;
-
-prevQtyC = clampPrevQty(prevQtyC, '[RECOMP C from G] prevQtyC', {
-  targetInvId: targetInv.id,
-  descId,
-});
-
-    // previous avgC: keep your S-only baseline (or widen to S/SR if you want)
-    let prevAvgC = 0;
-    const lastDescItem = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G','S','SR'] })
-      .andWhere('inv.date <= :date', { date: cutoffDate })
-      .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostC'])
-      .getOne();
-    if (lastDescItem && (lastDescItem as any).averageCostC != null) {
-      prevAvgC = Number((lastDescItem as any).averageCostC);
-    } else {
-      const openings = await this.invTransRepo.manager
-        .getRepository(InventoryCount)
-        .find({
-          where: { itemVariant: In(variantIdsForDesc) },
-          select: ['sqm', 'finalCostOfr'],
-        });
-      const totalOpenQty = openings.reduce((s, o) => s + Number(o.sqm), 0);
-      const weightedSum = openings.reduce((s, o) => s + Number(o.sqm) * Number(o.finalCostOfr), 0);
-      prevAvgC = totalOpenQty > 0 ? weightedSum / totalOpenQty : 0;
-    }
-
-    const poItemsSameDesc = tItemsByDesc.get(descId) ?? [];
-    const poQtyC = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-    const weightedCostSum = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalOFR) * Number(it.sqm),
-      0,
-    );
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-    const totalQtyC = prevQtyC + poQtyC;
-    const newAvgC = totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
-
-    for (const it of poItemsSameDesc) {
-      await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-        // DO NOT touch any VM fields here
-      });
-    }
-  }
-};
-
-// --- Dispatch based on later invoice type
-for (const r of laterRaw) {
-  
-  if (r.type === 'G') {
-    await recomputeInvoiceG(r.id);
-  } else if (r.type === 'S' || r.type === 'SR') {
-    await recomputeInvoiceSOrSR_StandardOnly(r.id); // ⬅️ Standard + C only, skip VM
-  }
-}
-console.log('🔁 [G] Forward recompute complete.');
-  }
-
-  console.log('🧾 [G] PO Cost Calc — End', { invoiceId: savedInvoice.id });
-}
-// 🔎 END: G-invoice block
-
-// 🔎 BEGIN: SR-invoice block (hybrid: G for OFR/C, S for VM/CVM)
-// ✅ SR = Hybrid (OFR like G + VM like S) WITH clampPrevQty everywhere
-if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'SR') {
-  const invDate = new Date(savedInvoice.date);
-  const dayStart = new Date(invDate);
-  dayStart.setHours(0, 0, 0, 0); // exclude same calendar date for "previous" lookups
-
-  // --- helpers (safe for S/SR + supports sqmOfr / sqmofr) ---
-  const getOfrQty = (it: any) =>
-    Number(it?.sqmOfr ?? it?.sqmofr ?? it?.sqmOFR ?? it?.sqm ?? 0) || 0;
-  const getOfrCost = (it: any) => Number(it?.finalOFR ?? 0) || 0;
-
-  const getVmQty = (it: any) => Number(it?.sqm ?? 0) || 0;
-  const getVmCost = (it: any) => Number(it?.finalCost ?? 0) || 0;
-
-  console.log('🧾 [SR] PO Cost Calc — Start', {
-    invoiceId: savedInvoice.id,
-    invoiceType: savedInvoice.type,
-    invoiceDateISO: invDate.toISOString(),
-    cutoffForPreviousISO: dayStart.toISOString(),
-    itemCount: savedInvoice.items?.length ?? 0,
-  });
-
-  const itemsByDesc = new Map<number, any[]>();
-
-  // NOT-IN for "previous" sums
-  const currPiiIds = (savedInvoice.items ?? []).map((it) => it.id);
-  const hasCurrPiiIds = currPiiIds.length > 0;
-  console.log('🔒 [SR] Excluding current PurchaseInvoiceItem IDs from prior sums:', currPiiIds);
-
-  // Collect description IDs
-  const descIds = new Set<number>();
-
-  /* ────────────────────────────────────────────────
-     PER-PII LOOP:
-       - OFR chain (avgCost) uses tx.sqmofr + finalOFR
-       - VM  chain (avgCostVM) uses tx.sqm    + finalCost
-     ──────────────────────────────────────────────── */
-  for (const item of savedInvoice.items ?? []) {
-    const variantt = await this.variantRepo.findOne({
-      where: { id: item.itemVariantId },
-      select: ['id', 'itemNameDescriptionId'],
-    });
-    if (!variantt) {
-      console.error(`❌ [SR] Variant ${item.itemVariantId} not found`);
-      continue;
-    }
-
-    const vid = variantt.id;
-    const descId = variantt.itemNameDescriptionId;
-
-    if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
-    itemsByDesc.get(descId)!.push(item);
-    descIds.add(descId);
-
-    console.log(`\n[SR] ► Processing PII ${item.id} (variantId=${vid}, descId=${descId}) on invoice ${savedInvoice.id}`);
-    console.log('[SR] row snapshot:', {
-      piiId: item.id,
-      itemVariantId: item.itemVariantId,
-      sqmVM: getVmQty(item),
-      sqmOFR: getOfrQty(item),
-      finalOFR: getOfrCost(item),
-      finalCost: getVmCost(item),
-    });
-
-    // =========================
-    //  A) OFR chain (G-style)
-    // =========================
-
-    // 0) previous avg OFR = last PII.averageCost from (G,S,SR) before dayStart
-    const prevPII_OFR = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCost AS avg_cost',
-        'inv.id AS inv_id',
-        'inv.type AS inv_type',
-        'inv.date AS inv_date',
-      ])
-      .getRawOne<{ pii_id?: number; avg_cost?: string | number | null; inv_id?: number; inv_type?: string; inv_date?: Date }>();
-
-    // 1) previous qty OFR:
-    //    - if history exists => SUM(tx.sqmofr) before dayStart (exclude current)
-    //    - else => openings qty (sqmOfr)
-    let prevQtyOFR = 0;
-    let prevAvgOFR = 0;
-
-    if (prevPII_OFR?.avg_cost != null) {
-      const qbPrevQtyOFR = this.inventoryTxRepo
-        .createQueryBuilder('tx')
-        .select('SUM(tx.sqmofr)', 'sum')
-        .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-        .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-      if (hasCurrPiiIds) {
-        qbPrevQtyOFR.andWhere(
-          '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-          { currPiiIds },
-        );
-      }
-
-      const { sum } = await qbPrevQtyOFR.getRawOne();
-      prevQtyOFR = Number(sum) || 0;
-      prevQtyOFR = clampPrevQty(prevQtyOFR, '[SR:OFR] prevQtyOFR', {
-        vid: item.itemVariantId,
-        piiId: item.id,
-        invId: savedInvoice.id,
-      });
-
-      prevAvgOFR = Number(prevPII_OFR.avg_cost);
-    } else {
-      const openingsOFR = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: { id: item.itemVariantId } },
-        select: ['sqmOfr', 'finalCostOfr'],
-      });
-
-      const openQty = openingsOFR.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-      const weighted = openingsOFR.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-        0,
-      );
-
-      prevQtyOFR = openQty;
-      prevQtyOFR = clampPrevQty(prevQtyOFR, '[SR:OFR] prevQtyOFR(openings)', {
-        vid: item.itemVariantId,
-        piiId: item.id,
-        invId: savedInvoice.id,
-      });
-
-      prevAvgOFR = openQty > 0 ? weighted / openQty : 0;
-    }
-
-    // 2) current PO OFR contribution (SR supports separate OFR qty/price)
-    const poQtyOFR = getOfrQty(item);
-    const poCostOFR = getOfrCost(item);
-
-    const totalQtyOFR = prevQtyOFR + poQtyOFR;
-    const newAvgOFR =
-      totalQtyOFR > 0 ? (prevAvgOFR * prevQtyOFR + poCostOFR * poQtyOFR) / totalQtyOFR : poCostOFR;
-
-    // 3) persist OFR chain
-    await this.itemRepo.update(item.id, {
-      previousQuantity: prevQtyOFR,
-      previousAverageCost: prevAvgOFR,
-      averageCost: newAvgOFR,
-    });
-
-    await this.variantRepo.update(item.itemVariantId, {
-      averageCost: newAvgOFR,
-      lastCost: poCostOFR,
-    });
-
-    // =========================
-    //  B) VM chain (S-style)
-    // =========================
-
-    // 0) previous avg VM = last PII.averageCostVM from (S,SR,RVR) before dayStart
-    const prevPII_VM = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCostVM AS avg_cost_vm',
-        'inv.id AS inv_id',
-        'inv.type AS inv_type',
-        'inv.date AS inv_date',
-      ])
-      .getRawOne<{ pii_id?: number; avg_cost_vm?: string | number | null; inv_id?: number; inv_type?: string; inv_date?: Date }>();
-
-    // 1) previous qty VM:
-    //    - if history exists => SUM(tx.sqm) before dayStart (exclude current)
-    //    - else => openings qty (sqm)
-    let prevQtyVM = 0;
-    let prevAvgVM = 0;
-
-    if (prevPII_VM?.avg_cost_vm != null) {
-      const qbPrevVm = this.inventoryTxRepo
-        .createQueryBuilder('tx')
-        .select('SUM(tx.sqm)', 'sum')
-        .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-        .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-      if (hasCurrPiiIds) {
-        qbPrevVm.andWhere(
-          '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-          { currPiiIds },
-        );
-      }
-
-      const { sum } = await qbPrevVm.getRawOne();
-      prevQtyVM = Number(sum) || 0;
-      prevQtyVM = clampPrevQty(prevQtyVM, '[SR:VM] prevQtyVM', {
-        vid: item.itemVariantId,
-        piiId: item.id,
-        invId: savedInvoice.id,
-      });
-
-      prevAvgVM = Number(prevPII_VM.avg_cost_vm);
-    } else {
-      const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: { id: item.itemVariantId } },
-        select: ['sqm', 'finalCost'],
-      });
-
-      const openQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm ?? 0), 0);
-      const weightedVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-        0,
-      );
-
-      prevQtyVM = openQtyVM;
-      prevQtyVM = clampPrevQty(prevQtyVM, '[SR:VM] prevQtyVM(openings)', {
-        vid: item.itemVariantId,
-        piiId: item.id,
-        invId: savedInvoice.id,
-      });
-
-      prevAvgVM = openQtyVM > 0 ? weightedVM / openQtyVM : 0;
-    }
-
-    // 2) current PO VM contribution
-    const poQtyVM = getVmQty(item);
-    const poCostVM = getVmCost(item);
-
-    const totalQtyVM = prevQtyVM + poQtyVM;
-    const newAvgVM =
-      totalQtyVM > 0 ? (prevAvgVM * prevQtyVM + poCostVM * poQtyVM) / totalQtyVM : poCostVM;
-
-    // 3) persist VM chain
-    await this.itemRepo.update(item.id, {
-      previousQuantityVM: prevQtyVM,
-      previousAverageCostVM: prevAvgVM,
-      averageCostVM: newAvgVM,
-    });
-
-    await this.variantRepo.update(item.itemVariantId, {
-      averageCostVM: newAvgVM,
-      lastCostVM: poCostVM,
-    });
-  } // end per-PII loop
-
-  /* ────────────────────────────────────────────────
-     C-LEVEL (desc, OFR chain)
-     ──────────────────────────────────────────────── */
-  console.log('\n📚 [SR] C-Level (by description, OFR) calculations start');
-
-  for (const descId of descIds) {
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-
-    // last avgCostC from (G,S,SR) before dayStart
-    const lastDescItemC = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-      .andWhere('inv.date < :date', { date: dayStart })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostC'])
-      .getOne();
-
-    let prevQtyC = 0;
-    let prevAvgC = 0;
-
-    if (lastDescItemC && (lastDescItemC as any).averageCostC != null) {
-      // qty from tx.sqmofr
-      const qbPrevC = this.inventoryTxRepo
-        .createQueryBuilder('tx')
-        .select('SUM(tx.sqmofr)', 'sum')
-        .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-        .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-        .andWhere(
-          '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-          { currPiiIds },
-        );
-
-      const { sum } = await qbPrevC.getRawOne();
-      prevQtyC = Number(sum) || 0;
-      prevQtyC = clampPrevQty(prevQtyC, '[SR:C] prevQtyC', { descId, invId: savedInvoice.id });
-
-      prevAvgC = Number((lastDescItemC as any).averageCostC);
-    } else {
-      // openings fallback (qty + avg)
-      const openings = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: In(variantIdsForDesc) },
-        select: ['sqmOfr', 'finalCostOfr'],
-      });
-
-      const openQty = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-      const weighted = openings.reduce(
-        (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-        0,
-      );
-
-      prevQtyC = openQty;
-      prevQtyC = clampPrevQty(prevQtyC, '[SR:C] prevQtyC(openings)', { descId, invId: savedInvoice.id });
-
-      prevAvgC = openQty > 0 ? weighted / openQty : 0;
-    }
-
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyC = poItemsSameDesc.reduce((s, it) => s + getOfrQty(it), 0);
-    const weightedCostSum = poItemsSameDesc.reduce((s, it) => s + getOfrCost(it) * getOfrQty(it), 0);
-    const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-
-    const totalQtyC = prevQtyC + poQtyC;
-    const newAvgC =
-      totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
-
-    for (const it of poItemsSameDesc) {
-      await this.itemRepo.update(it.id, {
-        previousQuantityC: prevQtyC,
-        previousAverageCostC: prevAvgC,
-        averageCostC: newAvgC,
-      });
-    }
-  }
-
-  /* ────────────────────────────────────────────────
-     CVM-LEVEL (desc, VM chain)
-     ──────────────────────────────────────────────── */
-  console.log('\n📚 [SR] CVM-Level (by description, VM) calculations start');
-
-  for (const descId of descIds) {
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-
-    // last avgCostCVM from (S,SR,RVR) before dayStart
-    const lastDescItemCVM = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-      .andWhere('inv.date < :date', { date: dayStart })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostCVM'])
-      .getOne();
-
-    let prevQtyCVM = 0;
-    let prevAvgCVM = 0;
-
-    if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-      // qty from tx.sqm
-      const qbPrevCVM = this.inventoryTxRepo
-        .createQueryBuilder('tx')
-        .select('SUM(tx.sqm)', 'sum')
-        .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-        .andWhere('tx.dateForEachInvoice < :d', { d: dayStart })
-        .andWhere(
-          '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-          { currPiiIds },
-        );
-
-      const { sum } = await qbPrevCVM.getRawOne();
-      prevQtyCVM = Number(sum) || 0;
-      prevQtyCVM = clampPrevQty(prevQtyCVM, '[SR:CVM] prevQtyCVM', { descId, invId: savedInvoice.id });
-
-      prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-    } else {
-      // openings fallback (qty + avg)
-      const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: In(variantIdsForDesc) },
-        select: ['sqm', 'finalCost'],
-      });
-
-      const openQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm ?? 0), 0);
-      const weightedVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-        0,
-      );
-
-      prevQtyCVM = openQtyVM;
-      prevQtyCVM = clampPrevQty(prevQtyCVM, '[SR:CVM] prevQtyCVM(openings)', { descId, invId: savedInvoice.id });
-
-      prevAvgCVM = openQtyVM > 0 ? weightedVM / openQtyVM : 0;
-    }
-
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyCVM = poItemsSameDesc.reduce((s, it: any) => s + getVmQty(it), 0);
-    const weightedCostSumVM = poItemsSameDesc.reduce((s, it: any) => s + getVmCost(it) * getVmQty(it), 0);
-    const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-    const totalQtyCVM = prevQtyCVM + poQtyCVM;
-    const newAvgCVM =
-      totalQtyCVM > 0 ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM : poCostCVM;
-
-    for (const it of poItemsSameDesc) {
-      await this.itemRepo.update(it.id, {
-        previousQuantityCVM: prevQtyCVM,
-        previousAverageCostCVM: prevAvgCVM,
-        averageCostCVM: newAvgCVM,
-      });
-    }
-  }
-
-  /* ────────────────────────────────────────────────
-     FINAL WRITE → ItemNameDescription (mirror from PII, no recalculation)
-     ──────────────────────────────────────────────── */
-  console.log('\n🗂 [SR] Writing final ItemNameDescription costs…');
-
-  for (const descId of descIds) {
-    const poRows = itemsByDesc.get(descId) ?? [];
-    if (!poRows.length) continue;
-
-    const ref = poRows[0] as any;
-    const fresh = await this.itemRepo.findOne({ where: { id: ref.id } });
-
-    const lastRow = poRows[poRows.length - 1] as any;
-
-    await this.descRepo.update(descId, {
-      averageCostC: Number((fresh as any)?.averageCostC ?? 0),
-      averageCostCVM: Number((fresh as any)?.averageCostCVM ?? 0),
-      lastCostC: getOfrCost(lastRow),
-      lastCostCVM: getVmCost(lastRow),
-    });
-  }
-
-  console.log('🧾 [SR] ItemNameDescription update (final) completed.');
-
-  /* ────────────────────────────────────────────────
-     FORWARD RECOMPUTE for later S/SR (SR affects BOTH chains)
-     ──────────────────────────────────────────────── */
-  const affectedVariantIds = Array.from(new Set((savedInvoice.items ?? []).map((it) => it.itemVariantId)));
-  const affectedDescIds = Array.from(descIds);
-
-  if (affectedVariantIds.length || affectedDescIds.length) {
-    const laterRaw = await this.invoiceRepo
-      .createQueryBuilder('inv')
-      .innerJoin('inv.items', 'pii')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :st', { st: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['S', 'SR'] })
-      .andWhere('inv.date > :cut', { cut: dayStart })
-      .andWhere(`(iv.id IN (:...varIds) OR iv.itemNameDescriptionId IN (:...descIds))`, {
-        varIds: affectedVariantIds.length ? affectedVariantIds : [-1],
-        descIds: affectedDescIds.length ? affectedDescIds : [-1],
-      })
-      .select('inv.id', 'id')
-      .addSelect('inv.type', 'type')
-      .addSelect('inv.date', 'date')
-      .distinct(true)
-      .orderBy('inv.date', 'ASC')
-      .addOrderBy('inv.id', 'ASC')
-      .getRawMany<{ id: number; type: 'S' | 'SR'; date: Date }>();
-
-    const recomputeInvoiceHybrid = async (targetId: number) => {
-      const targetInv = await this.invoiceRepo.findOne({
-        where: { id: targetId },
-        relations: ['items', 'items.itemVariant'],
-      });
-      if (!targetInv) return;
-
-      const cutoffDate = new Date(targetInv.date);
-      const tDayStart = new Date(cutoffDate);
-      tDayStart.setHours(0, 0, 0, 0);
-
-      const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-
-      const tItemsByDesc = new Map<number, any[]>();
-      const tDescIds = new Set<number>();
-
-      for (const item of targetInv.items ?? []) {
-        const iv =
-          item.itemVariant ??
-          (await this.variantRepo.findOne({
-            where: { id: item.itemVariantId },
-            select: ['id', 'itemNameDescriptionId'],
-          }));
-        if (!iv) continue;
-
-        const descId = (iv as any).itemNameDescriptionId;
-        if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-        tItemsByDesc.get(descId)!.push(item);
-        tDescIds.add(descId);
-
-        // ---- OFR prev PII ----
-        const prevPII_OFR = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-          .andWhere('inv.date < :cutoff', { cutoff: tDayStart })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCost AS avg_cost'])
-          .getRawOne<{ avg_cost?: string | number | null }>();
-
-        let prevQtyOFR = 0;
-        let prevAvgOFR = 0;
-
-        if (prevPII_OFR?.avg_cost != null) {
-          const { sum } = await this.inventoryTxRepo
-            .createQueryBuilder('tx')
-            .select('SUM(tx.sqmofr)', 'sum')
-            .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-            .andWhere('tx.dateForEachInvoice < :d', { d: tDayStart })
-            .andWhere(
-              '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-              { currIds: tCurrPiiIds },
-            )
-            .getRawOne();
-
-          prevQtyOFR = Number(sum) || 0;
-          prevQtyOFR = clampPrevQty(prevQtyOFR, '[RECOMP SR:OFR] prevQtyOFR', {
-            targetInvId: targetInv.id,
-            vid: item.itemVariantId,
-            piiId: item.id,
-          });
-
-          prevAvgOFR = Number(prevPII_OFR.avg_cost);
-        } else {
-          const openingsOFR = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: { id: item.itemVariantId } },
-            select: ['sqmOfr', 'finalCostOfr'],
-          });
-
-          const openQty = openingsOFR.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-          const weighted = openingsOFR.reduce(
-            (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-            0,
-          );
-
-          prevQtyOFR = openQty;
-          prevQtyOFR = clampPrevQty(prevQtyOFR, '[RECOMP SR:OFR] prevQtyOFR(openings)', {
-            targetInvId: targetInv.id,
-            vid: item.itemVariantId,
-            piiId: item.id,
-          });
-
-          prevAvgOFR = openQty > 0 ? weighted / openQty : 0;
-        }
-
-        const poQtyOFR = getOfrQty(item);
-        const poCostOFR = getOfrCost(item);
-        const totalQtyOFR = prevQtyOFR + poQtyOFR;
-        const newAvgOFR =
-          totalQtyOFR > 0 ? (prevAvgOFR * prevQtyOFR + poCostOFR * poQtyOFR) / totalQtyOFR : poCostOFR;
-
-        await this.itemRepo.update(item.id, {
-          previousQuantity: prevQtyOFR,
-          previousAverageCost: prevAvgOFR,
-          averageCost: newAvgOFR,
-        });
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCost: newAvgOFR,
-          lastCost: poCostOFR,
-        });
-
-        // ---- VM prev PII ----
-        const prevPII_VM = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-          .andWhere('inv.date < :cutoff', { cutoff: tDayStart })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostVM AS avg_cost_vm'])
-          .getRawOne<{ avg_cost_vm?: string | number | null }>();
-
-        let prevQtyVM = 0;
-        let prevAvgVM = 0;
-
-        if (prevPII_VM?.avg_cost_vm != null) {
-          const { sum } = await this.inventoryTxRepo
-            .createQueryBuilder('tx')
-            .select('SUM(tx.sqm)', 'sum')
-            .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-            .andWhere('tx.dateForEachInvoice < :d', { d: tDayStart })
-            .andWhere(
-              '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-              { currIds: tCurrPiiIds },
-            )
-            .getRawOne();
-
-          prevQtyVM = Number(sum) || 0;
-          prevQtyVM = clampPrevQty(prevQtyVM, '[RECOMP SR:VM] prevQtyVM', {
-            targetInvId: targetInv.id,
-            vid: item.itemVariantId,
-            piiId: item.id,
-          });
-
-          prevAvgVM = Number(prevPII_VM.avg_cost_vm);
-        } else {
-          const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: { id: item.itemVariantId } },
-            select: ['sqm', 'finalCost'],
-          });
-
-          const openQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm ?? 0), 0);
-          const weightedVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-            0,
-          );
-
-          prevQtyVM = openQtyVM;
-          prevQtyVM = clampPrevQty(prevQtyVM, '[RECOMP SR:VM] prevQtyVM(openings)', {
-            targetInvId: targetInv.id,
-            vid: item.itemVariantId,
-            piiId: item.id,
-          });
-
-          prevAvgVM = openQtyVM > 0 ? weightedVM / openQtyVM : 0;
-        }
-
-        const poQtyVM = getVmQty(item);
-        const poCostVM = getVmCost(item);
-        const totalQtyVM = prevQtyVM + poQtyVM;
-        const newAvgVM =
-          totalQtyVM > 0 ? (prevAvgVM * prevQtyVM + poCostVM * poQtyVM) / totalQtyVM : poCostVM;
-
-        await this.itemRepo.update(item.id, {
-          previousQuantityVM: prevQtyVM,
-          previousAverageCostVM: prevAvgVM,
-          averageCostVM: newAvgVM,
-        });
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCostVM: newAvgVM,
-          lastCostVM: poCostVM,
-        });
-      }
-
-      // ---- C-level recompute (OFR) ----
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({ where: { itemNameDescriptionId: descId }, select: ['id'] })
-        ).map((v) => v.id);
-
-        const lastDescItemC = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['G', 'S', 'SR'] })
-          .andWhere('inv.date < :date', { date: tDayStart })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostC'])
-          .getOne();
-
-        let prevQtyC = 0;
-        let prevAvgC = 0;
-
-        if (lastDescItemC && (lastDescItemC as any).averageCostC != null) {
-          const { sum } = await this.inventoryTxRepo
-            .createQueryBuilder('tx')
-            .select('SUM(tx.sqmofr)', 'sum')
-            .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-            .andWhere('tx.dateForEachInvoice < :d', { d: tDayStart })
-            .andWhere(
-              '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-              { currIds: tCurrPiiIds },
-            )
-            .getRawOne();
-
-          prevQtyC = Number(sum) || 0;
-          prevQtyC = clampPrevQty(prevQtyC, '[RECOMP SR:C] prevQtyC', { targetInvId: targetInv.id, descId });
-
-          prevAvgC = Number((lastDescItemC as any).averageCostC);
-        } else {
-          const openings = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: In(variantIdsForDesc) },
-            select: ['sqmOfr', 'finalCostOfr'],
-          });
-
-          const openQty = openings.reduce((s, o) => s + Number(o.sqmOfr ?? 0), 0);
-          const weighted = openings.reduce(
-            (s, o) => s + Number(o.sqmOfr ?? 0) * Number(o.finalCostOfr ?? 0),
-            0,
-          );
-
-          prevQtyC = openQty;
-          prevQtyC = clampPrevQty(prevQtyC, '[RECOMP SR:C] prevQtyC(openings)', { targetInvId: targetInv.id, descId });
-
-          prevAvgC = openQty > 0 ? weighted / openQty : 0;
-        }
-
-        const rows = tItemsByDesc.get(descId) ?? [];
-        const poQtyC = rows.reduce((s, it) => s + getOfrQty(it), 0);
-        const weightedCostSum = rows.reduce((s, it) => s + getOfrCost(it) * getOfrQty(it), 0);
-        const poCostC = poQtyC > 0 ? weightedCostSum / poQtyC : 0;
-
-        const totalQtyC = prevQtyC + poQtyC;
-        const newAvgC =
-          totalQtyC > 0 ? (prevAvgC * prevQtyC + poCostC * poQtyC) / totalQtyC : poCostC;
-
-        for (const it of rows) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityC: prevQtyC,
-            previousAverageCostC: prevAvgC,
-            averageCostC: newAvgC,
-          });
-        }
-      }
-
-      // ---- CVM-level recompute (VM) ----
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({ where: { itemNameDescriptionId: descId }, select: ['id'] })
-        ).map((v) => v.id);
-
-        const lastDescItemCVM = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-          .andWhere('inv.date < :date', { date: tDayStart })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostCVM'])
-          .getOne();
-
-        let prevQtyCVM = 0;
-        let prevAvgCVM = 0;
-
-        if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-          const { sum } = await this.inventoryTxRepo
-            .createQueryBuilder('tx')
-            .select('SUM(tx.sqm)', 'sum')
-            .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-            .andWhere('tx.dateForEachInvoice < :d', { d: tDayStart })
-            .andWhere(
-              '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-              { currIds: tCurrPiiIds },
-            )
-            .getRawOne();
-
-          prevQtyCVM = Number(sum) || 0;
-          prevQtyCVM = clampPrevQty(prevQtyCVM, '[RECOMP SR:CVM] prevQtyCVM', { targetInvId: targetInv.id, descId });
-
-          prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-        } else {
-          const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: In(variantIdsForDesc) },
-            select: ['sqm', 'finalCost'],
-          });
-
-          const openQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm ?? 0), 0);
-          const weightedVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm ?? 0) * Number((o as any).finalCost ?? 0),
-            0,
-          );
-
-          prevQtyCVM = openQtyVM;
-          prevQtyCVM = clampPrevQty(prevQtyCVM, '[RECOMP SR:CVM] prevQtyCVM(openings)', { targetInvId: targetInv.id, descId });
-
-          prevAvgCVM = openQtyVM > 0 ? weightedVM / openQtyVM : 0;
-        }
-
-        const rows = tItemsByDesc.get(descId) ?? [];
-        const poQtyCVM = rows.reduce((s, it) => s + getVmQty(it), 0);
-        const weightedCostSumVM = rows.reduce((s, it) => s + getVmCost(it) * getVmQty(it), 0);
-        const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-        const totalQtyCVM = prevQtyCVM + poQtyCVM;
-        const newAvgCVM =
-          totalQtyCVM > 0 ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM : poCostCVM;
-
-        for (const it of rows) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityCVM: prevQtyCVM,
-            previousAverageCostCVM: prevAvgCVM,
-            averageCostCVM: newAvgCVM,
-          });
-        }
-      }
-
-      // mirror into ItemNameDescription
-      for (const descId of tDescIds) {
-        const rows = tItemsByDesc.get(descId) ?? [];
-        if (!rows.length) continue;
-
-        const fresh = await this.itemRepo.findOne({ where: { id: rows[0].id } });
-        const lastRow = rows[rows.length - 1] as any;
-
-        await this.descRepo.update(descId, {
-          averageCostC: Number((fresh as any)?.averageCostC ?? 0),
-          averageCostCVM: Number((fresh as any)?.averageCostCVM ?? 0),
-          lastCostC: getOfrCost(lastRow),
-          lastCostCVM: getVmCost(lastRow),
-        });
-      }
-    };
-
-    for (const row of laterRaw) {
-      await recomputeInvoiceHybrid(row.id);
-    }
-
-    console.log('🔁 [SR] Forward recompute complete.');
-  }
-
-  console.log('🧾 [SR] PO Cost Calc — End', { invoiceId: savedInvoice.id });
-}
-
-// 🔎 END: SR-invoice block
-
-
-
-// 🔎 BEGIN: RVR Cost-calculation & logging block (VM + CVM)
-// NOTE: This block computes per-PII VM and per-description CVM for RVR invoices.
-//       Forward recompute covers RVR (VM + CVM) and S/SR (your full logic).
-if (savedInvoice.status === 'Recieved' && savedInvoice.type === 'RVR') {
-  const invDate = new Date(savedInvoice.date);
-  const dayStart = new Date(invDate);
-  dayStart.setHours(0, 0, 0, 0); // exclude same calendar date for "previous PII" lookups
-
-  console.log('🧾 RVR Cost Calc — Start', {
-    invoiceId: savedInvoice.id,
-    invoiceType: savedInvoice.type,
-    invoiceDate: invDate.toISOString(),
-    cutoffForPreviousPII: dayStart.toISOString(),
-    itemCount: savedInvoice.items?.length ?? 0,
-  });
-
-  // NOT-IN for "previous" sums
-  const currPiiIds = (savedInvoice.items ?? []).map((it) => it.id);
-  const hasCurrPiiIds = currPiiIds.length > 0;
-  console.log('🔒 Excluding current PurchaseInvoiceItem IDs from prior sums:', currPiiIds);
-
-  // Track affected variants for forward recompute
-  const affectedVariantIds = Array.from(
-    new Set((savedInvoice.items ?? []).map((it) => it.itemVariantId)),
+  const removedVariantIds = prevVariantIds.filter(
+    (vid) => !currentVariantIds.includes(vid),
   );
 
-  // For CVM: collect items by description for THIS invoice
-  const itemsByDesc = new Map<number, any[]>();
-  const descIds = new Set<number>();
-
-  // ─────────────────────────────────────────────────────────
-  // Per-PII: VM track (RVR)
-  // ─────────────────────────────────────────────────────────
-  for (const item of savedInvoice.items) {
-    // Need description id to group later for CVM
-    const variant = await this.variantRepo.findOne({
-      where: { id: item.itemVariantId },
-      select: ['id', 'itemNameDescriptionId'],
-    });
-    if (!variant) {
-      console.error(`❌ Variant ${item.itemVariantId} not found`);
-      continue;
-    }
-
-    // collect for CVM grouping
-    const descId = variant.itemNameDescriptionId;
-    if (!itemsByDesc.has(descId)) itemsByDesc.set(descId, []);
-    itemsByDesc.get(descId)!.push(item);
-    descIds.add(descId);
-
-    console.log(
-      `\n[RVR:VM] ► Processing PII ${item.id} (variantId=${variant.id}, descId=${descId}) on invoice ${savedInvoice.id}`,
-    );
-    console.log('[RVR:VM] row snapshot:', {
-      piiId: item.id,
-      itemVariantId: item.itemVariantId,
-      qty: Number(item.quantity),
-      sqm: Number(item.sqm),
-      finalCost: Number((item as any).finalCost),
-    });
-
-    // 0) Previous AVERAGE VM from last settled PII before dayStart across S/SR/RVR
-    const qbPrevPIIVM = this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-      .andWhere('inv.date < :cutoff', { cutoff: dayStart })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select([
-        'pii.id AS pii_id',
-        'pii.averageCostVM AS avg_cost_vm',
-        'inv.id AS inv_id',
-        'inv.type AS inv_type',
-        'inv.date AS inv_date',
-      ]);
-
-    try {
-      // @ts-ignore
-      console.log('[RVR:VM prevPII] SQL:', qbPrevPIIVM.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[RVR:VM prevPII] Params:', qbPrevPIIVM.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-
-    const prevPIIVMRaw = await qbPrevPIIVM.getRawOne<{
-      pii_id?: number;
-      avg_cost_vm?: string | number | null;
-      inv_id?: number;
-      inv_type?: string;
-      inv_date?: Date;
-    }>();
-
-    console.log('[RVR:VM prevPII] raw result:', prevPIIVMRaw ?? null);
-
-    // 1) Previous qty (VM uses SUM(tx.sqm)) — < dayStart, excluding current invoice rows
-    const qbPrevVm = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqm)', 'sum')
-      .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-    if (hasCurrPiiIds) {
-      qbPrevVm.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[RVR:VM prevQty] SQL:', qbPrevVm.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[RVR:VM prevQty] Params:', qbPrevVm.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-
-    const { sum: rawPrevVm } = await qbPrevVm.getRawOne();
-    let prevQtyVM = Number(rawPrevVm) || 0;
-
-    // ✅ CLAMP FIX
-    prevQtyVM = clampPrevQty(prevQtyVM, '[RVR:VM] prevQtyVM', {
-      invId: savedInvoice.id,
-      piiId: item.id,
-      vid: item.itemVariantId,
-    });
-
-    console.log('[RVR:VM prevQty] result:', { rawPrevVm, prevQtyVM });
-
-    // 2) Previous avg VM
-    let prevAvgVM: number;
-    if (prevPIIVMRaw && prevPIIVMRaw.avg_cost_vm != null) {
-      prevAvgVM = Number(prevPIIVMRaw.avg_cost_vm);
-      console.log('[RVR:VM prevAvg] from previous PII.averageCostVM:', {
-        prevAvgVM,
-        prevPiiId: prevPIIVMRaw.pii_id ?? null,
-        prevInvId: prevPIIVMRaw.inv_id ?? null,
-        prevInvType: prevPIIVMRaw.inv_type ?? null,
-        prevInvDate: prevPIIVMRaw.inv_date ?? null,
-      });
-    } else {
-      prevAvgVM = 0;
-      console.log('[RVR:VM prevAvg] no previous PII found → prevAvgVM = 0');
-    }
-
-    // 3) Current row (VM)
-    const poQtyVM = Number(item.sqm);
-    const poCostVM = Number((item as any).finalCost);
-    console.log('[RVR:VM current PO contribution:', { poQtyVM, poCostVM });
-
-    // 4) Blend (VM)
-    const totalQtyVM = prevQtyVM + poQtyVM;
-    const lhsVM = prevAvgVM * prevQtyVM;
-    const rhsVM = poCostVM * poQtyVM;
-    const newAvgVM = totalQtyVM > 0 ? (lhsVM + rhsVM) / totalQtyVM : poCostVM;
-    console.log('[RVR:VM blend details]', {
-      formula: 'newAvgVM = (prevAvgVM*prevQtyVM + poCostVM*poQtyVM) / (prevQtyVM + poQtyVM)',
-      prevAvgVM,
-      prevQtyVM,
-      poCostVM,
-      poQtyVM,
-      lhsVM,
-      rhsVM,
-      totalQtyVM,
-      newAvgVM,
-      guardWhenTotalQtyVMIsZero: totalQtyVM === 0 ? '(used poCostVM)' : '(used blend)',
-    });
-
-    // 5) Persist PII: VM filled; Standard & C cleared for RVR
-    const piiUpdateRes = await this.itemRepo.update(item.id, {
-      previousQuantity: null,
-      previousAverageCost: null,
-      // keep averageCost as-is (or null it if you want)
-      previousQuantityC: null,
-      previousAverageCostC: null,
-      averageCostC: null,
-
-      previousQuantityVM: prevQtyVM,
-      previousAverageCostVM: prevAvgVM,
-      averageCostVM: newAvgVM,
-    });
-    console.log('✓ [RVR:VM] PII update result:', {
-      piiId: item.id,
-      affected: piiUpdateRes?.affected ?? 'n/a',
-      set: {
-        previousQuantity: null,
-        previousAverageCost: null,
-        previousQuantityC: null,
-        previousAverageCostC: null,
-        averageCostC: null,
-        previousQuantityVM: prevQtyVM,
-        previousAverageCostVM: prevAvgVM,
-        averageCostVM: newAvgVM,
-      },
-    });
-
-    // 6) Persist Variant (VM only)
-    const varUpdateResVM = await this.variantRepo.update(item.itemVariantId, {
-      averageCostVM: newAvgVM,
-      lastCostVM: poCostVM,
-    });
-    console.log('✓ [RVR:VM] Variant update result:', {
-      itemVariantId: item.itemVariantId,
-      affected: varUpdateResVM?.affected ?? 'n/a',
-      set: { averageCostVM: newAvgVM, lastCostVM: poCostVM },
-    });
-  } // end per-PII VM loop
-
-  // ─────────────────────────────────────────────────────────
-  // CVM-LEVEL (by description) for CURRENT RVR invoice
-  // Uses SUM(tx.sqm) and finalCost; prev avg from last PII.averageCostCVM across RVR/S/SR
-  // ─────────────────────────────────────────────────────────
-  console.log('\n📚 CVM-Level (by description) calculations start (RVR)');
-  for (const descId of descIds) {
-    console.log(`\n[CVM] ► Description ${descId}`);
-
-    // variants under this description
-    const variantIdsForDesc = (
-      await this.variantRepo.find({
-        where: { itemNameDescriptionId: descId },
-        select: ['id'],
-      })
-    ).map((v) => v.id);
-    console.log('[CVM] variantIdsForDesc:', variantIdsForDesc);
-
-    // previous qty (VM chain): SUM(tx.sqm) before dayStart; exclude current PO rows
-    const qbPrevCVM = this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select('SUM(tx.sqm)', 'sum')
-      .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-      .andWhere('tx.dateForEachInvoice < :d', { d: dayStart });
-
-    if (hasCurrPiiIds) {
-      qbPrevCVM.andWhere(
-        '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currPiiIds))',
-        { currPiiIds },
-      );
-    }
-
-    try {
-      // @ts-ignore
-      console.log('[CVM] prevQtyCVM SQL:', qbPrevCVM.getSql?.() ?? '(sql not available)');
-      // @ts-ignore
-      console.log('[CVM] prevQtyCVM Params:', qbPrevCVM.getParameters?.() ?? '(params not available)');
-    } catch {
-      /* noop */
-    }
-
-    const { sum: rawPrevCVM } = await qbPrevCVM.getRawOne();
-    let prevQtyCVM = Number(rawPrevCVM) || 0;
-
-    // ✅ CLAMP FIX
-    prevQtyCVM = clampPrevQty(prevQtyCVM, '[RVR:CVM] prevQtyCVM', {
-      invId: savedInvoice.id,
-      descId,
-    });
-
-    console.log('[CVM] prevQtyCVM result:', { rawPrevCVM, prevQtyCVM });
-
-    // previous avgCVM from last settled PII.averageCostCVM (RVR/S/SR) before dayStart (exclude current invoice)
-    let prevAvgCVM: number;
-    const lastDescItemCVM = await this.itemRepo
-      .createQueryBuilder('pii')
-      .innerJoin('pii.invoice', 'inv')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :status', { status: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['RVR', 'S', 'SR'] })
-      .andWhere('inv.date < :date', { date: dayStart })
-      .andWhere('inv.id <> :curInvId', { curInvId: savedInvoice.id })
-      .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-      .orderBy('inv.date', 'DESC')
-      .addOrderBy('pii.id', 'DESC')
-      .select(['pii.averageCostCVM'])
-      .getOne();
-
-    if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-      prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-      console.log('[CVM] prevAvgCVM from last PII.averageCostCVM:', prevAvgCVM);
-    } else {
-      console.log('[CVM] no prior PII.averageCostCVM, compute from openings (VM)…');
-      const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-        where: { itemVariant: In(variantIdsForDesc) },
-        select: ['sqm', 'finalCost'],
-      });
-
-      const totalOpenQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm), 0);
-      const weightedSumVM = openingsVM.reduce(
-        (s, o) => s + Number(o.sqm) * Number((o as any).finalCost ?? 0),
-        0,
-      );
-      prevAvgCVM = totalOpenQtyVM > 0 ? weightedSumVM / totalOpenQtyVM : 0;
-      console.log('[CVM] openings snapshot:', {
-        openingsCount: openingsVM.length,
-        totalOpenQtyVM,
-        weightedSumVM,
-        prevAvgCVM,
-      });
-    }
-
-    // group CURRENT RVR rows of this description — VM chain: sqm + finalCost
-    const poItemsSameDesc = itemsByDesc.get(descId) ?? [];
-    const poQtyCVM = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-    const weightedCostSumVM = poItemsSameDesc.reduce(
-      (s, it) => s + Number((it as any).finalCost) * Number(it.sqm),
-      0,
-    );
-    const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-    console.log('[CVM] current PO group snapshot (VM):', {
-      piiIds: poItemsSameDesc.map((x) => x.id),
-      perRow: poItemsSameDesc.map((x) => ({
-        piiId: x.id,
-        sqm: Number(x.sqm),
-        finalCost: Number((x as any).finalCost),
-      })),
-      poQtyCVM,
-      weightedCostSumVM,
-      poCostCVM,
-    });
-
-    // blend (weighted-average) for CVM
-    const totalQtyCVM = prevQtyCVM + poQtyCVM;
-    const lhsCVM = prevAvgCVM * prevQtyCVM;
-    const rhsCVM = poCostCVM * poQtyCVM;
-    const newAvgCVM = totalQtyCVM > 0 ? (lhsCVM + rhsCVM) / totalQtyCVM : poCostCVM;
-    console.log('[CVM] blend details:', {
-      formula: 'newAvgCVM = (prevAvgCVM*prevQtyCVM + poCostCVM*poQtyCVM) / (prevQtyCVM + poQtyCVM)',
-      prevAvgCVM,
-      prevQtyCVM,
-      poCostCVM,
-      poQtyCVM,
-      lhsCVM,
-      rhsCVM,
-      totalQtyCVM,
-      newAvgCVM,
-      guardWhenTotalQtyCVMIsZero: totalQtyCVM === 0 ? '(used poCostCVM)' : '(used blend)',
-    });
-
-    // write SAME CVM values to ALL PII rows of this description on THIS RVR invoice
-    for (const it of poItemsSameDesc) {
-      const res = await this.itemRepo.update(it.id, {
-        previousQuantityCVM: prevQtyCVM,
-        previousAverageCostCVM: prevAvgCVM,
-        averageCostCVM: newAvgCVM,
-      });
-      console.log('✓ [CVM] PII row updated with CVM-values:', {
-        piiId: it.id,
-        affected: res?.affected ?? 'n/a',
-        set: {
-          previousQuantityCVM: prevQtyCVM,
-          previousAverageCostCVM: prevAvgCVM,
-          averageCostCVM: newAvgCVM,
-        },
-      });
-    }
-  } // end CVM loop
-
-  // ─────────────────────────────
-  // ⚙️ Forward recompute for back-dated inserts: later invoices of types RVR/S/SR
-  // ─────────────────────────────
-  if (affectedVariantIds.length) {
-    console.log('🔁 Checking for later invoices to recompute…', {
-      affectedVariantIds,
-      includeTypes: ['RVR', 'S', 'SR'],
-    });
-
-    const laterRaw = await this.invoiceRepo
-      .createQueryBuilder('inv')
-      .innerJoin('inv.items', 'pii')
-      .innerJoin('pii.itemVariant', 'iv')
-      .where('inv.status = :st', { st: 'Recieved' })
-      .andWhere('inv.type IN (:...types)', { types: ['RVR', 'S', 'SR'] })
-      .andWhere('inv.date > :cut', { cut: invDate })
-      .andWhere('iv.id IN (:...varIds)', { varIds: affectedVariantIds })
-      .select(['inv.id AS id', 'inv.date AS date', 'inv.type AS type'])
-      .distinct(true)
-      .orderBy('inv.date', 'ASC')
-      .addOrderBy('inv.id', 'ASC')
-      .getRawMany<{ id: number; date: Date; type: 'RVR' | 'S' | 'SR' }>();
-
-    const laterIds = laterRaw.map((r) => r.id);
-    console.log('🔁 Later invoice IDs to recompute (RVR/S/SR):', laterIds);
-
-    // Helper: recompute VM + CVM for a later RVR invoice
-    const recomputeInvoiceRVR = async (targetId: number) => {
-      const targetInv = await this.invoiceRepo.findOne({
-        where: { id: targetId },
-        relations: ['items', 'items.itemVariant'],
-      });
-      if (!targetInv) {
-        console.warn('⚠️ Target invoice not found during forward recompute (RVR):', { targetId });
-        return;
-      }
-      const cutoffDate = new Date(targetInv.date);
-      const tCurrPiiIds = (targetInv.items ?? []).map((it) => it.id);
-
-      console.log(
-        `\n🔁 [RVR:VM] Recomputing invoice ${targetInv.id} dated ${cutoffDate
-          .toISOString()
-          .slice(0, 10)} (VM + CVM)`,
-        { itemCount: targetInv.items?.length ?? 0 },
-      );
-
-      // Collect for CVM grouping
-      const tItemsByDesc = new Map<number, any[]>();
-      const tDescIds = new Set<number>();
-
-      // Per-PII VM recompute
-      for (const item of targetInv.items) {
-        // Only if variant was affected
-        if (!affectedVariantIds.includes(item.itemVariantId)) continue;
-
-        const descId = item.itemVariant?.itemNameDescriptionId;
-        if (descId != null) {
-          if (!tItemsByDesc.has(descId)) tItemsByDesc.set(descId, []);
-          tItemsByDesc.get(descId)!.push(item);
-          tDescIds.add(descId);
-        }
-
-        // prev qty VM
-        const qbRPrevVm = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqm)', 'sum')
-          .where('tx.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-
-        try {
-          // @ts-ignore
-          console.log('[RECOMP RVR:VM prevQty] SQL:', qbRPrevVm.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP RVR:VM prevQty] Params:', qbRPrevVm.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-
-        const { sum: rawPrevVm } = await qbRPrevVm.getRawOne();
-        let prevQtyVM = Number(rawPrevVm) || 0;
-
-        // ✅ CLAMP FIX
-        prevQtyVM = clampPrevQty(prevQtyVM, '[RECOMP RVR:VM] prevQtyVM', {
-          targetInvId: targetInv.id,
-          piiId: item.id,
-          vid: item.itemVariantId,
-        });
-
-        // prev avg VM from previous PII among S/SR/RVR (before this target date)
-        const qbPrevPIIVM2 = this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .where('pii.itemVariantId = :vid', { vid: item.itemVariantId })
-          .andWhere('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['S', 'SR', 'RVR'] })
-          .andWhere('inv.date < :cutoff', { cutoff: cutoffDate })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select([
-            'pii.averageCostVM AS avg_cost_vm',
-            'inv.id AS inv_id',
-            'inv.type AS inv_type',
-            'inv.date AS inv_date',
-          ]);
-
-        const prevPIIVM2 = await qbPrevPIIVM2.getRawOne<{ avg_cost_vm?: number | string | null }>();
-        let prevAvgVM = prevPIIVM2?.avg_cost_vm != null ? Number(prevPIIVM2.avg_cost_vm) : 0;
-
-        // blend VM
-        const poQtyVM = Number(item.sqm);
-        const poCostVM = Number((item as any).finalCost);
-        const totalQtyVM = prevQtyVM + poQtyVM;
-        const newAvgVM =
-          totalQtyVM > 0 ? (prevAvgVM * prevQtyVM + poCostVM * poQtyVM) / totalQtyVM : poCostVM;
-
-        console.log('[RECOMP RVR:VM details]', {
-          piiId: item.id,
-          itemVariantId: item.itemVariantId,
-          prevQtyVM,
-          prevAvgVM,
-          poQtyVM,
-          poCostVM,
-          totalQtyVM,
-          newAvgVM,
-        });
-
-        await this.itemRepo.update(item.id, {
-          // enforce nulls for Standard & C in RVR
-          previousQuantity: null,
-          previousAverageCost: null,
-          previousQuantityC: null,
-          previousAverageCostC: null,
-          averageCostC: null,
-
-          // VM fields
-          previousQuantityVM: prevQtyVM,
-          previousAverageCostVM: prevAvgVM,
-          averageCostVM: newAvgVM,
-        });
-
-        await this.variantRepo.update(item.itemVariantId, {
-          averageCostVM: newAvgVM,
-          lastCostVM: poCostVM,
-        });
-      } // end per-PII VM recompute
-
-      // CVM recompute (by description) for this later RVR
-      console.log('\n[RECOMP CVM] start for invoice:', targetInv.id);
-      for (const descId of tDescIds) {
-        const variantIdsForDesc = (
-          await this.variantRepo.find({
-            where: { itemNameDescriptionId: descId },
-            select: ['id'],
-          })
-        ).map((v) => v.id);
-
-        // previous qty CVM (VM chain)
-        const qbRPrevCVM = this.inventoryTxRepo
-          .createQueryBuilder('tx')
-          .select('SUM(tx.sqm)', 'sum')
-          .where('tx.itemVariantId IN (:...ids)', { ids: variantIdsForDesc })
-          .andWhere('tx.dateForEachInvoice <= :d', { d: cutoffDate })
-          .andWhere(
-            '(tx.purchaseInvoiceItemId IS NULL OR tx.purchaseInvoiceItemId NOT IN (:...currIds))',
-            { currIds: tCurrPiiIds },
-          );
-        try {
-          // @ts-ignore
-          console.log('[RECOMP CVM] prevQtyCVM SQL:', qbRPrevCVM.getSql?.() ?? '(sql not available)');
-          // @ts-ignore
-          console.log('[RECOMP CVM] prevQtyCVM Params:', qbRPrevCVM.getParameters?.() ?? '(params not available)');
-        } catch {
-          /* noop */
-        }
-
-        const { sum: rawPrevCVM } = await qbRPrevCVM.getRawOne();
-        let prevQtyCVM = Number(rawPrevCVM) || 0;
-
-        // ✅ CLAMP FIX
-        prevQtyCVM = clampPrevQty(prevQtyCVM, '[RECOMP RVR:CVM] prevQtyCVM', {
-          targetInvId: targetInv.id,
-          descId,
-        });
-
-        // previous avgCVM from last PII.averageCostCVM across RVR/S/SR on/before cutoffDate (exclude current)
-        let prevAvgCVM = 0;
-        const lastDescItemCVM = await this.itemRepo
-          .createQueryBuilder('pii')
-          .innerJoin('pii.invoice', 'inv')
-          .innerJoin('pii.itemVariant', 'iv')
-          .where('inv.status = :status', { status: 'Recieved' })
-          .andWhere('inv.type IN (:...types)', { types: ['RVR', 'S', 'SR'] })
-          .andWhere('iv.itemNameDescriptionId = :descId', { descId })
-          .andWhere('inv.id <> :curInvId', { curInvId: targetInv.id })
-          .andWhere('inv.date <= :date', { date: cutoffDate })
-          .orderBy('inv.date', 'DESC')
-          .addOrderBy('pii.id', 'DESC')
-          .select(['pii.averageCostCVM'])
-          .getOne();
-
-        if (lastDescItemCVM && (lastDescItemCVM as any).averageCostCVM != null) {
-          prevAvgCVM = Number((lastDescItemCVM as any).averageCostCVM);
-        } else {
-          const openingsVM = await this.invTransRepo.manager.getRepository(InventoryCount).find({
-            where: { itemVariant: In(variantIdsForDesc) },
-            select: ['sqm', 'finalCost'],
-          });
-
-          const totalOpenQtyVM = openingsVM.reduce((s, o) => s + Number(o.sqm), 0);
-          const weightedSumVM = openingsVM.reduce(
-            (s, o) => s + Number(o.sqm) * Number((o as any).finalCost ?? 0),
-            0,
-          );
-          prevAvgCVM = totalOpenQtyVM > 0 ? weightedSumVM / totalOpenQtyVM : 0;
-        }
-
-        const poItemsSameDesc = tItemsByDesc.get(descId) ?? [];
-        const poQtyCVM = poItemsSameDesc.reduce((s, it) => s + Number(it.sqm), 0);
-        const weightedCostSumVM = poItemsSameDesc.reduce(
-          (s, it) => s + Number((it as any).finalCost) * Number(it.sqm),
-          0,
-        );
-        const poCostCVM = poQtyCVM > 0 ? weightedCostSumVM / poQtyCVM : 0;
-
-        const totalQtyCVM = prevQtyCVM + poQtyCVM;
-        const newAvgCVM =
-          totalQtyCVM > 0 ? (prevAvgCVM * prevQtyCVM + poCostCVM * poQtyCVM) / totalQtyCVM : poCostCVM;
-
-        console.log('[RECOMP CVM] details:', {
-          descId,
-          prevQtyCVM,
-          prevAvgCVM,
-          poQtyCVM,
-          weightedCostSumVM,
-          poCostCVM,
-          totalQtyCVM,
-          newAvgCVM,
-        });
-
-        // Persist to all PII in this description (on the target RVR invoice)
-        for (const it of poItemsSameDesc) {
-          await this.itemRepo.update(it.id, {
-            previousQuantityCVM: prevQtyCVM,
-            previousAverageCostCVM: prevAvgCVM,
-            averageCostCVM: newAvgCVM,
-          });
-        }
-      } // end RECOMP CVM loop
-    };
-
-    // Helper: recompute S/SR invoice (kept as you wrote it)
-    const recomputeInvoiceSOrSR = async (targetId: number) => {
-      // ... (unchanged from your snippet)
-      // If you also want CVM on S/SR here, mirror the CVM loop used above.
-      // (You already added CVM in your S block elsewhere.)
-      // -- omitted for brevity --
-    };
-
-    for (const r of laterRaw) {
-      if (r.type === 'RVR') {
-        await recomputeInvoiceRVR(r.id);
-      } else if (r.type === 'S' || r.type === 'SR') {
-        await recomputeInvoiceSOrSR(r.id);
-      }
-    }
-    console.log('🔁 Forward recompute complete for later RVR/S/SR invoices.');
-  }
-
-  console.log('🧾 RVR Cost Calc — End', { invoiceId: savedInvoice.id });
-}
-// affected variants MUST include removed items too:
-const prevVariantIds = (existing.items ?? []).map(x => Number(x.itemVariantId)).filter(Boolean);
-const newVariantIds  = (incomingItems ?? []).map(x => Number(x.itemVariantId)).filter(Boolean);
-const affectedVariantIds = Array.from(new Set([...prevVariantIds, ...newVariantIds]));
-
-await this.recomputeSalesInvoiceItemsAfterPurchaseEdit({
-  cutoffDate: new Date(savedInvoice.date),
-  affectedVariantIds,
-});
-
-
-}
-
-
-
-private async getPurchaseAvgCostsAsOfFromSet(
-  variantIds: number[],
-  asOfDate: Date,
-): Promise<{
-  pickedVariantId: number | null;
-  costs: { averageCost: number | null; averageCostC: number | null; averageCostVM: number | null; averageCostCVM: number | null };
-}> {
-  const uniq = Array.from(new Set((variantIds ?? []).map(Number).filter(Boolean)));
-  if (!uniq.length) {
-    return { pickedVariantId: null, costs: { averageCost: null, averageCostC: null, averageCostVM: null, averageCostCVM: null } };
-  }
-
-  // IMPORTANT: match your existing getPurchaseAvgCostsAsOf “end of day” logic
-  // (your log shows Beirut end-of-day => 21:59:59.999Z)
-  const cut = new Date(asOfDate);
-  cut.setHours(23, 59, 59, 999);
-
-  const row = await this.itemRepo
-    .createQueryBuilder('pii')
-    .innerJoin('pii.invoice', 'pi')
-    .select([
-      'pii.itemVariantId AS itemVariantId',
-      'pii.averageCost AS averageCost',
-      'pii.averageCostC AS averageCostC',
-      'pii.averageCostVM AS averageCostVM',
-      'pii.averageCostCVM AS averageCostCVM',
-      'pi.id AS piId',
-      'pi.date AS piDate',
-      'pi.type AS piType',
-      'pii.id AS piiId',
-    ])
-    .where('pii.itemVariantId IN (:...ids)', { ids: uniq })
-    .andWhere('pi.status = :st', { st: 'Recieved' })
-    .andWhere('pi.type IN (:...types)', { types: ['S', 'G', 'SR'] }) // adjust to your real ones
-    .andWhere('pi.date <= :cut', { cut })
-    .orderBy('pi.date', 'DESC')
-    .addOrderBy('pi.id', 'DESC')
-    .addOrderBy('pii.id', 'DESC')
-    .getRawOne<{
-      itemVariantId: number;
-      averageCost: any;
-      averageCostC: any;
-      averageCostVM: any;
-      averageCostCVM: any;
-    }>();
-
-  if (!row) {
-    return { pickedVariantId: null, costs: { averageCost: null, averageCostC: null, averageCostVM: null, averageCostCVM: null } };
-  }
-
-  const toNum = (v: any) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
-
-  return {
-    pickedVariantId: Number(row.itemVariantId),
-    costs: {
-      averageCost: toNum(row.averageCost),
-      averageCostC: toNum(row.averageCostC),
-      averageCostVM: toNum(row.averageCostVM),
-      averageCostCVM: toNum(row.averageCostCVM),
-    },
-  };
-}
-
-
-
-private convertCostsBetweenModes(
-  costs: { averageCost: number | null; averageCostC: number | null; averageCostVM: number | null; averageCostCVM: number | null },
-  fromMode: VariantMode | null,
-  toMode: VariantMode | null,
-  sqmPerSheet: number,
-  spbFrom: number,
-  spbTo: number,
-) {
-  const mul = (v: number | null, k: number) => (v === null ? null : Number((v * k).toFixed(6)));
-  const div = (v: number | null, k: number) => (v === null ? null : (k > 0 ? Number((v / k).toFixed(6)) : null));
-
-  if (!fromMode || !toMode || fromMode === toMode) return costs;
-
-  // factors
-  const sqmPerBoxFrom = sqmPerSheet > 0 && spbFrom > 0 ? sqmPerSheet * spbFrom : 0;
-  const sqmPerBoxTo   = sqmPerSheet > 0 && spbTo > 0   ? sqmPerSheet * spbTo   : 0;
-
-  const apply = (fn: (x: number | null) => number | null) => ({
-    averageCost: fn(costs.averageCost),
-    averageCostC: fn(costs.averageCostC),
-    averageCostVM: fn(costs.averageCostVM),
-    averageCostCVM: fn(costs.averageCostCVM),
+  const affected = Array.from(
+    new Set([...currentVariantIds, ...removedVariantIds]),
+  );
+
+  console.log('[RECOMP][UPDATE] affectedVariantIds', {
+    prevVariantIds,
+    currentVariantIds,
+    removedVariantIds,
+    affected,
   });
 
-  // box -> sheet/sqm
-  if (fromMode === 'box' && toMode === 'sheet') return apply(v => div(v, spbFrom));
-  if (fromMode === 'box' && toMode === 'sqm')   return apply(v => div(v, sqmPerBoxFrom));
-
-  // sheet -> box/sqm
-  if (fromMode === 'sheet' && toMode === 'box') return apply(v => mul(v, spbTo));
-  if (fromMode === 'sheet' && toMode === 'sqm') return apply(v => div(v, sqmPerSheet));
-
-  // sqm -> sheet/box
-  if (fromMode === 'sqm' && toMode === 'sheet') return apply(v => mul(v, sqmPerSheet));
-  if (fromMode === 'sqm' && toMode === 'box')   return apply(v => mul(v, sqmPerBoxTo));
-
-  // unit: no conversion (or define your own rules)
-  return costs;
-}
-
-
-
-
-private normalizeOrigin(origin: any): string {
-  return String(origin ?? '').trim().toLowerCase();
-}
-
-private numKey(v: any): string {
-  if (v === null || v === undefined) return '0';
-  const s = String(v).trim();
-  return s === '' ? '0' : s;
-}
-
-/**
- * IMPORTANT:
- * We use thicknessMm (value), NOT thicknessId,
- * because box/sheet/sqm are different Items -> different Thickness rows (different IDs).
- */
-private familyKey(v: {
-  itemNameDescriptionId: number | null;
-  thicknessMm: any;
-  length: any;
-  width: any;
-  origin: string | null;
-  sheetsPerBox: number | null;
-  mode: VariantMode | null;
-}) {
-  const base =
-    `${v.itemNameDescriptionId ?? 0}|${this.numKey(v.thicknessMm)}|${this.numKey(v.length)}|${this.numKey(v.width)}|${this.normalizeOrigin(v.origin)}`;
-
-  if (v.mode === 'box') return `${base}|box|${Number(v.sheetsPerBox ?? 0)}`;
-  return `${base}|nonbox`;
-}
-
-
-private sqmPerSheetFromVariant(v: { length: any; width: any }) {
-  const L = Number(v.length ?? 0);
-  const W = Number(v.width ?? 0);
-  // cm → m²
-  return L > 0 && W > 0 ? (L * W) / 10000 : 0;
-}
-
-/**
- * Load variant meta + Item.type (mode) by variant IDs
- * (matches your entities: origin is string, thickness is a joined value)
- */
-private async loadVariantMetas(ids: number[]): Promise<VariantMeta[]> {
-  if (!ids?.length) return [];
-
-  return this.variantRepo
-    .createQueryBuilder('v')
-    .leftJoin('v.thickness', 't')
-    .leftJoin('t.item', 'it')
-    .select([
-      'v.id AS id',
-      'v.itemNameDescriptionId AS itemNameDescriptionId',
-      't.thickness AS thicknessMm',     
-      'v.length AS length',
-      'v.width AS width',
-      'v.origin AS origin',
-      'v.sheetsPerBox AS sheetsPerBox',
-      'it.type AS mode',
-    ])
-    .where('v.id IN (:...ids)', { ids })
-    .getRawMany<VariantMeta>();
-}
-
-
-/**
- * Fetch sibling variants for each family:
- * identity = itemNameDescriptionId + thickness(mm) + length + width + origin
- * include sheet/sqm/unit always; include box only if sheetsPerBox matches base SPB
- */
-private async resolveSiblingVariantsForBaseVariants(baseVariants: VariantMeta[]) {
-  const uniqueFamilies = new Map<string, VariantMeta>();
-
-  for (const v of baseVariants) {
-    const k = this.familyKey({
-      itemNameDescriptionId: v.itemNameDescriptionId,
-      thicknessMm: v.thicknessMm,
-      length: v.length,
-      width: v.width,
-      origin: v.origin,
-      sheetsPerBox: v.sheetsPerBox,
-      mode: 'sheet',
-    });
-    if (!uniqueFamilies.has(k)) uniqueFamilies.set(k, v);
-  }
-
-  const families = Array.from(uniqueFamilies.values());
-  if (!families.length) return new Map<string, SiblingBucket>();
-
-  const qb = this.variantRepo
-    .createQueryBuilder('v')
-    .leftJoin('v.thickness', 't')
-    .leftJoin('t.item', 'it')
-    .select([
-      'v.id AS id',
-      'v.itemNameDescriptionId AS itemNameDescriptionId',
-      't.thickness AS thicknessMm',      // ✅ IMPORTANT
-      'v.length AS length',
-      'v.width AS width',
-      'v.origin AS origin',
-      'v.sheetsPerBox AS sheetsPerBox',
-      'it.type AS mode',
-    ]);
-
-  const params: Record<string, any> = {};
-  const orParts: string[] = [];
-
-  families.forEach((f, i) => {
-    params[`d${i}`] = f.itemNameDescriptionId;
-    params[`tm${i}`] = f.thicknessMm;
-    params[`l${i}`] = f.length;
-    params[`w${i}`] = f.width;
-    params[`o${i}`] = this.normalizeOrigin(f.origin);
-    params[`spb${i}`] = Number(f.sheetsPerBox ?? 0);
-
-    const identity = `
-      (v.itemNameDescriptionId <=> :d${i})
-      AND (t.thickness = :tm${i})
-      AND (v.length = :l${i})
-      AND (v.width = :w${i})
-      AND (LOWER(TRIM(v.origin)) = :o${i})
-    `;
-
-    orParts.push(`
-      (
-        ${identity}
-        AND (
-          it.type IN ('sheet','sqm','unit')
-          OR (it.type = 'box' AND v.sheetsPerBox = :spb${i})
-        )
-      )
-    `);
-  });
-
-  const allCandidates = await qb.where(orParts.join(' OR '), params).getRawMany<VariantMeta>();
-
-  const byKey = new Map<string, SiblingBucket>();
-
-  for (const c of allCandidates) {
-    const keyNonBox = this.familyKey({
-      itemNameDescriptionId: c.itemNameDescriptionId,
-      thicknessMm: c.thicknessMm,
-      length: c.length,
-      width: c.width,
-      origin: c.origin,
-      sheetsPerBox: c.sheetsPerBox,
-      mode: 'sheet',
-    });
-
-    const bucket =
-      byKey.get(keyNonBox) ??
-      ({ sheet: null, sqm: null, unit: null, boxBySpb: new Map<number, VariantMeta>() } as SiblingBucket);
-
-    if (c.mode === 'sheet') bucket.sheet = c;
-    if (c.mode === 'sqm') bucket.sqm = c;
-    if (c.mode === 'unit') bucket.unit = c;
-    if (c.mode === 'box') bucket.boxBySpb.set(Number(c.sheetsPerBox ?? 0), c);
-
-    byKey.set(keyNonBox, bucket);
-  }
-
-  return byKey;
-}
-
-
-/** Expand affected variants to include sibling sheet/sqm/unit + matching box(spb) */
-private async expandAffectedVariantIds(affectedVariantIds: number[]) {
-  const baseVariants = await this.loadVariantMetas(Array.from(new Set(affectedVariantIds)));
-  if (!baseVariants.length) return Array.from(new Set(affectedVariantIds));
-
-  const siblingsByFamily = await this.resolveSiblingVariantsForBaseVariants(baseVariants);
-
-  // debug mapping (optional)
-  console.log('🧩 [SALES-RECOMP] sibling map for affected variants');
-  for (const b of baseVariants) {
-    const keyNonBox = this.familyKey({
-      itemNameDescriptionId: b.itemNameDescriptionId,
-      thicknessMm: b.thicknessMm,
-      length: b.length,
-      width: b.width,
-      origin: b.origin,
-      sheetsPerBox: b.sheetsPerBox,
-      mode: 'sheet',
-    });
-    const bucket = siblingsByFamily.get(keyNonBox);
-    console.log('   base', {
-      id: b.id,
-      mode: b.mode,
-      thicknessMm: String(b.thicknessMm),
-      L: String(b.length),
-      W: String(b.width),
-      origin: b.origin,
-      spb: Number(b.sheetsPerBox ?? 0),
-      found: bucket
-        ? {
-            sheet: bucket.sheet?.id ?? null,
-            sqm: bucket.sqm?.id ?? null,
-            unit: bucket.unit?.id ?? null,
-            boxSameSpb: bucket.boxBySpb.get(Number(b.sheetsPerBox ?? 0))?.id ?? null,
-          }
-        : null,
-    });
-  }
-
-  const out = new Set<number>();
-
-  for (const b of baseVariants) {
-    out.add(Number(b.id));
-
-    const keyNonBox = this.familyKey({
-      itemNameDescriptionId: b.itemNameDescriptionId,
-      thicknessMm: b.thicknessMm,
-      length: b.length,
-      width: b.width,
-      origin: b.origin,
-      sheetsPerBox: b.sheetsPerBox,
-      mode: 'sheet',
-    });
-
-    const bucket = siblingsByFamily.get(keyNonBox);
-    if (!bucket) continue;
-
-    if (bucket.sheet?.id) out.add(Number(bucket.sheet.id));
-    if (bucket.sqm?.id) out.add(Number(bucket.sqm.id));
-    if (bucket.unit?.id) out.add(Number(bucket.unit.id));
-
-    const spb = Number(b.sheetsPerBox ?? 0);
-    const box = bucket.boxBySpb.get(spb);
-    if (box?.id) out.add(Number(box.id));
-  }
-
-  return [...out];
-}
-
-private async recomputeSalesInvoiceItemsAfterPurchaseEdit(opts: {
-  cutoffDate: Date;
-  affectedVariantIds: number[];
-}) {
-  const { cutoffDate, affectedVariantIds } = opts;
-  if (!affectedVariantIds?.length) return;
-
-  const cut = new Date(cutoffDate);
-  cut.setHours(0, 0, 0, 0);
-
-  // 1) Expand affected variants to include siblings (sheet/sqm/unit + matching box)
-  const expandedVariantIds = await this.expandAffectedVariantIds(affectedVariantIds);
-
-  console.log('🔁 [SALES-RECOMP] start', {
-    cut: cut.toISOString(),
-    affectedVariantIdsCount: affectedVariantIds.length,
-    expandedVariantIdsCount: expandedVariantIds.length,
-    expandedVariantIds,
-  });
-
-  // 2) Load metas for expanded variants (so we know each variant's mode + family identity)
-  const metas = await this.loadVariantMetas(expandedVariantIds);
-  console.log('🔁 [SALES-RECOMP] expanded variants meta', { count: metas.length });
-
-  const metaById = new Map<number, any>(metas.map(m => [Number(m.id), m]));
-
-  // 3) Build sibling buckets per family
-  const siblingsByFamily = await this.resolveSiblingVariantsForBaseVariants(metas);
-
-  // 4) Find affected sales invoice_items after cutoff
-  const rows = await this.invoiceItemRepo
-    .createQueryBuilder('ii')
-    .innerJoin('ii.invoice', 'inv')
-    .where('inv.date >= :cut', { cut })
-    .andWhere('ii.itemVariantId IN (:...varIds)', { varIds: expandedVariantIds })
-    .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G','RVR'] })
-    .select([
-      'ii.id AS iiId',
-      'ii.itemVariantId AS variantId',
-      'inv.id AS invId',
-      'inv.date AS invoiceDate',
-      'inv.invoiceType AS invoiceType',
-    ])
-    .orderBy('inv.date', 'ASC')
-    .addOrderBy('ii.id', 'ASC')
-    .getRawMany<{
-      iiId: number;
-      variantId: number;
-      invId: number;
-      invoiceDate: string | Date;
-      invoiceType: string;
-    }>();
-
-  console.log('🔁 [SALES-RECOMP] invoice_items found', { count: rows.length });
-  if (!rows.length) return;
-
-  // 5) Cache purchase-cost lookups by (pickedVariantId|dayKey)
-  const costCache = new Map<string, any>();
-
-  // helper: pick a box sibling to use as the purchase-cost source
-  const pickBoxSource = (bucket: any, targetMeta: any) => {
-    if (!bucket?.boxBySpb || bucket.boxBySpb.size === 0) return null;
-
-    const targetSpb = Number(targetMeta?.sheetsPerBox ?? 0);
-
-    // if target has a meaningful spb and there's an exact box match, use it
-    if (targetSpb > 1) {
-      const exact = bucket.boxBySpb.get(targetSpb);
-      if (exact?.id) return exact;
-    }
-
-    // if only one box candidate exists, use it
-    if (bucket.boxBySpb.size === 1) {
-      return Array.from(bucket.boxBySpb.values())[0] ?? null;
-    }
-
-    // otherwise pick the largest spb (common case: multiple boxes, want the "real" box)
-    let best: any = null;
-    let bestSpb = -1;
-    for (const [spb, v] of bucket.boxBySpb.entries()) {
-      if (spb > bestSpb) {
-        bestSpb = spb;
-        best = v;
-      }
-    }
-    return best;
-  };
-
-  for (const r of rows) {
-    const iiId = Number(r.iiId);
-    const targetId = Number(r.variantId);
-
-    const target = metaById.get(targetId);
-    if (!target) continue;
-
-    const dayKey =
-      typeof r.invoiceDate === 'string'
-        ? String(r.invoiceDate).slice(0, 10)
-        : new Date(r.invoiceDate).toISOString().slice(0, 10);
-
-    const invDateUTC = new Date(dayKey + 'T00:00:00.000Z');
-
-    // Find family bucket
-    const nonBoxKey = this.familyKey({
-      itemNameDescriptionId: target.itemNameDescriptionId ?? null,
-      thicknessMm: target.thicknessMm,
-      length: target.length,
-      width: target.width,
-      origin: target.origin ?? null,
-      sheetsPerBox: target.sheetsPerBox ?? null,
-      mode: 'sheet',
-    });
-
-    const bucket = siblingsByFamily.get(nonBoxKey);
-
-    // ✅ Decide which variant to use to READ purchase costs
-    // If target is box -> itself
-    // If target is sheet/sqm/unit -> prefer the box sibling
-    let picked = target;
-    if (target.mode !== 'box') {
-      const boxSource = pickBoxSource(bucket, target);
-      if (boxSource?.id) picked = boxSource;
-    }
-
-    const pickedVariantId = Number(picked.id);
-
-    // ✅ get purchase costs (cached)
-    const costKey = `${pickedVariantId}|${dayKey}`;
-    let costs = costCache.get(costKey);
-    if (!costs) {
-      costs = await this.getPurchaseAvgCostsAsOf(pickedVariantId, invDateUTC);
-      costCache.set(costKey, costs);
-    }
-
-    console.log('🧾 [SALES-RECOMP] resolved purchase source', {
-      iiId,
-      targetId,
-      targetMode: target.mode,
-      dayKey,
-      pickedVariantId,
-      pickedMode: picked.mode,
-      pickedSpb: picked.sheetsPerBox ?? null,
-      candidateIdsCount: bucket?.boxBySpb?.size ?? 0,
-      costs,
-    });
-
-    // ✅ IMPORTANT: write costs EXACTLY AS-IS (NO division by spb, NO sqm conversion)
-    await this.invoiceItemRepo.update(iiId, {
-      averageCost: costs?.averageCost ?? null,
-      averageCostC: costs?.averageCostC ?? null,
-      averageCostVM: costs?.averageCostVM ?? null,
-      averageCostCVM: costs?.averageCostCVM ?? null,
-    });
-  }
-
-  console.log('✅ [SALES-RECOMP] done');
+  // 1) recompute purchase chain for POs (variants + deleted variants)
+  await this.recomputePurchaseChainFrom(prevDate, affected);
+
+  // 2) 🔥 recompute all sales invoice_items that use these variants
+  await this.recomputeSalesCostsFrom(prevDate, affected);
 }
 
 
@@ -9015,9 +3203,13 @@ private async recomputeSalesInvoiceItemsAfterPurchaseEdit(opts: {
 
 
 
-// In your PurchaseInvoicesService (or wherever PurchaseInvoiceItem repo lives)
-// Make sure you have this import at the top:
-// import { InventoryCount } from '../inventory/count.entity';
+
+
+
+
+
+
+
 
 async getCostAnalysisHistory(q?: string): Promise<any[]> {
   // small helper: normalize Arabic/Arabic-Indic digits to Western 0–9
@@ -9353,9 +3545,6 @@ async getRealDescriptionCostHistory(q?: string): Promise<any[]> {
   const raw = await qb.getRawMany();
   return raw;
 }
-
-
-
 
 
 
