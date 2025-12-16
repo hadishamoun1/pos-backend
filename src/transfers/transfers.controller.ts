@@ -2,9 +2,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -84,5 +86,24 @@ async getInvoiceDimChanges(@Query() q: any) {
   findOne(@Param('id', ParseIntPipe) id: number): Promise<Transfer> {
     return this.svc.findOne(id);
   }
+
+
+
+
+
+  @Patch(':id')
+  async update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: any,
+  ) {
+    return this.svc.updateTransfer(id, body);
+  }
+
+
+  @Delete(':id')
+async remove(@Param('id', ParseIntPipe) id: number) {
+  await this.svc.remove(id);
+  return { success: true };
+}
 
 }

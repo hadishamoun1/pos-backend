@@ -35,5 +35,6 @@ import { InvoiceItem } from 'src/entities/invoiceItem.entity';
   ],
   controllers: [PurchaseInvoiceController],
   providers: [PurchaseInvoiceService],
+   exports: [PurchaseInvoiceService],
 })
 export class PurchaseInvoiceModule {}

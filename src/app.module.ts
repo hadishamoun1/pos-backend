@@ -35,6 +35,7 @@ import { RecievablesModule } from './receipt-voucher/recievables.module';
 import { ItemNameDescriptionModule } from './item-name-description/item-name-description.module';
 import { ReportsModule } from './reports/reports.module';
 import { SqmPiecesModule } from './sqmPiece/sqm-piece.module';
+import { RecomputeModule } from './recomputeTransfersAndPurchases/recompute.module';
 
 @Module({
   imports: [
@@ -83,7 +84,8 @@ import { SqmPiecesModule } from './sqmPiece/sqm-piece.module';
     RecievablesModule,
     ItemNameDescriptionModule,
     ReportsModule,
-    SqmPiecesModule
+    SqmPiecesModule,
+    RecomputeModule
   ],
 })
 export class AppModule {}
