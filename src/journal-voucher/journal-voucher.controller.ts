@@ -138,20 +138,33 @@ async getCustomerStmt(
 }
 
 
- @Get('account-statement/ofr')
-  async getAccountStatementOFR(
-    @Query('accountId', ParseIntPipe) accountId: number,
-    @Query('type') type?: 'S' | 'G' | 'ALL',
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-  ) {
-    return this.journalVoucherService.getAccountStatementOFR({
-      accountId,
-      type: (type as any) ?? 'ALL',
-      from,
-      to,
-    });
-  }
+@Get("account-statement/ofr")
+async getAccountStatementOFR(
+  @Query("accountId") accountId?: string,
+  @Query("customerId") customerId?: string,
+  @Query("supplierId") supplierId?: string,
+  @Query("type") type?: "S" | "G" | "ALL",
+  @Query("from") from?: string,
+  @Query("to") to?: string,
+) {
+  const toOptInt = (v?: string) => {
+    if (v == null) return undefined;
+    const s = String(v).trim();
+    if (!s) return undefined;
+    const n = Number(s);
+    if (!Number.isFinite(n)) throw new BadRequestException(`Invalid id: ${v}`);
+    return n;
+  };
+
+  return this.journalVoucherService.getAccountStatementOFR({
+    accountId: toOptInt(accountId),
+    customerId: toOptInt(customerId),
+    supplierId: toOptInt(supplierId),
+    type: (type as any) ?? "ALL",
+    from,
+    to,
+  });
+}
 
     @Get('v1/jv/search')
   async searchByCustomerOrJv(

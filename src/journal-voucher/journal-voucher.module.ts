@@ -8,6 +8,7 @@ import { JournalVoucherService } from './journal-voucher.service';
 import { JournalVoucherController } from './journal-voucher.controller';
 import { Customer } from 'src/entities/customer.entity';
 import { Settings } from 'src/entities/settings.entity'; 
+import { Supplier } from 'src/entities/supplier.entity';
 
 
 @Module({
@@ -18,7 +19,8 @@ import { Settings } from 'src/entities/settings.entity';
       Account,
       CurrencyRate,
       Customer,
-      Settings
+      Settings,
+      Supplier
     ]),
   ],
   controllers: [JournalVoucherController],

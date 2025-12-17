@@ -33,6 +33,8 @@ export class JournalVoucherService {
     private readonly currencyRateRepository: Repository<CurrencyRate>,
     @InjectRepository(Customer)
     private readonly customerRepo: Repository<Customer>,
+       @InjectRepository(Supplier)
+    private readonly supplierRepo: Repository<Supplier>,
      @InjectRepository(Settings)
   private readonly settingsRepo: Repository<Settings>, 
   ) {}
@@ -751,19 +753,62 @@ async getCustomerStatementOFR(params: {
 
 
 async getAccountStatementOFR(params: {
-  accountId: number;
+  accountId?: number;
+  customerId?: number;
+  supplierId?: number;
   type?: 'S' | 'G' | 'ALL';
-  from?: string; // 'YYYY-MM-DD'
-  to?: string;   // 'YYYY-MM-DD'
+  from?: string;
+  to?: string;
 }) {
-  const { accountId, type = 'ALL', from, to } = params;
+  const { accountId, customerId, supplierId, type = 'ALL', from, to } = params;
 
-  // 1) Load account (for metadata)
-  const account = await this.accountRepository.findOne({
-    where: { id: accountId },
-    relations: ['currency'],
-  });
-  if (!account) throw new NotFoundException(`Account ${accountId} not found`);
+  // ✅ pick exactly one target
+  const targets = [
+    accountId != null ? 'account' : null,
+    customerId != null ? 'customer' : null,
+    supplierId != null ? 'supplier' : null,
+  ].filter(Boolean);
+
+  if (targets.length !== 1) {
+    throw new BadRequestException('Provide exactly one of: accountId, customerId, supplierId');
+  }
+
+  // 1) Load metadata based on target
+  let meta: any = {};
+  if (accountId != null) {
+    const account = await this.accountRepository.findOne({
+      where: { id: accountId },
+      relations: ['currency'],
+    });
+    if (!account) throw new NotFoundException(`Account ${accountId} not found`);
+
+    meta = {
+      targetKind: 'account',
+      targetId: accountId,
+      accountCode: (account as any).accountNumber,
+      accountName: (account as any).accountName ?? (account as any).arabicAccountName,
+    };
+  } else if (customerId != null) {
+const customer = await this.customerRepo.findOne({ where: { id: customerId } });
+    if (!customer) throw new NotFoundException(`Customer ${customerId} not found`);
+
+    meta = {
+      targetKind: 'customer',
+      targetId: customerId,
+      accountCode: customer.customerAccountNumber,
+      accountName: customer.customerName,
+    };
+  } else if (supplierId != null) {
+const supplier = await this.supplierRepo.findOne({ where: { id: supplierId } });
+    if (!supplier) throw new NotFoundException(`Supplier ${supplierId} not found`);
+
+    meta = {
+      targetKind: 'supplier',
+      targetId: supplierId,
+      accountCode: supplier.supplierAccountNumber,
+      accountName: supplier.supplierName,
+    };
+  }
 
   // Helper: normalize jvType -> 'S' | 'G'
   const rowKind = (r: JournalVoucherDetail): 'S' | 'G' => {
@@ -775,41 +820,47 @@ async getAccountStatementOFR(params: {
   const amounts = (r: JournalVoucherDetail) => {
     const kind = rowKind(r);
     if (kind === 'G') {
-      // G => USD OFR only
       const debit  = Number(r.drUSDOFR || 0);
       const credit = Number(r.crUSDOFR || 0);
       return { kind, debit, credit };
     }
-    // S => USD only
     const debit  = Number(r.drUSD || 0);
     const credit = Number(r.crUSD || 0);
     return { kind, debit, credit };
   };
 
-  // 2) Build the period query
-  const qb = this.journalVoucherDetailRepository
-    .createQueryBuilder('d')
-    .leftJoinAndSelect('d.journalVoucher', 'jv')
-    .where('d.accountId = :accountId', { accountId });
+  // ✅ build base WHERE depending on target kind
+  const applyTargetWhere = (qb: any) => {
+    if (accountId != null) qb.where('d.accountId = :id', { id: accountId });
+    if (customerId != null) qb.where('d.customerId = :id', { id: customerId });
+    if (supplierId != null) qb.where('d.supplierId = :id', { id: supplierId });
+    return qb;
+  };
+
+  // 2) Period query
+  const qb = applyTargetWhere(
+    this.journalVoucherDetailRepository
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.journalVoucher', 'jv'),
+  );
 
   if (from) qb.andWhere('jv.date >= :from', { from });
   if (to)   qb.andWhere('jv.date <= :to',   { to });
 
-  // Filter by jvType only when S or G is requested
   if (type === 'S') qb.andWhere('jv.jvType = :tt', { tt: 'S' });
   if (type === 'G') qb.andWhere('jv.jvType = :tt', { tt: 'G' });
 
   qb.orderBy('jv.date', 'ASC').addOrderBy('d.id', 'ASC');
   const periodRows = await qb.getMany();
 
-  // 3) Opening balance (strictly before "from") — same rules
+  // 3) Opening balance (before "from")
   let openingBalance = 0;
   if (from) {
-    const beforeQb = this.journalVoucherDetailRepository
-      .createQueryBuilder('d')
-      .leftJoin('d.journalVoucher', 'jv')
-      .where('d.accountId = :accountId', { accountId })
-      .andWhere('jv.date < :from', { from });
+    const beforeQb = applyTargetWhere(
+      this.journalVoucherDetailRepository
+        .createQueryBuilder('d')
+        .leftJoin('d.journalVoucher', 'jv'),
+    ).andWhere('jv.date < :from', { from });
 
     if (type === 'S') beforeQb.andWhere('jv.jvType = :tt', { tt: 'S' });
     if (type === 'G') beforeQb.andWhere('jv.jvType = :tt', { tt: 'G' });
@@ -827,8 +878,9 @@ async getAccountStatementOFR(params: {
     openingBalance = dr - cr;
   }
 
-  // 4) Items + running balance (each row uses the proper columns by its jvType)
+  // 4) Items + running
   let running = openingBalance;
+
   const allItems = periodRows.map((r) => {
     const { kind, debit, credit } = amounts(r);
     return { r, kind, debit, credit };
@@ -844,11 +896,10 @@ async getAccountStatementOFR(params: {
       jvNumber: r.journalVoucher?.jvNumber,
       description: r.description ?? null,
       docNbr: r.docNbr ?? null,
-      kind,                // 'S' or 'G' (from jvType)
+      kind,
       debit,
       credit,
       balanceAfter: running,
-      // pass through rates if you want to show them; not used in math here
       exRateUSD: r.exRateUSD ?? undefined,
       exRateEUROToUSD: r.exRateEUROToUSD ?? undefined,
     };
@@ -856,17 +907,15 @@ async getAccountStatementOFR(params: {
 
   const totals = items.reduce(
     (t, it) => {
-      t.totalDebit  += it.debit;
+      t.totalDebit += it.debit;
       t.totalCredit += it.credit;
       return t;
     },
-    { totalDebit: 0, totalCredit: 0 }
+    { totalDebit: 0, totalCredit: 0 },
   );
 
   return {
-    accountId,
-    accountCode: (account as any).accountNumber,
-    accountName: (account as any).accountName,
+    ...meta,
     from: from ?? null,
     to: to ?? null,
     openingBalance,
@@ -876,10 +925,9 @@ async getAccountStatementOFR(params: {
     basis: {
       selection: type,
       columnBasis: {
-        S: { debit: 'drUSD',    credit: 'crUSD'    },
+        S: { debit: 'drUSD', credit: 'crUSD' },
         G: { debit: 'drUSDOFR', credit: 'crUSDOFR' },
       },
-      filterBasis: 'SQL filter on jv.jvType when S/G, none when ALL',
     },
   };
 }
@@ -1338,10 +1386,8 @@ async searchBySeq(params?: {
 
 
 
-  // search api for jv in reciept page
 
 
-  // journalVoucher.service.ts
 async searchByCustomerOrJv(params?: {
   q?: string;
   page?: number;
@@ -1359,25 +1405,39 @@ async searchByCustomerOrJv(params?: {
   const rawQ = (params?.q ?? "").trim();
 
   if (!rawQ) {
-    // fallback to your summary when no query is provided
     return this.getVoucherSummary({ page, limit });
   }
 
-  // Case-insensitive LIKE that works on both MySQL and Postgres
-  // We'll compare LOWER(column) LIKE LOWER(:like)
-  const like = `%${rawQ.toLowerCase()}%`;
+  const qLower = rawQ.toLowerCase();
+  const like = `%${qLower}%`;
+
+  // ✅ Works in MySQL + Postgres
+  const custNameExpr = `LOWER(COALESCE(c.customerName, ''))`;
+  const fullNameExpr = `LOWER(CONCAT_WS(' ', COALESCE(c.firstName,''), COALESCE(c.middleName,''), COALESCE(c.lastName,'')))`;
+  const fullNameRevExpr = `LOWER(CONCAT_WS(' ', COALESCE(c.lastName,''), COALESCE(c.firstName,''), COALESCE(c.middleName,'')))`;
+
+  // Reuse the same WHERE for count + ids
+  const applySearch = (qb: any) => {
+    qb.where(
+      new Brackets((w) => {
+        w.where("LOWER(jv.jvNumber) LIKE :like", { like })
+          // ✅ original customerName
+          .orWhere(`${custNameExpr} LIKE :like`, { like })
+          // ✅ first/middle/last
+          .orWhere(`${fullNameExpr} LIKE :like`, { like })
+          // ✅ reversed order: "last first"
+          .orWhere(`${fullNameRevExpr} LIKE :like`, { like });
+      }),
+    );
+  };
 
   // -------- 1) COUNT DISTINCT JV IDs --------
   const countQb = this.journalVoucherRepository
     .createQueryBuilder("jv")
     .leftJoin("jv.details", "d")
-    .leftJoin("d.customer", "c")
-    .where(
-      new Brackets((w) => {
-        w.where("LOWER(jv.jvNumber) LIKE :like", { like })
-         .orWhere("LOWER(c.customerName) LIKE :like", { like });
-      }),
-    );
+    .leftJoin("d.customer", "c");
+
+  applySearch(countQb);
 
   const { cnt } = await countQb
     .select("COUNT(DISTINCT jv.id)", "cnt")
@@ -1396,13 +1456,9 @@ async searchByCustomerOrJv(params?: {
     .createQueryBuilder("jv")
     .leftJoin("jv.details", "d")
     .leftJoin("d.customer", "c")
-    .select("jv.id", "id")
-    .where(
-      new Brackets((w) => {
-        w.where("LOWER(jv.jvNumber) LIKE :like", { like })
-         .orWhere("LOWER(c.customerName) LIKE :like", { like });
-      }),
-    );
+    .select("jv.id", "id");
+
+  applySearch(idQb);
 
   const idRows = await idQb
     .groupBy("jv.id")
@@ -1428,7 +1484,6 @@ async searchByCustomerOrJv(params?: {
       'jv.jvNumber AS "jvNumber"',
       'jv.jvType AS "jvType"',
     ])
-    // Pick any description where DR > 0 (same as your summary)
     .addSelect(
       "MIN(CASE WHEN d.dr > 0 THEN d.description END)",
       "description",

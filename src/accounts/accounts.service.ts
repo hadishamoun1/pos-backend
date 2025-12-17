@@ -195,8 +195,7 @@ async getCombinedAccounts(): Promise<any[]> {
     return transformAccounts(accounts);
   }
   // ✅ Add this method to your AccountsService
- async getFlatSimplifiedAccounts(): Promise<any[]> {
-  // No relations here – we’re building the hierarchy manually using parentNumber
+async getFlatSimplifiedAccounts(): Promise<any[]> {
   const accounts = await this.accountRepository.find();
 
   const customers = await this.customerRepository.find({
@@ -207,14 +206,12 @@ async getCombinedAccounts(): Promise<any[]> {
     select: ['id', 'supplierAccountNumber', 'supplierName'],
   });
 
-  // Helper to normalize parentNumber: treat "" as null
   const normalizeParent = (v?: string | null): string | null => {
     if (!v) return null;
     const trimmed = v.toString().trim();
     return trimmed === '' ? null : trimmed;
   };
 
-  // Recursive transformer
   const buildHierarchy = (parentNumber: string | null = null): any[] => {
     return accounts
       .filter((acc) => normalizeParent(acc.parentNumber) === parentNumber)
@@ -223,12 +220,13 @@ async getCombinedAccounts(): Promise<any[]> {
         const node: any = {
           id: acc.id,
           accountNumber: acc.accountNumber,
-          accountName: acc.arabicAccountName, // or acc.accountName if you prefer
+          accountName: acc.arabicAccountName,
           parentNumber: acc.parentNumber || null,
+          kind: 'account',          // ✅ NEW
+          refId: acc.id,            // ✅ NEW (explicit)
           children: [],
         };
 
-        // Add customer accounts under 4111
         if (acc.accountNumber === '4111') {
           node.children.push(
             ...customers.map((cust) => ({
@@ -236,12 +234,13 @@ async getCombinedAccounts(): Promise<any[]> {
               accountNumber: cust.customerAccountNumber,
               accountName: cust.customerName,
               parentNumber: '4111',
+              kind: 'customer',      // ✅ NEW
+              refId: cust.id,        // ✅ NEW
               children: [],
             })),
           );
         }
 
-        // Add supplier accounts under 4011
         if (acc.accountNumber === '4011') {
           node.children.push(
             ...suppliers.map((supp) => ({
@@ -249,21 +248,21 @@ async getCombinedAccounts(): Promise<any[]> {
               accountNumber: supp.supplierAccountNumber,
               accountName: supp.supplierName,
               parentNumber: '4011',
+              kind: 'supplier',      // ✅ NEW
+              refId: supp.id,        // ✅ NEW
               children: [],
             })),
           );
         }
 
-        // Recursively build children from accounts table
         node.children.push(...buildHierarchy(acc.accountNumber));
-
         return node;
       });
   };
 
-  // Start from top-level accounts (no parent)
   return buildHierarchy(null);
 }
+
 
 
 
