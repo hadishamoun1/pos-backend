@@ -33,13 +33,10 @@ export class PurchaseInvoiceController {
   }
 
       // GET /cost-analysis/history
- @Get('cost-analysis/history')
-  async getCostAnalysisHistory(
-    @Query('q') q?: string, // <-- optional search text
-  ) {
-    return this.service.getCostAnalysisHistory(q);
-  }
-
+@Get('cost-analysis/history')
+getCostAnalysisHistory() {
+  return this.service.getCostAnalysisHistory();
+}
 @Get('cost-analysis/real-description-history')
 getRealDescHistory(@Query('q') q?: string) {
   return this.service.getRealDescriptionCostHistory(q);

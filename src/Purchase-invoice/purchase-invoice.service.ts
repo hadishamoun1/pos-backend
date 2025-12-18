@@ -16,14 +16,15 @@ import { UnitPriceModalRow } from '../entities/Purchase-Invoice/unit-price-modal
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
 import { PurchaseVoucherDetail } from '../entities/Vouchers/purchaseVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
-
+import { TransferItem } from 'src/entities/inventory/transferItem.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { InventoryCount } from 'src/entities/inventory/count.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 import { InvoiceItem } from 'src/entities/invoiceItem.entity';
-
+import { Thickness } from '../entities/inventory/thickness.entity';
+import { Item } from '../entities/inventory/item.entity';
 import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
 
@@ -1417,39 +1418,106 @@ export class PurchaseInvoiceService {
   // ────────────────────────────────────────────────────────────
   // Controller-required methods (your TS errors)
   // ────────────────────────────────────────────────────────────
-  async getCostAnalysisHistory(q?: any): Promise<any[]> {
-    const itemVariantId = Number(q?.itemVariantId || q?.variantId || 0);
-    if (!itemVariantId) return [];
+async getCostAnalysisHistory(q?: any): Promise<any[]> {
+  // Optional variant filter:
+  // - if itemVariantId / variantId is present → filter on that
+  // - if not present → return ALL matching rows
+  const variantIdFilter =
+    q?.itemVariantId != null
+      ? Number(q.itemVariantId)
+      : q?.variantId != null
+      ? Number(q.variantId)
+      : null;
 
-    return this.inventoryTxRepo
-      .createQueryBuilder('tx')
-      .select([
-        'tx.id AS id',
-        'tx.itemVariantId AS itemVariantId',
-        'tx.transactionType AS transactionType',
-        'tx.transactionDate AS transactionDate',
-        'tx.dateForEachInvoice AS dateForEachInvoice',
-        'tx.sqm AS sqm',
-        'tx.sqmofr AS sqmofr',
-        'tx.finalcost AS finalcost',
-        'tx.finalcostofr AS finalcostofr',
-        'tx.purchaseInvoiceItemId AS purchaseInvoiceItemId',
-        'tx.transferId AS transferId',
-        'tx.inventoryCountId AS inventoryCountId',
-      ])
-      .where('tx.itemVariantId = :id', { id: itemVariantId })
-      .andWhere(
-        new Brackets((b) => {
-          b.where('tx.purchaseInvoiceItemId IS NOT NULL')
-            .orWhere('tx.transferId IS NOT NULL')
-            .orWhere('tx.inventoryCountId IS NOT NULL');
-        }),
-      )
-      .orderBy('tx.dateForEachInvoice', 'ASC')
-      .addOrderBy('tx.transactionDate', 'ASC')
-      .addOrderBy('tx.id', 'ASC')
-      .getRawMany();
+  const qb = this.inventoryTxRepo
+    .createQueryBuilder('tx')
+    // 🔹 join purchase invoice items (for purchases)
+    .leftJoin(PurchaseInvoiceItem, 'pii', 'pii.id = tx.purchaseInvoiceItemId')
+    // 🔹 join transfer items (for transfers)
+    .leftJoin(
+      TransferItem,
+      'ti',
+      'ti.transferId = tx.transferId AND ti.itemVariantId = tx.itemVariantId',
+    )
+    // 🔹 join variant → thickness → item to get itemName + thickness + dims + origin
+    .leftJoin(ItemVariant, 'iv', 'iv.id = tx.itemVariantId')
+    .leftJoin(Thickness, 'th', 'th.id = iv.thicknessId')
+    .leftJoin(Item, 'it', 'it.id = th.itemId')
+    .select([
+      // base tx fields
+      'tx.id AS id',
+      'tx.itemVariantId AS itemVariantId',
+      'tx.transactionType AS transactionType',
+      'tx.transactionDate AS transactionDate',
+      'tx.dateForEachInvoice AS dateForEachInvoice',
+      'tx.sqm AS sqm',
+      'tx.sqmofr AS sqmofr',
+      'tx.finalcost AS finalcost',
+      'tx.finalcostofr AS finalcostofr',
+      'tx.purchaseInvoiceItemId AS purchaseInvoiceItemId',
+      'tx.transferId AS transferId',
+      'tx.inventoryCountId AS inventoryCountId',
+    ])
+    .addSelect([
+      // 🔹 item / variant metadata for the frontend title & meta
+      'it.itemName AS itemName',
+      'it.sortIndex AS itemSortIndex',
+      'th.thickness AS thickness',
+      'th.sort_index AS thicknessSortIndex',
+      'iv.length AS length',
+      'iv.width AS width',
+      'iv.sheetsPerBox AS sheetsPerBox',
+      'iv.origin AS origin',
+      'iv.invoiceDisplayName AS invoiceDisplayName',
+
+      // ───────── PREVIOUS QTY (from purchase invoices only) ─────────
+      'pii.previousQuantity AS previousQuantity',
+      'pii.previousQuantityC AS previousQuantityC',
+      'pii.previousQuantityVM AS previousQuantityVM',
+      'pii.previousQuantityCVM AS previousQuantityCVM',
+
+      // ───────── PREVIOUS AVG COSTS (from purchase invoices only) ─────────
+      'pii.previousAverageCost AS previousAverageCost',
+      'pii.previousAverageCostC AS previousAverageCostC',
+      'pii.previousAverageCostVM AS previousAverageCostVM',
+      'pii.previousAverageCostCVM AS previousAverageCostCVM',
+
+      // ───────── RUNNING AVG COSTS (purchase OR transfer) ─────────
+      // purchases → from pii, transfers → from ti
+      'COALESCE(pii.averageCost, ti.averageCost) AS averageCost',
+      'COALESCE(pii.averageCostC, ti.averageCostC) AS averageCostC',
+      'COALESCE(pii.averageCostVM, ti.averageCostVM) AS averageCostVM',
+      'COALESCE(pii.averageCostCVM, ti.averageCostCVM) AS averageCostCVM',
+
+      // price / final OFR (only meaningful for purchases)
+      'pii.priceOFR AS priceOFR',
+      'pii.finalOFR AS finalOFR',
+    ])
+    .where(
+      new Brackets((b) => {
+        b.where('tx.purchaseInvoiceItemId IS NOT NULL')
+          .orWhere('tx.transferId IS NOT NULL')
+          .orWhere('tx.inventoryCountId IS NOT NULL');
+      }),
+    );
+
+  // ✅ Only apply this filter if a variant id was actually passed
+  if (variantIdFilter) {
+    qb.andWhere('tx.itemVariantId = :id', { id: variantIdFilter });
   }
+
+  return qb
+    .orderBy('it.sortIndex', 'ASC')
+    .addOrderBy('th.sort_index', 'ASC')
+    .addOrderBy('iv.id', 'ASC')
+    .addOrderBy('tx.dateForEachInvoice', 'ASC')
+    .addOrderBy('tx.transactionDate', 'ASC')
+    .addOrderBy('tx.id', 'ASC')
+    .getRawMany();
+}
+
+
+
 
   async getRealDescriptionCostHistory(q?: any): Promise<any[]> {
     const descId = Number(q?.itemNameDescriptionId || q?.descriptionId || 0);

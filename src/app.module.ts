@@ -36,6 +36,7 @@ import { ItemNameDescriptionModule } from './item-name-description/item-name-des
 import { ReportsModule } from './reports/reports.module';
 import { SqmPiecesModule } from './sqmPiece/sqm-piece.module';
 import { RecomputeModule } from './recomputeTransfersAndPurchases/recompute.module';
+import { InventoryAuditModule } from './inventory-audit/inventory-audit.module';
 
 @Module({
   imports: [
@@ -85,7 +86,8 @@ import { RecomputeModule } from './recomputeTransfersAndPurchases/recompute.modu
     ItemNameDescriptionModule,
     ReportsModule,
     SqmPiecesModule,
-    RecomputeModule
+    RecomputeModule,
+    InventoryAuditModule
   ],
 })
 export class AppModule {}
