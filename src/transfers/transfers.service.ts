@@ -578,26 +578,56 @@ export class TransfersService {
   // -----------------------------
   // CRUD (NO forward recompute)
   // -----------------------------
-  async create(data: any): Promise<Transfer> {
-    console.log('🛠️ TransfersService.create payload:', JSON.stringify(data, null, 2));
+ async create(data: any): Promise<Transfer[]> {
+  console.log(
+    "🛠️ TransfersService.create payload:",
+    JSON.stringify(data, null, 2)
+  );
 
-    const created = await this.transfersRepo.manager.transaction(async (manager) => {
+  const items = Array.isArray(data?.items) ? data.items : [];
+  if (items.length === 0) {
+    // you can throw BadRequestException if you want
+    // throw new BadRequestException("Transfer must contain at least 1 item");
+    return [];
+  }
+
+  const createdTransfers = await this.transfersRepo.manager.transaction(
+    async (manager) => {
       const year2 = await this.getActiveYearSuffix(manager);
       const prefix = this.getPrefixFromLocation(data.location);
-      const transferNumber = await this.nextTransferNumber(manager, prefix, year2);
 
-      const transfer = await this.saveTransferHeaderAndItems(manager, {
-        ...data,
-        transferNumber,
-      });
+      const results: Transfer[] = [];
 
-      await this.applyTransferLogic(manager, transfer, data.items ?? []);
-      return transfer;
-    });
+      for (const item of items) {
+        const transferNumber = await this.nextTransferNumber(
+          manager,
+          prefix,
+          year2
+        );
 
-    await this.emitActivityNowAndSoon();
-    return created;
-  }
+        // create a new transfer header with ONLY this item
+        const transfer = await this.saveTransferHeaderAndItems(manager, {
+          ...data,
+          transferNumber,
+          items: [item],
+        });
+
+        // apply logic only for this single item
+        await this.applyTransferLogic(manager, transfer, [item]);
+
+        results.push(transfer);
+      }
+
+      return results;
+    }
+  );
+
+  // emit once after everything is created
+  await this.emitActivityNowAndSoon();
+
+  return createdTransfers;
+}
+
 
   async updateTransfer(transferId: number, data: any): Promise<Transfer> {
     const updated = await this.transfersRepo.manager.transaction(async (manager) => {

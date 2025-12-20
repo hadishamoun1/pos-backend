@@ -26,10 +26,10 @@ export class TransfersController {
 
   @Post()
   @RequirePerms('transfers.create')
-  create(@Body() body: any): Promise<Transfer> {
+  create(@Body() body: any): Promise<Transfer[]> {
     return this.svc.create(body);
   }
-
+  
   @Get('v1/details')
   @RequirePerms('transfers.view')
   async findDetails() {
