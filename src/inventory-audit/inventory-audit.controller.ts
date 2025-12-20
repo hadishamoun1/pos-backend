@@ -1,34 +1,32 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
-import { InventoryAuditService } from './inventory-audit.service';
+import { Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
+import { InventoryAuditService } from "./inventory-audit.service";
 
-@Controller('inventory/audit')
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { PermissionsGuard } from "../auth/permissions.guard";
+import { RequirePerms } from "../auth/permissions.decorator";
+
+@Controller("inventory/audit")
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class InventoryAuditController {
   constructor(private readonly auditService: InventoryAuditService) {}
 
-  /**
-   * GET /inventory/audit/ofr
-   * Query:
-   *  - variantId=123 (optional)
-   *  - onlyMismatch=1|0 (default 1)
-   *  - tolerance=0.01 (default 0.01)
-   *  - limit=200 (max 2000)
-   *  - offset=0
-   */
-@Get("ofr/all")
-async auditOfrAll(
-  @Query("variantId") variantId?: string,
-  @Query("tolerance") tolerance?: string,
-) {
-  return this.auditService.auditOfrAll({
-    variantId: variantId ? Number(variantId) : undefined,
-    tolerance: tolerance == null ? undefined : Number(tolerance),
-  });
-}
+  // VIEW audit
+  @Get("ofr/all")
+  @RequirePerms("inventoryAudit.view")
+  async auditOfrAll(
+    @Query("variantId") variantId?: string,
+    @Query("tolerance") tolerance?: string
+  ) {
+    return this.auditService.auditOfrAll({
+      variantId: variantId ? Number(variantId) : undefined,
+      tolerance: tolerance == null ? undefined : Number(tolerance),
+    });
+  }
 
-
-  @Post('ofr/fix')
+  // FIX audit mismatches (dangerous)
+  @Post("ofr/fix")
+  @RequirePerms("inventoryAudit.fix")
   fixGhostStockOfr(@Body() body: any) {
     return this.auditService.fixGhostStockOfr(body);
   }
-
 }

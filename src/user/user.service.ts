@@ -1,46 +1,75 @@
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { User } from '../entities/user.entity';
+// src/users/users.service.ts
+import { Injectable, BadRequestException, NotFoundException } from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import * as bcrypt from "bcrypt";
+import { User } from "../entities/user.entity";
 
 @Injectable()
-export class UserService {
-  constructor(
-    @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
-  ) {}
+export class UsersService {
+  constructor(@InjectRepository(User) private repo: Repository<User>) {}
 
-  async create(
-    username: string,
-    password: string,
-    role: string,
-  ): Promise<User> {
-    const newUser = this.userRepository.create({ username, password, role });
-    return this.userRepository.save(newUser);
+  findByUsername(username: string) {
+    return this.repo.findOne({ where: { username } });
   }
 
-  async findAll(): Promise<User[]> {
-    return this.userRepository.find();
+  findById(id: number) {
+    return this.repo.findOne({ where: { id } });
   }
 
-  async findOne(id: number): Promise<User> {
-    return this.userRepository.findOne({ where: { id } });
+  async createUser(username: string, password: string, role = "USER", permissions: string[] = []) {
+    const exists = await this.findByUsername(username);
+    if (exists) throw new BadRequestException("Username already exists");
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const user = this.repo.create({ username, passwordHash, role, permissions });
+    return this.repo.save(user);
   }
 
-  async update(
-    id: number,
-    username: string,
-    password: string,
-    role: string,
-  ): Promise<User> {
-    const user = await this.userRepository.findOne({ where: { id } });
-    user.username = username;
-    user.password = password;
-    user.role = role;
-    return this.userRepository.save(user);
-  }
 
-  async delete(id: number): Promise<void> {
-    await this.userRepository.delete(id);
-  }
+  async listUsersSafe() {
+  return this.repo.find({
+    select: ["id", "username", "role", "permissions"], // no passwordHash
+    order: { id: "ASC" },
+  });
+}
+
+async setPermissions(userId: number, permissions: string[]) {
+  const user = await this.repo.findOne({ where: { id: userId } });
+  if (!user) throw new NotFoundException("User not found");
+
+  user.permissions = permissions || [];
+  const saved = await this.repo.save(user);
+
+  // return safe fields
+  return {
+    id: saved.id,
+    username: saved.username,
+    role: saved.role,
+    permissions: saved.permissions || [],
+  };
+}
+
+async setRole(userId: number, role: string) {
+  const user = await this.repo.findOne({ where: { id: userId } });
+  if (!user) throw new NotFoundException("User not found");
+
+  user.role = role;
+  const saved = await this.repo.save(user);
+
+  return {
+    id: saved.id,
+    username: saved.username,
+    role: saved.role,
+    permissions: saved.permissions || [],
+  };
+}
+
+
+
+async hasAnyAdmin() {
+  const count = await this.repo.count({ where: { role: "ADMIN" } });
+  return count > 0;
+}
 }

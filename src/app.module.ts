@@ -37,6 +37,7 @@ import { ReportsModule } from './reports/reports.module';
 import { SqmPiecesModule } from './sqmPiece/sqm-piece.module';
 import { RecomputeModule } from './recomputeTransfersAndPurchases/recompute.module';
 import { InventoryAuditModule } from './inventory-audit/inventory-audit.module';
+import { AuthModule } from "./auth/auth.module";
 
 @Module({
   imports: [
@@ -87,7 +88,8 @@ import { InventoryAuditModule } from './inventory-audit/inventory-audit.module';
     ReportsModule,
     SqmPiecesModule,
     RecomputeModule,
-    InventoryAuditModule
+    InventoryAuditModule,
+    AuthModule
   ],
 })
 export class AppModule {}

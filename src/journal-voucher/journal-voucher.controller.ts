@@ -11,16 +11,24 @@ import {
   BadRequestException,
   Query,
   ParseIntPipe,
+  UseGuards,
 } from '@nestjs/common';
 import { JournalVoucherService } from './journal-voucher.service';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 
+// ✅ auth + perms
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PermissionsGuard } from '../auth/permissions.guard';
+import { RequirePerms } from '../auth/permissions.decorator';
+
 @Controller('journal-vouchers')
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class JournalVoucherController {
   constructor(private readonly journalVoucherService: JournalVoucherService) {}
 
   // Create a Journal Voucher
   @Post()
+  @RequirePerms('journal.create')
   async createJournalVoucher(
     @Body()
     body: {
@@ -60,8 +68,10 @@ export class JournalVoucherController {
       );
     }
   }
+
   // Get all Journal Vouchers
   @Get()
+  @RequirePerms('journal.view')
   async getAllJournalVouchers() {
     try {
       return await this.journalVoucherService.getAllJournalVouchers();
@@ -70,23 +80,24 @@ export class JournalVoucherController {
     }
   }
 
-  
-@Get('v1/list')
-async getSummary(
-  @Query('page') page = '1',
-  @Query('limit') limit = '100',
-  @Query('q') q = ''
-) {
-  const p = Math.max(1, parseInt(page as string, 10) || 1);
-  const l = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 100));
-  return this.journalVoucherService.getVoucherSummary({ page: p, limit: l, q });
-}
+  @Get('v1/list')
+  @RequirePerms('journal.view')
+  async getSummary(
+    @Query('page') page = '1',
+    @Query('limit') limit = '100',
+    @Query('q') q = '',
+  ) {
+    const p = Math.max(1, parseInt(page as string, 10) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 100));
+    return this.journalVoucherService.getVoucherSummary({ page: p, limit: l, q });
+  }
 
- @Get('v1/search-by-seq')
+  @Get('v1/search-by-seq')
+  @RequirePerms('journal.view')
   async searchBySeq(
-    @Query('seq') seq: string,          // required
-    @Query('page') page?: string,       // optional
-    @Query('limit') limit?: string,     // optional
+    @Query('seq') seq: string, // required
+    @Query('page') page?: string, // optional
+    @Query('limit') limit?: string, // optional
   ) {
     return this.journalVoucherService.searchBySeq({
       seq,
@@ -95,9 +106,9 @@ async getSummary(
     });
   }
 
-
   // Get a single Journal Voucher by ID
   @Get(':id')
+  @RequirePerms('journal.view')
   async getJournalVoucherById(@Param('id') id: number) {
     try {
       return await this.journalVoucherService.getJournalVoucherById(id);
@@ -106,11 +117,9 @@ async getSummary(
     }
   }
 
-  // Update a Journal Voucher by ID
-
-
   // Delete a Journal Voucher by ID
   @Delete(':id')
+  @RequirePerms('journal.delete')
   async deleteJournalVoucher(@Param('id') id: number) {
     try {
       return await this.journalVoucherService.deleteJournalVoucher(id);
@@ -119,54 +128,55 @@ async getSummary(
     }
   }
 
-
-   // Example:
+  // Example:
   // /journal-vouchers/statements/customers/1?currency=USD
-@Get('statements/customers/:customerId')
-async getCustomerStmt(
-  @Param('customerId', ParseIntPipe) customerId: number,
-  @Query('type') type?: 'S' | 'G' | 'ALL',
-  @Query('from') from?: string,
-  @Query('to') to?: string,
-) {
-  return this.journalVoucherService.getCustomerStatementOFR({
-    customerId,
-    type: (type as any) || 'ALL',
-    from,
-    to,
-  });
-}
+  @Get('statements/customers/:customerId')
+  @RequirePerms('journal.view')
+  async getCustomerStmt(
+    @Param('customerId', ParseIntPipe) customerId: number,
+    @Query('type') type?: 'S' | 'G' | 'ALL',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.journalVoucherService.getCustomerStatementOFR({
+      customerId,
+      type: (type as any) || 'ALL',
+      from,
+      to,
+    });
+  }
 
+  @Get('account-statement/ofr')
+  @RequirePerms('journal.view')
+  async getAccountStatementOFR(
+    @Query('accountId') accountId?: string,
+    @Query('customerId') customerId?: string,
+    @Query('supplierId') supplierId?: string,
+    @Query('type') type?: 'S' | 'G' | 'ALL',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const toOptInt = (v?: string) => {
+      if (v == null) return undefined;
+      const s = String(v).trim();
+      if (!s) return undefined;
+      const n = Number(s);
+      if (!Number.isFinite(n)) throw new BadRequestException(`Invalid id: ${v}`);
+      return n;
+    };
 
-@Get("account-statement/ofr")
-async getAccountStatementOFR(
-  @Query("accountId") accountId?: string,
-  @Query("customerId") customerId?: string,
-  @Query("supplierId") supplierId?: string,
-  @Query("type") type?: "S" | "G" | "ALL",
-  @Query("from") from?: string,
-  @Query("to") to?: string,
-) {
-  const toOptInt = (v?: string) => {
-    if (v == null) return undefined;
-    const s = String(v).trim();
-    if (!s) return undefined;
-    const n = Number(s);
-    if (!Number.isFinite(n)) throw new BadRequestException(`Invalid id: ${v}`);
-    return n;
-  };
+    return this.journalVoucherService.getAccountStatementOFR({
+      accountId: toOptInt(accountId),
+      customerId: toOptInt(customerId),
+      supplierId: toOptInt(supplierId),
+      type: (type as any) ?? 'ALL',
+      from,
+      to,
+    });
+  }
 
-  return this.journalVoucherService.getAccountStatementOFR({
-    accountId: toOptInt(accountId),
-    customerId: toOptInt(customerId),
-    supplierId: toOptInt(supplierId),
-    type: (type as any) ?? "ALL",
-    from,
-    to,
-  });
-}
-
-    @Get('v1/jv/search')
+  @Get('v1/jv/search')
+  @RequirePerms('journal.view')
   async searchByCustomerOrJv(
     @Query('q') q?: string,
     @Query('page') page?: string,
@@ -179,14 +189,9 @@ async getAccountStatementOFR(
     });
   }
 
-
-
   @Put(':id')
-async updateJV(
-  @Param('id') id: string,
-  @Body() body: any
-) {
-  return this.journalVoucherService.updateJournalVoucherFull(Number(id), body);
-}
-
+  @RequirePerms('journal.update')
+  async updateJV(@Param('id') id: string, @Body() body: any) {
+    return this.journalVoucherService.updateJournalVoucherFull(Number(id), body);
+  }
 }

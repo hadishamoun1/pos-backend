@@ -9,20 +9,29 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { TransfersService } from './transfers.service';
 import { Transfer } from '../entities/inventory/transfer.entity';
 
+// ✅ auth + perms
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PermissionsGuard } from '../auth/permissions.guard';
+import { RequirePerms } from '../auth/permissions.decorator';
+
 @Controller('transfers')
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class TransfersController {
   constructor(private readonly svc: TransfersService) {}
 
   @Post()
+  @RequirePerms('transfers.create')
   create(@Body() body: any): Promise<Transfer> {
     return this.svc.create(body);
   }
 
   @Get('v1/details')
+  @RequirePerms('transfers.view')
   async findDetails() {
     const raws = await this.svc.finddetails();
     return raws.map((t) => ({
@@ -55,8 +64,10 @@ export class TransfersController {
       }),
     }));
   }
-   // GET /inventory/cuts?page=1&limit=50&status=pending&from=2025-01-01&to=2025-12-31&q=...
+
+  // GET /transfers/v1/cuts?page=1&limit=50&status=pending&from=...&to=...&q=...
   @Get('v1/cuts')
+  @RequirePerms('cuts.view')
   async getCuts(@Query() query: any) {
     return this.svc.getCutsQueue({
       page: query.page,
@@ -69,41 +80,37 @@ export class TransfersController {
   }
 
   @Get('v1/dim-changes')
-async getInvoiceDimChanges(@Query() q: any) {
-  return this.svc.getInvoiceDimChanges({
-    page: q.page,
-    limit: q.limit,
-    q: q.q,
-  });
-}
+  @RequirePerms('transfers.view')
+  async getInvoiceDimChanges(@Query() q: any) {
+    return this.svc.getInvoiceDimChanges({
+      page: q.page,
+      limit: q.limit,
+      q: q.q,
+    });
+  }
 
   @Get()
+  @RequirePerms('transfers.view')
   findAll(): Promise<Transfer[]> {
     return this.svc.findAll();
   }
 
   @Get(':id')
+  @RequirePerms('transfers.view')
   findOne(@Param('id', ParseIntPipe) id: number): Promise<Transfer> {
     return this.svc.findOne(id);
   }
 
-
-
-
-
   @Patch(':id')
-  async update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: any,
-  ) {
+  @RequirePerms('transfers.update')
+  async update(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
     return this.svc.updateTransfer(id, body);
   }
 
-
   @Delete(':id')
-async remove(@Param('id', ParseIntPipe) id: number) {
-  await this.svc.remove(id);
-  return { success: true };
-}
-
+  @RequirePerms('transfers.delete')
+  async remove(@Param('id', ParseIntPipe) id: number) {
+    await this.svc.remove(id);
+    return { success: true };
+  }
 }

@@ -6,67 +6,75 @@ import {
   Delete,
   Body,
   Param,
-} from '@nestjs/common';
-import { CurrencyService } from './currency.service';
-import { Currency } from '../entities/currency.entity';
-import { CurrencyRate } from '../entities/currencyRate.entity';
+  UseGuards,
+} from "@nestjs/common";
+import { CurrencyService } from "./currency.service";
+import { Currency } from "../entities/currency.entity";
+import { CurrencyRate } from "../entities/currencyRate.entity";
 
-@Controller('currency')
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { PermissionsGuard } from "../auth/permissions.guard";
+import { RequirePerms } from "../auth/permissions.decorator";
+
+@Controller("currency")
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CurrencyController {
   constructor(private readonly currencyService: CurrencyService) {}
 
-  // Get all currencies
+  // VIEW
   @Get()
+  @RequirePerms("currency.view")
   getAllCurrencies(): Promise<Currency[]> {
     return this.currencyService.getAllCurrencies();
   }
 
-  // Get a specific currency by code
-  @Get(':code')
-  getCurrencyByCode(@Param('code') code: string): Promise<Currency> {
+  @Get(":code")
+  @RequirePerms("currency.view")
+  getCurrencyByCode(@Param("code") code: string): Promise<Currency> {
     return this.currencyService.getCurrencyByCode(code);
   }
 
-  // Add a new currency
+  // MANAGE
   @Post()
+  @RequirePerms("currency.manage")
   createCurrency(@Body() currencyData: Partial<Currency>): Promise<Currency> {
     return this.currencyService.createCurrency(currencyData);
   }
 
-  // Update a currency
-  @Put(':code')
+  @Put(":code")
+  @RequirePerms("currency.manage")
   updateCurrency(
-    @Param('code') code: string,
-    @Body() currencyData: Partial<Currency>,
+    @Param("code") code: string,
+    @Body() currencyData: Partial<Currency>
   ): Promise<Currency> {
     return this.currencyService.updateCurrency(code, currencyData);
   }
 
-  // Delete a currency
-  @Delete(':code')
-  deleteCurrency(@Param('code') code: string): Promise<void> {
+  @Delete(":code")
+  @RequirePerms("currency.manage")
+  deleteCurrency(@Param("code") code: string): Promise<void> {
     return this.currencyService.deleteCurrency(code);
   }
 
-  // Add a currency rate
-  @Post('rate')
+  // Currency rates (still manage)
+  @Post("rate")
+  @RequirePerms("currency.manage")
   createCurrencyRate(
-    @Body() rateData: Partial<CurrencyRate>,
+    @Body() rateData: Partial<CurrencyRate>
   ): Promise<CurrencyRate> {
     return this.currencyService.createCurrencyRate(rateData);
   }
 
-  // Get all currency rates
-  @Get('rate/all')
+  @Get("rate/all")
+  @RequirePerms("currency.view")
   getAllCurrencyRates(): Promise<CurrencyRate[]> {
     return this.currencyService.getAllCurrencyRates();
   }
 
-  // Get all currency codes for dropdown
-  @Get('v1/dropdown/currencycodes')
-  getCurrencyCodesForDropdown(): Promise<
-    { id: number; currencyCode: string }[]
-  > {
+  // Dropdown codes (view)
+  @Get("v1/dropdown/currencycodes")
+  @RequirePerms("currency.view")
+  getCurrencyCodesForDropdown(): Promise<{ id: number; currencyCode: string }[]> {
     return this.currencyService.getCurrencyCodesForDropdown();
   }
 }

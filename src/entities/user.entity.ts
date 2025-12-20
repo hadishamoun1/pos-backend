@@ -1,17 +1,23 @@
-import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
+// src/users/user.entity.ts
+import { Entity, PrimaryGeneratedColumn, Column, Index } from "typeorm";
 
-@Entity()
+@Entity("users")
 export class User {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column()
+  @Index({ unique: true })
+  @Column({ type: "varchar", length: 50 })
   username: string;
 
-  @Column()
-  password: string;
+  @Column({ type: "varchar", length: 255 })
+  passwordHash: string;
 
-  @Column()
+  // Role name (simple)
+  @Column({ type: "varchar", length: 30, default: "USER" })
   role: string;
-  
+
+  // Fine-grained permissions (this is what controls buttons like delete)
+  @Column({ type: "simple-json", nullable: true })
+  permissions: string[]; // e.g. ["items.delete", "items.update"]
 }
