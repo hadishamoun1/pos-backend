@@ -285,7 +285,7 @@ export class RecomputeCostsService {
           break;
         case 'G':
           qtyOfr = qty;
-          sqmOfr = sqm;
+          sqmOfr =  Number((item as any).sqmOfr ?? 0);
           qty = 0;
           sqm = 0;
           break;

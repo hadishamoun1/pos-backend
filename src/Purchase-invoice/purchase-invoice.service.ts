@@ -633,7 +633,7 @@ export class PurchaseInvoiceService {
             break;
           case 'G':
             qtyOfr = qty;
-            sqmofr = sqm;
+            sqmofr = sqmOFR;
             qty = 0;
             sqm = 0;
             break;
@@ -1057,6 +1057,7 @@ export class PurchaseInvoiceService {
       for (const item of ((savedInvoice as any).items ?? []) as any[]) {
         let qty = Number(item.quantity ?? 0);
         let sqm = Number(item.sqm ?? 0);
+        
         let qtyOfr = 0;
         let sqmOfr = 0;
 
@@ -1068,7 +1069,7 @@ export class PurchaseInvoiceService {
             break;
           case 'G':
             qtyOfr = qty;
-            sqmOfr = sqm;
+            sqmOfr = Number((item as any).sqmOfr ?? 0);
             qty = 0;
             sqm = 0;
             break;
