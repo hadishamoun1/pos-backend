@@ -168,7 +168,7 @@ export class ItemsController {
   }
 
   @Get('v1/real-variant-ledger')
-  @RequirePerms('items.view')
+  @RequirePerms('inventory.view')
   async getVariantLedgerReal(
     @Query('q') q?: string,
     @Query('itemName') itemName?: string,
