@@ -20,4 +20,8 @@ export class User {
   // Fine-grained permissions (this is what controls buttons like delete)
   @Column({ type: "simple-json", nullable: true })
   permissions: string[]; // e.g. ["items.delete", "items.update"]
+  
+  @Column({ type: "int", default: 1 })
+tokenVersion: number;
+
 }

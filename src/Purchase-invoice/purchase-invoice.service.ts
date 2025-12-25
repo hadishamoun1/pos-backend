@@ -9,6 +9,7 @@ import {
   SelectQueryBuilder,
   Brackets,
 } from 'typeorm';
+import { Transfer } from 'src/entities/inventory/transfer.entity';
 
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
@@ -1420,9 +1421,6 @@ export class PurchaseInvoiceService {
   // Controller-required methods (your TS errors)
   // ────────────────────────────────────────────────────────────
 async getCostAnalysisHistory(q?: any): Promise<any[]> {
-  // Optional variant filter:
-  // - if itemVariantId / variantId is present → filter on that
-  // - if not present → return ALL matching rows
   const variantIdFilter =
     q?.itemVariantId != null
       ? Number(q.itemVariantId)
@@ -1430,22 +1428,60 @@ async getCostAnalysisHistory(q?: any): Promise<any[]> {
       ? Number(q.variantId)
       : null;
 
-  const qb = this.inventoryTxRepo
-    .createQueryBuilder('tx')
+  const qb = this.inventoryTxRepo.createQueryBuilder('tx');
+
+  // ✅ subquery: the source batch (MovedFrom) batchId for the same transfer/date
+  const movedFromBatchSub = qb
+    .subQuery()
+    .select('txo.itemBatchId')
+    .from(InventoryTransaction, 'txo')
+    .where('txo.transferId = tx.transferId')
+    .andWhere(`txo.transactionType = 'MovedFrom'`)
+    .andWhere('txo.dateForEachInvoice = tx.dateForEachInvoice')
+    .orderBy('txo.id', 'DESC')
+    .limit(1)
+    .getQuery();
+
+  // normalize location (your “codes” live in location)
+  const locExpr = `UPPER(TRIM(tr.location))`;
+
+  qb
     // 🔹 join purchase invoice items (for purchases)
     .leftJoin(PurchaseInvoiceItem, 'pii', 'pii.id = tx.purchaseInvoiceItemId')
+
+    // 🔹 join transfer header (for JF/BOSTS detection)
+    .leftJoin(Transfer, 'tr', 'tr.id = tx.transferId')
+
     // 🔹 join transfer items (for transfers)
+    // ✅ IMPORTANT: do NOT join by itemVariantId (it is NULL in your table)
+    // Normal transfers: match by tx.itemBatchId
+    // Special (JF/BOSTS/FJ): MovedTo should match the MovedFrom batchId
     .leftJoin(
       TransferItem,
       'ti',
-      'ti.transferId = tx.transferId AND ti.itemVariantId = tx.itemVariantId',
+      `
+      ti.transferId = tx.transferId
+      AND (
+        (
+          ${locExpr} NOT IN ('JF','BOSTS','FJ')
+          AND ti.itemBatchId = tx.itemBatchId
+        )
+        OR
+        (
+          ${locExpr} IN ('JF','BOSTS','FJ')
+          AND tx.transactionType = 'MovedTo'
+          AND ti.itemBatchId = (${movedFromBatchSub})
+        )
+      )
+    `,
     )
-    // 🔹 join variant → thickness → item to get itemName + thickness + dims + origin
+
+    // 🔹 join variant → thickness → item
     .leftJoin(ItemVariant, 'iv', 'iv.id = tx.itemVariantId')
     .leftJoin(Thickness, 'th', 'th.id = iv.thicknessId')
     .leftJoin(Item, 'it', 'it.id = th.itemId')
+
     .select([
-      // base tx fields
       'tx.id AS id',
       'tx.itemVariantId AS itemVariantId',
       'tx.transactionType AS transactionType',
@@ -1460,7 +1496,7 @@ async getCostAnalysisHistory(q?: any): Promise<any[]> {
       'tx.inventoryCountId AS inventoryCountId',
     ])
     .addSelect([
-      // 🔹 item / variant metadata for the frontend title & meta
+      // metadata
       'it.itemName AS itemName',
       'it.sortIndex AS itemSortIndex',
       'th.thickness AS thickness',
@@ -1471,26 +1507,28 @@ async getCostAnalysisHistory(q?: any): Promise<any[]> {
       'iv.origin AS origin',
       'iv.invoiceDisplayName AS invoiceDisplayName',
 
-      // ───────── PREVIOUS QTY (from purchase invoices only) ─────────
+      // helpful: show transfer "code"
+      'tr.location AS transferLocation',
+
+      // previous qty (purchase only)
       'pii.previousQuantity AS previousQuantity',
       'pii.previousQuantityC AS previousQuantityC',
       'pii.previousQuantityVM AS previousQuantityVM',
       'pii.previousQuantityCVM AS previousQuantityCVM',
 
-      // ───────── PREVIOUS AVG COSTS (from purchase invoices only) ─────────
+      // previous avg (purchase only)
       'pii.previousAverageCost AS previousAverageCost',
       'pii.previousAverageCostC AS previousAverageCostC',
       'pii.previousAverageCostVM AS previousAverageCostVM',
       'pii.previousAverageCostCVM AS previousAverageCostCVM',
 
-      // ───────── RUNNING AVG COSTS (purchase OR transfer) ─────────
-      // purchases → from pii, transfers → from ti
+      // running avg (purchase OR transfer)
       'COALESCE(pii.averageCost, ti.averageCost) AS averageCost',
       'COALESCE(pii.averageCostC, ti.averageCostC) AS averageCostC',
       'COALESCE(pii.averageCostVM, ti.averageCostVM) AS averageCostVM',
       'COALESCE(pii.averageCostCVM, ti.averageCostCVM) AS averageCostCVM',
 
-      // price / final OFR (only meaningful for purchases)
+      // purchase-only price info
       'pii.priceOFR AS priceOFR',
       'pii.finalOFR AS finalOFR',
     ])
@@ -1502,7 +1540,6 @@ async getCostAnalysisHistory(q?: any): Promise<any[]> {
       }),
     );
 
-  // ✅ Only apply this filter if a variant id was actually passed
   if (variantIdFilter) {
     qb.andWhere('tx.itemVariantId = :id', { id: variantIdFilter });
   }
@@ -1516,6 +1553,7 @@ async getCostAnalysisHistory(q?: any): Promise<any[]> {
     .addOrderBy('tx.id', 'ASC')
     .getRawMany();
 }
+
 
 
 

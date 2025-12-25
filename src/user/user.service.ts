@@ -65,6 +65,10 @@ async setRole(userId: number, role: string) {
     permissions: saved.permissions || [],
   };
 }
+async updateUser(id: number, patch: Partial<User>) {
+  await this.repo.update({ id }, patch);
+  return this.repo.findOne({ where: { id } });
+}
 
 
 

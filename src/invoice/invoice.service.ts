@@ -21,6 +21,7 @@ import { InventoryCount } from '../entities/inventory/count.entity';
 import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
 import { Request as RequestEntity } from '../entities/request.entity';
 import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails.entity';
+import { TransferItem } from '../entities/inventory/transferItem.entity';
 
 
 @Injectable()
@@ -120,67 +121,70 @@ async createInvoice(data: any): Promise<Invoice> {
     const savedInvoice = await queryRunner.manager.save(invoice);
     console.log('✅ Invoice saved with ID:', savedInvoice.id);
 
- const items = data.items.map((item, index) => {
-  console.log(`📦 Preparing item[${index}]`, item);
+    const items = data.items.map((item, index) => {
+      console.log(`📦 Preparing item[${index}]`, item);
 
-  const isUnit = String(item.type ?? "").trim().toLowerCase() === "unit";
+      const isUnit = String(item.type ?? '').trim().toLowerCase() === 'unit';
 
-  // ✅ For unit: quantity comes from sheet (UI input)
-  const qtyForSave = isUnit ? item.sheet : item.quantity;
+      // ✅ For unit: quantity comes from sheet (UI input)
+      const qtyForSave = isUnit ? item.sheet : item.quantity;
 
-  // ✅ For unit: sqm = 0
-  const sqmForSave = isUnit ? 0 : item.sqm;
+      // ✅ For unit: sqm = 0
+      const sqmForSave = isUnit ? 0 : item.sqm;
 
-  // ✅ Price/Total come from payload (no backend calculation)
-  const unitPriceForSave =
-    item.unitPrice != null ? Number(item.unitPrice) : Number(item.price ?? 0);
+      // ✅ Price/Total come from payload (no backend calculation)
+      const unitPriceForSave =
+        item.unitPrice != null ? Number(item.unitPrice) : Number(item.price ?? 0);
 
-  const totalAmountForSave = item.totalAmount; // ✅ use payload as-is
+      const totalAmountForSave = item.totalAmount; // ✅ use payload as-is
 
-  if (
-    sqmForSave === undefined ||
-    qtyForSave === undefined ||
-    item.itemVariantId === undefined ||
-    item.itemBatchId === undefined
-  ) {
-    console.error(`❌ Missing required field in item[${index}]`, item);
-    throw new BadRequestException(`Missing required fields in item[${index}]`);
-  }
+      if (
+        sqmForSave === undefined ||
+        qtyForSave === undefined ||
+        item.itemVariantId === undefined ||
+        item.itemBatchId === undefined
+      ) {
+        console.error(`❌ Missing required field in item[${index}]`, item);
+        throw new BadRequestException(`Missing required fields in item[${index}]`);
+      }
 
-  const invItem = this.invoiceItemRepo.create({
-    invoiceId: savedInvoice.id,
-    itemVariantId: item.itemVariantId,
-    itemBatchId: item.itemBatchId,
-    length: item.length ?? null,
-    width: item.width ?? null,
-    sheetsPerBox: item.sheetsPerBox ?? null,
+      const invItem = this.invoiceItemRepo.create({
+        invoiceId: savedInvoice.id,
+        itemVariantId: item.itemVariantId,
+        itemBatchId: item.itemBatchId,
+        length: item.length ?? null,
+        width: item.width ?? null,
+        sheetsPerBox: item.sheetsPerBox ?? null,
 
-    sqm: Number(sqmForSave),
+        sqm: Number(sqmForSave),
 
-    unitPrice: unitPriceForSave,
-    totalAmount: totalAmountForSave, // ✅ payload value
+        unitPrice: unitPriceForSave,
+        totalAmount: totalAmountForSave, // ✅ payload value
 
-    vat: item.vat,
-    quantity: Number(qtyForSave),
+        vat: item.vat,
+        quantity: Number(qtyForSave),
 
-    sqmPieceId:
-      item.sqmPieceId != null
-        ? Number(item.sqmPieceId)
-        : item.sqmPiece && typeof item.sqmPiece.id === "number"
-        ? Number(item.sqmPiece.id)
-        : null,
-  });
+        sqmPieceId:
+          item.sqmPieceId != null
+            ? Number(item.sqmPieceId)
+            : item.sqmPiece && typeof item.sqmPiece.id === 'number'
+            ? Number(item.sqmPiece.id)
+            : null,
+      });
 
-  return invItem;
-});
-
+      return invItem;
+    });
 
     const savedItems = await queryRunner.manager
       .getRepository(InvoiceItem)
       .save(items);
     console.log('✅ Saved invoice items:', savedItems.map((i) => i.id));
 
-
+    // ✅ IMPORTANT: keep variantIds available for later logic (stockModeMap, etc.)
+    const variantIds: number[] = Array.from(
+      new Set(savedItems.map((i) => Number(i.itemVariantId)).filter(Boolean)),
+    );
+    console.log('🔢 Variant IDs in this invoice:', variantIds);
 
     // -------------- NEW: UPDATE SQM PIECES SOLD / REMAINING --------------
     // For each invoice line that has `sqmPieceId`, consume sqm from that piece group
@@ -254,289 +258,153 @@ async createInvoice(data: any): Promise<Invoice> {
       }
     }
 
-    // -------------- NEW: FILL COST FIELDS ON INVOICE ITEMS --------------
-    const purchaseItemRepo =
-      queryRunner.manager.getRepository<PurchaseInvoiceItem>(
-        'PurchaseInvoiceItem',
-      );
-    const inventoryCountRepo =
-      queryRunner.manager.getRepository<InventoryCount>('InventoryCount');
-
-    const salesDate = new Date(savedInvoice.date);
-
-    type CostBundle = {
-      averageCost: number | null;
-      averageCostC: number | null;
-      averageCostVM: number | null;
-      averageCostCVM: number | null;
-      lastCost: number | null;
-      lastCostC: number | null;
-      lastCostVM: number | null;
-      lastCostCVM: number | null;
-    };
-
-    const safeNumOrNull = (v: any): number | null => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    };
-
-    const uniqueVariantIds = new Set<number>();
-    for (const it of savedItems) {
-      if (typeof it.itemVariantId === 'number') {
-        uniqueVariantIds.add(it.itemVariantId);
-      }
-    }
-    const variantIds: number[] = Array.from(uniqueVariantIds);
-    console.log('🔢 Variant IDs in this invoice (for cost lookup):', variantIds);
-
-    const variantCostCache = new Map<number, CostBundle>();
-
-    for (const variantId of variantIds) {
-      let bundle: CostBundle | null = null;
-
-      // 1) Try last PurchaseInvoiceItem for this variant before / on invoice date
-      const lastPurchaseItem = await purchaseItemRepo
-        .createQueryBuilder('pi')
-        .innerJoin('pi.invoice', 'pinv')
-        .where('pi.itemVariantId = :variantId', { variantId })
-        .andWhere('pinv.date <= :invDate', { invDate: salesDate })
-        .andWhere('pinv.type IN (:...types)', { types: ['S', 'G', 'SR'] }) // ignore RVR POs
-        .orderBy('pinv.date', 'DESC')
-        .addOrderBy('pinv.id', 'DESC')
-        .getOne();
-
-      if (lastPurchaseItem) {
-        const avg = safeNumOrNull(lastPurchaseItem.averageCost);
-        const avgC = safeNumOrNull(lastPurchaseItem.averageCostC);
-        const avgVM = safeNumOrNull(lastPurchaseItem.averageCostVM);
-        const avgCVM = safeNumOrNull(lastPurchaseItem.averageCostCVM);
-        const lc = safeNumOrNull(lastPurchaseItem.finalOFR);
-        const lcvm = safeNumOrNull(lastPurchaseItem.finalCost);
-
-        bundle = {
-          averageCost: avg,
-          averageCostC: avgC,
-          averageCostVM: avgVM,
-          averageCostCVM: avgCVM,
-          lastCost: lc,
-          lastCostC: null,
-          lastCostVM: lcvm,
-          lastCostCVM: null,
-        };
-      } else {
-        // 2) Fallback: use latest InventoryCount (opening count) before / on invoice date
-        const lastCount = await inventoryCountRepo
-          .createQueryBuilder('ic')
-          .where('ic.itemVariantId = :variantId', { variantId })
-          .andWhere('ic.date <= :invDate', { invDate: salesDate })
-          .orderBy('ic.date', 'DESC')
-          .addOrderBy('ic.id', 'DESC')
-          .getOne();
-
-        if (lastCount) {
-          const base = safeNumOrNull(lastCount.finalCost);
-          const baseOfr = safeNumOrNull(lastCount.finalCostOfr) ?? base;
-
-          bundle = {
-            averageCost: base,
-            averageCostC: baseOfr,
-            averageCostVM: null,
-            averageCostCVM: null,
-            lastCost: base,
-            lastCostC: baseOfr,
-            lastCostVM: null,
-            lastCostCVM: null,
-          };
-        }
-      }
-
-      if (!bundle) {
-        bundle = {
-          averageCost: null,
-          averageCostC: null,
-          averageCostVM: null,
-          averageCostCVM: null,
-          lastCost: null,
-          lastCostC: null,
-          lastCostVM: null,
-          lastCostCVM: null,
-        };
-      }
-
-      variantCostCache.set(variantId, bundle);
-    }
-
-    const itemsWithCosts = savedItems.map((item) => {
-      const costs = item.itemVariantId
-        ? variantCostCache.get(item.itemVariantId)
-        : undefined;
-
-      if (costs) {
-        item.averageCost = costs.averageCost;
-        item.averageCostC = costs.averageCostC;
-        item.averageCostVM = costs.averageCostVM;
-        item.averageCostCVM = costs.averageCostCVM;
-        item.lastCost = costs.lastCost;
-        item.lastCostC = costs.lastCostC;
-        item.lastCostVM = costs.lastCostVM;
-        item.lastCostCVM = costs.lastCostCVM;
-      }
-
-      return item;
-    });
-
-    await queryRunner.manager.save(InvoiceItem, itemsWithCosts);
-    console.log('✅ Cost fields populated on invoice items');
-    await this.fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
-  queryRunner,
-  new Date(savedInvoice.date),
-  savedItems, // or itemsWithCosts (ids must exist)
-);
-console.log('✅ Sibling PO average costs applied');
-
-
-    // -------------- INVENTORY TRANSACTIONS --------------
-// -------------- INVENTORY TRANSACTIONS (with stockMode rules) --------------
-// ===================== INVENTORY TRANSACTIONS =====================
-
-// 1) Build map: variantId -> item.stockMode (from DB)
-const stockModeMap = new Map<number, string>();
-
-if (Array.isArray(variantIds) && variantIds.length > 0) {
-  const rows = await queryRunner.manager
-    .getRepository(ItemVariant)
-    .createQueryBuilder("v")
-    .leftJoin("v.thickness", "th")
-    .leftJoin("th.item", "item")
-    .select("v.id", "id")
-    .addSelect("item.stockMode", "stockMode")
-    .where("v.id IN (:...ids)", { ids: variantIds })
-    .getRawMany();
-
-  for (const r of rows) {
-    const id = Number((r as any)?.id);
-    const mode = String((r as any)?.stockMode ?? "").trim().toLowerCase();
-    if (Number.isFinite(id) && id > 0) stockModeMap.set(id, mode);
-  }
-}
-
-// 2) Normalize modes
-const normalizeStockMode = (m: any) => {
-  const s = String(m ?? "").trim().toLowerCase();
-
-  // ✅ treat unit as qty-mode
-  if (s === "unit") return "qty";
-
-  // allow common values: sqm | qty | none
-  return s || "sqm"; // default to sqm
-};
-
-// 3) Build transactions
-const inventoryTransactions = (savedItems || [])
-  .map((item) => {
-    const vId = Number(item.itemVariantId);
-
-    const itemType = String((item as any)?.itemType ?? "").trim().toLowerCase();
-
-    // ✅ Prefer invoiceItem.stockMode first, fallback to DB item.stockMode
-    let mode = normalizeStockMode(
-      (item as any)?.stockMode ?? stockModeMap.get(vId)
+    // ✅ NEW: Fill ONLY average-cost snapshot from LAST EVENT (PO / Transfer / InventoryCount)
+    // ✅ Must be BEFORE creating Sales inventory transactions
+    await this.fillSalesInvoiceAvgCostsFromLastEvent(
+      queryRunner,
+      new Date(savedInvoice.date),
+      savedItems,
     );
+    console.log('✅ Avg cost snapshot saved on invoice items (last event)');
 
-    // ✅ Force unit to behave like qty stock
-    if (itemType === "unit") mode = "qty";
+    // -------------- INVENTORY TRANSACTIONS (with stockMode rules) --------------
+    // ===================== INVENTORY TRANSACTIONS =====================
 
-    // stockMode none → skip
-    if (mode === "none") {
-      console.log("⛔ Skipping inventory txn due to stockMode=none", {
-        vId,
-        itemType,
-        itemStockMode: (item as any)?.stockMode,
-        dbStockMode: stockModeMap.get(vId),
-      });
-      return null;
-    }
+    // 1) Build map: variantId -> item.stockMode (from DB)
+    const stockModeMap = new Map<number, string>();
 
-    let quantity = 0;
-    let sqm = 0;
-    let quantityofr = 0;
-    let sqmofr = 0;
+    if (Array.isArray(variantIds) && variantIds.length > 0) {
+      const rows = await queryRunner.manager
+        .getRepository(ItemVariant)
+        .createQueryBuilder('v')
+        .leftJoin('v.thickness', 'th')
+        .leftJoin('th.item', 'item')
+        .select('v.id', 'id')
+        .addSelect('item.stockMode', 'stockMode')
+        .where('v.id IN (:...ids)', { ids: variantIds })
+        .getRawMany();
 
-    const qtyLine = Number(item.quantity) || 0;
-    const sqmLine = Number(item.sqm) || 0;
-
-    // ✅ qty-mode: ONLY qty fields
-    if (mode === "qty") {
-      if (data.invoiceType === "RVR") {
-        quantity = -qtyLine;
-      } else if (data.invoiceType === "G") {
-        quantityofr = -qtyLine;
-      } else if (data.invoiceType === "S") {
-        quantity = -qtyLine;
-        quantityofr = -qtyLine;
-      }
-      // sqm/sqmofr remain 0
-    } else {
-      // ✅ sqm-mode (original logic)
-      if (data.invoiceType === "RVR") {
-        quantity = -qtyLine;
-        sqm = -sqmLine;
-      } else if (data.invoiceType === "G") {
-        quantityofr = -qtyLine;
-        sqmofr = -sqmLine;
-      } else if (data.invoiceType === "S") {
-        quantity = -qtyLine;
-        sqm = -sqmLine;
-        quantityofr = -qtyLine;
-        sqmofr = -sqmLine;
+      for (const r of rows) {
+        const id = Number((r as any)?.id);
+        const mode = String((r as any)?.stockMode ?? '').trim().toLowerCase();
+        if (Number.isFinite(id) && id > 0) stockModeMap.set(id, mode);
       }
     }
 
-    // ✅ optional: if BOTH qty and sqm are 0, skip (prevents useless txns)
-    if (
-      quantity === 0 &&
-      sqm === 0 &&
-      quantityofr === 0 &&
-      sqmofr === 0
-    ) {
-      console.log("⛔ Skipping inventory txn because all deltas are 0", {
-        vId,
-        itemType,
-        mode,
-        qtyLine,
-        sqmLine,
-        invoiceType: data.invoiceType,
-      });
-      return null;
+    // 2) Normalize modes
+    const normalizeStockMode = (m: any) => {
+      const s = String(m ?? '').trim().toLowerCase();
+
+      // ✅ treat unit as qty-mode
+      if (s === 'unit') return 'qty';
+
+      // allow common values: sqm | qty | none
+      return s || 'sqm'; // default to sqm
+    };
+
+    // 3) Build transactions
+    const inventoryTransactions = (savedItems || [])
+      .map((item) => {
+        const vId = Number(item.itemVariantId);
+
+        const itemType = String((item as any)?.itemType ?? '')
+          .trim()
+          .toLowerCase();
+
+        // ✅ Prefer invoiceItem.stockMode first, fallback to DB item.stockMode
+        let mode = normalizeStockMode(
+          (item as any)?.stockMode ?? stockModeMap.get(vId),
+        );
+
+        // ✅ Force unit to behave like qty stock
+        if (itemType === 'unit') mode = 'qty';
+
+        // stockMode none → skip
+        if (mode === 'none') {
+          console.log('⛔ Skipping inventory txn due to stockMode=none', {
+            vId,
+            itemType,
+            itemStockMode: (item as any)?.stockMode,
+            dbStockMode: stockModeMap.get(vId),
+          });
+          return null;
+        }
+
+        let quantity = 0;
+        let sqm = 0;
+        let quantityofr = 0;
+        let sqmofr = 0;
+
+        const qtyLine = Number(item.quantity) || 0;
+        const sqmLine = Number(item.sqm) || 0;
+
+        // ✅ qty-mode: ONLY qty fields
+        if (mode === 'qty') {
+          if (data.invoiceType === 'RVR') {
+            quantity = -qtyLine;
+          } else if (data.invoiceType === 'G') {
+            quantityofr = -qtyLine;
+          } else if (data.invoiceType === 'S') {
+            quantity = -qtyLine;
+            quantityofr = -qtyLine;
+          }
+          // sqm/sqmofr remain 0
+        } else {
+          // ✅ sqm-mode (original logic)
+          if (data.invoiceType === 'RVR') {
+            quantity = -qtyLine;
+            sqm = -sqmLine;
+          } else if (data.invoiceType === 'G') {
+            quantityofr = -qtyLine;
+            sqmofr = -sqmLine;
+          } else if (data.invoiceType === 'S') {
+            quantity = -qtyLine;
+            sqm = -sqmLine;
+            quantityofr = -qtyLine;
+            sqmofr = -sqmLine;
+          }
+        }
+
+        // ✅ optional: if BOTH qty and sqm are 0, skip (prevents useless txns)
+        if (quantity === 0 && sqm === 0 && quantityofr === 0 && sqmofr === 0) {
+          console.log('⛔ Skipping inventory txn because all deltas are 0', {
+            vId,
+            itemType,
+            mode,
+            qtyLine,
+            sqmLine,
+            invoiceType: data.invoiceType,
+          });
+          return null;
+        }
+
+        return queryRunner.manager
+          .getRepository(InventoryTransaction)
+          .create({
+            transactionType: 'Sales',
+            itemVariantId: item.itemVariantId,
+            itemBatchId: item.itemBatchId,
+            invoiceItemId: item.id,
+
+            quantity,
+            sqm,
+            quantityofr,
+            sqmofr,
+
+            transactionDate: new Date(),
+            dateForEachInvoice: new Date(savedInvoice.date),
+          });
+      })
+      .filter(Boolean) as InventoryTransaction[];
+
+    // 4) Save
+    if (inventoryTransactions.length) {
+      await queryRunner.manager.save(InventoryTransaction, inventoryTransactions);
     }
 
-    return queryRunner.manager
-      .getRepository(InventoryTransaction)
-      .create({
-        transactionType: "Sales",
-        itemVariantId: item.itemVariantId,
-        itemBatchId: item.itemBatchId,
-        invoiceItemId: item.id,
+    console.log('✅ Inventory transactions saved:', inventoryTransactions.length);
 
-        quantity,
-        sqm,
-        quantityofr,
-        sqmofr,
-
-        transactionDate: new Date(),
-        dateForEachInvoice: new Date(savedInvoice.date),
-      });
-  })
-  .filter(Boolean) as InventoryTransaction[];
-
-// 4) Save
-if (inventoryTransactions.length) {
-  await queryRunner.manager.save(InventoryTransaction, inventoryTransactions);
-}
-
-console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
-
-//----- UPDATE BATCH OUT/OUTOFR (or IN/INOFR for RVR) + BALANCES --------------
+    //----- UPDATE BATCH OUT/OUTOFR (or IN/INOFR for RVR) + BALANCES --------------
     const batchRepo = queryRunner.manager.getRepository(ItemBatch);
     const affectedVariantIds = new Set<number>();
 
@@ -621,9 +489,7 @@ console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
       variant.totalStart = Number(totalStart.toFixed(2));
       variant.totalIn = Number(totalIn.toFixed(2));
       variant.totalOut = Number(totalOut.toFixed(2));
-      variant.totalBalance = Number(
-        (totalStart + totalIn - totalOut).toFixed(2),
-      );
+      variant.totalBalance = Number((totalStart + totalIn - totalOut).toFixed(2));
 
       variant.totalStartOFR = Number(totalStartOFR.toFixed(2));
       variant.totalInOFR = Number(totalInOFR.toFixed(2));
@@ -650,9 +516,7 @@ console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
       ? parseInt(lastJV.jvNumber.split('-')[1]) + 1
       : 1;
 
-    const jvNumber = `${jvPrefix}${yearSuffix}-${String(
-      jvSequence,
-    ).padStart(3, '0')}`;
+    const jvNumber = `${jvPrefix}${yearSuffix}-${String(jvSequence).padStart(3, '0')}`;
     const currencyCode = data.currencyId === 2 ? 'LL' : 'USD';
     const useVAT = data.vatPercentage > 0;
     const rate = Number(data.currencyRate);
@@ -671,9 +535,7 @@ console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
       accountNumber: salesAccNumber,
     });
     if (!salesAccount)
-      throw new NotFoundException(
-        `Sales account ${salesAccNumber} not found`,
-      );
+      throw new NotFoundException(`Sales account ${salesAccNumber} not found`);
 
     const vatAccount = useVAT
       ? await this.accountRepo.findOneBy({ accountNumber: vatAccNumber })
@@ -692,24 +554,10 @@ console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
 
     const details: JournalVoucherDetail[] = [];
 
-    const getJVFields = (
-      type: 'dr' | 'cr',
-      val: number,
-      valLL: number,
-    ): Partial<JournalVoucherDetail> => {
+    const getJVFields = (type: 'dr' | 'cr', val: number, valLL: number): Partial<JournalVoucherDetail> => {
       const fields: any = {
-        dr: 0,
-        drUSD: 0,
-        drLL: 0,
-        drOFR: 0,
-        drUSDOFR: 0,
-        drLLOFR: 0,
-        cr: 0,
-        crUSD: 0,
-        crLL: 0,
-        crOFR: 0,
-        crUSDOFR: 0,
-        crLLOFR: 0,
+        dr: 0, drUSD: 0, drLL: 0, drOFR: 0, drUSDOFR: 0, drLLOFR: 0,
+        cr: 0, crUSD: 0, crLL: 0, crOFR: 0, crUSDOFR: 0, crLLOFR: 0,
       };
       if (type === 'dr') {
         if (isG) {
@@ -760,9 +608,7 @@ console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
     );
 
     const salesCrAmount = isG ? totalWithoutVAT + totalVAT : totalWithoutVAT;
-    const salesCrAmountLL = isG
-      ? totalWithoutVATLL + totalVATLL
-      : totalWithoutVATLL;
+    const salesCrAmountLL = isG ? totalWithoutVATLL + totalVATLL : totalWithoutVATLL;
 
     details.push(
       this.journalVoucherDetailRepo.create({
@@ -813,52 +659,47 @@ console.log("✅ Inventory transactions saved:", inventoryTransactions.length);
 
     console.log('🧾 payload.requestId =', data.requestId, 'type=', typeof data.requestId);
 
+    // ✅ Delete request if provided
+    if (data.requestId != null && String(data.requestId).trim() !== '') {
+      const reqId = Number(data.requestId);
 
-// ✅ Delete request if provided
-// ✅ Delete request if provided
-if (data.requestId != null && String(data.requestId).trim() !== '') {
-  const reqId = Number(data.requestId);
+      console.log('🗑️ attempting delete requestId=', reqId);
 
-  console.log('🗑️ attempting delete requestId=', reqId);
+      if (!Number.isInteger(reqId) || reqId <= 0) {
+        throw new BadRequestException(`Invalid requestId: ${data.requestId}`);
+      }
 
-  if (!Number.isInteger(reqId) || reqId <= 0) {
-    throw new BadRequestException(`Invalid requestId: ${data.requestId}`);
-  }
+      const reqRepo = queryRunner.manager.getRepository(RequestEntity);
+      const reqDetailRepo = queryRunner.manager.getRepository(RequestDetailEntity);
 
-  const reqRepo = queryRunner.manager.getRepository(RequestEntity);
-  const reqDetailRepo = queryRunner.manager.getRepository(RequestDetailEntity);
+      // 1) delete details by FK column (JoinColumn name = requestId)
+      const delDetails = await reqDetailRepo
+        .createQueryBuilder()
+        .delete()
+        .from(RequestDetailEntity)
+        .where('requestId = :reqId', { reqId })
+        .execute();
 
-  // 1) delete details by FK column (JoinColumn name = requestId)
-  const delDetails = await reqDetailRepo
-    .createQueryBuilder()
-    .delete()
-    .from(RequestDetailEntity)
-    .where('requestId = :reqId', { reqId })
-    .execute();
+      console.log('🧹 deleted request_details affected =', delDetails.affected);
 
-  console.log('🧹 deleted request_details affected =', delDetails.affected);
+      // 2) delete header
+      const delReq = await reqRepo
+        .createQueryBuilder()
+        .delete()
+        .from(RequestEntity)
+        .where('id = :reqId', { reqId })
+        .execute();
 
-  // 2) delete header
-  const delReq = await reqRepo
-    .createQueryBuilder()
-    .delete()
-    .from(RequestEntity)
-    .where('id = :reqId', { reqId })
-    .execute();
+      console.log('🧨 deleted request header affected =', delReq.affected);
 
-  console.log('🧨 deleted request header affected =', delReq.affected);
+      if (!delReq.affected) {
+        throw new BadRequestException(
+          `Request ${reqId} was not deleted (not found in DB/table).`,
+        );
+      }
 
-  if (!delReq.affected) {
-    // this means the row was NOT found in the table this repo points to
-    throw new BadRequestException(`Request ${reqId} was not deleted (not found in DB/table).`);
-  }
-
-  console.log(`✅ Deleted Request #${reqId} after invoice #${savedInvoice.id}`);
-}
-
-
-
-
+      console.log(`✅ Deleted Request #${reqId} after invoice #${savedInvoice.id}`);
+    }
 
     await queryRunner.commitTransaction();
     console.log('🎉 Invoice creation complete');
@@ -874,55 +715,28 @@ if (data.requestId != null && String(data.requestId).trim() !== '') {
 
 
 
-private async fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
+private async fillSalesInvoiceAvgCostsFromLastEvent(
   queryRunner: QueryRunner,
   invoiceDate: Date,
   savedItems: InvoiceItem[],
 ) {
-  const TAG = `[AVG-SIB-PO]`;
-  console.log(`${TAG} START`, {
-    invoiceDate,
-    savedItemsCount: savedItems?.length ?? 0,
-    savedItemIds: (savedItems || []).map(x => x.id),
-  });
+  const TAG = `[SALES-AVG-SNAPSHOT]`;
 
-  if (!savedItems?.length) {
-    console.log(`${TAG} EXIT: no savedItems`);
-    return;
-  }
+  if (!savedItems?.length) return;
 
-  const invDate = new Date(invoiceDate);
-  const cut = new Date(invDate);
+  const cut = new Date(invoiceDate);
   cut.setHours(23, 59, 59, 999);
+  const cutStr = cut.toISOString().slice(0, 10); // for DATE columns
 
-  const uniqVariantIds = Array.from(
-    new Set(savedItems.map(i => Number(i.itemVariantId)).filter(Boolean)),
-  );
+  const txRepo = queryRunner.manager.getRepository(InventoryTransaction);
+  const piiRepo = queryRunner.manager.getRepository(PurchaseInvoiceItem);
+  const tiRepo = queryRunner.manager.getRepository(TransferItem);
+  const icRepo = queryRunner.manager.getRepository(InventoryCount);
+  const vRepo = queryRunner.manager.getRepository(ItemVariant);
 
-  console.log(`${TAG} uniqVariantIds`, uniqVariantIds);
-
-  if (!uniqVariantIds.length) {
-    console.log(`${TAG} EXIT: no uniqVariantIds`);
-    return;
-  }
-
-  const normalizeOrigin = (o: any) => String(o ?? "").trim().toLowerCase();
-  const numKey = (v: any) => {
-    if (v === null || v === undefined) return "0";
-    const s = String(v).trim();
-    return s === "" ? "0" : s;
-  };
-  const familyKey = (v: any) =>
-    `${v.itemNameDescriptionId ?? 0}|${numKey(v.thicknessMm)}|${numKey(v.length)}|${numKey(v.width)}|${normalizeOrigin(v.origin)}`;
-
-  const toNumOrNull = (v: any) => {
+  const toNumOrNull = (v: any): number | null => {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
-  };
-
-  const safeNum = (v: any) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
   };
 
   const safeAvgOrNull = (sumVal: number, sumQty: number) => {
@@ -930,297 +744,155 @@ private async fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
     return sumVal / sumQty;
   };
 
-  // 1) load meta for ALL variants in the invoice
-  const metas = await queryRunner.manager
-    .getRepository(ItemVariant)
-    .createQueryBuilder("v")
-    .leftJoin("v.thickness", "t")
-    .select([
-      "v.id AS id",
-      "v.itemNameDescriptionId AS itemNameDescriptionId",
-      "t.thickness AS thicknessMm",
-      "v.length AS length",
-      "v.width AS width",
-      "v.origin AS origin",
-    ])
-    .where("v.id IN (:...ids)", { ids: uniqVariantIds })
-    .getRawMany();
+  const uniqVariantIds = Array.from(
+    new Set(savedItems.map((i) => Number(i.itemVariantId)).filter(Boolean)),
+  );
 
-  console.log(`${TAG} metas loaded`, {
-    count: metas?.length ?? 0,
-    sample: (metas || []).slice(0, 5),
-  });
-
-  const metaById = new Map<number, any>((metas || []).map((m: any) => [Number(m.id), m]));
-
-  // show if any invoice variant had NO meta
-  for (const vid of uniqVariantIds) {
-    if (!metaById.has(Number(vid))) {
-      console.warn(`${TAG} WARN: meta missing for variant`, vid);
-    }
-  }
-
-  // 2) group invoice items by family key (so we do 1 PO lookup per family)
-  const familyToInvoiceItemIds = new Map<string, number[]>();
-
-  for (const ii of savedItems) {
-    const vid = Number(ii.itemVariantId);
-    const meta = metaById.get(vid);
-    if (!meta) {
-      console.warn(`${TAG} SKIP invoiceItem meta missing`, {
-        invoiceItemId: ii.id,
-        itemVariantId: ii.itemVariantId,
-      });
-      continue;
-    }
-
-    const fk = familyKey(meta);
-    if (!fk || fk.trim() === "") {
-      console.warn(`${TAG} SKIP fk empty`, { invoiceItemId: ii.id, meta });
-      continue;
-    }
-
-    const arr = familyToInvoiceItemIds.get(fk) ?? [];
-    arr.push(Number(ii.id));
-    familyToInvoiceItemIds.set(fk, arr);
-
-    console.log(`${TAG} mapped invoiceItem -> family`, {
-      invoiceItemId: ii.id,
-      variantId: ii.itemVariantId,
-      fk,
-      meta,
-    });
-  }
-
-  console.log(`${TAG} families`, {
-    count: familyToInvoiceItemIds.size,
-    keys: Array.from(familyToInvoiceItemIds.keys()),
-  });
-
-  if (!familyToInvoiceItemIds.size) {
-    console.log(`${TAG} EXIT: no families built`);
-    return;
-  }
-
-  const variantRepo = queryRunner.manager.getRepository(ItemVariant);
-  const piiRepo = queryRunner.manager.getRepository(PurchaseInvoiceItem);
-  const iiRepo = queryRunner.manager.getRepository(InvoiceItem);
-  const icRepo = queryRunner.manager.getRepository(InventoryCount);
-
-  // cache: familyKey -> costs
-  const costCache = new Map<string, any>();
-
-  // helper: aggregate InventoryCount weighted sums for given variantIds
-  const getInvCountAggForVariantIds = async (ids: number[]) => {
-    if (!ids?.length) {
-      return { sumQtyOfr: 0, sumValOfr: 0, sumQtyVm: 0, sumValVm: 0 };
-    }
-
-    const raw = await icRepo
-      .createQueryBuilder("ic")
-      .leftJoin("ic.itemVariant", "iv")
-      .select("SUM(COALESCE(ic.sqmOfr,0))", "sumQtyOfr")
-      .addSelect("SUM(COALESCE(ic.sqmOfr,0) * COALESCE(ic.finalCostOfr,0))", "sumValOfr")
-      .addSelect("SUM(COALESCE(ic.sqm,0))", "sumQtyVm")
-      .addSelect("SUM(COALESCE(ic.sqm,0) * COALESCE(ic.finalCost,0))", "sumValVm")
-      .where("iv.id IN (:...ids)", { ids })
-      .getRawOne<{
-        sumQtyOfr?: string | number | null;
-        sumValOfr?: string | number | null;
-        sumQtyVm?: string | number | null;
-        sumValVm?: string | number | null;
-      }>();
-
-    return {
-      sumQtyOfr: safeNum(raw?.sumQtyOfr),
-      sumValOfr: safeNum(raw?.sumValOfr),
-      sumQtyVm: safeNum(raw?.sumQtyVm),
-      sumValVm: safeNum(raw?.sumValVm),
-    };
+  type AvgBundle = {
+    averageCost: number | null;
+    averageCostVM: number | null;
+    averageCostC: number | null;
+    averageCostCVM: number | null;
   };
 
-  for (const [fk, invoiceItemIds] of familyToInvoiceItemIds.entries()) {
-    console.log(`${TAG} --- family loop ---`, { fk, invoiceItemIds });
+  const cache = new Map<number, AvgBundle>();
 
-    const repIiId = invoiceItemIds[0];
-    const repIi = savedItems.find(x => Number(x.id) === repIiId);
-    if (!repIi) {
-      console.warn(`${TAG} SKIP: rep invoice item not found`, repIiId);
-      continue;
-    }
+  for (const variantId of uniqVariantIds) {
+    // ✅ last event before this invoice date
+    const lastTx = await txRepo
+      .createQueryBuilder('tx')
+      .where('tx.itemVariantId = :variantId', { variantId })
+      .andWhere('tx.dateForEachInvoice <= :cut', { cut: cutStr })
+      .andWhere(
+        new Brackets((b) => {
+          b.where('tx.purchaseInvoiceItemId IS NOT NULL')
+            .orWhere('tx.transferId IS NOT NULL')
+            .orWhere('tx.inventoryCountId IS NOT NULL');
+        }),
+      )
+      .orderBy('tx.dateForEachInvoice', 'DESC')
+      .addOrderBy('tx.id', 'DESC')
+      .getOne();
 
-    const repMeta = metaById.get(Number(repIi.itemVariantId));
-    if (!repMeta) {
-      console.warn(`${TAG} SKIP: rep meta missing`, {
-        repIiId,
-        repVariantId: repIi.itemVariantId,
-      });
-      continue;
-    }
+    let bundle: AvgBundle = {
+      averageCost: null,
+      averageCostVM: null,
+      averageCostC: null,
+      averageCostCVM: null,
+    };
 
-    console.log(`${TAG} repMeta`, repMeta);
-
-    // 3) find ALL variant IDs that belong to this family
-    const candidateVariants = await variantRepo
-      .createQueryBuilder("v")
-      .leftJoin("v.thickness", "t")
-      .select(["v.id AS id"])
-      .where("(v.itemNameDescriptionId <=> :d)", { d: repMeta.itemNameDescriptionId ?? null })
-      .andWhere("t.thickness = :tm", { tm: repMeta.thicknessMm })
-      .andWhere("v.length = :l", { l: repMeta.length })
-      .andWhere("v.width = :w", { w: repMeta.width })
-      .andWhere("LOWER(TRIM(COALESCE(v.origin,''))) = :o", { o: normalizeOrigin(repMeta.origin) })
-      .getRawMany();
-
-    const candidateIds = Array.from(
-      new Set((candidateVariants || []).map((r: any) => Number(r.id)).filter(Boolean)),
-    );
-
-    console.log(`${TAG} candidateIds`, {
-      fk,
-      count: candidateIds.length,
-      ids: candidateIds,
-    });
-
-    if (!candidateIds.length) {
-      console.warn(`${TAG} WARN: no siblings found for family`, { fk, repMeta });
-      continue;
-    }
-
-    // 4) get latest PO costs among ANY sibling variant
-    let costs = costCache.get(fk);
-    if (!costs) {
-      console.log(`${TAG} querying latest PO cost`, {
-        fk,
-        cut,
-        candidateIds,
+    if (lastTx?.purchaseInvoiceItemId) {
+      // ✅ last event = PO → take avg costs directly from that PO row
+      const pii = await piiRepo.findOne({
+        where: { id: Number(lastTx.purchaseInvoiceItemId) } as any,
       });
 
-      const row = await piiRepo
-        .createQueryBuilder("pii")
-        .innerJoin("pii.invoice", "pi")
-        .select([
-          "pi.id AS piId",
-          "pi.date AS piDate",
-          "pi.type AS piType",
-          "pi.status AS piStatus",
-          "pii.id AS piiId",
-          "pii.itemVariantId AS piiVariantId",
-          "pii.averageCost AS averageCost",
-          "pii.averageCostC AS averageCostC",
-          "pii.averageCostVM AS averageCostVM",
-          "pii.averageCostCVM AS averageCostCVM",
-        ])
-        .where("pii.itemVariantId IN (:...ids)", { ids: candidateIds })
-        .andWhere("pi.status = :st", { st: "Recieved" })
-        .andWhere("pi.type IN (:...types)", { types: ["S", "G", "SR","RVR"] })
-        .andWhere("pi.date <= :cut", { cut })
-        .orderBy("pi.date", "DESC")
-        .addOrderBy("pi.id", "DESC")
-        .addOrderBy("pii.id", "DESC")
-        .getRawOne();
-
-      console.log(`${TAG} latest PO row`, row);
-
-      const poCostsParsed = {
-        averageCost: toNumOrNull((row as any)?.averageCost),
-        averageCostC: toNumOrNull((row as any)?.averageCostC),
-        averageCostVM: toNumOrNull((row as any)?.averageCostVM),
-        averageCostCVM: toNumOrNull((row as any)?.averageCostCVM),
-      };
-
-      const poRowMissing =
-        !row ||
-        (poCostsParsed.averageCost == null &&
-          poCostsParsed.averageCostC == null &&
-          poCostsParsed.averageCostVM == null &&
-          poCostsParsed.averageCostCVM == null);
-
-      // ✅ NEW: fallback to InventoryCount when NO PO found
-      if (poRowMissing) {
-        console.warn(`${TAG} NO PO FOUND for family → falling back to InventoryCount`, {
-          fk,
-          candidateIds,
-          descId: repMeta.itemNameDescriptionId ?? null,
-        });
-
-        // (A) variant-level fallback from InventoryCount for the sibling variants (candidateIds)
-        const aggVar = await getInvCountAggForVariantIds(candidateIds);
-
-        const avgOfrFromCounts = safeAvgOrNull(aggVar.sumValOfr, aggVar.sumQtyOfr);
-        const avgVmFromCounts = safeAvgOrNull(aggVar.sumValVm, aggVar.sumQtyVm);
-
-        console.log(`${TAG} InventoryCount VAR agg`, {
-          fk,
-          aggVar,
-          avgOfrFromCounts,
-          avgVmFromCounts,
-        });
-
-        // (B) description-level fallback from InventoryCount for ALL variants under same description
-        const descVariantRows = await variantRepo
-          .createQueryBuilder("v")
-          .select(["v.id AS id"])
-          .where("(v.itemNameDescriptionId <=> :d)", { d: repMeta.itemNameDescriptionId ?? null })
-          .getRawMany();
-
-        const descVariantIds = Array.from(
-          new Set((descVariantRows || []).map((r: any) => Number(r.id)).filter(Boolean)),
-        );
-
-        const aggDesc = await getInvCountAggForVariantIds(descVariantIds);
-
-        const avgCFromCounts = safeAvgOrNull(aggDesc.sumValOfr, aggDesc.sumQtyOfr);   // C uses OFR fields
-        const avgCvmFromCounts = safeAvgOrNull(aggDesc.sumValVm, aggDesc.sumQtyVm);   // CVM uses VM fields
-
-        console.log(`${TAG} InventoryCount DESC agg`, {
-          fk,
-          descId: repMeta.itemNameDescriptionId ?? null,
-          descVariantIdsCount: descVariantIds.length,
-          aggDesc,
-          avgCFromCounts,
-          avgCvmFromCounts,
-        });
-
-        costs = {
-          averageCost: avgOfrFromCounts,
-          averageCostVM: avgVmFromCounts,
-          averageCostC: avgCFromCounts,
-          averageCostCVM: avgCvmFromCounts,
+      if (pii) {
+        bundle = {
+          averageCost: toNumOrNull((pii as any).averageCost),
+          averageCostVM: toNumOrNull((pii as any).averageCostVM),
+          averageCostC: toNumOrNull((pii as any).averageCostC),
+          averageCostCVM: toNumOrNull((pii as any).averageCostCVM),
         };
-
-        console.log(`${TAG} costs resolved from InventoryCount fallback`, { fk, costs });
-      } else {
-        costs = poCostsParsed;
-        console.log(`${TAG} parsed costs from PO`, { fk, costs });
       }
+    } else if (lastTx?.transferId) {
+      // ✅ last event = Transfer → take avg costs from TransferItem
+      const where: any = {
+        transferId: Number(lastTx.transferId),
+        itemVariantId: Number(variantId),
+      };
+      // if your tx stores itemBatchId, this makes it even more accurate
+      if ((lastTx as any).itemBatchId) where.itemBatchId = Number((lastTx as any).itemBatchId);
 
-      costCache.set(fk, costs);
-    } else {
-      console.log(`${TAG} cache hit`, { fk, costs });
+      const ti = await tiRepo.findOne({ where });
+
+      if (ti) {
+        bundle = {
+          averageCost: toNumOrNull((ti as any).averageCost),
+          averageCostVM: toNumOrNull((ti as any).averageCostVM),
+          averageCostC: toNumOrNull((ti as any).averageCostC),
+          averageCostCVM: toNumOrNull((ti as any).averageCostCVM),
+        };
+      }
+    } else if (lastTx?.inventoryCountId) {
+      // ✅ last event = InventoryCount / OpeningCount
+      // your rule:
+      // finalCostOfr = averageCost (base)
+      // finalCost    = averageCostVM
+      const ic = await icRepo.findOne({
+        where: { id: Number(lastTx.inventoryCountId) } as any,
+      });
+
+      if (ic) {
+        bundle.averageCost = toNumOrNull((ic as any).finalCostOfr);
+        bundle.averageCostVM = toNumOrNull((ic as any).finalCost);
+
+        // ✅ derive C / CVM from InventoryCount like your PO fallback (DESC-level weighted avg)
+        const v = await vRepo.findOne({
+          where: { id: variantId } as any,
+          select: ['id', 'itemNameDescriptionId'] as any,
+        });
+
+        const descId = Number((v as any)?.itemNameDescriptionId || 0);
+        if (descId) {
+          const descVariantRows = await vRepo
+            .createQueryBuilder('v')
+            .select(['v.id AS id'])
+            .where('v.itemNameDescriptionId = :d', { d: descId })
+            .getRawMany();
+
+          const descVariantIds = Array.from(
+            new Set((descVariantRows || []).map((r: any) => Number(r.id)).filter(Boolean)),
+          );
+
+          if (descVariantIds.length) {
+            const raw = await icRepo
+              .createQueryBuilder('ic')
+              .select('SUM(COALESCE(ic.sqmOfr,0))', 'sumQtyOfr')
+              .addSelect('SUM(COALESCE(ic.sqmOfr,0) * COALESCE(ic.finalCostOfr,0))', 'sumValOfr')
+              .addSelect('SUM(COALESCE(ic.sqm,0))', 'sumQtyVm')
+              .addSelect('SUM(COALESCE(ic.sqm,0) * COALESCE(ic.finalCost,0))', 'sumValVm')
+              .where('ic.itemVariantId IN (:...ids)', { ids: descVariantIds })
+              .andWhere('ic.date <= :cut', { cut: cutStr })
+              .getRawOne<any>();
+
+            const sumQtyOfr = Number(raw?.sumQtyOfr ?? 0);
+            const sumValOfr = Number(raw?.sumValOfr ?? 0);
+            const sumQtyVm = Number(raw?.sumQtyVm ?? 0);
+            const sumValVm = Number(raw?.sumValVm ?? 0);
+
+            bundle.averageCostC = safeAvgOrNull(sumValOfr, sumQtyOfr);   // C uses OFR lane
+            bundle.averageCostCVM = safeAvgOrNull(sumValVm, sumQtyVm);   // CVM uses VM lane
+          }
+        }
+      }
     }
 
-    // 5) update all invoice items of that family
-    const res = await iiRepo.update(
-      { id: In(invoiceItemIds) },
-      {
-        averageCost: costs.averageCost,
-        averageCostC: costs.averageCostC,
-        averageCostVM: costs.averageCostVM,
-        averageCostCVM: costs.averageCostCVM,
-      } as any,
-    );
-
-    console.log(`${TAG} update result`, {
-      fk,
-      invoiceItemIds,
-      affected: (res as any)?.affected,
-      raw: res,
-    });
+    cache.set(variantId, bundle);
   }
 
-  console.log(`${TAG} END`);
+  // ✅ apply to invoice items (NO siblings, per-variant)
+  for (const ii of savedItems) {
+    const vid = Number(ii.itemVariantId);
+    const b = cache.get(vid);
+    if (!b) continue;
+
+    ii.averageCost = b.averageCost;
+    ii.averageCostVM = b.averageCostVM;
+    ii.averageCostC = b.averageCostC;
+    ii.averageCostCVM = b.averageCostCVM;
+
+    // you said: no need for last cost in snapshot
+    ii.lastCost = null;
+    ii.lastCostVM = null;
+    ii.lastCostC = null;
+    ii.lastCostCVM = null;
+  }
+
+  await queryRunner.manager.save(InvoiceItem, savedItems);
+  console.log(`${TAG} done`, { count: savedItems.length, cut: cutStr });
 }
+
 
 
 
@@ -2515,7 +2187,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
     const fromPayload = parseStockMode(opts.payloadMode);
     if (fromPayload === 'none') return 'none'; // ✅ HARD STOP
-    if (itemType === 'unit') return 'qty';     // ✅ unit default
+    if (itemType === 'unit') return 'qty'; // ✅ unit default
 
     const fromDb = parseStockMode(opts.dbMode);
     return fromPayload ?? fromDb ?? 'sqm';
@@ -2565,10 +2237,6 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     const sqmPieceRepo = queryRunner.manager.getRepository(SqmPiece);
     const jvRepo = queryRunner.manager.getRepository(JournalVoucher);
     const jvDetailRepo = queryRunner.manager.getRepository(JournalVoucherDetail);
-    const purchaseItemRepo =
-      queryRunner.manager.getRepository<PurchaseInvoiceItem>('PurchaseInvoiceItem');
-    const inventoryCountRepo =
-      queryRunner.manager.getRepository<InventoryCount>('InventoryCount');
 
     const existingInvoice = await invoiceRepo.findOne({
       where: { id: invoiceId },
@@ -2625,7 +2293,10 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
       // ✅ if item stockMode is NONE, we must NOT touch batch / sqm piece during unapply
       if (oldMode === 'none') {
-        console.log('↩️ Skipping unapply for old item (stockMode=NONE):', (oldItem as any).id);
+        console.log(
+          '↩️ Skipping unapply for old item (stockMode=NONE):',
+          (oldItem as any).id,
+        );
         continue;
       }
 
@@ -2652,7 +2323,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
           console.log(
             `🔙 SQM piece #${(piece as any).id}: rollback +${qtySqm.toFixed(
               4,
-            )}, remaining=${newRemaining.toFixed(4)}, soldTotal=${newSold.toFixed(4)}`,
+            )}, remaining=${newRemaining.toFixed(
+              4,
+            )}, soldTotal=${newSold.toFixed(4)}`,
           );
         }
       }
@@ -2670,7 +2343,8 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
         );
       }
 
-      const variantId = (batch as any).itemVariant?.id ?? (oldItem as any).itemVariantId;
+      const variantId =
+        (batch as any).itemVariant?.id ?? (oldItem as any).itemVariantId;
       if (variantId) affectedVariantIds.add(variantId);
 
       // ✅ moveVal depends on stockMode
@@ -2689,12 +2363,12 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
       // ✅ FIX: counters never negative (use addCounter)
       if (oldInvoiceType === 'S') {
-        (batch as any).out    = addCounter((batch as any).out,    -moveVal);
+        (batch as any).out = addCounter((batch as any).out, -moveVal);
         (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
       } else if (oldInvoiceType === 'G') {
         (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
       } else if (oldInvoiceType === 'RVR') {
-        (batch as any).in     = addCounter((batch as any).in,     -moveVal);
+        (batch as any).in = addCounter((batch as any).in, -moveVal);
       }
 
       const start = num((batch as any).start);
@@ -2708,19 +2382,33 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       (batch as any).balance = to2(start + inStd - outStd);
       (batch as any).balanceOFR = to2(startO + inO - outO);
 
-      const chk: (keyof ItemBatch)[] = ['in', 'out', 'balance', 'inOFR', 'outOFR', 'balanceOFR'];
+      const chk: (keyof ItemBatch)[] = [
+        'in',
+        'out',
+        'balance',
+        'inOFR',
+        'outOFR',
+        'balanceOFR',
+      ];
       for (const key of chk) {
         const val = Number((batch as any)[key]);
         if (!Number.isFinite(val)) {
           console.error(`❌ NaN @ unapply.batch.${String(key)}`, batch);
           throw new BadRequestException(
-            `Cannot save NaN in ItemBatch.${String(key)} (batchId=${(batch as any).id})`,
+            `Cannot save NaN in ItemBatch.${String(key)} (batchId=${
+              (batch as any).id
+            })`,
           );
         }
       }
 
       await batchRepo.save(batch);
-      console.log('🔙 Unapplied batch for old item:', (oldItem as any).id, 'mode=', oldMode);
+      console.log(
+        '🔙 Unapplied batch for old item:',
+        (oldItem as any).id,
+        'mode=',
+        oldMode,
+      );
     }
 
     // 🔁 Delete inventory transactions for old items
@@ -2765,7 +2453,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
       if (item.itemVariantId === undefined || item.itemBatchId === undefined) {
         console.error(`❌ Missing required field in item[${index}]`, item);
-        throw new BadRequestException(`Missing required fields in item[${index}]`);
+        throw new BadRequestException(
+          `Missing required fields in item[${index}]`,
+        );
       }
 
       const isUnit = String(item.itemType ?? '').trim().toLowerCase() === 'unit';
@@ -2776,7 +2466,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
       if (sqmForSave === undefined || qtyForSave === undefined) {
         console.error(`❌ Missing qty/sqm in item[${index}]`, item);
-        throw new BadRequestException(`Missing required fields in item[${index}]`);
+        throw new BadRequestException(
+          `Missing required fields in item[${index}]`,
+        );
       }
 
       const parsed = invoiceItemRepo.create({
@@ -2804,7 +2496,19 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     });
 
     const savedItems = await invoiceItemRepo.save(incomingItems as any);
-    console.log('✅ New invoice items saved:', (savedItems as any[]).map((i) => (i as any).id));
+    console.log(
+      '✅ New invoice items saved:',
+      (savedItems as any[]).map((i) => (i as any).id),
+    );
+
+    // ✅ Variant IDs used later for metaMapNew + batch updates
+    const variantIds: number[] = Array.from(
+      new Set(
+        (savedItems as any[])
+          .map((it) => Number((it as any).itemVariantId))
+          .filter((x) => Number.isInteger(x) && x > 0),
+      ),
+    );
 
     /* -----------------------------------------------------------
        4) APPLY SQM PIECES FOR NEW ITEMS
@@ -2815,7 +2519,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
         const sqmPieceId: number | undefined =
           src.sqmPieceId ??
-          (src.sqmPiece && typeof src.sqmPiece.id === 'number' ? src.sqmPiece.id : undefined);
+          (src.sqmPiece && typeof src.sqmPiece.id === 'number'
+            ? src.sqmPiece.id
+            : undefined);
 
         if (!sqmPieceId) continue;
 
@@ -2824,7 +2530,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
         const piece = await sqmPieceRepo.findOne({ where: { id: sqmPieceId } });
         if (!piece) {
-          throw new BadRequestException(`SQM piece ${sqmPieceId} not found for item[${index}].`);
+          throw new BadRequestException(
+            `SQM piece ${sqmPieceId} not found for item[${index}].`,
+          );
         }
 
         const remainingBefore = num((piece as any).sqmRemaining);
@@ -2832,14 +2540,17 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
         if (lineSqm > remainingBefore + 0.0001) {
           throw new BadRequestException(
-            `Item[${index + 1}] sqm (${lineSqm.toFixed(4)}) exceeds remaining sqm (${remainingBefore.toFixed(
+            `Item[${index + 1}] sqm (${lineSqm.toFixed(
+              4,
+            )}) exceeds remaining sqm (${remainingBefore.toFixed(
               4,
             )}) for SQM piece #${sqmPieceId}.`,
           );
         }
 
         const newRemainingRaw = remainingBefore - lineSqm;
-        const newRemaining = newRemainingRaw <= 0.0001 ? 0 : Number(newRemainingRaw.toFixed(4));
+        const newRemaining =
+          newRemainingRaw <= 0.0001 ? 0 : Number(newRemainingRaw.toFixed(4));
         const newSold = Number((soldBefore + lineSqm).toFixed(4));
 
         (piece as any).sqmRemaining = newRemaining;
@@ -2851,122 +2562,17 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     }
 
     /* -----------------------------------------------------------
-       5) FILL COST FIELDS ON NEW INVOICE ITEMS (unchanged)
+       5) ✅ NEW: FILL AVG COST SNAPSHOT FROM LAST EVENT (PO / Transfer / InventoryCount)
+          - NO siblings
+          - NO lastCost fields
+          - must be BEFORE creating Sales inventory tx
        ----------------------------------------------------------- */
-    type CostBundle = {
-      averageCost: number | null;
-      averageCostC: number | null;
-      averageCostVM: number | null;
-      averageCostCVM: number | null;
-      lastCost: number | null;
-      lastCostC: number | null;
-      lastCostVM: number | null;
-      lastCostCVM: number | null;
-    };
-
-    const safeNumOrNull = (v: any): number | null => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    };
-
-    const salesDate = new Date((savedInvoice as any).date);
-    const uniqueVariantIds = new Set<number>();
-    for (const it of savedItems as any[]) {
-      if (typeof (it as any).itemVariantId === 'number')
-        uniqueVariantIds.add((it as any).itemVariantId);
-    }
-    const variantIds: number[] = Array.from(uniqueVariantIds);
-
-    const variantCostCache = new Map<number, CostBundle>();
-
-    for (const variantId of variantIds) {
-      let bundle: CostBundle | null = null;
-
-      const lastPurchaseItem = await purchaseItemRepo
-        .createQueryBuilder('pi')
-        .innerJoin('pi.invoice', 'pinv')
-        .where('pi.itemVariantId = :variantId', { variantId })
-        .andWhere('pinv.date <= :invDate', { invDate: salesDate })
-        .andWhere('pinv.type IN (:...types)', { types: ['S', 'G', 'SR'] })
-        .orderBy('pinv.date', 'DESC')
-        .addOrderBy('pinv.id', 'DESC')
-        .getOne();
-
-      if (lastPurchaseItem) {
-        const avg = safeNumOrNull((lastPurchaseItem as any).averageCost);
-        const avgC = safeNumOrNull((lastPurchaseItem as any).averageCostC);
-        const avgVM = safeNumOrNull((lastPurchaseItem as any).averageCostVM);
-        const avgCVM = safeNumOrNull((lastPurchaseItem as any).averageCostCVM);
-        const lc = safeNumOrNull((lastPurchaseItem as any).finalOFR);
-        const lcvm = safeNumOrNull((lastPurchaseItem as any).finalCost);
-
-        bundle = {
-          averageCost: avg,
-          averageCostC: avgC,
-          averageCostVM: avgVM,
-          averageCostCVM: avgCVM,
-          lastCost: lc,
-          lastCostC: null,
-          lastCostVM: lcvm,
-          lastCostCVM: null,
-        };
-      } else {
-        const lastCount = await inventoryCountRepo
-          .createQueryBuilder('ic')
-          .where('ic.itemVariantId = :variantId', { variantId })
-          .andWhere('ic.date <= :invDate', { invDate: salesDate })
-          .orderBy('ic.date', 'DESC')
-          .addOrderBy('ic.id', 'DESC')
-          .getOne();
-
-        if (lastCount) {
-          const base = safeNumOrNull((lastCount as any).finalCost);
-          const baseOfr = safeNumOrNull((lastCount as any).finalCostOfr) ?? base;
-
-          bundle = {
-            averageCost: base,
-            averageCostC: baseOfr,
-            averageCostVM: null,
-            averageCostCVM: null,
-            lastCost: base,
-            lastCostC: baseOfr,
-            lastCostVM: null,
-            lastCostCVM: null,
-          };
-        }
-      }
-
-      if (!bundle) {
-        bundle = {
-          averageCost: null,
-          averageCostC: null,
-          averageCostVM: null,
-          averageCostCVM: null,
-          lastCost: null,
-          lastCostC: null,
-          lastCostVM: null,
-          lastCostCVM: null,
-        };
-      }
-
-      variantCostCache.set(variantId, bundle);
-    }
-
-    const itemsWithCosts = (savedItems as any[]).map((item) => {
-      const costs = item.itemVariantId ? variantCostCache.get(item.itemVariantId) : undefined;
-      if (costs) Object.assign(item, costs);
-      return item;
-    });
-
-    await invoiceItemRepo.save(itemsWithCosts as any);
-    console.log('✅ Cost fields populated on invoice items');
-    await this.fillSalesInvoiceItemAvgCostsFromAnySiblingPO(
-  queryRunner,
-  new Date((savedInvoice as any).date),
-  savedItems as any,
-);
-console.log('✅ Sibling PO average costs applied');
-
+    await this.fillSalesInvoiceAvgCostsFromLastEvent(
+      queryRunner,
+      new Date((savedInvoice as any).date),
+      savedItems as any,
+    );
+    console.log('✅ Avg cost snapshot saved on invoice items (last event)');
 
     // ✅ meta map for NEW items (stockMode + itemType from DB)
     const metaMapNew = await buildVariantMetaMap(variantIds);
@@ -2981,7 +2587,9 @@ console.log('✅ Sibling PO average costs applied');
       const vId = Number(item.itemVariantId);
       const meta = metaMapNew.get(vId);
 
-      const itemType = String(src.itemType ?? meta?.itemType ?? '').trim().toLowerCase();
+      const itemType = String(src.itemType ?? meta?.itemType ?? '')
+        .trim()
+        .toLowerCase();
 
       const mode = resolveStockMode({
         itemType,
@@ -3044,7 +2652,10 @@ console.log('✅ Sibling PO average costs applied');
     if (newInventoryTransactions.length) {
       await invTxRepo.save(newInventoryTransactions as any);
     }
-    console.log('✅ Inventory transactions saved (new):', newInventoryTransactions.length);
+    console.log(
+      '✅ Inventory transactions saved (new):',
+      newInventoryTransactions.length,
+    );
 
     /* -----------------------------------------------------------
        7) APPLY NEW BATCH MOVEMENTS & RECOMPUTE VARIANT TOTALS
@@ -3061,12 +2672,17 @@ console.log('✅ Sibling PO average costs applied');
         where: { id: item.itemBatchId },
         relations: ['itemVariant'],
       });
-      if (!batch) throw new NotFoundException(`ItemBatch ${item.itemBatchId} not found while applying`);
+      if (!batch)
+        throw new NotFoundException(
+          `ItemBatch ${item.itemBatchId} not found while applying`,
+        );
 
       const variantId = (batch as any).itemVariant?.id ?? item.itemVariantId;
       if (variantId) affectedVariantIds.add(variantId);
 
-      const itemType = String(src.itemType ?? meta?.itemType ?? '').trim().toLowerCase();
+      const itemType = String(src.itemType ?? meta?.itemType ?? '')
+        .trim()
+        .toLowerCase();
 
       const mode = resolveStockMode({
         itemType,
@@ -3087,12 +2703,12 @@ console.log('✅ Sibling PO average costs applied');
 
       // ✅ FIX: update totals with addCounter (never negative)
       if ((savedInvoice as any).invoiceType === 'S') {
-        (batch as any).out    = addCounter((batch as any).out,    +moveVal);
+        (batch as any).out = addCounter((batch as any).out, +moveVal);
         (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
       } else if ((savedInvoice as any).invoiceType === 'G') {
         (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
       } else if ((savedInvoice as any).invoiceType === 'RVR') {
-        (batch as any).in     = addCounter((batch as any).in,     +moveVal);
+        (batch as any).in = addCounter((batch as any).in, +moveVal);
       }
 
       const start = num((batch as any).start);
@@ -3106,7 +2722,14 @@ console.log('✅ Sibling PO average costs applied');
       (batch as any).balance = to2(start + inStd - outStd);
       (batch as any).balanceOFR = to2(startO + inO - outO);
 
-      const chk2: (keyof ItemBatch)[] = ['in', 'out', 'balance', 'inOFR', 'outOFR', 'balanceOFR'];
+      const chk2: (keyof ItemBatch)[] = [
+        'in',
+        'out',
+        'balance',
+        'inOFR',
+        'outOFR',
+        'balanceOFR',
+      ];
       for (const key of chk2) {
         const val = Number((batch as any)[key]);
         if (!Number.isFinite(val)) {
@@ -3336,6 +2959,8 @@ console.log('✅ Sibling PO average costs applied');
     await queryRunner.release();
   }
 }
+
+
 
 
 async createReturnInvoice(

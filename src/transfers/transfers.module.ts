@@ -1,5 +1,5 @@
 // src/transfers/transfers.module.ts
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Transfer } from '../entities/inventory/transfer.entity';
 import { TransferItem } from '../entities/inventory/transferItem.entity';
@@ -16,6 +16,8 @@ import { InvoiceItem } from 'src/entities/invoiceItem.entity';
 import { InventoryCount } from 'src/entities/inventory/count.entity';
 import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+
+import { RecomputeModule } from 'src/recomputeTransfersAndPurchases/recompute.module';
 
 @Module({
   imports: [
@@ -34,9 +36,11 @@ import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.
       ItemNameDescription,
     ]),
     InventoryTransactionModule,
+
+    forwardRef(() => RecomputeModule),
   ],
   providers: [TransfersService],
   controllers: [TransfersController],
-  exports: [TransfersService], 
+  exports: [TransfersService],
 })
 export class TransfersModule {}

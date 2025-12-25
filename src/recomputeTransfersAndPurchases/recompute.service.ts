@@ -16,6 +16,12 @@ import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invo
 import { TransfersService } from '../transfers/transfers.service';
 import { PurchaseInvoiceService } from 'src/Purchase-invoice/purchase-invoice.service';
 
+import { Invoice } from 'src/entities/invoice.entity';
+import { InvoiceItem } from 'src/entities/invoiceItem.entity';
+import { InventoryCount } from 'src/entities/inventory/count.entity'; 
+import { Brackets } from 'typeorm';
+
+
 type EventRow = {
   type: 'purchase' | 'transfer';
   id: number;
@@ -52,6 +58,16 @@ export class RecomputeCostsService {
 
     @InjectRepository(PurchaseInvoiceItem)
     private readonly purchaseItemRepo: Repository<PurchaseInvoiceItem>,
+
+    @InjectRepository(Invoice)
+private readonly salesInvoiceRepo: Repository<Invoice>,
+
+@InjectRepository(InvoiceItem)
+private readonly salesInvoiceItemRepo: Repository<InvoiceItem>,
+
+@InjectRepository(InventoryCount)
+private readonly countRepo: Repository<InventoryCount>,
+
 
     private readonly transfersService: TransfersService,
     private readonly purchaseService: PurchaseInvoiceService,
@@ -106,6 +122,8 @@ export class RecomputeCostsService {
         transfersDone++;
       }
     }
+    await this.refreshSalesInvoiceItemAvgSnapshots(from);
+
 
     return {
       from,
@@ -115,6 +133,344 @@ export class RecomputeCostsService {
       transfersDone,
     };
   }
+
+
+
+private async refreshSalesInvoiceItemAvgSnapshots(from: Date) {
+  const TAG = `[RECOMP-SALES-SNAPSHOT]`;
+
+  // Fetch all sales invoices from "from" date
+  const invoiceIdsRaw = await this.salesInvoiceRepo
+    .createQueryBuilder('inv')
+    .select('inv.id', 'id')
+    .where('inv.date >= :from', { from })
+    .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G', 'RVR'] })
+    .getRawMany<{ id: string }>();
+
+  const invoiceIds = invoiceIdsRaw.map((r) => Number(r.id)).filter(Number.isFinite);
+
+  console.log(`${TAG} invoices to refresh:`, invoiceIds.length);
+  if (!invoiceIds.length) return;
+
+  const CHUNK = 200;
+
+  const toNumOrNull = (v: any): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const safeAvgOrNull = (sumVal: number, sumQty: number) => {
+    if (!Number.isFinite(sumVal) || !Number.isFinite(sumQty) || sumQty <= 0) return null;
+    return sumVal / sumQty;
+  };
+
+  // helper: fetch last tx, with the ability to skip “source side” of special transfers
+  const getLastCostEventTx = async (variantId: number, cutStr: string) => {
+    let last = await this.txRepo
+      .createQueryBuilder('tx')
+      .where('tx.itemVariantId = :variantId', { variantId })
+      .andWhere('tx.dateForEachInvoice <= :cut', { cut: cutStr })
+      .andWhere(
+        new Brackets((b) => {
+          b.where('tx.purchaseInvoiceItemId IS NOT NULL')
+            .orWhere('tx.transferId IS NOT NULL')
+            .orWhere('tx.inventoryCountId IS NOT NULL');
+        }),
+      )
+      .orderBy('tx.dateForEachInvoice', 'DESC')
+      .addOrderBy('tx.id', 'DESC')
+      .getOne();
+
+    // Skip loop (max a few hops, prevents infinite loop)
+    for (let hop = 0; hop < 6 && last?.transferId; hop++) {
+      const tid = Number((last as any).transferId);
+      const txType = String((last as any).transactionType || '');
+      const transfer = await this.transferRepo.findOne({
+        where: { id: tid } as any,
+        select: ['id', 'location'] as any,
+      });
+
+      const loc = String((transfer as any)?.location || '').toUpperCase();
+
+      const isSpecial = loc === 'JF' || loc === 'FJ' || loc === 'BOSTS';
+
+      // ✅ For special transfers: ignore the SOURCE side (MovedFrom) as a “cost event”
+      if (isSpecial && txType === 'MovedFrom') {
+        const lastId = Number((last as any).id);
+        const lastDate = String((last as any).dateForEachInvoice);
+
+        last = await this.txRepo
+          .createQueryBuilder('tx')
+          .where('tx.itemVariantId = :variantId', { variantId })
+          .andWhere('tx.dateForEachInvoice <= :cut', { cut: cutStr })
+          .andWhere(
+            new Brackets((b) => {
+              b.where('tx.purchaseInvoiceItemId IS NOT NULL')
+                .orWhere('tx.transferId IS NOT NULL')
+                .orWhere('tx.inventoryCountId IS NOT NULL');
+            }),
+          )
+          .andWhere(
+            new Brackets((b) => {
+              // strictly earlier than the “skipped” one
+              b.where('tx.dateForEachInvoice < :d', { d: lastDate }).orWhere(
+                new Brackets((b2) => {
+                  b2.where('tx.dateForEachInvoice = :d', { d: lastDate }).andWhere('tx.id < :id', {
+                    id: lastId,
+                  });
+                }),
+              );
+            }),
+          )
+          .orderBy('tx.dateForEachInvoice', 'DESC')
+          .addOrderBy('tx.id', 'DESC')
+          .getOne();
+
+        continue;
+      }
+
+      break;
+    }
+
+    return last;
+  };
+
+  // helper: find the transferItem row that holds the costs we need
+  const getTransferCostBundle = async (variantId: number, lastTx: any) => {
+    const transferId = Number(lastTx.transferId);
+    const txType = String(lastTx.transactionType || '');
+    const cutDate = String(lastTx.dateForEachInvoice);
+
+    const transfer = await this.transferRepo.findOne({
+      where: { id: transferId } as any,
+      select: ['id', 'location'] as any,
+    });
+
+    const loc = String((transfer as any)?.location || '').toUpperCase();
+    const isSpecial = loc === 'JF' || loc === 'FJ' || loc === 'BOSTS';
+
+    // default: use tx’s own batch
+    let costBatchId: number | null = lastTx.itemBatchId != null ? Number(lastTx.itemBatchId) : null;
+
+    // ✅ For special transfers, if we are on the DEST side (MovedTo),
+    // the transferItem row is tied to the SOURCE batch (MovedFrom).
+    if (isSpecial && txType === 'MovedTo') {
+      const sqmofr = Number(lastTx.sqmofr ?? 0);
+      const sqm = Number(lastTx.sqm ?? 0);
+      const qofr = Number(lastTx.quantityofr ?? 0);
+      const q = Number(lastTx.quantity ?? 0);
+
+      const pairedOut = await this.txRepo
+        .createQueryBuilder('tx')
+        .where('tx.transferId = :tid', { tid: transferId })
+        .andWhere('tx.transactionType = :t', { t: 'MovedFrom' })
+        .andWhere('tx.dateForEachInvoice = :d', { d: cutDate })
+        .andWhere(
+          new Brackets((b) => {
+            // try to match the paired line by magnitude
+            b.where('ABS(COALESCE(tx.sqmofr,0)) = ABS(:sqmofr)', { sqmofr })
+              .orWhere('ABS(COALESCE(tx.sqm,0)) = ABS(:sqm)', { sqm })
+              .orWhere('ABS(COALESCE(tx.quantityofr,0)) = ABS(:qofr)', { qofr })
+              .orWhere('ABS(COALESCE(tx.quantity,0)) = ABS(:q)', { q });
+          }),
+        )
+        .orderBy('tx.id', 'DESC')
+        .getOne();
+
+      if (pairedOut?.itemBatchId != null) {
+        costBatchId = Number(pairedOut.itemBatchId);
+      } else {
+        // fallback: any movedFrom in the same transfer/date
+        const anyOut = await this.txRepo.findOne({
+          where: {
+            transferId,
+            transactionType: 'MovedFrom' as any,
+            dateForEachInvoice: cutDate as any,
+          } as any,
+          order: { id: 'DESC' } as any,
+        });
+
+        if ((anyOut as any)?.itemBatchId != null) {
+          costBatchId = Number((anyOut as any).itemBatchId);
+        }
+      }
+    }
+
+    if (!costBatchId) {
+      return {
+        averageCost: null,
+        averageCostVM: null,
+        averageCostC: null,
+        averageCostCVM: null,
+      };
+    }
+
+    // ✅ IMPORTANT: we do NOT use itemVariantId at all (it’s null in your table)
+    const ti = await this.transferItemRepo.findOne({
+      where: {
+        transferId,
+        itemBatchId: costBatchId,
+      } as any,
+      order: { id: 'DESC' } as any,
+    });
+
+    if (!ti) {
+      return {
+        averageCost: null,
+        averageCostVM: null,
+        averageCostC: null,
+        averageCostCVM: null,
+      };
+    }
+
+    return {
+      averageCost: toNumOrNull((ti as any).averageCost),
+      averageCostVM: toNumOrNull((ti as any).averageCostVM),
+      averageCostC: toNumOrNull((ti as any).averageCostC),
+      averageCostCVM: toNumOrNull((ti as any).averageCostCVM),
+    };
+  };
+
+  for (let i = 0; i < invoiceIds.length; i += CHUNK) {
+    const batchIds = invoiceIds.slice(i, i + CHUNK);
+
+    const invoices = await this.salesInvoiceRepo.find({
+      where: { id: In(batchIds) } as any,
+      relations: ['items'] as any,
+    });
+
+    for (const inv of invoices as any[]) {
+      const invDate = new Date(inv.date);
+      const cutStr = invDate.toISOString().slice(0, 10);
+
+      const items: InvoiceItem[] = (inv.items ?? []).filter((x: any) => x?.itemVariantId);
+      if (!items.length) continue;
+
+      const uniqVariantIds = Array.from(
+        new Set(items.map((it: any) => Number(it.itemVariantId)).filter(Boolean)),
+      );
+
+      const cache = new Map<
+        number,
+        {
+          averageCost: number | null;
+          averageCostVM: number | null;
+          averageCostC: number | null;
+          averageCostCVM: number | null;
+        }
+      >();
+
+      for (const variantId of uniqVariantIds) {
+        const lastTx = await getLastCostEventTx(variantId, cutStr);
+
+        let bundle = {
+          averageCost: null as number | null,
+          averageCostVM: null as number | null,
+          averageCostC: null as number | null,
+          averageCostCVM: null as number | null,
+        };
+
+        if ((lastTx as any)?.purchaseInvoiceItemId) {
+          const pii = await this.purchaseItemRepo.findOne({
+            where: { id: Number((lastTx as any).purchaseInvoiceItemId) } as any,
+          });
+
+          if (pii) {
+            bundle = {
+              averageCost: toNumOrNull((pii as any).averageCost),
+              averageCostVM: toNumOrNull((pii as any).averageCostVM),
+              averageCostC: toNumOrNull((pii as any).averageCostC),
+              averageCostCVM: toNumOrNull((pii as any).averageCostCVM),
+            };
+          }
+        } else if ((lastTx as any)?.transferId) {
+          bundle = await getTransferCostBundle(variantId, lastTx as any);
+        } else if ((lastTx as any)?.inventoryCountId) {
+          const ic = await this.countRepo.findOne({
+            where: { id: Number((lastTx as any).inventoryCountId) } as any,
+          });
+
+          if (ic) {
+            // your rule:
+            // finalCostOfr -> averageCost
+            // finalCost    -> averageCostVM
+            bundle.averageCost = toNumOrNull((ic as any).finalCostOfr);
+            bundle.averageCostVM = toNumOrNull((ic as any).finalCost);
+
+            // derive C / CVM from counts (desc weighted avg) up to invoice date
+            const v = await this.variantRepo.findOne({
+              where: { id: variantId } as any,
+              select: ['id', 'itemNameDescriptionId'] as any,
+            });
+
+            const descId = Number((v as any)?.itemNameDescriptionId || 0);
+
+            if (descId) {
+              const descVariantRows = await this.variantRepo
+                .createQueryBuilder('v')
+                .select(['v.id AS id'])
+                .where('v.itemNameDescriptionId = :d', { d: descId })
+                .getRawMany();
+
+              const descVariantIds = Array.from(
+                new Set((descVariantRows || []).map((r: any) => Number(r.id)).filter(Boolean)),
+              );
+
+              if (descVariantIds.length) {
+                const raw = await this.countRepo
+                  .createQueryBuilder('ic')
+                  .select('SUM(COALESCE(ic.sqmOfr,0))', 'sumQtyOfr')
+                  .addSelect('SUM(COALESCE(ic.sqmOfr,0) * COALESCE(ic.finalCostOfr,0))', 'sumValOfr')
+                  .addSelect('SUM(COALESCE(ic.sqm,0))', 'sumQtyVm')
+                  .addSelect('SUM(COALESCE(ic.sqm,0) * COALESCE(ic.finalCost,0))', 'sumValVm')
+                  .where('ic.itemVariantId IN (:...ids)', { ids: descVariantIds })
+                  .andWhere('ic.date <= :cut', { cut: cutStr })
+                  .getRawOne<any>();
+
+                const sumQtyOfr = Number(raw?.sumQtyOfr ?? 0);
+                const sumValOfr = Number(raw?.sumValOfr ?? 0);
+                const sumQtyVm = Number(raw?.sumQtyVm ?? 0);
+                const sumValVm = Number(raw?.sumValVm ?? 0);
+
+                bundle.averageCostC = safeAvgOrNull(sumValOfr, sumQtyOfr);
+                bundle.averageCostCVM = safeAvgOrNull(sumValVm, sumQtyVm);
+              }
+            }
+          }
+        }
+
+        cache.set(variantId, bundle);
+      }
+
+      for (const it of items as any[]) {
+        const b = cache.get(Number(it.itemVariantId));
+        if (!b) continue;
+
+        it.averageCost = b.averageCost;
+        it.averageCostVM = b.averageCostVM;
+        it.averageCostC = b.averageCostC;
+        it.averageCostCVM = b.averageCostCVM;
+
+        // keep lastCost* empty (you don’t want them)
+        it.lastCost = null;
+        it.lastCostVM = null;
+        it.lastCostC = null;
+        it.lastCostCVM = null;
+      }
+
+      await this.salesInvoiceItemRepo.save(items as any);
+    }
+
+    console.log(`${TAG} processed chunk`, { i, batch: batchIds.length });
+  }
+
+  console.log(`${TAG} DONE`);
+}
+
+
+
+
+
 
   private async buildEvents(from: Date): Promise<EventRow[]> {
     // Transfers
@@ -371,65 +727,61 @@ export class RecomputeCostsService {
    * - uses TransfersService private helpers via (as any)
    * - no websocket spam (we do not call the public update)
    */
-  private async recomputeOneTransfer(transferId: number) {
-    const transferExists = await this.transferRepo.findOne({
+private async recomputeOneTransfer(transferId: number) {
+  const transferExists = await this.transferRepo.findOne({
+    where: { id: transferId } as any,
+    select: ['id'] as any,
+  });
+  if (!transferExists) throw new NotFoundException(`Transfer ${transferId} not found`);
+
+  await this.dataSource.transaction(async (manager) => {
+    const header = await manager.getRepository(Transfer).findOne({
       where: { id: transferId } as any,
-      select: ['id'] as any,
     });
-    if (!transferExists) throw new NotFoundException(`Transfer ${transferId} not found`);
+    if (!header) throw new NotFoundException(`Transfer ${transferId} not found`);
 
-    await this.dataSource.transaction(async (manager) => {
-      // snapshot header + items (plain)
-      const header = await manager.getRepository(Transfer).findOne({
-        where: { id: transferId } as any,
-      });
-      if (!header) throw new NotFoundException(`Transfer ${transferId} not found`);
-
-      const items = await manager.getRepository(TransferItem).find({
-        where: { transferId } as any,
-      });
-
-      const itemsPayload = (items as any[]).map((ti) => ({
-        itemBatchId: ti.itemBatchId ?? (ti as any).itemBatch?.id,
-        toItemVariantId: (ti as any).toItemVariantId ?? (ti as any).itemVariantId,
-        quantity: (ti as any).quantity,
-        sqm: (ti as any).sqm,
-        price: (ti as any).price,
-        transactionType: (ti as any).transactionType,
-        reason: (ti as any).reason,
-        condition: (ti as any).condition,
-      }));
-
-      // rollback existing effect
-      await (this.transfersService as any).rollbackTransfer(manager, transferId);
-
-      // restore header as-is (keeps same id/number/date/type/location)
-      await manager.getRepository(Transfer).update(
-        { id: transferId } as any,
-        {
-          transferNumber: (header as any).transferNumber,
-          date: (header as any).date,
-          type: (header as any).type,
-          location: (header as any).location,
-        } as any,
-      );
-
-      // re-insert items
-      await (this.transfersService as any).insertTransferItems(
-        manager,
-        transferId,
-        itemsPayload,
-      );
-
-      // reload full transfer (their helper expects relations)
-      const reloaded = await (this.transfersService as any).mustGetTransfer(manager, transferId);
-
-      // re-apply inventory/cost logic
-      await (this.transfersService as any).applyTransferLogic(
-        manager,
-        reloaded,
-        itemsPayload,
-      );
+    const items = await manager.getRepository(TransferItem).find({
+      where: { transferId } as any,
     });
-  }
+
+    // ✅ include avg fields so recompute doesn't wipe them
+    const itemsPayload = (items as any[]).map((ti) => ({
+      itemBatchId: ti.itemBatchId ?? null,
+      itemVariantId: (ti as any).itemVariantId ?? null,
+
+      quantity: Number((ti as any).quantity ?? 0),
+      sqm: Number((ti as any).sqm ?? 0),
+      price: (ti as any).price ?? null,
+
+      transactionType: (ti as any).transactionType,
+      reason: (ti as any).reason,
+      condition: (ti as any).condition,
+
+      averageCost: (ti as any).averageCost ?? null,
+      averageCostVM: (ti as any).averageCostVM ?? null,
+      averageCostC: (ti as any).averageCostC ?? null,
+      averageCostCVM: (ti as any).averageCostCVM ?? null,
+    }));
+
+    // rollback + rebuild
+    await (this.transfersService as any).rollbackTransfer(manager, transferId);
+
+    await manager.getRepository(Transfer).update(
+      { id: transferId } as any,
+      {
+        transferNumber: (header as any).transferNumber,
+        date: (header as any).date,
+        type: (header as any).type,
+        location: (header as any).location,
+      } as any,
+    );
+
+    await (this.transfersService as any).insertTransferItems(manager, transferId, itemsPayload);
+
+    const reloaded = await (this.transfersService as any).mustGetTransfer(manager, transferId);
+
+    await (this.transfersService as any).applyTransferLogic(manager, reloaded, itemsPayload);
+  });
+}
+
 }

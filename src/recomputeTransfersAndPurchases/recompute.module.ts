@@ -18,6 +18,10 @@ import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoi
 import { TransfersModule } from '../transfers/transfers.module';
 import { PurchaseInvoiceModule } from '../Purchase-invoice/purchase-invoice.module';
 
+import { Invoice } from 'src/entities/invoice.entity';
+import { InvoiceItem } from 'src/entities/invoiceItem.entity';
+import { InventoryCount } from 'src/entities/inventory/count.entity'; 
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -29,6 +33,9 @@ import { PurchaseInvoiceModule } from '../Purchase-invoice/purchase-invoice.modu
       TransferItem,
       PurchaseInvoice,
       PurchaseInvoiceItem,
+      Invoice,
+      InvoiceItem,
+      InventoryCount,
     ]),
 
     // so DI can inject TransfersService + PurchaseInvoiceService

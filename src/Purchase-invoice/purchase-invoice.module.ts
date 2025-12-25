@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
@@ -15,6 +15,8 @@ import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 import { InvoiceItem } from 'src/entities/invoiceItem.entity';
 
+import { RecomputeModule } from 'src/recomputeTransfersAndPurchases/recompute.module';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -25,16 +27,18 @@ import { InvoiceItem } from 'src/entities/invoiceItem.entity';
       InventoryTransaction,
       PurchaseVoucher,
       Account,
-      ItemVariant, 
+      ItemVariant,
       JournalVoucher,
       JournalVoucherDetail,
       ItemBatch,
-      InvoiceItem
-
+      InvoiceItem,
     ]),
+
+    // ✅ module import (NOT inside forFeature)
+    forwardRef(() => RecomputeModule),
   ],
   controllers: [PurchaseInvoiceController],
   providers: [PurchaseInvoiceService],
-   exports: [PurchaseInvoiceService],
+  exports: [PurchaseInvoiceService],
 })
 export class PurchaseInvoiceModule {}
