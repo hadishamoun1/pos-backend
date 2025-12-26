@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Param, UseGuards, Query } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  UseGuards,
+  Query,
+  Patch,
+  ParseIntPipe,
+} from "@nestjs/common";
 import { CustomerService } from "./customer.service";
 import { Customer } from "../entities/customer.entity";
 
@@ -18,19 +28,7 @@ export class CustomerController {
     return this.customerService.createCustomer(customerData);
   }
 
-  // VIEW
-  @Get()
-  @RequirePerms("customers.view")
-  async getAllCustomers(): Promise<Customer[]> {
-    return this.customerService.getAllCustomers();
-  }
-
-  @Get(":id")
-  @RequirePerms("customers.view")
-  async getCustomerById(@Param("id") id: number): Promise<Customer> {
-    return this.customerService.getCustomerById(id);
-  }
-
+  // ✅ v1 routes MUST come before ":id"
   @Get("v1/paginated")
   @RequirePerms("customers.view")
   async getCustomersPaginated(
@@ -48,10 +46,30 @@ export class CustomerController {
     return this.customerService.getCustomerBasicDetails();
   }
 
-  // SEARCH (view)
   @Get("v1/search")
   @RequirePerms("customers.view")
   async searchCustomers(@Query("query") query: string) {
     return this.customerService.searchCustomers(query);
+  }
+
+  // VIEW (all)
+  @Get()
+  @RequirePerms("customers.view")
+  async getAllCustomers(): Promise<Customer[]> {
+    return this.customerService.getAllCustomers();
+  }
+
+  // VIEW (single)
+  @Get(":id")
+  @RequirePerms("customers.view")
+  async getCustomerById(@Param("id", ParseIntPipe) id: number): Promise<Customer> {
+    return this.customerService.getCustomerById(id);
+  }
+
+  // ✅ UPDATE
+  @Patch(":id")
+  @RequirePerms("customers.update")
+  update(@Param("id", ParseIntPipe) id: number, @Body() body: Partial<Customer>) {
+    return this.customerService.updateCustomer(id, body);
   }
 }

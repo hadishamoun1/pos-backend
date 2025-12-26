@@ -400,4 +400,70 @@ async searchCustomers(
   }));
 }
 
+
+// ✅ COMPLETE: CustomerService.updateCustomer (drop-in)
+async updateCustomer(id: number, dto: Partial<Customer>): Promise<Customer> {
+  // 1) Find existing
+  const customer = await this.customerRepository.findOne({
+    where: { id },
+    relations: ['currency', 'account'],
+  });
+  if (!customer) {
+    throw new NotFoundException(`Customer with ID ${id} not found.`);
+  }
+
+  // 2) Update currency if provided
+  if (dto.currencyId != null) {
+    const currency = await this.currencyRepository.findOne({
+      where: { id: Number(dto.currencyId) },
+    });
+    if (!currency) {
+      throw new NotFoundException(`Currency with ID ${dto.currencyId} not found.`);
+    }
+    customer.currency = currency;
+    customer.currencyId = currency.id as any;
+  }
+
+  // 3) IMPORTANT: do NOT auto-regenerate account number on edit
+  //    Only change it if explicitly provided
+  if (dto.customerAccountNumber != null) {
+    const v = String(dto.customerAccountNumber).trim();
+    if (v) customer.customerAccountNumber = v;
+  }
+
+  // 4) Normalize invoiceType if provided
+  if (dto.invoiceType != null) {
+    const normalized =
+      this.normalizeInvoiceType(dto.invoiceType as any) ?? (dto.invoiceType as any);
+    customer.invoiceType = normalized as any;
+  }
+
+  // 5) Normalize area if provided
+  if (dto.area != null) {
+    customer.area = this.normalizeArea(dto.area) as any;
+  }
+
+  // 6) Update normal scalar fields (only if provided)
+  if (dto.customerName != null) customer.customerName = dto.customerName as any;
+
+  if (dto.firstName != null) customer.firstName = dto.firstName as any;
+  if (dto.middleName != null) customer.middleName = dto.middleName as any;
+  if (dto.lastName != null) customer.lastName = dto.lastName as any;
+
+  if (dto.paymentTerms != null) customer.paymentTerms = dto.paymentTerms as any;
+  if (dto.companyType != null) customer.companyType = dto.companyType as any;
+
+  if (dto.address != null) customer.address = dto.address as any;
+  if (dto.phoneNumber != null) customer.phoneNumber = dto.phoneNumber as any;
+
+  if (dto.financialNumber != null) customer.financialNumber = dto.financialNumber as any;
+  if (dto.vat != null) customer.vat = dto.vat as any;
+
+  // account remains the same (linked to 4111 on create) unless you add explicit logic
+
+  // 7) Save
+  return this.customerRepository.save(customer);
+}
+
+
 }
