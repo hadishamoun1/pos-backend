@@ -6,6 +6,7 @@ import { InvoiceItem } from '../entities/invoiceItem.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 
 type AuditStatus = 'OK' | 'WARN' | 'FAIL';
 
@@ -18,6 +19,10 @@ function r2(v: number) {
 }
 function nearly(a: number, b: number, eps = 0.02) {
   return Math.abs(a - b) <= eps;
+}
+
+function isInt(x: any) {
+  return Number.isInteger(Number(x));
 }
 
 @Injectable()
@@ -66,7 +71,7 @@ export class AuditService {
       const invoiceIds = invoices.map((i) => i.id);
       const invoiceNumbers = invoices.map((i) => i.invoiceNumber);
 
-      // Fetch items for this page
+      // 1) Fetch items for this page
       const itemRepo = manager.getRepository(InvoiceItem);
       const items = invoiceIds.length
         ? await itemRepo.find({ where: { invoiceId: In(invoiceIds) } as any })
@@ -78,7 +83,38 @@ export class AuditService {
         itemsByInvoice.get(it.invoiceId)!.push(it);
       }
 
-      // Fetch JV details for this page (by docNbr = invoiceNumber)
+      // ✅ 1.5) Fetch stockMode per itemVariantId (ItemVariant -> Thickness -> Item.stockMode)
+      const variantIds = Array.from(
+        new Set(
+          items
+            .map((x: any) => x.itemVariantId)
+            .filter((x: any) => isInt(x))
+            .map((x: any) => Number(x)),
+        ),
+      );
+
+      const stockModeByVariantId = new Map<number, 'SQM' | 'QTY' | 'NONE' | null>();
+
+      if (variantIds.length) {
+        // using raw joins to avoid loading heavy relations
+        const raw = await manager
+          .getRepository(ItemVariant)
+          .createQueryBuilder('v')
+          .leftJoin('v.thickness', 't')
+          .leftJoin('t.item', 'it')
+          .select('v.id', 'variantId')
+          .addSelect('it.stockMode', 'stockMode')
+          .where('v.id IN (:...ids)', { ids: variantIds })
+          .getRawMany();
+
+        for (const r of raw) {
+          const vid = Number(r.variantId);
+          const sm = (r.stockMode ?? null) as any;
+          stockModeByVariantId.set(vid, sm);
+        }
+      }
+
+      // 2) Fetch JV details for this page (by docNbr = invoiceNumber)
       const jvDetailRepo = manager.getRepository(JournalVoucherDetail);
       const jvDetails = invoiceNumbers.length
         ? await jvDetailRepo.find({ where: { docNbr: In(invoiceNumbers) } as any })
@@ -91,9 +127,11 @@ export class AuditService {
         jvByDocNbr.get(key)!.push(d);
       }
 
-      // Fetch inventory tx for this page: join via invoiceItemId
+      // 3) Fetch inventory tx for this page: join via invoiceItemId
       const invTxRepo = manager.getRepository(InventoryTransaction);
-      const itemIds = items.map((x) => (x as any).id).filter((x) => Number.isInteger(x));
+      const itemIds = items
+        .map((x: any) => x.id)
+        .filter((x: any) => Number.isInteger(x));
 
       const txs = itemIds.length
         ? await invTxRepo.find({ where: { invoiceItemId: In(itemIds) } as any })
@@ -106,20 +144,35 @@ export class AuditService {
         txByItem.get(k)!.push(t);
       }
 
-      // Optional: quick batch sanity for involved batches (not per invoice historical)
+      // 4) Optional: quick batch sanity for involved batches (not per invoice historical)
       const batchRepo = manager.getRepository(ItemBatch);
-      const batchIds = Array.from(new Set(items.map((it: any) => it.itemBatchId).filter((x) => Number.isInteger(x))));
-      const batches = deepStock && batchIds.length
-        ? await batchRepo.find({ where: { id: In(batchIds) } as any })
-        : [];
+      const batchIds = Array.from(
+        new Set(
+          items
+            .map((it: any) => it.itemBatchId)
+            .filter((x: any) => Number.isInteger(x)),
+        ),
+      );
+
+      const batches =
+        deepStock && batchIds.length
+          ? await batchRepo.find({ where: { id: In(batchIds) } as any })
+          : [];
+
       const batchMap = new Map<number, any>();
       for (const b of batches as any[]) batchMap.set(Number(b.id), b);
 
       const results = invoices.map((inv) => {
-        const issues: Array<{ code: string; level: 'WARN' | 'FAIL'; message: string; meta?: any }> = [];
+        const issues: Array<{
+          code: string;
+          level: 'WARN' | 'FAIL';
+          message: string;
+          meta?: any;
+        }> = [];
+
         const invItems = itemsByInvoice.get(inv.id) || [];
 
-        // 1) totals = sum(items)
+        // A) totals = sum(items)
         const sumWithoutVat = r2(invItems.reduce((acc, it: any) => acc + n(it.totalAmount), 0));
         const sumVat = r2(invItems.reduce((acc, it: any) => acc + n(it.vat), 0));
         const sumGrand = r2(sumWithoutVat + sumVat);
@@ -152,12 +205,16 @@ export class AuditService {
           });
         }
 
-        // 2) JV exists + balanced + matches invoice
+        // B) JV exists + balanced + matches invoice
         const doc = String(inv.invoiceNumber || '');
         const jvs = jvByDocNbr.get(doc) || [];
 
         if (!jvs.length) {
-          issues.push({ code: 'MISSING_JV', level: 'FAIL', message: `No JV details found for docNbr=${doc}` });
+          issues.push({
+            code: 'MISSING_JV',
+            level: 'FAIL',
+            message: `No JV details found for docNbr=${doc}`,
+          });
         } else {
           const sum = (k: string) => r2(jvs.reduce((acc: number, d: any) => acc + n(d[k]), 0));
 
@@ -174,7 +231,6 @@ export class AuditService {
           const drLLOFR = sum('drLLOFR');
           const crLLOFR = sum('crLLOFR');
 
-          // balanced
           if (
             !nearly(dr, cr) ||
             !nearly(drUSD, crUSD) ||
@@ -187,11 +243,23 @@ export class AuditService {
               code: 'JV_NOT_BALANCED',
               level: 'FAIL',
               message: 'JV is not balanced (Dr != Cr)',
-              meta: { dr, cr, drUSD, crUSD, drLL, crLL, drOFR, crOFR, drUSDOFR, crUSDOFR, drLLOFR, crLLOFR },
+              meta: {
+                dr,
+                cr,
+                drUSD,
+                crUSD,
+                drLL,
+                crLL,
+                drOFR,
+                crOFR,
+                drUSDOFR,
+                crUSDOFR,
+                drLLOFR,
+                crLLOFR,
+              },
             });
           }
 
-          // matches grandTotal (choose which fields based on whether OFR is used)
           const grand = r2(n(inv.grandTotal));
           const ofrUsed = drOFR > 0 || drUSDOFR > 0 || drLLOFR > 0;
 
@@ -206,7 +274,7 @@ export class AuditService {
               });
             }
           } else {
-            // if invoice currency is LL you might want drLL check, else drUSD check
+            // adjust if your currencyId mapping differs
             if (Number(inv.currencyId) === 2) {
               if (!nearly(drLL, grand)) {
                 issues.push({
@@ -229,43 +297,63 @@ export class AuditService {
           }
         }
 
-        // 3) Inventory tx exists per item + sign check
+        // C) Inventory tx exists per item + sign check
         for (const it of invItems as any[]) {
+          const variantId = Number(it.itemVariantId);
+          const stockMode = stockModeByVariantId.get(variantId) ?? null;
+
+          // ✅ FIX: stockMode NONE means NO inventory transaction is expected
+          if (stockMode === 'NONE') {
+            // skip inventory & batch checks for this item
+            continue;
+          }
+
           const list = txByItem.get(Number(it.id)) || [];
           if (!list.length) {
             issues.push({
               code: 'MISSING_INV_TX',
               level: 'FAIL',
               message: `Missing inventory transaction for invoiceItemId=${it.id}`,
-              meta: { invoiceItemId: it.id, itemVariantId: it.itemVariantId, itemBatchId: it.itemBatchId },
+              meta: {
+                invoiceItemId: it.id,
+                itemVariantId: it.itemVariantId,
+                itemBatchId: it.itemBatchId,
+                stockMode,
+              },
             });
             continue;
           }
 
-          // sign expectations based on YOUR current logic:
           const qty = n(it.quantity);
           const sqm = n(it.sqm);
           const t = list[0] as any;
           const type = String(inv.invoiceType || '');
 
           if (type === 'S' || type === 'RVR' || type === 'RTN') {
-            // typical sales-like moves: STD negative (you can adjust RTN if your logic is opposite)
             if (!nearly(n(t.quantity), -qty) || !nearly(n(t.sqm), -sqm)) {
               issues.push({
                 code: 'INV_TX_SIGN_MISMATCH',
                 level: 'FAIL',
                 message: `Inventory tx sign mismatch for type=${type}`,
-                meta: { invoiceItemId: it.id, expected: { quantity: -qty, sqm: -sqm }, got: { quantity: n(t.quantity), sqm: n(t.sqm) } },
+                meta: {
+                  invoiceItemId: it.id,
+                  stockMode,
+                  expected: { quantity: -qty, sqm: -sqm },
+                  got: { quantity: n(t.quantity), sqm: n(t.sqm) },
+                },
               });
             }
           } else if (type === 'G') {
-            // G uses OFR negative, STD zero
             if (!nearly(n(t.quantity), 0) || !nearly(n(t.sqm), 0)) {
               issues.push({
                 code: 'INV_TX_STD_NOT_ZERO_G',
                 level: 'FAIL',
                 message: 'G should not move STD quantity/sqm',
-                meta: { invoiceItemId: it.id, got: { quantity: n(t.quantity), sqm: n(t.sqm) } },
+                meta: {
+                  invoiceItemId: it.id,
+                  stockMode,
+                  got: { quantity: n(t.quantity), sqm: n(t.sqm) },
+                },
               });
             }
             if (!nearly(n(t.quantityofr), -qty) || !nearly(n(t.sqmofr), -sqm)) {
@@ -273,12 +361,17 @@ export class AuditService {
                 code: 'INV_TX_OFR_MISMATCH_G',
                 level: 'FAIL',
                 message: 'G OFR movement mismatch',
-                meta: { invoiceItemId: it.id, expected: { quantityofr: -qty, sqmofr: -sqm }, got: { quantityofr: n(t.quantityofr), sqmofr: n(t.sqmofr) } },
+                meta: {
+                  invoiceItemId: it.id,
+                  stockMode,
+                  expected: { quantityofr: -qty, sqmofr: -sqm },
+                  got: { quantityofr: n(t.quantityofr), sqmofr: n(t.sqmofr) },
+                },
               });
             }
           }
 
-          // 4) Optional stock sanity (current totals): batch formula + negative checks
+          // D) Optional stock sanity
           if (deepStock && it.itemBatchId != null) {
             const b = batchMap.get(Number(it.itemBatchId));
             if (b) {
@@ -339,9 +432,7 @@ export class AuditService {
         };
       });
 
-      const filtered = onlyFailed
-        ? results.filter((r) => r.status !== 'OK')
-        : results;
+      const filtered = onlyFailed ? results.filter((r) => r.status !== 'OK') : results;
 
       const stats = filtered.reduce(
         (acc, r) => {
@@ -352,7 +443,15 @@ export class AuditService {
       );
 
       return {
-        meta: { from: from || null, to: to || null, page, limit, totalInvoices, onlyFailed, deepStock },
+        meta: {
+          from: from || null,
+          to: to || null,
+          page,
+          limit,
+          totalInvoices,
+          onlyFailed,
+          deepStock,
+        },
         stats,
         results: filtered,
       };
