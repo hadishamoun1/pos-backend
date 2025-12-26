@@ -5,7 +5,7 @@ import { Invoice } from '../entities/invoice.entity';
 import { InvoiceItem } from '../entities/invoiceItem.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity';
-import { JournalVoucherDetail } from '../entities/vouchers/journalVoucherDetails.entity';
+import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 
 type AuditStatus = 'OK' | 'WARN' | 'FAIL';
 

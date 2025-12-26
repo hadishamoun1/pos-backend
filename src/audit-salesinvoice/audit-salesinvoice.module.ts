@@ -6,8 +6,8 @@ import { AuditController } from './audit-salesinvoice.controller';
 
 import { Invoice } from '../entities/invoice.entity';
 import { InvoiceItem } from '../entities/invoiceItem.entity';
-import { JournalVoucher } from '../entities/vouchers/journalVoucher.entity';
-import { JournalVoucherDetail } from '../entities/vouchers/journalVoucherDetails.entity'; // ✅ correct import
+import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
+import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity'; // ✅ correct import
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity';
