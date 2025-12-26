@@ -38,7 +38,7 @@ import { SqmPiecesModule } from './sqmPiece/sqm-piece.module';
 import { RecomputeModule } from './recomputeTransfersAndPurchases/recompute.module';
 import { InventoryAuditModule } from './inventory-audit/inventory-audit.module';
 import { AuthModule } from "./auth/auth.module";
-
+import { AuditSaleInvoiceModule } from './audit-salesinvoice/audit-salesinvoice.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -89,7 +89,8 @@ import { AuthModule } from "./auth/auth.module";
     SqmPiecesModule,
     RecomputeModule,
     InventoryAuditModule,
-    AuthModule
+    AuthModule,
+    AuditSaleInvoiceModule
   ],
 })
 export class AppModule {}
