@@ -66,12 +66,15 @@ export class InvoiceService {
   /**
    * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
    */
+
+
 async createInvoice(data: any): Promise<Invoice> {
   const queryRunner = this.dataSource.createQueryRunner();
   await queryRunner.connect();
   await queryRunner.startTransaction();
-
+  
   try {
+    let deletedRequestId: number | null = null; 
     console.log('🟢 Starting invoice creation');
 
     const setting = await this.settingsRepo.findOneBy({ isActive: true });
@@ -699,11 +702,15 @@ async createInvoice(data: any): Promise<Invoice> {
           `Request ${reqId} was not deleted (not found in DB/table).`,
         );
       }
+      deletedRequestId = reqId; 
+
 
       console.log(`✅ Deleted Request #${reqId} after invoice #${savedInvoice.id}`);
     }
 
     await queryRunner.commitTransaction();
+    if (deletedRequestId) {
+ this.invoiceGateway.emitRequestRemoved(deletedRequestId);}
     // ✅ Fetch a fresh summary that matches what your list expects
 const forList = await this.invoiceRepository.findOne({
   where: { id: savedInvoice.id },

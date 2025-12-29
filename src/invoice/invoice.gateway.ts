@@ -35,4 +35,11 @@ export class InvoiceGateway
   emitInvoiceUpdated(invoiceData: any) {
     this.server.emit("invoiceUpdated", invoiceData);
   }
+
+
+  // invoice.gateway.ts
+emitRequestRemoved(requestId: number) {
+  this.server.emit("requestRemoved", { id: requestId });
+}
+
 }

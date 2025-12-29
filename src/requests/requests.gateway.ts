@@ -35,5 +35,13 @@ export class RequestGateway
    */
   sendFilteredRequests(updatedRequests: any) {
     this.server.emit('updateRequests', updatedRequests);
+
+
+  }
+
+
+
+    notifyRequestRemoved(requestId: number) {
+    this.server.emit("requestRemoved", { id: requestId });
   }
 }
