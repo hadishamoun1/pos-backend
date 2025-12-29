@@ -60,6 +60,8 @@ export class InvoiceService {
 
                 @InjectRepository(RequestDetailEntity)
     private readonly requestDetailRepo: Repository<RequestDetailEntity>,
+
+    private readonly invoiceGateway: InvoiceGateway,
   ) {}
   /**
    * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
@@ -702,6 +704,22 @@ async createInvoice(data: any): Promise<Invoice> {
     }
 
     await queryRunner.commitTransaction();
+    // ✅ Fetch a fresh summary that matches what your list expects
+const forList = await this.invoiceRepository.findOne({
+  where: { id: savedInvoice.id },
+  relations: ["customer"], // if you have this relation
+});
+
+this.invoiceGateway.emitNewInvoice({
+  id: forList?.id ?? savedInvoice.id,
+  invoiceNumber: forList?.invoiceNumber ?? savedInvoice.invoiceNumber,
+  date: forList?.date ?? savedInvoice.date,
+  grandTotal: forList?.grandTotal ?? savedInvoice.grandTotal,
+  customerName:
+    (forList as any)?.customer?.customerName ??
+    (forList as any)?.customerName ??
+    "Unknown",
+});
     console.log('🎉 Invoice creation complete');
     return savedInvoice;
   } catch (error: any) {
@@ -2949,6 +2967,23 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     }
 
     await queryRunner.commitTransaction();
+
+    // ✅ re-load latest summary for the list
+const forList = await this.invoiceRepository.findOne({
+  where: { id: (savedInvoice as any).id },
+  relations: ["customer"],
+});
+
+this.invoiceGateway.emitInvoiceUpdated({
+  id: (forList as any)?.id ?? (savedInvoice as any).id,
+  invoiceNumber: (forList as any)?.invoiceNumber ?? (savedInvoice as any).invoiceNumber,
+  date: (forList as any)?.date ?? (savedInvoice as any).date,
+  grandTotal: (forList as any)?.grandTotal ?? (savedInvoice as any).grandTotal,
+  customerName:
+    (forList as any)?.customer?.customerName ??
+    (forList as any)?.customerName ??
+    "Unknown",
+});
     console.log('🎉 Invoice update complete for id:', (savedInvoice as any).id);
     return savedInvoice;
   } catch (error: any) {
