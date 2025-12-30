@@ -742,7 +742,154 @@ async getCustomerStatementOFR(params: {
     basis,
   };
 }
+async getCustomerBalancesReport(params: {
+  to?: string; // 'YYYY-MM-DD'
+  type?: 'S' | 'G' | 'ALL';
+}) {
+  const { to, type = 'ALL' } = params;
 
+  // Helper: expand YMD to full-day datetime
+  const ymdToStart = (ymd: string) => `${ymd} 00:00:00`;
+  const nextYMD = (ymd: string) => {
+    const d = new Date(`${ymd}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  // Default to today if not provided
+  const today = new Date();
+  const todayYMD = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const toDate = to || todayYMD;
+  const toNext = ymdToStart(nextYMD(toDate)); // exclusive end
+
+  // Type filter: S includes everything except G; G is only G; ALL is everything
+  const applyTypeFilter = (
+    qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
+  ) => {
+    if (type === 'S') {
+      // S = Sales-related: Include S, RVR, RTN, SR, etc. - everything EXCEPT G
+      qb.andWhere('jv.jvType != :gType', { gType: 'G' });
+    } else if (type === 'G') {
+      // G = Offers only
+      qb.andWhere('jv.jvType = :gType', { gType: 'G' });
+    }
+    // type === 'ALL' = no filter, include everything
+    return qb;
+  };
+
+  // Get all customers
+  const customers = await this.customerRepo.find({
+    relations: ['currency'],
+    order: { customerName: 'ASC' },
+  });
+
+  const results = [];
+
+  for (const customer of customers) {
+    const customerId = customer.id;
+
+    // Determine currency
+    let currencyCode =
+      (customer as any)?.currency?.code as 'USD' | 'LL' | 'EURO' | 'BASE' | undefined;
+    if (!currencyCode) {
+      currencyCode = (customer as any).currencyId === 2 ? 'LL' : 'USD';
+    }
+
+    const customerAccountNumber: string | null =
+      (customer as any)?.customerAccountNumber ?? (customer as any)?.accountNumber ?? null;
+
+    // Column maps for OFR (used by G type)
+    const ofrColMap = {
+      USD: { dr: 'drUSDOFR', cr: 'crUSDOFR' },
+      LL: { dr: 'drLLOFR', cr: 'crLLOFR' },
+      EURO: { dr: 'drOFR', cr: 'crOFR' },
+      BASE: { dr: 'drOFR', cr: 'crOFR' },
+    } as const;
+
+    // Column maps for base amounts (used by S, RVR, RTN, SR)
+    const baseColMap = {
+      USD: { dr: 'drUSD', cr: 'crUSD' },
+      LL: { dr: 'drLL', cr: 'crLL' },
+      EURO: { dr: 'dr', cr: 'cr' },
+      BASE: { dr: 'dr', cr: 'cr' },
+    } as const;
+
+    type RowKind = 'S' | 'G';
+
+    const getColsFor = (rowKind: RowKind) => {
+      if (rowKind === 'G') {
+        const p = ofrColMap[currencyCode] ?? ofrColMap.USD;
+        return {
+          drCol: p.dr as keyof JournalVoucherDetail,
+          crCol: p.cr as keyof JournalVoucherDetail,
+        };
+      }
+      const p = baseColMap[currencyCode] ?? baseColMap.USD;
+      return {
+        drCol: p.dr as keyof JournalVoucherDetail,
+        crCol: p.cr as keyof JournalVoucherDetail,
+      };
+    };
+
+    // Determine which columns to use based on jvType
+    const getRowKindFromJV = (jvType?: string | null): RowKind => {
+      const t = String(jvType ?? '').trim().toUpperCase();
+      if (t === 'G') return 'G'; // Offers use OFR columns
+      return 'S'; // S, RVR, RTN, SR use base columns
+    };
+
+    // Query all transactions up to toDate
+    const qb = this.journalVoucherDetailRepository
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.journalVoucher', 'jv')
+      .where('d.customerId = :customerId', { customerId })
+      .andWhere('jv.date < :toNext', { toNext }); // exclusive end
+
+    applyTypeFilter(qb);
+
+    const rows = await qb.getMany();
+
+    // Calculate balance
+    let totalDr = 0;
+    let totalCr = 0;
+
+    for (const r of rows) {
+      const rowKind = getRowKindFromJV(r.journalVoucher?.jvType ?? null);
+      const { drCol, crCol } = getColsFor(rowKind);
+
+      totalDr += Number((r as any)[drCol] || 0);
+      totalCr += Number((r as any)[crCol] || 0);
+    }
+
+    const balance = totalDr - totalCr;
+
+    // Only include customers with non-zero balance or transactions
+    if (rows.length > 0 || balance !== 0) {
+      results.push({
+        customerId,
+        customerName: (customer as any).customerName || '',
+        customerAccountNumber,
+        currencyCode,
+        balance: Math.round(balance * 100) / 100, // round to 2 decimals
+        transactionCount: rows.length,
+      });
+    }
+  }
+
+  return {
+    reportDate: toDate,
+    type,
+    customers: results,
+    summary: {
+      totalCustomers: results.length,
+      totalPositiveBalances: results.filter((c) => c.balance > 0).length,
+      totalNegativeBalances: results.filter((c) => c.balance < 0).length,
+    },
+  };
+}
 
 
 

@@ -146,6 +146,19 @@ export class JournalVoucherController {
     });
   }
 
+  // GET /journal-vouchers/reports/customer-balances?to=2025-12-30&type=S
+@Get('reports/customer-balances')
+@RequirePerms('journal.view')
+async getCustomerBalances(
+  @Query('to') to?: string, // 'YYYY-MM-DD' - defaults to today
+  @Query('type') type?: 'S' | 'G' | 'ALL', // defaults to ALL
+) {
+  return this.journalVoucherService.getCustomerBalancesReport({
+    to,
+    type: (type as any) || 'ALL',
+  });
+}
+
   @Get('account-statement/ofr')
   @RequirePerms('journal.view')
   async getAccountStatementOFR(
