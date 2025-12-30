@@ -57,7 +57,7 @@ private normalizeCurrencyCode(raw: string): 'USD' | 'LL' | 'EURO' | string {
 async create(data: {
   customerId: number;
   date: Date;
- invoiceId?: number | null;
+  invoiceId?: number | null;
   cashNumber: number;
   currency: 'USD' | 'LL';
   exchangeRate?: number;
@@ -72,10 +72,11 @@ async create(data: {
   });
   if (!setting) throw new NotFoundException('No active financial year set');
   const yy = setting.year.slice(-2);
+  
   // 2) Choose prefix: 'RVG' for G, else 'RV'
   const prefix = data.type === 'G' ? 'RVG' : 'RV';
 
-  // 2) New JV number
+  // 3) New JV number
   const lastJv = await this.jvRepo.find({
     where: { jvNumber: Like(`${prefix}${yy}-%`) },
     order: { jvNumber: 'DESC' },
@@ -86,15 +87,13 @@ async create(data: {
     : 1;
   const jvNumber = `${prefix}${yy}-${String(seq).padStart(3, '0')}`;
 
-  // 3) Determine USD/LL parts from the two fields:
-  //   - if currency=LL: cashNumber is LL, amountExchanged is USD
-  //   - if currency=USD: cashNumber is USD, amountExchanged is LL
+  // 4) Determine USD/LL parts
   const usdPart =
     data.currency === 'LL' ? data.amountExchanged : data.cashNumber;
   const llPart =
     data.currency === 'LL' ? data.cashNumber : data.amountExchanged;
 
-  // 4) Compute header totals by type
+  // 5) Compute header totals by type
   let hdrDr = 0,
     hdrDrUSD = 0,
     hdrDrLL = 0;
@@ -135,15 +134,13 @@ async create(data: {
       hdrDr = usdPart;
       hdrDrUSD = usdPart;
       hdrDrLL = llPart;
-
       hdrCr = usdPart;
       hdrCrUSD = usdPart;
       hdrCrLL = llPart;
-
       break;
   }
 
-  // 5) Persist JV header
+  // 6) Persist JV header
   const jv = this.jvRepo.create({
     date: data.date,
     jvNumber,
@@ -163,22 +160,33 @@ async create(data: {
   });
   await this.jvRepo.save(jv);
 
-  // 6) Create JV detail lines
+  // 7) Create JV detail lines
   const cashAcct = await this.accountRepo.findOneBy({
     accountNumber: data.currency === 'USD' ? '5301' : '5302',
   });
   if (!cashAcct) throw new NotFoundException('Cash account not found');
 
-  // >>> Added: auto description for cash payments
-  const autoDesc =
-    data.pmtType === 'Cash'
-      ? (data.currency === 'USD' ? 'دفعة نقدا $$' : 'دفعة نقدا LL')
-      : undefined;
-  const descriptionText = autoDesc ?? data.comments ?? null;
-  // <<<
+  // ✅ FIXED: Build description with static text + comments in parentheses
+  let descriptionText: string | null = null;
+  
+  if (data.pmtType === 'Cash') {
+    // Static part based on currency
+    const staticDesc = data.currency === 'USD' ? 'دفعة نقدا $$' : 'دفعة نقدا LL';
+    
+    // Add comments in parentheses if provided
+    if (data.comments && data.comments.trim()) {
+      descriptionText = `${staticDesc} (${data.comments.trim()})`;
+    } else {
+      descriptionText = staticDesc;
+    }
+  } else {
+    // For Check payments, just use comments if provided
+    descriptionText = data.comments?.trim() || null;
+  }
+
   const currencyCode = this.normalizeCurrencyCode(data.currency);
-const exRateUSD = Number(data.exchangeRate);                        
-const exRateEUROToUSD = currencyCode === 'EURO' ? exRateUSD : 0;
+  const exRateUSD = Number(data.exchangeRate);                        
+  const exRateEUROToUSD = currencyCode === 'EURO' ? exRateUSD : 0;
 
   const drLine = this.jvDetailRepo.create({
     journalVoucherId: jv.id,
@@ -196,16 +204,16 @@ const exRateEUROToUSD = currencyCode === 'EURO' ? exRateUSD : 0;
     crOFR: 0,
     crUSDOFR: 0,
     crLLOFR: 0,
-       exRateUSD,
+    exRateUSD,
     exRateEUROToUSD,
-    description: descriptionText, // <-- use requested text
+    description: descriptionText, // ✅ Now includes static + comments
     docNbr: jvNumber,
   });
 
   const crLine = this.jvDetailRepo.create({
     journalVoucherId: jv.id,
     customerId: data.customerId,
-   currency: currencyCode,
+    currency: currencyCode,
     dr: 0,
     drUSD: 0,
     drLL: 0,
@@ -218,15 +226,15 @@ const exRateEUROToUSD = currencyCode === 'EURO' ? exRateUSD : 0;
     crOFR: hdrCrOFR,
     crUSDOFR: hdrCrUSDOFR,
     crLLOFR: hdrCrLLOFR,
-       exRateUSD,
+    exRateUSD,
     exRateEUROToUSD,
-    description: descriptionText, // <-- use requested text
+    description: descriptionText, // ✅ Now includes static + comments
     docNbr: jvNumber,
   });
 
   await this.jvDetailRepo.save([drLine, crLine]);
 
-  // 7) Persist ReceiptEntry (store exchangeRate but not recalc)
+  // 8) Persist ReceiptEntry
   const entry = this.entryRepo.create({
     customerId: data.customerId,
     date: data.date,
@@ -244,11 +252,10 @@ const exRateEUROToUSD = currencyCode === 'EURO' ? exRateUSD : 0;
   const savedEntry = await this.entryRepo.save(entry);
   jv.receiptEntryId = savedEntry.id;
   await this.jvRepo.save(jv);
-  // ──────────────────────────────────────────────────────────────────────────────
-  // 8) Broadcast the updated list of entries to all connected clients
+
+  // 9) Broadcast the updated list
   const all = await this.findSummary();
   this.gateway.broadcastAll(all);
-  // ──────────────────────────────────────────────────────────────────────────────
 
   return savedEntry;
 }
@@ -279,203 +286,216 @@ const exRateEUROToUSD = currencyCode === 'EURO' ? exRateUSD : 0;
   }
   /*update an existing reciept + its jv */
   async update(
-    id: number,
-    data: {
-      customerId: number;
-      date: Date;
-      invoiceId?: number | null;
-      cashNumber: number;
-      currency: 'USD' | 'LL';
-      exchangeRate?: number;
-      amountExchanged: number;
-      comments?: string;
-      type: ReceiptType;
-      pmtType: 'Cash' | 'Check';
-    },
-  ): Promise<ReceiptEntry> {
-    // fetch the existing entry + its JV+details
-    const entry = await this.entryRepo.findOne({
-      where: { id },
-      relations: ['journalVoucher', 'journalVoucher.details'],
+  id: number,
+  data: {
+    customerId: number;
+    date: Date;
+    invoiceId?: number | null;
+    cashNumber: number;
+    currency: 'USD' | 'LL';
+    exchangeRate?: number;
+    amountExchanged: number;
+    comments?: string;
+    type: ReceiptType;
+    pmtType: 'Cash' | 'Check';
+  },
+): Promise<ReceiptEntry> {
+  // fetch the existing entry + its JV+details
+  const entry = await this.entryRepo.findOne({
+    where: { id },
+    relations: ['journalVoucher', 'journalVoucher.details'],
+  });
+  if (!entry) throw new NotFoundException('Receipt entry not found');
+
+  const jv = entry.journalVoucher;
+
+  // recalc your JV‐number *only* if type changed (else keep the old one)
+  if (data.type !== entry.type) {
+    const yy = (
+      await this.settingsRepo.findOne({ where: { isActive: true } })
+    ).year.slice(-2);
+    const prefix = data.type === 'G' ? 'RVG' : 'RV';
+    const last = await this.jvRepo.find({
+      where: { jvNumber: Like(`${prefix}${yy}-%`) },
+      order: { jvNumber: 'DESC' },
+      take: 1,
     });
-    if (!entry) throw new NotFoundException('Receipt entry not found');
-
-    const jv = entry.journalVoucher;
-
-    // recalc your JV‐number *only* if type changed (else keep the old one)
-    if (data.type !== entry.type) {
-      const yy = (
-        await this.settingsRepo.findOne({ where: { isActive: true } })
-      ).year.slice(-2);
-      const prefix = data.type === 'G' ? 'RVG' : 'RV';
-      const last = await this.jvRepo.find({
-        where: { jvNumber: Like(`${prefix}${yy}-%`) },
-        order: { jvNumber: 'DESC' },
-        take: 1,
-      });
-      const seq = last.length
-        ? parseInt(last[0].jvNumber.split('-')[1], 10) + 1
-        : 1;
-      jv.jvNumber = `${prefix}${yy}-${String(seq).padStart(3, '0')}`;
-    }
-
-    // update header date/type
-    jv.date = data.date;
-    jv.jvType = data.type;
-
-    // compute the USD/LL parts and totals just like in create()
-    const usdPart =
-      data.currency === 'LL' ? data.amountExchanged : data.cashNumber;
-    const llPart =
-      data.currency === 'LL' ? data.cashNumber : data.amountExchanged;
-
-        const normalizedCode = this.normalizeCurrencyCode(data.currency);
-        const autoDesc =
-  data.pmtType === 'Cash'
-    ? (normalizedCode === 'USD' ? 'دفعة نقدا $$' : 'دفعة نقدا LL')
-    : undefined;
-const exRateUSD = Number(data.exchangeRate);
-const exRateEUROToUSD = normalizedCode === 'EURO' ? exRateUSD : 0;
-const descriptionText = autoDesc ?? data.comments ?? null;
-
-
-    let hdrDr = 0,
-      hdrDrUSD = 0,
-      hdrDrLL = 0;
-    let hdrDrOFR = 0,
-      hdrDrUSDOFR = 0,
-      hdrDrLLOFR = 0;
-    let hdrCr = 0,
-      hdrCrUSD = 0,
-      hdrCrLL = 0;
-    let hdrCrOFR = 0,
-      hdrCrUSDOFR = 0,
-      hdrCrLLOFR = 0;
-
-    switch (data.type) {
-      case 'G':
-        hdrDrOFR = usdPart;
-        hdrDrUSDOFR = usdPart;
-        hdrDrLLOFR = llPart;
-        hdrCrOFR = usdPart;
-        hdrCrUSDOFR = usdPart;
-        hdrCrLLOFR = llPart;
-        break;
-      case 'S':
-        hdrDr = usdPart;
-        hdrDrUSD = usdPart;
-        hdrDrLL = llPart;
-        hdrDrOFR = usdPart;
-        hdrDrUSDOFR = usdPart;
-        hdrDrLLOFR = llPart;
-        hdrCr = usdPart;
-        hdrCrUSD = usdPart;
-        hdrCrLL = llPart;
-        hdrCrOFR = usdPart;
-        hdrCrUSDOFR = usdPart;
-        hdrCrLLOFR = llPart;
-        break;
-      case 'RVR':
-        hdrDr = usdPart;
-        hdrDrUSD = usdPart;
-        hdrDrLL = llPart;
-        hdrCr = usdPart;
-        hdrCrUSD = usdPart;
-        hdrCrLL = llPart;
-        break;
-    }
-
-    // assign header totals & save
-    Object.assign(jv, {
-      totalDr: hdrDr,
-      totalDrUSD: hdrDrUSD,
-      totalDrLL: hdrDrLL,
-      totalDrOFR: hdrDrOFR,
-      totalDrUSDOFR: hdrDrUSDOFR,
-      totalDrLLOFR: hdrDrLLOFR,
-      totalCr: hdrCr,
-      totalCrUSD: hdrCrUSD,
-      totalCrLL: hdrCrLL,
-      totalCrOFR: hdrCrOFR,
-      totalCrUSDOFR: hdrCrUSDOFR,
-      totalCrLLOFR: hdrCrLLOFR,
-    });
-    await this.jvRepo.save(jv);
-
-    // drop old lines & reinsert
-    await this.jvDetailRepo.delete({ journalVoucherId: jv.id });
-
-    const cashAcct = await this.accountRepo.findOneBy({
-      accountNumber: data.currency === 'USD' ? '5301' : '5302',
-
-      
-    });
-    if (!cashAcct) throw new NotFoundException('Cash account not found');
-
-    const drLine = this.jvDetailRepo.create({
-      journalVoucherId: jv.id,
-      accountId: cashAcct.id,
-      currency: normalizedCode,
-      dr: hdrDr,
-      drUSD: hdrDrUSD,
-      drLL: hdrDrLL,
-      drOFR: hdrDrOFR,
-      drUSDOFR: hdrDrUSDOFR,
-      drLLOFR: hdrDrLLOFR,
-        exRateUSD,                       
-  exRateEUROToUSD, 
-      cr: 0,
-      crUSD: 0,
-      crLL: 0,
-      crOFR: 0,
-      crUSDOFR: 0,
-      crLLOFR: 0,
-  description: descriptionText,         
-  docNbr: jv.jvNumber,    });
-    const crLine = this.jvDetailRepo.create({
-      journalVoucherId: jv.id,
-      customerId: data.customerId,
-       currency: normalizedCode,
-      dr: 0,
-      drUSD: 0,
-      drLL: 0,
-      drOFR: 0,
-      drUSDOFR: 0,
-      drLLOFR: 0,
-      cr: hdrCr,
-      crUSD: hdrCrUSD,
-      crLL: hdrCrLL,
-      crOFR: hdrCrOFR,
-      crUSDOFR: hdrCrUSDOFR,
-      crLLOFR: hdrCrLLOFR,
-      description: descriptionText,        
-  docNbr: jv.jvNumber,
-    exRateUSD,                     
-  exRateEUROToUSD, 
-    });
-    await this.jvDetailRepo.save([drLine, crLine]);
-
-    // update the ReceiptEntry itself
-    Object.assign(entry, {
-      customerId: data.customerId,
-      date: data.date,
-      invoiceId: data.invoiceId,
-      cashNumber: data.cashNumber,
-      currency: data.currency,
-      exchangeRate: data.exchangeRate ?? null,
-      amountExchanged: data.amountExchanged,
-      comments: data.comments ?? null,
-      type: data.type,
-      pmtType: data.pmtType,
-      journalVoucherId: jv.id,
-    });
-    const updated = await this.entryRepo.save(entry);
-
-    // broadcast new summary
-    this.gateway.broadcastAll(await this.findSummary());
-
-    return updated;
+    const seq = last.length
+      ? parseInt(last[0].jvNumber.split('-')[1], 10) + 1
+      : 1;
+    jv.jvNumber = `${prefix}${yy}-${String(seq).padStart(3, '0')}`;
   }
+
+  // update header date/type
+  jv.date = data.date;
+  jv.jvType = data.type;
+
+  // compute the USD/LL parts and totals just like in create()
+  const usdPart =
+    data.currency === 'LL' ? data.amountExchanged : data.cashNumber;
+  const llPart =
+    data.currency === 'LL' ? data.cashNumber : data.amountExchanged;
+
+  const normalizedCode = this.normalizeCurrencyCode(data.currency);
+  const exRateUSD = Number(data.exchangeRate);
+  const exRateEUROToUSD = normalizedCode === 'EURO' ? exRateUSD : 0;
+
+  // ✅ FIXED: Build description with static text + comments in parentheses
+  let descriptionText: string | null = null;
+  
+  if (data.pmtType === 'Cash') {
+    // Static part based on currency
+    const staticDesc = normalizedCode === 'USD' ? 'دفعة نقدا $$' : 'دفعة نقدا LL';
+    
+    // Add comments in parentheses if provided
+    if (data.comments && data.comments.trim()) {
+      descriptionText = `${staticDesc} (${data.comments.trim()})`;
+    } else {
+      descriptionText = staticDesc;
+    }
+  } else {
+    // For Check payments, just use comments if provided
+    descriptionText = data.comments?.trim() || null;
+  }
+
+  let hdrDr = 0,
+    hdrDrUSD = 0,
+    hdrDrLL = 0;
+  let hdrDrOFR = 0,
+    hdrDrUSDOFR = 0,
+    hdrDrLLOFR = 0;
+  let hdrCr = 0,
+    hdrCrUSD = 0,
+    hdrCrLL = 0;
+  let hdrCrOFR = 0,
+    hdrCrUSDOFR = 0,
+    hdrCrLLOFR = 0;
+
+  switch (data.type) {
+    case 'G':
+      hdrDrOFR = usdPart;
+      hdrDrUSDOFR = usdPart;
+      hdrDrLLOFR = llPart;
+      hdrCrOFR = usdPart;
+      hdrCrUSDOFR = usdPart;
+      hdrCrLLOFR = llPart;
+      break;
+    case 'S':
+      hdrDr = usdPart;
+      hdrDrUSD = usdPart;
+      hdrDrLL = llPart;
+      hdrDrOFR = usdPart;
+      hdrDrUSDOFR = usdPart;
+      hdrDrLLOFR = llPart;
+      hdrCr = usdPart;
+      hdrCrUSD = usdPart;
+      hdrCrLL = llPart;
+      hdrCrOFR = usdPart;
+      hdrCrUSDOFR = usdPart;
+      hdrCrLLOFR = llPart;
+      break;
+    case 'RVR':
+      hdrDr = usdPart;
+      hdrDrUSD = usdPart;
+      hdrDrLL = llPart;
+      hdrCr = usdPart;
+      hdrCrUSD = usdPart;
+      hdrCrLL = llPart;
+      break;
+  }
+
+  // assign header totals & save
+  Object.assign(jv, {
+    totalDr: hdrDr,
+    totalDrUSD: hdrDrUSD,
+    totalDrLL: hdrDrLL,
+    totalDrOFR: hdrDrOFR,
+    totalDrUSDOFR: hdrDrUSDOFR,
+    totalDrLLOFR: hdrDrLLOFR,
+    totalCr: hdrCr,
+    totalCrUSD: hdrCrUSD,
+    totalCrLL: hdrCrLL,
+    totalCrOFR: hdrCrOFR,
+    totalCrUSDOFR: hdrCrUSDOFR,
+    totalCrLLOFR: hdrCrLLOFR,
+  });
+  await this.jvRepo.save(jv);
+
+  // drop old lines & reinsert
+  await this.jvDetailRepo.delete({ journalVoucherId: jv.id });
+
+  const cashAcct = await this.accountRepo.findOneBy({
+    accountNumber: data.currency === 'USD' ? '5301' : '5302',
+  });
+  if (!cashAcct) throw new NotFoundException('Cash account not found');
+
+  const drLine = this.jvDetailRepo.create({
+    journalVoucherId: jv.id,
+    accountId: cashAcct.id,
+    currency: normalizedCode,
+    dr: hdrDr,
+    drUSD: hdrDrUSD,
+    drLL: hdrDrLL,
+    drOFR: hdrDrOFR,
+    drUSDOFR: hdrDrUSDOFR,
+    drLLOFR: hdrDrLLOFR,
+    exRateUSD,
+    exRateEUROToUSD,
+    cr: 0,
+    crUSD: 0,
+    crLL: 0,
+    crOFR: 0,
+    crUSDOFR: 0,
+    crLLOFR: 0,
+    description: descriptionText, // ✅ Now includes static + comments
+    docNbr: jv.jvNumber,
+  });
+
+  const crLine = this.jvDetailRepo.create({
+    journalVoucherId: jv.id,
+    customerId: data.customerId,
+    currency: normalizedCode,
+    dr: 0,
+    drUSD: 0,
+    drLL: 0,
+    drOFR: 0,
+    drUSDOFR: 0,
+    drLLOFR: 0,
+    cr: hdrCr,
+    crUSD: hdrCrUSD,
+    crLL: hdrCrLL,
+    crOFR: hdrCrOFR,
+    crUSDOFR: hdrCrUSDOFR,
+    crLLOFR: hdrCrLLOFR,
+    description: descriptionText, // ✅ Now includes static + comments
+    docNbr: jv.jvNumber,
+    exRateUSD,
+    exRateEUROToUSD,
+  });
+  await this.jvDetailRepo.save([drLine, crLine]);
+
+  // update the ReceiptEntry itself
+  Object.assign(entry, {
+    customerId: data.customerId,
+    date: data.date,
+    invoiceId: data.invoiceId,
+    cashNumber: data.cashNumber,
+    currency: data.currency,
+    exchangeRate: data.exchangeRate ?? null,
+    amountExchanged: data.amountExchanged,
+    comments: data.comments ?? null,
+    type: data.type,
+    pmtType: data.pmtType,
+    journalVoucherId: jv.id,
+  });
+  const updated = await this.entryRepo.save(entry);
+
+  // broadcast new summary
+  this.gateway.broadcastAll(await this.findSummary());
+
+  return updated;
+}
+
 
 
 
