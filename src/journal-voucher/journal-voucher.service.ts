@@ -613,32 +613,25 @@ async getCustomerStatementOFR(params: {
     };
   };
 
-  // ✅ NEW: robust doc prefix detection
-  const getRowKindFromDoc = (docNbr?: string | null, jvType?: string | null): RowKind => {
-    const doc = String(docNbr ?? "").trim().toUpperCase();
-    // Offer/Quotation docs and their returns:
-    if (jvType === "G") return "G";
-    if (doc.startsWith("G") || doc.startsWith("RG")) return "G"; // ✅ RG treated as G
-    return "S"; // includes S, R, RTN of S/RVR, etc.
+  // ✅ FIXED: Use jvType instead of docNbr for determining row kind
+  const getRowKindFromJV = (jvType?: string | null): RowKind => {
+    const type = String(jvType ?? "").trim().toUpperCase();
+    if (type === "G") return "G";
+    return "S"; // Default to S for all other types (S, R, etc.)
   };
 
-  // 3) Type filter
+  // ✅ FIXED: Filter by jvType on the JournalVoucher, not docNbr
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
     if (type === "S") {
-      // ✅ include Sales + Returns of Sales (R...), but exclude RG...
-      qb.andWhere(
-        "((d.docNbr LIKE :sPrefix) OR (d.docNbr LIKE :rPrefix)) AND (d.docNbr NOT LIKE :rgPrefix)",
-        { sPrefix: "S%", rPrefix: "R%", rgPrefix: "RG%" }
-      );
+      // Only include JVs where jvType is NOT 'G'
+      qb.andWhere("jv.jvType != :gType", { gType: "G" });
     } else if (type === "G") {
-      // ✅ include G + RG
-      qb.andWhere("(d.docNbr LIKE :gPrefix OR d.docNbr LIKE :rgPrefix)", {
-        gPrefix: "G%",
-        rgPrefix: "RG%",
-      });
+      // Only include JVs where jvType is 'G'
+      qb.andWhere("jv.jvType = :gType", { gType: "G" });
     }
+    // If type === "ALL", no additional filter needed
     return qb;
   };
 
@@ -674,7 +667,7 @@ async getCustomerStatementOFR(params: {
     let openingCr = 0;
 
     for (const r of beforeRows) {
-      const rowKind = getRowKindFromDoc(r.docNbr, r.journalVoucher?.jvType ?? null);
+      const rowKind = getRowKindFromJV(r.journalVoucher?.jvType ?? null);
       const { drCol, crCol } = getColsFor(rowKind);
 
       openingDr += Number((r as any)[drCol] || 0);
@@ -688,7 +681,7 @@ async getCustomerStatementOFR(params: {
   let running = openingBalance;
 
   const items = rows.map((r) => {
-    const rowKind = getRowKindFromDoc(r.docNbr, r.journalVoucher?.jvType ?? null);
+    const rowKind = getRowKindFromJV(r.journalVoucher?.jvType ?? null);
 
     const { drCol, crCol } = getColsFor(rowKind);
     const debit = Number((r as any)[drCol] || 0);
@@ -700,6 +693,7 @@ async getCustomerStatementOFR(params: {
       journalVoucherId: r.journalVoucherId,
       date: r.journalVoucher?.date,
       jvNumber: r.journalVoucher?.jvNumber,
+      jvType: r.journalVoucher?.jvType, // ✅ Include jvType for clarity
       description: r.description ?? null,
       docNbr: r.docNbr ?? null,
       kind: rowKind,
