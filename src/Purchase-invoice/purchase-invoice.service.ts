@@ -28,6 +28,7 @@ import { Thickness } from '../entities/inventory/thickness.entity';
 import { Item } from '../entities/inventory/item.entity';
 import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
+import { Settings } from 'src/entities/settings.entity';
 
 export type Chain = 'OFR' | 'VM';
 
@@ -90,6 +91,9 @@ export class PurchaseInvoiceService {
 
     @InjectRepository(InvoiceItem)
     private readonly invoiceItemRepo: Repository<InvoiceItem>,
+
+    @InjectRepository(Settings)
+private readonly settingsRepo: Repository<Settings>,
   ) {}
 
   // ────────────────────────────────────────────────────────────
@@ -1042,10 +1046,47 @@ export class PurchaseInvoiceService {
     await this.journalVoucherRepo.save(jv);
   }
 
+
+
+
+  private async getActiveYearYY(): Promise<string> {
+  const setting = await this.settingsRepo.findOne({ where: { isActive: true } as any });
+  if (!setting?.year) throw new Error('Active year not found in settings');
+  return String(setting.year).slice(-2);
+}
+
+private async getNextPurchaseInvoiceNumber(type: 'S' | 'G' | 'SR' | 'RVR'): Promise<string> {
+  const yy = await this.getActiveYearYY();
+
+  // If you want G to have its own series, keep PVG. If you want ALL types to be PV, replace with: `PV${yy}-`
+  const prefix = type === 'G' ? `PVG${yy}-` : `PV${yy}-`;
+
+  const last = await this.invoiceRepo
+    .createQueryBuilder('pi')
+    .select(['pi.id', 'pi.invoiceNumber'])
+    .where('pi.invoiceNumber LIKE :p', { p: `${prefix}%` })
+    .orderBy('pi.id', 'DESC')
+    .getOne();
+
+  let lastSeq = 0;
+  if (last?.invoiceNumber?.startsWith(prefix)) {
+    const part = last.invoiceNumber.replace(prefix, ''); // "001"
+    const n = parseInt(part, 10);
+    if (Number.isFinite(n)) lastSeq = n;
+  }
+
+  const nextSeq = lastSeq + 1;
+  return `${prefix}${String(nextSeq).padStart(3, '0')}`; // PV25-001
+}
+
   // ────────────────────────────────────────────────────────────
   // CREATE (no recompute functions, no applyPurchaseCostsForInvoice)
   // ────────────────────────────────────────────────────────────
   async create(data: Partial<PurchaseInvoice>) {
+
+      // ✅ generate invoiceNumber like PV25-001
+  const type = (data as any).type ?? 'S';
+  (data as any).invoiceNumber = await this.getNextPurchaseInvoiceNumber(type);
     // 1) save invoice + items
     const invoice = this.invoiceRepo.create(data as any);
     const savedInvoice = await this.invoiceRepo.save(invoice as any);
@@ -1602,4 +1643,122 @@ async getCostAnalysisHistory(q?: any): Promise<any[]> {
       .addOrderBy('tx.id', 'ASC')
       .getRawMany();
   }
+
+
+  
+typescript// Add this method to your PurchaseInvoiceService class
+
+/**
+ * Get journal voucher(s) with details for a specific purchase invoice
+ */
+async getJournalVouchersForInvoice(purchaseInvoiceId: number) {
+  // First verify the purchase invoice exists
+  const invoice = await this.invoiceRepo.findOne({
+    where: { id: purchaseInvoiceId } as any,
+  });
+
+  if (!invoice) {
+    throw new NotFoundException(
+      `Purchase invoice with ID ${purchaseInvoiceId} not found`,
+    );
+  }
+
+  // Get all journal vouchers for this purchase invoice with their details
+  const journalVouchers = await this.journalVoucherRepo.find({
+    where: { purchaseInvoiceId } as any,
+    relations: [
+      'details',
+      'details.account',
+      'details.supplier',
+      'details.customer',
+      'details.exchangeRateAcc',
+      'details.exchangeRateUSD',
+      'exchangeRateAcc',
+      'exchangeRateUSD',
+    ],
+    order: {
+      date: 'DESC',
+      id: 'DESC',
+    } as any,
+  });
+
+  return {
+    purchaseInvoice: {
+      id: (invoice as any).id,
+      invoiceNumber: (invoice as any).invoiceNumber,
+      date: (invoice as any).date,
+      type: (invoice as any).type,
+      status: (invoice as any).status,
+    },
+    journalVouchers: journalVouchers.map((jv) => ({
+      id: (jv as any).id,
+      date: (jv as any).date,
+      jvNumber: (jv as any).jvNumber,
+      jvType: (jv as any).jvType,
+      totalDr: (jv as any).totalDr,
+      totalDrUSD: (jv as any).totalDrUSD,
+      totalDrLL: (jv as any).totalDrLL,
+      totalDrOFR: (jv as any).totalDrOFR,
+      totalDrUSDOFR: (jv as any).totalDrUSDOFR,
+      totalDrLLOFR: (jv as any).totalDrLLOFR,
+      totalCr: (jv as any).totalCr,
+      totalCrUSD: (jv as any).totalCrUSD,
+      totalCrLL: (jv as any).totalCrLL,
+      totalCrOFR: (jv as any).totalCrOFR,
+      totalCrUSDOFR: (jv as any).totalCrUSDOFR,
+      totalCrLLOFR: (jv as any).totalCrLLOFR,
+      exchangeRateAcc: (jv as any).exchangeRateAcc,
+      exchangeRateUSD: (jv as any).exchangeRateUSD,
+      details: ((jv as any).details || []).map((detail: any) => ({
+        id: detail.id,
+        accountId: detail.accountId,
+        account: detail.account
+          ? {
+              id: detail.account.id,
+              name: detail.account.name,
+              code: detail.account.code,
+              accountNumber: detail.account.accountNumber,
+            }
+          : null,
+        supplierId: detail.supplierId,
+        supplier: detail.supplier
+          ? {
+              id: detail.supplier.id,
+              name: detail.supplier.name,
+              supplierName: detail.supplier.supplierName,
+            }
+          : null,
+        customerId: detail.customerId,
+        customer: detail.customer
+          ? {
+              id: detail.customer.id,
+              customerName: detail.customer.customerName,
+            }
+          : null,
+        description: detail.description,
+        check: detail.check,
+        checkDate: detail.checkDate,
+        bankName: detail.bankName,
+        dr: detail.dr,
+        drUSD: detail.drUSD,
+        drLL: detail.drLL,
+        drOFR: detail.drOFR,
+        drUSDOFR: detail.drUSDOFR,
+        drLLOFR: detail.drLLOFR,
+        cr: detail.cr,
+        crUSD: detail.crUSD,
+        crLL: detail.crLL,
+        crOFR: detail.crOFR,
+        crUSDOFR: detail.crUSDOFR,
+        crLLOFR: detail.crLLOFR,
+        currency: detail.currency,
+        exRateEUROToUSD: detail.exRateEUROToUSD,
+        exRateUSD: detail.exRateUSD,
+        docNbr: detail.docNbr,
+        exchangeRateAcc: detail.exchangeRateAcc,
+        exchangeRateUSD: detail.exchangeRateUSD,
+      })),
+    })),
+  };
+}
 }

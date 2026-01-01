@@ -627,4 +627,137 @@ async delete(id: number): Promise<{ ok: true; id: number }> {
   }
 
 
+async getJournalVoucherForReceiptEntry(receiptEntryId: number) {
+  // First verify the receipt entry exists
+  const receiptEntry = await this.entryRepo.findOne({
+    where: { id: receiptEntryId },
+    relations: ['customer', 'journalVoucher'],
+  });
+
+  if (!receiptEntry) {
+    throw new NotFoundException(
+      `Receipt entry with ID ${receiptEntryId} not found`,
+    );
+  }
+
+  // Get the journal voucher ID
+  const jvId = receiptEntry.journalVoucherId;
+
+  if (!jvId) {
+    throw new NotFoundException(
+      `No journal voucher found for receipt entry ${receiptEntryId}`,
+    );
+  }
+
+  // Get the full journal voucher with details
+  const journalVoucher = await this.jvRepo.findOne({
+    where: { id: jvId },
+    relations: [
+      'details',
+      'details.account',
+      'details.supplier',
+      'details.customer',
+      'details.exchangeRateAcc',
+      'details.exchangeRateUSD',
+      'exchangeRateAcc',
+      'exchangeRateUSD',
+    ],
+  });
+
+  if (!journalVoucher) {
+    throw new NotFoundException(
+      `Journal voucher with ID ${jvId} not found`,
+    );
+  }
+
+  return {
+    receiptEntry: {
+      id: receiptEntry.id,
+      customerId: receiptEntry.customerId,
+      customerName: receiptEntry.customer?.customerName,
+      type: receiptEntry.type,
+      date: receiptEntry.date,
+      cashNumber: receiptEntry.cashNumber,
+      currency: receiptEntry.currency,
+      exchangeRate: receiptEntry.exchangeRate,
+      amountExchanged: receiptEntry.amountExchanged,
+      comments: receiptEntry.comments,
+      pmtType: receiptEntry.pmtType,
+      invoiceId: receiptEntry.invoiceId,
+    },
+    journalVoucher: {
+      id: journalVoucher.id,
+      date: journalVoucher.date,
+      jvNumber: journalVoucher.jvNumber,
+      jvType: journalVoucher.jvType,
+      totalDr: journalVoucher.totalDr,
+      totalDrUSD: journalVoucher.totalDrUSD,
+      totalDrLL: journalVoucher.totalDrLL,
+      totalDrOFR: journalVoucher.totalDrOFR,
+      totalDrUSDOFR: journalVoucher.totalDrUSDOFR,
+      totalDrLLOFR: journalVoucher.totalDrLLOFR,
+      totalCr: journalVoucher.totalCr,
+      totalCrUSD: journalVoucher.totalCrUSD,
+      totalCrLL: journalVoucher.totalCrLL,
+      totalCrOFR: journalVoucher.totalCrOFR,
+      totalCrUSDOFR: journalVoucher.totalCrUSDOFR,
+      totalCrLLOFR: journalVoucher.totalCrLLOFR,
+      exchangeRateAcc: journalVoucher.exchangeRateAcc,
+      exchangeRateUSD: journalVoucher.exchangeRateUSD,
+      details: (journalVoucher.details || []).map((detail: any) => ({
+        id: detail.id,
+        accountId: detail.accountId,
+        account: detail.account
+          ? {
+              id: detail.account.id,
+              name: detail.account.name,
+              arabicAccountName: detail.account.arabicAccountName,
+              code: detail.account.code,
+              accountNumber: detail.account.accountNumber,
+            }
+          : null,
+        supplierId: detail.supplierId,
+        supplier: detail.supplier
+          ? {
+              id: detail.supplier.id,
+              name: detail.supplier.name,
+              supplierName: detail.supplier.supplierName,
+            }
+          : null,
+        customerId: detail.customerId,
+        customer: detail.customer
+          ? {
+              id: detail.customer.id,
+              customerName: detail.customer.customerName,
+            }
+          : null,
+        description: detail.description,
+        check: detail.check,
+        checkDate: detail.checkDate,
+        bankName: detail.bankName,
+        dr: detail.dr,
+        drUSD: detail.drUSD,
+        drLL: detail.drLL,
+        drOFR: detail.drOFR,
+        drUSDOFR: detail.drUSDOFR,
+        drLLOFR: detail.drLLOFR,
+        cr: detail.cr,
+        crUSD: detail.crUSD,
+        crLL: detail.crLL,
+        crOFR: detail.crOFR,
+        crUSDOFR: detail.crUSDOFR,
+        crLLOFR: detail.crLLOFR,
+        currency: detail.currency,
+        exRateEUROToUSD: detail.exRateEUROToUSD,
+        exRateUSD: detail.exRateUSD,
+        docNbr: detail.docNbr,
+        exchangeRateAcc: detail.exchangeRateAcc,
+        exchangeRateUSD: detail.exchangeRateUSD,
+      })),
+    },
+  };
+}
+
+
+  
 }

@@ -88,7 +88,10 @@ export class RecievablesController {
       limit: limit ? Number(limit) : 50,
     });
   }
-
+@Get(':id/journal-voucher')
+async getJournalVoucher(@Param('id', ParseIntPipe) id: number) {
+  return await this.service.getJournalVoucherForReceiptEntry(id);
+}
 
 
    @Delete(':id')

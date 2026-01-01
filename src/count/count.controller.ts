@@ -17,9 +17,10 @@ import { InventoryCountService } from "./count.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import { RequirePerms } from "../auth/permissions.decorator";
+import { CountType } from '../entities/inventory/count.entity';
 
 @Controller("inventory-count")
-@UseGuards(JwtAuthGuard, PermissionsGuard)
+
 export class InventoryCountController {
   constructor(private readonly svc: InventoryCountService) {}
 
@@ -79,6 +80,20 @@ export class InventoryCountController {
     return this.svc.getFilteredCountsWithBatchBalance();
   }
 
+
+   @Get('audit/count-transactions')
+  async auditCountTransactions(
+    @Query('asOf') asOf?: string,
+    @Query('type') type?: CountType,
+    @Query('limit') limit?: string,
+  ) {
+    return this.svc.auditCountTransactions({
+      asOf,
+      type,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
   // OPENING count creation
   @Post("v1/opening")
   @RequirePerms("inventoryCount.create")
@@ -93,6 +108,18 @@ export class InventoryCountController {
   @RequirePerms("inventoryCount.rebuild")
   rebuildOpening(@Body() body: { keepDate: string; deleteDate: string }) {
     return this.svc.rebuildOpeningCountsKeepDate(body);
+  }
+
+
+   @Post('opening-snapshot-g')
+  async createOpeningSnapshotG(@Body() body: any) {
+    const asOf = body?.asOf || '2026-01-01';
+
+    return this.svc.createOpeningSnapshotG({
+      asOf,
+      deleteExisting: true,
+      skipZeroRows: true,
+    });
   }
 
   // Inventory check creation

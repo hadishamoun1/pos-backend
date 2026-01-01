@@ -1,0 +1,3080 @@
+FOUND SUPPLIERS (FUZZY MATCH)
+================================================================================
+Row 27 | 401153 | Match: exact_name
+  CSV: AGC Obeikan
+  DB:   AGC Obeikan
+
+Row 30 | 401181 | Match: exact_name
+  CSV: Allen Glass
+  DB:   Allen Glass
+
+Row 35 | 401104 | Match: exact_name
+  CSV: ARABIAN UNITED FLOAT GLASS
+  DB:   ARABIAN UNITED FLOAT GLASS
+
+Row 36 | 401105 | Match: exact_name
+  CSV: AUSTRALIA LANDSON
+  DB:  Ali Jaber AUSTRALIA LANDSON
+
+Row 38 | 401151 | Match: exact_name
+  CSV: Benxi Yujing Glass
+  DB:  Majed Benxi Yujing Glass
+
+Row 40 | 401172 | Match: partial_name
+  CSV: Bisheng Glass Technology
+  DB:  Ali Jaber Bisheng Glass
+
+Row 42 | 401174 | Match: exact_name
+  CSV: BRG Glass
+  DB:  Ali Jaber BRG Glass
+
+Row 43 | 401103 | Match: exact_name
+  CSV: Cairo Glass Manufacturing Co.
+  DB:   Cairo Glass Manufacturing Co.
+
+Row 44 | 401135 | Match: exact_name
+  CSV: CAM MERKIZI SAN(Yorglas)
+  DB:   CAM MERKIZI SAN(Yorglas)
+
+Row 46 | 401118 | Match: exact_name
+  CSV: CHINA GLASS GROUP
+  DB:  Majed/Ali Jaber CHINA GLASS GROUP
+
+Row 49 | 401183 | Match: exact_name
+  CSV: Corpotrade
+  DB:   Corpotrade
+
+Row 53 | 401133 | Match: exact_name
+  CSV: DEKOR GLASS
+  DB:   DEKOR GLASS
+
+Row 55 | 401112 | Match: exact_name
+  CSV: EL NASR GLASS & CRYSTAL
+  DB:   EL NASR GLASS & CRYSTAL
+
+Row 56 | 401152 | Match: exact_name
+  CSV: Emirates Float Glass
+  DB:   Emirates Float Glass
+
+Row 63 | 401124 | Match: exact_name
+  CSV: FIRST GLASS CO.
+  DB:   FIRST GLASS CO.
+
+Row 71 | 401138 | Match: exact_name
+  CSV: GOLDEN FALCON
+  DB:   GOLDEN FALCON
+
+Row 72 | 40112103 | Match: exact_name
+  CSV: GUARDIAN EGYPT GLASS
+  DB:   GUARDIAN EGYPT GLASS
+
+Row 73 | 40112102 | Match: exact_name
+  CSV: GUARDIAN ZOUJAJ
+  DB:   GUARDIAN ZOUJAJ
+
+Row 76 | 401130 | Match: exact_name
+  CSV: HEBEI CSG GLASS
+  DB:  Majed HEBEI CSG GLASS
+
+Row 77 | 401145 | Match: partial_name
+  CSV: HESHAN XIDA TRADING
+  DB:  Ali Jaber Heshan Xida Trading Co.,LTD
+
+Row 82 | 401162 | Match: partial_name
+  CSV: Impex
+  DB:   IMPEX GmbH Float Glass Supplier
+
+Row 88 | 401168 | Match: exact_name
+  CSV: KHALDI TRADING
+  DB:   KHALDI TRADING
+
+Row 94 | 401167 | Match: exact_name
+  CSV: MULIA GLASS
+  DB:   MULIA GLASS
+
+Row 98 | 401155 | Match: exact_name
+  CSV: Obeikan Glass Company
+  DB:   Obeikan Glass Company
+
+Row 103 | 401136 | Match: exact_name
+  CSV: QINGDAO BANGMEI HONGTU
+  DB:  Majed QINGDAO BANGMEI HONGTU
+
+Row 104 | 401178 | Match: exact_name
+  CSV: QINGDAO HAISEN
+  DB:  Majed QINGDAO HAISEN
+
+Row 105 | 401143 | Match: exact_name
+  CSV: QINGDAO JINJING
+  DB:  Majed QINGDAO JINJING
+
+Row 106 | 401171 | Match: exact_name
+  CSV: Qingdao Joyo
+  DB:  Ali Jaber Qingdao Joyo
+
+Row 107 | 401156 | Match: exact_name
+  CSV: QINGDAO KING TAI
+  DB:  Sunny QINGDAO KING TAI
+
+Row 108 | 401185 | Match: exact_name
+  CSV: Qingdao Lanmo
+  DB:   Qingdao Lanmo
+
+Row 109 | 401180 | Match: exact_name
+  CSV: Qingdao Orient Industry
+  DB:   Qingdao Orient Industry
+
+Row 110 | 401144 | Match: exact_name
+  CSV: Qingdao Phoenix Glass Co., LTD
+  DB:  Farid Slim Qingdao Phoenix Glass Co., LTD
+
+Row 111 | 401101 | Match: exact_name
+  CSV: Qingdao Reliance Industry Co. LTD
+  DB:  Ali Jaber Qingdao Reliance Industry Co. LTD
+
+Row 112 | 401141 | Match: exact_name
+  CSV: QINGDAO REXI
+  DB:  Ali Jaber QINGDAO REXI
+
+Row 113 | 401126 | Match: exact_name
+  CSV: QINGDAO SHINING
+  DB:  Tess QINGDAO SHINING
+
+Row 114 | 401173 | Match: partial_name
+  CSV: Qingdao Vanguard
+  DB:  Ali Jaber Qingdao Vanguard Glass
+
+Row 115 | 401125 | Match: exact_name
+  CSV: QINHUANGDAO BEIFANG GLASS
+  DB:   QINHUANGDAO BEIFANG GLASS
+
+Row 117 | 401102 | Match: exact_name
+  CSV: RIDER GLASS
+  DB:   RIDER GLASS
+
+Row 118 | 401163 | Match: exact_name
+  CSV: RongSheng Glass Nigeria Limited
+  DB:   RongSheng Glass Nigeria Limited
+
+Row 123 | 40112101 | Match: exact_name
+  CSV: SAUDI GUARDIAN
+  DB:   SAUDI GUARDIAN
+
+Row 125 | 401176 | Match: exact_name
+  CSV: Shahe Biyoute
+  DB:  Ali Jaber Shahe Biyoute
+
+Row 127 | 401160 | Match: exact_name
+  CSV: Shandong Float Glass
+  DB:  Tess Shandong Float Glass
+
+Row 128 | 401161 | Match: exact_name
+  CSV: Shandong Fluent Glass
+  DB:  Tess Shandong Fluent Glass
+
+Row 129 | 401154 | Match: exact_name
+  CSV: Shandong Jinjing
+  DB:   Shandong Jinjing
+
+Row 130 | 401177 | Match: exact_name
+  CSV: Shandong Sunshine
+  DB:  Majed Shandong Sunshine
+
+Row 131 | 401106 | Match: exact_name
+  CSV: SIAM PATTERN GLASS
+  DB:  Majed SIAM PATTERN GLASS
+
+Row 132 | 401158 | Match: exact_name
+  CSV: SISECAM ITALY
+  DB:   SISECAM ITALY
+
+Row 133 | 401111 | Match: exact_name
+  CSV: SISECAM TURKEY
+  DB:   SISECAM TURKEY
+
+Row 136 | 401117 | Match: exact_name
+  CSV: SPHINX GLASS(اعتمادات)
+  DB:   SPHINX GLASS(اعتمادات)
+
+Row 137 | 401116 | Match: exact_name
+  CSV: SPHINX GLASS(تحاويل نقدية)
+  DB:   SPHINX GLASS(تحاويل نقدية)
+
+Row 140 | 401179 | Match: partial_name
+  CSV: Summer Qingdao Easen
+  DB:  Summer Qingdao Easen
+
+Row 143 | 401120 | Match: exact_name
+  CSV: TENGZHOU JINJING
+  DB:   TENGZHOU JINJING
+
+Row 144 | 401157 | Match: exact_name
+  CSV: Tengzhou Yushuo Glass Technology Co. Ltd
+  DB:  Majed Tengzhou Yushuo Glass Technology Co. Ltd
+
+Row 145 | 401169 | Match: exact_name
+  CSV: Thai Patterned Glass Limited
+  DB:   Thai Patterned Glass Limited
+
+Row 146 | 401170 | Match: exact_name
+  CSV: Tianjin Luck Glass Technology
+  DB:  Ali Jaber Tianjin Luck Glass Technology
+
+Row 147 | 401110 | Match: exact_name
+  CSV: Trakya Glass Bulgaria
+  DB:   Trakya Glass Bulgaria
+
+Row 152 | 401159 | Match: exact_name
+  CSV: WEIHAI CNG COATED
+  DB:   WEIHAI CNG COATED
+
+Row 154 | 401146 | Match: exact_name
+  CSV: XIANNING C.S.G
+  DB:   XIANNING C.S.G
+
+Row 155 | 401147 | Match: exact_name
+  CSV: XINYI GROUP
+  DB:   XINYI GROUP
+
+Row 156 | 401127 | Match: exact_name
+  CSV: ZENGZHOU HENGHAO
+  DB:   ZENGZHOU HENGHAO
+
+Row 157 | 401114 | Match: exact_name
+  CSV: ZHONGBO TECHNOLOY
+  DB:   ZHONGBO TECHNOLOY
+
+Row 479 | 401164 | Match: exact_name
+  CSV: شركة صرار للزجاج والمرايا
+  DB:   شركة صرار للزجاج والمرايا
+
+Row 577 | 401184 | Match: partial_name
+  CSV: عمر بساطة Grand Star Company
+  DB:  عمر بساطة Grand Star Company
+
+Row 634 | 401108 | Match: exact_name
+  CSV: مؤسسة انطوان حجار التجارية
+  DB:   مؤسسة انطوان حجار التجارية
+
+
+
+FOUND CUSTOMERS (FUZZY MATCH)
+================================================================================
+Row 1 | 411101375 | Match: partial_name
+  CSV: / ايلي عازار HK MATERIALS SARL
+  DB:  / ايلي عازار HK MATERIALS SARL
+
+Row 2 | 411102089 | Match: partial_name
+  CSV: هلال نجم NAJM ART
+  DB:  هلال نجم NAJM ART
+
+Row 3 | 4111010102 | Match: exact_name
+  CSV: 3- غلاس بريميوم ش.م.م
+  DB:  بول مارون - مشروع علي ديب 3- غلاس بريميوم ش.م.م
+
+Row 4 | 411104125 | Match: exact_name
+  CSV: J.T.N For Glass & Mirrors
+  DB:  جلال طلال النشار J.T.N For Glass & Mirrors
+
+Row 6 | 411101161 | Match: partial_name
+  CSV: ابوجمال الغول  El Ghoul شركة الغول ش م ل
+  DB:   جمال الغول
+
+Row 7 | 411101469 | Match: exact_name
+  CSV: الشركة الوطنية للالمنيوم والزجاج(سونال)
+  DB:  احمد جمعة الشركة الوطنية للالمنيوم والزجاج(سونال)
+
+Row 8 | 411102074 | Match: partial_name
+  CSV: شركة تكنيكال غروب - حجازي وشركاه
+  DB:  Technical Group Hijazi شركة تكنيكال غروب - حجازي وشركاه -
+
+Row 9 | 411105049 | Match: partial_name
+  CSV: عقيل اخوان محمود بغدادي Ste Batico Constrution SA
+  DB:   محمود بغدادي
+
+Row 11 | 411101079 | Match: partial_name
+  CSV: فيصل الاشقر - Five lines شركة الخطوط الخمسة للزجا
+  DB:  حسين كريم 
+
+Row 12 | 411105057 | Match: partial_name
+  CSV: نعمة عباس Emmanuel bob Lincoln
+  DB:  نعمة عباس Emmanuel bob Lincoln
+
+Row 13 | 411105066 | Match: partial_name
+  CSV: يوسف بدر الدين - تصدير HMBN Alumi. Wholesale Co L
+  DB:  حسين كريم 
+
+Row 14 | 411105058 | Match: partial_name
+  CSV: /سامر محفوظ سميحة عثمان
+  DB:  /سامر محفوظ سميحة عثمان
+
+Row 15 | 4111021241 | Match: partial_name
+  CSV: 2 - HIJAZI CO.  FOR GLASS AND MIRRORS [ حجازي ]الغ
+  DB:   2 - HIJAZI CO.  FOR GLASS AND MIRRORS [ حجازي ]الغازية
+
+Row 16 | 4111030291 | Match: exact_name
+  CSV: 2- الياس غيا
+  DB:   2- الياس غيا
+
+Row 17 | 4111040401 | Match: exact_name
+  CSV: 2- ان جي غروب ش م م
+  DB:  NG GROUP غمراوي 2- ان جي غروب ش م م
+
+Row 18 | 4111030051 | Match: exact_name
+  CSV: 2- حسين الدلباني/ قديم
+  DB:   2- حسين الدلباني/ قديم
+
+Row 19 | 4111010101 | Match: exact_name
+  CSV: 2- غلاس بريميوم ش.م.م
+  DB:  بول مارون- GLASS PREMIUM 2- غلاس بريميوم ش.م.م
+
+Row 20 | 4111040221 | Match: partial_name
+  CSV: 2- مؤسسة فوزي النشار للزجاج والمرايا
+  DB:   مؤسسة فوزي النشار للزجاج والمرايا
+
+Row 21 | 4111030181 | Match: exact_name
+  CSV: 2- مهدي الدلباني وشركاه
+  DB:   2- مهدي الدلباني وشركاه
+
+Row 22 | 4111010103 | Match: exact_name
+  CSV: 4- غلاس بريميوم ش.م.م
+  DB:  مشروع رزق اللله 4- غلاس بريميوم ش.م.م
+
+Row 23 | 411101164 | Match: exact_name
+  CSV: 7ala Decoration /امير زحلان
+  DB:   7ala Decoration /امير زحلان
+
+Row 24 | 411101586 | Match: exact_name
+  CSV: A. Hajjar For Trading
+  DB:  انطوان حجار A. Hajjar For Trading
+
+Row 25 | 411105018 | Match: partial_name
+  CSV: Africa Aluminum Manufacturing Co.
+  DB:  جمال دياب Africa Aluminum Manufacturing Co
+
+Row 28 | 411101291 | Match: partial_name
+  CSV: ALEXCO-Aluminum Experts Company
+  DB:   ALEXCO-Aluminum Experts Company                    وسيم الا
+
+Row 29 | 411101154 | Match: exact_name
+  CSV: ALGSCO
+  DB:   ALGSCO
+
+Row 31 | 411101332 | Match: exact_name
+  CSV: ALU DESIGN / شومان
+  DB:   ALU DESIGN / شومان
+
+Row 32 | 411105090 | Match: partial_name
+  CSV: ALU PRO R & M
+  DB:  حسين كريم 
+
+Row 33 | 411101003 | Match: exact_name
+  CSV: ALUKIT/  حسان حرب
+  DB:   ALUKIT/  حسان حرب
+
+Row 34 | 411104131 | Match: exact_name
+  CSV: Alumiron S.A.L.
+  DB:  رضا حداد Alumiron S.A.L.
+
+Row 37 | 411101398 | Match: exact_name
+  CSV: Ayadi Industries SARL
+  DB:   Ayadi Industries SARL
+
+Row 39 | 411101454 | Match: exact_name
+  CSV: Best Choice for Aluminum And Wood
+  DB:  ايلي جبور Best Choice for Aluminum And Wood
+
+Row 41 | 411105083 | Match: exact_name
+  CSV: Boss Aluminium Investments Limited
+  DB:  طارق سرور Boss Aluminium Investments Limited
+
+Row 45 | 411101428 | Match: exact_name
+  CSV: Cedar Office Center
+  DB:  غانم خليفة Cedar Office Center
+
+Row 47 | 411103040 | Match: partial_name
+  CSV: Clear Glass علي علام شركة كلير جلاس ش.م.م
+  DB:  Clear Glass شركة كلير جلاس ش.م.م
+
+Row 48 | 411105007 | Match: exact_name
+  CSV: COBAFEV SARL
+  DB:  حسن غندور COBAFEV SARL
+
+Row 50 | 411101545 | Match: exact_name
+  CSV: Crystal Glass
+  DB:  خليل المسلم Crystal Glass
+
+Row 51 | 411101103 | Match: exact_name
+  CSV: Crystalla  / فيصل الاشقر
+  DB:   Crystalla  / فيصل الاشقر
+
+Row 52 | 411101519 | Match: exact_name
+  CSV: Deeb Glass Tec
+  DB:  علي ديب Deeb Glass Tec
+
+Row 54 | 411101486 | Match: exact_name
+  CSV: Distruct Solutions SARL
+  DB:  ريشار بولص Distruct Solutions SARL
+
+Row 57 | 411105055 | Match: exact_name
+  CSV: Etablissements Tanso
+  DB:  إبراهيم صقر Etablissements Tanso
+
+Row 58 | 411105085 | Match: exact_name
+  CSV: ETS Al ESSRAA
+  DB:  حسن حجازي ETS Al ESSRAA
+
+Row 59 | 411102247 | Match: exact_name
+  CSV: Euro Glass
+  DB:  عيسى عثمان Euro Glass
+
+Row 60 | 411101425 | Match: exact_name
+  CSV: Ezzeddine Glass Contracting
+  DB:  رامي عز الدين Ezzeddine Glass Contracting
+
+Row 61 | 411105074 | Match: exact_name
+  CSV: Fabrica Jammoul Aluminio sl
+  DB:  عبد اللله فحص Fabrica Jammoul Aluminio sl
+
+Row 62 | 411104033 | Match: partial_name
+  CSV: fenestra windows sarl
+  DB:   fenestra windows sarl                      زياد كارابيبار
+
+Row 64 | 411101450 | Match: exact_name
+  CSV: Frigo Parts SAL
+  DB:  غانم غانم Frigo Parts SAL
+
+Row 65 | 411101326 | Match: exact_name
+  CSV: GLASS GATE CO.
+  DB:  هامبيك ماسيريان GLASS GATE CO.
+
+Row 66 | 411101011 | Match: partial_name
+  CSV: Glass World Industries /الشيخ سامر العريضي
+  DB:  حسين كريم 
+
+Row 67 | 411101121 | Match: exact_name
+  CSV: GLASSLINE INDUSTRIES
+  DB:   GLASSLINE INDUSTRIES
+
+Row 68 | 411101501 | Match: exact_name
+  CSV: Glasspro (مارون شربل فهد)
+  DB:   Glasspro (مارون شربل فهد)
+
+Row 69 | 411101405 | Match: exact_name
+  CSV: Glastronic
+  DB:  جورج عطاللله Glastronic
+
+Row 70 | 411103007 | Match: exact_name
+  CSV: GLOBO WIN / عمار الزمار
+  DB:   GLOBO WIN / عمار الزمار
+
+Row 74 | 411105087 | Match: exact_name
+  CSV: Guinea Ecuatorial De Construccion
+  DB:  احمد جمعة Guinea Ecuatorial De Construccion
+
+Row 75 | 411104046 | Match: exact_name
+  CSV: H.G.A / رباح حداد
+  DB:   H.G.A / رباح حداد
+
+Row 78 | 411102124 | Match: exact_name
+  CSV: HIJAZI CO.  FOR GLASS AND MIRRORS [ حجازي ]الغازية
+  DB:   HIJAZI CO.  FOR GLASS AND MIRRORS [ حجازي ]الغازية
+
+Row 79 | 411101024 | Match: exact_name
+  CSV: HIJAZI GLASS CONTRACTING CO-SARL
+  DB:   HIJAZI GLASS CONTRACTING CO-SARL
+
+Row 80 | 411105068 | Match: partial_name
+  CSV: Hmbn Aluminium wholesales Co ltd
+  DB:  حسين كريم 
+
+Row 81 | 411105063 | Match: exact_name
+  CSV: Hussein Mazh
+  DB:  عبد اللله فحص Hussein Mazh
+
+Row 83 | 411101388 | Match: exact_name
+  CSV: Institut Bassam Fattouh /ايلي عازار
+  DB:   Institut Bassam Fattouh /ايلي عازار
+
+Row 84 | 411104122 | Match: exact_name
+  CSV: Kamana Glass
+  DB:  فادي كمانة Kamana Glass
+
+Row 85 | 411101041 | Match: exact_name
+  CSV: Kassar Co Aluminium Wood & Glass/محمد قصار
+  DB:   Kassar Co Aluminium Wood & Glass/محمد قصار
+
+Row 86 | 411102133 | Match: exact_name
+  CSV: Khadra Frames Co SARL/ بسام خضرا
+  DB:   Khadra Frames Co SARL/ بسام خضرا
+
+Row 87 | 411102106 | Match: exact_name
+  CSV: Khadra Safety Glass CO. SARL
+  DB:  بسام خضرا Khadra Safety Glass CO. SARL
+
+Row 89 | 411103038 | Match: exact_name
+  CSV: KONNEN/ محمد شريف
+  DB:   KONNEN/ محمد شريف
+
+Row 90 | 411105003 | Match: exact_name
+  CSV: Mag Atelier
+  DB:  محمود حجيج Mag Atelier
+
+Row 91 | 411101544 | Match: exact_name
+  CSV: Metal Touch
+  DB:  (XXXXXX)خليل المسلم Metal Touch
+
+Row 92 | 411101063 | Match: exact_name
+  CSV: Mirodec CO  /جوزيف خوري
+  DB:   Mirodec CO  /جوزيف خوري
+
+Row 93 | 411101373 | Match: exact_name
+  CSV: Miroiterie Soufan S.A.R.L
+  DB:  صوفان Miroiterie Soufan S.A.R.L
+
+Row 95 | 411101014 | Match: exact_name
+  CSV: MULTI GLASS LIMITED / روني شلهوب
+  DB:   MULTI GLASS LIMITED / روني شلهوب
+
+Row 96 | 411101525 | Match: exact_name
+  CSV: Najjar Trading For Aluminum & Glass
+  DB:  عبد اللله النجار Najjar Trading For Aluminum & Glass
+
+Row 97 | 411101047 | Match: exact_name
+  CSV: NASSAR GLAZING/ ريمون نصار
+  DB:   NASSAR GLAZING/ ريمون نصار
+
+Row 100 | 411101135 | Match: exact_name
+  CSV: PROFALU/عصام نخول
+  DB:   PROFALU/عصام نخول
+
+Row 101 | 411101313 | Match: exact_name
+  CSV: Profitech S.A.R.L Aluminum Hmeidani
+  DB:  المنيوم حميداني Profitech S.A.R.L Aluminum Hmeidani
+
+Row 102 | 411101416 | Match: exact_name
+  CSV: Projection SARL
+  DB:  زياد الكيلاني Projection SARL
+
+Row 116 | 411102234 | Match: exact_name
+  CSV: Rico SARL
+  DB:  حسين ابو شوقي Rico SARL
+
+Row 119 | 411101422 | Match: exact_name
+  CSV: Roys
+  DB:  بيار سعادة Roys
+
+Row 120 | 411101059 | Match: exact_name
+  CSV: Saab Glass
+  DB:   Saab Glass
+
+Row 122 | 411105004 | Match: partial_name
+  CSV: Samaha Comercio Geral e Industrial       علي الامي
+  DB:   Samaha Comercio Geral e Industrial       علي الامين
+
+Row 124 | 411101034 | Match: exact_name
+  CSV: SAYCO GLASS / ربيع الصياح
+  DB:   SAYCO GLASS / ربيع الصياح
+
+Row 126 | 411101480 | Match: exact_name
+  CSV: Shammas-S.A.L
+  DB:  الشماس مكلس Shammas-S.A.L
+
+Row 134 | 411101361 | Match: partial_name
+  CSV: Société Generale D'entreprise et de Logement SARL
+  DB:   Société Generale D'entreprise et de Logement SARL /  فؤاد سلفاني
+
+Row 135 | 411102143 | Match: exact_name
+  CSV: Sogeco Co/مصطفى عز الدين
+  DB:   Sogeco Co/مصطفى عز الدين
+
+Row 138 | 411101590 | Match: exact_name
+  CSV: Steel Concept
+  DB:  ايلي عازار Steel Concept
+
+Row 139 | 411101412 | Match: exact_name
+  CSV: STR Sarl
+  DB:  شادي رعيدي STR Sarl
+
+Row 141 | 4111020741 | Match: partial_name
+  CSV: Technical Group Hijazi 2- شركة تكنيكال غروب - حجاز
+  DB:   TECHNICAL
+
+Row 142 | 411101119 | Match: partial_name
+  CSV: Tempo Glass تمبو جلاس ش.م.ل
+  DB:  Tempo Glass تمبو جلاس ش.م.ل
+
+Row 148 | 411101056 | Match: partial_name
+  CSV: UNITAL S.A.R.L
+  DB:   UNITAL S.A.R.L                                    حجازي
+
+Row 149 | 411101476 | Match: exact_name
+  CSV: Valerie Integre Furniture SAL VIFurniture
+  DB:   Valerie Integre Furniture SAL VIFurniture
+
+Row 150 | 411101187 | Match: exact_name
+  CSV: Vertical Class / ربيع الشعار
+  DB:   Vertical Class / ربيع الشعار
+
+Row 151 | 411101303 | Match: exact_name
+  CSV: V-TECH / روجيه صياح
+  DB:   V-TECH / روجيه صياح
+
+Row 153 | 411101465 | Match: partial_name
+  CSV: World Patriarchal Maronite Foundation for Integral
+  DB:   World Patriarchal Maronite Foundation for Integral Development
+
+Row 158 | 411102238 | Match: exact_name
+  CSV: أبو جودة فومن كومباني (اجافكو)
+  DB:  زياد الكيلاني أبو جودة فومن كومباني (اجافكو)
+
+Row 159 | 411106064 | Match: exact_name
+  CSV: أدوار مارون
+  DB:   أدوار مارون
+
+Row 160 | 411106061 | Match: exact_name
+  CSV: أمير دغيلي
+  DB:   أمير دغيلي
+
+Row 161 | 411106054 | Match: exact_name
+  CSV: أمين حيدر
+  DB:   أمين حيدر
+
+Row 162 | 411102204 | Match: exact_name
+  CSV: أنور الصباغ
+  DB:   أنور الصباغ
+
+Row 163 | 411102066 | Match: exact_name
+  CSV: ابراهيم المغربي
+  DB:   ابراهيم المغربي
+
+Row 164 | 411101273 | Match: exact_name
+  CSV: ابراهيم حمد
+  DB:   ابراهيم حمد
+
+Row 165 | 411101130 | Match: exact_name
+  CSV: ابراهيم فياض
+  DB:   ابراهيم فياض
+
+Row 166 | 411101074 | Match: exact_name
+  CSV: ابراهيم قاسم حمود
+  DB:   ابراهيم قاسم حمود
+
+Row 167 | 411101244 | Match: exact_name
+  CSV: ابراهيم مصطفى
+  DB:   ابراهيم مصطفى
+
+Row 168 | 411101384 | Match: exact_name
+  CSV: ابراهيم معتوق
+  DB:   ابراهيم معتوق
+
+Row 169 | 411105081 | Match: partial_name
+  CSV: ابراهيم يونس STE SARA
+  DB:  ابراهيم يونس STE SARA
+
+Row 170 | 411101385 | Match: exact_name
+  CSV: ابناء احمد الجمل التجارية ش.م.م
+  DB:   ابناء احمد الجمل التجارية ش.م.م
+
+Row 171 | 411101015 | Match: partial_name
+  CSV: ابو احمد سعيد اسماعيل لتجارة الالمنيوم
+  DB:  ابو احمد سعيد اسماعيل لتجارة الالمنيوم
+
+Row 172 | 411101437 | Match: partial_name
+  CSV: ابو زناد Line Industries
+  DB:  ابو زناد Line Industries
+
+Row 173 | 411102202 | Match: exact_name
+  CSV: ابو شقرا للالمينيوم والزجاج والديكور
+  DB:   ابو شقرا للالمينيوم والزجاج والديكور
+
+Row 174 | 411101127 | Match: exact_name
+  CSV: اتيفار حكيم للزجاج
+  DB:   اتيفار حكيم للزجاج
+
+Row 175 | 411106037 | Match: exact_name
+  CSV: اجود اسعد طليعة
+  DB:   اجود اسعد طليعة
+
+Row 176 | 411101336 | Match: exact_name
+  CSV: احسان الامين
+  DB:   احسان الامين
+
+Row 177 | 411102152 | Match: exact_name
+  CSV: احسان الشامي
+  DB:   احسان الشامي
+
+Row 178 | 411102163 | Match: exact_name
+  CSV: احسان خليفة
+  DB:   احسان خليفة
+
+Row 179 | 411101087 | Match: exact_name
+  CSV: احمد العبد اللله ووفيق صالح
+  DB:   احمد العبد اللله ووفيق صالح
+
+Row 180 | 411102135 | Match: exact_name
+  CSV: احمد المصري
+  DB:   احمد المصري
+
+Row 181 | 411105060 | Match: partial_name
+  CSV: احمد بيطار Assani Razaki
+  DB:  احمد بيطار Assani Razaki
+
+Row 182 | 411101115 | Match: exact_name
+  CSV: احمد جابر
+  DB:   احمد جابر
+
+Row 183 | 411102169 | Match: exact_name
+  CSV: احمد جزيني
+  DB:   احمد جزيني
+
+Row 184 | 411101265 | Match: exact_name
+  CSV: احمد حمدان
+  DB:   احمد حمدان
+
+Row 185 | 411101319 | Match: exact_name
+  CSV: احمد خير الدين
+  DB:   احمد خير الدين
+
+Row 186 | 411102072 | Match: exact_name
+  CSV: احمد سرحان
+  DB:   احمد سرحان
+
+Row 187 | 411106005 | Match: exact_name
+  CSV: احمد سلوطة
+  DB:   احمد سلوطة
+
+Row 188 | 411101282 | Match: exact_name
+  CSV: احمد شري
+  DB:   احمد شري
+
+Row 189 | 411101110 | Match: exact_name
+  CSV: احمد فرحات
+  DB:   احمد فرحات
+
+Row 190 | 411101359 | Match: exact_name
+  CSV: احمد قرصيفي
+  DB:   احمد قرصيفي
+
+Row 191 | 411103028 | Match: exact_name
+  CSV: احمد معدراني
+  DB:   احمد معدراني
+
+Row 192 | 411106090 | Match: partial_name
+  CSV: احمد ملحم Investors  (احمد حسن ملحم)
+  DB:  احمد ملحم Investors  (احمد حسن ملحم)
+
+Row 193 | 411102295 | Match: exact_name
+  CSV: احمد نادر عزام
+  DB:  زياد الكيلاني احمد نادر عزام
+
+Row 194 | 411101343 | Match: exact_name
+  CSV: ادم عطوي
+  DB:   ادم عطوي
+
+Row 195 | 411106019 | Match: exact_name
+  CSV: ادهم جميل مياسة
+  DB:   ادهم جميل مياسة
+
+Row 196 | 411104090 | Match: exact_name
+  CSV: ادهم زويني
+  DB:   ادهم زويني
+
+Row 197 | 411101346 | Match: exact_name
+  CSV: ادوار شمعون
+  DB:   ادوار شمعون
+
+Row 198 | 411101584 | Match: exact_name
+  CSV: ارك ش.م.م
+  DB:  انطوان ابي خليل ارك ش.م.م
+
+Row 199 | 411106170 | Match: exact_name
+  CSV: اسامة حشيمي
+  DB:   اسامة حشيمي
+
+Row 200 | 411105080 | Match: partial_name
+  CSV: اسماعيل الخشن Ismael khechen (ik) limited
+  DB:  اسماعيل الخشن Ismael khechen (ik) limited
+
+Row 201 | 411102165 | Match: exact_name
+  CSV: اسماعيل نعنوع
+  DB:   اسماعيل نعنوع
+
+Row 202 | 411101243 | Match: exact_name
+  CSV: اشرف حمزة
+  DB:   اشرف حمزة
+
+Row 203 | 411106026 | Match: exact_name
+  CSV: اصف محمود خضور
+  DB:   اصف محمود خضور
+
+Row 204 | 411101427 | Match: partial_name
+  CSV: اغوب City Glass
+  DB:  اغوب City Glass
+
+Row 205 | 411101045 | Match: partial_name
+  CSV: اكرم الشعار مؤسسة المشرق
+  DB:  اكرم الشعار مؤسسة المشرق
+
+Row 206 | 411104086 | Match: exact_name
+  CSV: اكرم عودة
+  DB:   اكرم عودة
+
+Row 207 | 411101089 | Match: exact_name
+  CSV: الجمل للالمنيوم و الزجاج
+  DB:   الجمل للالمنيوم و الزجاج
+
+Row 208 | 411101399 | Match: exact_name
+  CSV: الجيش اللبناني -منطقة جبل لبنان
+  DB:   الجيش اللبناني -منطقة جبل لبنان
+
+Row 209 | 411101175 | Match: exact_name
+  CSV: الجيش اللبناني-فوج الاشغال
+  DB:   الجيش اللبناني-فوج الاشغال
+
+Row 210 | 411101462 | Match: exact_name
+  CSV: الحموي غروب ش.م.م
+  DB:   الحموي غروب ش.م.م
+
+Row 211 | 411101539 | Match: exact_name
+  CSV: الشركة العامة للخدمات اللوجيستية ش.م.ل
+  DB:   الشركة العامة للخدمات اللوجيستية ش.م.ل
+
+Row 212 | 411101171 | Match: exact_name
+  CSV: الشركة الوطنية للزجاج والمرايا
+  DB:  البيرخوري الشركة الوطنية للزجاج والمرايا
+
+Row 213 | 411102200 | Match: partial_name
+  CSV: المهندس ياسين حوحو مروان ترو
+  DB:  المهندس ياسين حوحو مروان ترو
+
+Row 214 | 411101356 | Match: exact_name
+  CSV: المينيوم الباقر
+  DB:   المينيوم الباقر
+
+Row 215 | 411101378 | Match: exact_name
+  CSV: المينيوم الحسن
+  DB:   المينيوم الحسن
+
+Row 216 | 411101512 | Match: exact_name
+  CSV: الوسال  ر س ب
+  DB:  رامي سليم برادعي (الابن) الوسال  ر س ب
+
+Row 217 | 411104128 | Match: exact_name
+  CSV: الوغلاس-ALUGLASS-موريس اسد بصبوص
+  DB:   الوغلاس-ALUGLASS-موريس اسد بصبوص
+
+Row 218 | 411104006 | Match: exact_name
+  CSV: الياس رعد
+  DB:   الياس رعد
+
+Row 219 | 411104047 | Match: exact_name
+  CSV: الياس عبيد
+  DB:   الياس عبيد
+
+Row 220 | 411103029 | Match: exact_name
+  CSV: الياس غيا
+  DB:   الياس غيا
+
+Row 221 | 411101124 | Match: exact_name
+  CSV: الياس كرم
+  DB:   الياس كرم
+
+Row 222 | 411101339 | Match: partial_name
+  CSV: امير شحاذة
+  DB:  حسين كريم 
+
+Row 223 | 411101283 | Match: exact_name
+  CSV: اميل الحاج
+  DB:   اميل الحاج
+
+Row 224 | 411101214 | Match: exact_name
+  CSV: اميل حنا
+  DB:   اميل حنا
+
+Row 225 | 411101499 | Match: partial_name
+  CSV: اميل خوري Khoury Contracting and Trading
+  DB:   اميل خوري
+
+Row 226 | 411106066 | Match: exact_name
+  CSV: اميل مبارك
+  DB:   اميل مبارك
+
+Row 227 | 411101372 | Match: partial_name
+  CSV: امين حمادة حسن عبد اللله شعيتاني - البرواز الذهبي
+  DB:  امين حمادة حسن عبد اللله شعيتاني - البرواز الذهبي
+
+Row 228 | 411104039 | Match: exact_name
+  CSV: ان جي NG ش.م.م
+  DB:  ناجي غمراوي - NG ان جي NG ش.م.م
+
+Row 229 | 4111040391 | Match: partial_name
+  CSV: ان جي NG ش.م.م - 2
+  DB:  ناجي غمراوي - NG ان جي NG ش.م.م
+
+Row 230 | 411104040 | Match: exact_name
+  CSV: ان جي غروب ش م م
+  DB:  ناجي غمراوي - Group ان جي غروب ش م م
+
+Row 236 | 411101184 | Match: exact_name
+  CSV: انطوان الريس
+  DB:   انطوان الريس
+
+Row 237 | 411104027 | Match: exact_name
+  CSV: انور الاحدب
+  DB:   انور الاحدب
+
+Row 238 | 411106030 | Match: exact_name
+  CSV: اياد عبد الحكيم عاقل
+  DB:   اياد عبد الحكيم عاقل
+
+Row 239 | 411106015 | Match: exact_name
+  CSV: اياس سليمان عسلية
+  DB:   اياس سليمان عسلية
+
+Row 240 | 411101451 | Match: exact_name
+  CSV: ايلي ابراهيم للتجارة والصناعة
+  DB:   ايلي ابراهيم للتجارة والصناعة
+
+Row 241 | 411101276 | Match: exact_name
+  CSV: ايلي داوود
+  DB:   ايلي داوود
+
+Row 242 | 411101215 | Match: exact_name
+  CSV: ايلي سلامة
+  DB:   ايلي سلامة
+
+Row 243 | 411101522 | Match: partial_name
+  CSV: ايلي عازار شركة غلاس كوم ش.م.م
+  DB:  ايلي عازار شركة غلاس كوم ش.م.م
+
+Row 244 | 411102062 | Match: exact_name
+  CSV: ايلي عجاقة
+  DB:   ايلي عجاقة
+
+Row 245 | 411101300 | Match: exact_name
+  CSV: ايلي عجيل - زجاج ومرايا
+  DB:   ايلي عجيل - زجاج ومرايا
+
+Row 246 | 411105059 | Match: partial_name
+  CSV: ايلي نادروس Andrew Samura
+  DB:  ايلي نادروس Andrew Samura
+
+Row 247 | 411106009 | Match: exact_name
+  CSV: ايمن حامد
+  DB:   ايمن حامد
+
+Row 248 | 411101323 | Match: exact_name
+  CSV: ايمن عليق
+  DB:   ايمن عليق
+
+Row 249 | 411106004 | Match: exact_name
+  CSV: ايهم غزول
+  DB:   ايهم غزول
+
+Row 250 | 411103015 | Match: exact_name
+  CSV: باسل دلباني
+  DB:   باسل دلباني
+
+Row 251 | 411101504 | Match: exact_name
+  CSV: بديع العيتاني
+  DB:   بديع العيتاني
+
+Row 252 | 411101506 | Match: exact_name
+  CSV: بروفيكو ش.م.م
+  DB:  Profico علي حسين الحاج بروفيكو ش.م.م
+
+Row 253 | 411101155 | Match: exact_name
+  CSV: بروفيكو للالمنيوم والصناعات الخفيفة
+  DB:   بروفيكو للالمنيوم والصناعات الخفيفة
+
+Row 254 | 411101474 | Match: exact_name
+  CSV: بزي للزجاج والمرايا
+  DB:  فادي بزي بزي للزجاج والمرايا
+
+Row 255 | 411103089 | Match: exact_name
+  CSV: بسام ابراهيم
+  DB:   بسام ابراهيم
+
+Row 256 | 411105078 | Match: partial_name
+  CSV: بسام الديراني DIAB IMPORT EXPORT SARL
+  DB:  بسام الديراني DIAB IMPORT EXPORT SARL
+
+Row 257 | 411105071 | Match: partial_name
+  CSV: بسام زيادة Signs & Beyond S.A.R.L
+  DB:  بسام زيادة Signs & Beyond S.A.R.L
+
+Row 258 | 411101145 | Match: exact_name
+  CSV: بسام شمالي
+  DB:   بسام شمالي
+
+Row 259 | 411101040 | Match: exact_name
+  CSV: بسام علما
+  DB:   بسام علما
+
+Row 260 | 411101340 | Match: exact_name
+  CSV: بشير حرب
+  DB:   بشير حرب
+
+Row 261 | 411101096 | Match: exact_name
+  CSV: بلال الطويل
+  DB:   بلال الطويل
+
+Row 262 | 411101231 | Match: exact_name
+  CSV: بلال جرادي
+  DB:   بلال جرادي
+
+Row 263 | 411101052 | Match: exact_name
+  CSV: بلال حسين شعيتاني
+  DB:   بلال حسين شعيتاني
+
+Row 264 | 411101027 | Match: exact_name
+  CSV: بلال حمود
+  DB:   بلال حمود
+
+Row 265 | 411101383 | Match: exact_name
+  CSV: بلال صوان
+  DB:   بلال صوان
+
+Row 266 | 411105006 | Match: partial_name
+  CSV: بلال صوان PYRAMIDE COM
+  DB:  بلال صوان PYRAMIDE COM
+
+Row 267 | 411102063 | Match: exact_name
+  CSV: بلال ضاهر
+  DB:   بلال ضاهر
+
+Row 268 | 411102121 | Match: exact_name
+  CSV: بلال فحص
+  DB:   بلال فحص
+
+Row 269 | 411101192 | Match: exact_name
+  CSV: بيار المسيح
+  DB:   بيار المسيح
+
+Row 270 | 411101274 | Match: exact_name
+  CSV: بيار كرم
+  DB:   بيار كرم
+
+Row 271 | 411104127 | Match: exact_name
+  CSV: بيار نصر
+  DB:   بيار نصر
+
+Row 272 | 411106038 | Match: exact_name
+  CSV: بيبرس عماد ابراهيم
+  DB:   بيبرس عماد ابراهيم
+
+Row 273 | 411102113 | Match: exact_name
+  CSV: تراكتوم للمقاولات
+  DB:  ربيع فواز تراكتوم للمقاولات
+
+Row 274 | 411101137 | Match: partial_name
+  CSV: تكنيكال ALU DESIGN2
+  DB:  تكنيكال ALU DESIGN2
+
+Row 275 | 411102108 | Match: exact_name
+  CSV: تكنيكال للالمنيوم والزجاج / حسين حجازي
+  DB:   تكنيكال للالمنيوم والزجاج / حسين حجازي
+
+Row 276 | 411106041 | Match: exact_name
+  CSV: تمام محمد حلوم
+  DB:   تمام محمد حلوم
+
+Row 277 | 411102093 | Match: exact_name
+  CSV: تيسير الصوص
+  DB:   تيسير الصوص
+
+Row 278 | 411106070 | Match: exact_name
+  CSV: تيم يونس
+  DB:   تيم يونس
+
+Row 279 | 411106045 | Match: exact_name
+  CSV: ثائر كاسر احمد
+  DB:   ثائر كاسر احمد
+
+Row 280 | 411101188 | Match: partial_name
+  CSV: جاد الشعار J.S FOR GLASS AND MIRRORS
+  DB:  جاد الشعار J.S FOR GLASS AND MIRRORS
+
+Row 281 | 411101185 | Match: exact_name
+  CSV: جاد عيسى
+  DB:   جاد عيسى
+
+Row 282 | 411102127 | Match: exact_name
+  CSV: جاد كعور
+  DB:   جاد كعور
+
+Row 283 | 411106055 | Match: exact_name
+  CSV: جاك خليفة
+  DB:   جاك خليفة
+
+Row 284 | 411101517 | Match: partial_name
+  CSV: جان ابراهيم Glasstec
+  DB:  جان ابراهيم Glasstec
+
+Row 285 | 411104005 | Match: exact_name
+  CSV: جان كلود مبارك
+  DB:   جان كلود مبارك
+
+Row 286 | 411103059 | Match: exact_name
+  CSV: جعفر يزبك
+  DB:   جعفر يزبك
+
+Row 287 | 411101493 | Match: partial_name
+  CSV: جلبير مطر Matar Engineering group s.a.r.l
+  DB:  جلبير مطر Matar Engineering group s.a.r.l
+
+Row 288 | 411101169 | Match: exact_name
+  CSV: جمال السيد
+  DB:   جمال السيد
+
+Row 289 | 411102142 | Match: exact_name
+  CSV: جمال الشحيمي
+  DB:   جمال الشحيمي
+
+Row 290 | 411101140 | Match: exact_name
+  CSV: جمال الغول
+  DB:   جمال الغول
+
+Row 291 | 411102146 | Match: exact_name
+  CSV: جمال بيضون
+  DB:   جمال بيضون
+
+Row 292 | 411101277 | Match: exact_name
+  CSV: جميل اسماعيل
+  DB:   جميل اسماعيل
+
+Row 293 | 411101118 | Match: exact_name
+  CSV: جميل بيضون
+  DB:   جميل بيضون
+
+Row 294 | 411102060 | Match: exact_name
+  CSV: جميل زهرة
+  DB:   جميل زهرة
+
+Row 295 | 411101369 | Match: exact_name
+  CSV: جميل عمار
+  DB:   جميل عمار
+
+Row 296 | 411101302 | Match: exact_name
+  CSV: جميل فارس
+  DB:   جميل فارس
+
+Row 297 | 411101270 | Match: exact_name
+  CSV: جميل مطر
+  DB:   جميل مطر
+
+Row 298 | 411102118 | Match: exact_name
+  CSV: جهاد الرشيدي
+  DB:   جهاد الرشيدي
+
+Row 299 | 411103050 | Match: exact_name
+  CSV: جهاد امهز
+  DB:   جهاد امهز
+
+Row 300 | 411101353 | Match: exact_name
+  CSV: جهاد بركات
+  DB:   جهاد بركات
+
+Row 301 | 411101017 | Match: exact_name
+  CSV: جهاد حمود
+  DB:   جهاد حمود
+
+Row 302 | 411101354 | Match: exact_name
+  CSV: جهاد حوماني
+  DB:   جهاد حوماني
+
+Row 303 | 411103043 | Match: exact_name
+  CSV: جهاد حيدر
+  DB:   جهاد حيدر
+
+Row 304 | 411101223 | Match: exact_name
+  CSV: جهاد منصور
+  DB:   جهاد منصور
+
+Row 305 | 411101542 | Match: exact_name
+  CSV: جود ش.م.م شركة الشخص الوحيد
+  DB:  احمد سلام جود ش.م.م شركة الشخص الوحيد
+
+Row 306 | 411101448 | Match: exact_name
+  CSV: جودة علاو
+  DB:   جودة علاو
+
+Row 307 | 411106183 | Match: partial_name
+  CSV: جورج الريس Beyond Engineering
+  DB:   جورج الريس
+
+Row 308 | 411101299 | Match: exact_name
+  CSV: جورج بيطار
+  DB:   جورج بيطار
+
+Row 309 | 411102180 | Match: exact_name
+  CSV: جورج حداد
+  DB:   جورج حداد
+
+Row 310 | 411106071 | Match: exact_name
+  CSV: جورج روكز
+  DB:   جورج روكز
+
+Row 311 | 411101104 | Match: partial_name
+  CSV: جورج سلامة WILLIAMS Glass&Mirror
+  DB:  جورج سلامة WILLIAMS Glass&Mirror
+
+Row 312 | 411106182 | Match: partial_name
+  CSV: جورج سليط Technical Promotion and Layout
+  DB:   TECHNICAL
+
+Row 313 | 411101278 | Match: exact_name
+  CSV: جورج صبح
+  DB:   جورج صبح
+
+Row 314 | 411101318 | Match: exact_name
+  CSV: جورج صعب
+  DB:   جورج صعب
+
+Row 315 | 411103068 | Match: exact_name
+  CSV: جورج صياح
+  DB:   جورج صياح
+
+Row 316 | 411101150 | Match: exact_name
+  CSV: جورج طبارة
+  DB:   جورج طبارة
+
+Row 317 | 411104120 | Match: partial_name
+  CSV: جورج عطاللله Atalium
+  DB:  جورج عطاللله Atalium
+
+Row 318 | 411101288 | Match: exact_name
+  CSV: جورج كاميليوس
+  DB:   جورج كاميليوس
+
+Row 319 | 411101051 | Match: exact_name
+  CSV: جورج نصار
+  DB:   جورج نصار
+
+Row 320 | 411101031 | Match: exact_name
+  CSV: جوزيف الريس
+  DB:   جوزيف الريس
+
+Row 321 | 411101158 | Match: exact_name
+  CSV: جوزيف السلفاني
+  DB:   جوزيف السلفاني
+
+Row 322 | 411104117 | Match: partial_name
+  CSV: جوزيف حبيب STALUGLASS Co.
+  DB:  جوزيف حبيب STALUGLASS Co.
+
+Row 323 | 411104161 | Match: exact_name
+  CSV: جوزيف رحمة
+  DB:   جوزيف رحمة
+
+Row 324 | 411101042 | Match: exact_name
+  CSV: جوزيف ضاهر
+  DB:   جوزيف ضاهر
+
+Row 325 | 411101252 | Match: exact_name
+  CSV: جوزيف غانم
+  DB:   جوزيف غانم
+
+Row 326 | 411101112 | Match: exact_name
+  CSV: جوزيف نصر اللله
+  DB:   جوزيف نصر اللله
+
+Row 327 | 411104078 | Match: partial_name
+  CSV: جوزيف يوسف يوسف للتجارة
+  DB:  جوزيف يوسف يوسف للتجارة
+
+Row 328 | 411103053 | Match: exact_name
+  CSV: جون كاميليوس
+  DB:   جون كاميليوس
+
+Row 329 | 411101460 | Match: exact_name
+  CSV: جيلبير مطر
+  DB:   جيلبير مطر
+
+Row 330 | 411101268 | Match: exact_name
+  CSV: حافظ شمعة
+  DB:   حافظ شمعة
+
+Row 331 | 411104104 | Match: exact_name
+  CSV: حامد ناصر الدين
+  DB:   حامد ناصر الدين
+
+Row 332 | 411106092 | Match: exact_name
+  CSV: حسام ريدان
+  DB:   حسام ريدان
+
+Row 333 | 411101272 | Match: exact_name
+  CSV: حسان توبة
+  DB:   حسان توبة
+
+Row 334 | 411102145 | Match: exact_name
+  CSV: حسن اسماعيل
+  DB:   حسن اسماعيل
+
+Row 335 | 411101293 | Match: exact_name
+  CSV: حسن القداد
+  DB:   حسن القداد
+
+Row 336 | 411102099 | Match: exact_name
+  CSV: حسن بليق
+  DB:   حسن بليق
+
+Row 337 | 411101222 | Match: exact_name
+  CSV: حسن حوراني
+  DB:   حسن حوراني
+
+Row 338 | 411101028 | Match: exact_name
+  CSV: حسن رحمة
+  DB:   حسن رحمة
+
+Row 339 | 411101577 | Match: partial_name
+  CSV: حسن علي جوني Infinite Support Services
+  DB:   علي جوني
+
+Row 340 | 411101133 | Match: exact_name
+  CSV: حسن فرحات
+  DB:   حسن فرحات
+
+Row 341 | 411101219 | Match: exact_name
+  CSV: حسن مرو
+  DB:   حسن مرو
+
+Row 342 | 411103051 | Match: exact_name
+  CSV: حسن مستراح
+  DB:   حسن مستراح
+
+Row 343 | 411106052 | Match: exact_name
+  CSV: حسن منيمنة
+  DB:   حسن منيمنة
+
+Row 344 | 411101076 | Match: exact_name
+  CSV: حسيب توما
+  DB:   حسيب توما
+
+Row 345 | 411102168 | Match: exact_name
+  CSV: حسيب عز الدين
+  DB:   حسيب عز الدين
+
+Row 346 | 411103005 | Match: exact_name
+  CSV: حسين الدلباني
+  DB:   حسين الدلباني
+
+Row 347 | 411103052 | Match: exact_name
+  CSV: حسين الهق
+  DB:   حسين الهق
+
+Row 348 | 411101178 | Match: exact_name
+  CSV: حسين زراقط
+  DB:   حسين زراقط
+
+Row 349 | 411106020 | Match: exact_name
+  CSV: حسين شحادة خلوف
+  DB:   حسين شحادة خلوف
+
+Row 350 | 411105069 | Match: partial_name
+  CSV: حسين صعب Maria Luisa Mangue Obiang
+  DB:  حسين صعب Maria Luisa Mangue Obiang
+
+Row 351 | 411106056 | Match: exact_name
+  CSV: حسين قاسم
+  DB:   حسين قاسم
+
+Row 352 | 411101341 | Match: exact_name
+  CSV: حسين قانصو
+  DB:   حسين قانصو
+
+Row 353 | 411106068 | Match: exact_name
+  CSV: حكمت عيسى
+  DB:   حكمت عيسى
+
+Row 354 | 411101176 | Match: exact_name
+  CSV: حمود سرحان
+  DB:   حمود سرحان
+
+Row 355 | 411101236 | Match: exact_name
+  CSV: حيدر علامة
+  DB:   حيدر علامة
+
+Row 356 | 411102161 | Match: exact_name
+  CSV: خالد الاسعد
+  DB:   خالد الاسعد
+
+Row 357 | 411106001 | Match: exact_name
+  CSV: خالد الخباز
+  DB:   خالد الخباز
+
+Row 358 | 411104088 | Match: exact_name
+  CSV: خالد ايوب
+  DB:   خالد ايوب
+
+Row 359 | 411102144 | Match: exact_name
+  CSV: خالد حفوضة
+  DB:   خالد حفوضة
+
+Row 360 | 411104028 | Match: exact_name
+  CSV: خالد رعد
+  DB:   خالد رعد
+
+Row 361 | 411101210 | Match: exact_name
+  CSV: خالد ضو
+  DB:   خالد ضو
+
+Row 362 | 411101226 | Match: exact_name
+  CSV: خالد قليلات
+  DB:   خالد قليلات
+
+Row 363 | 411106008 | Match: exact_name
+  CSV: خالد محي الدين السوسو
+  DB:   خالد محي الدين السوسو
+
+Row 364 | 411104101 | Match: exact_name
+  CSV: خالد مزهر
+  DB:   خالد مزهر
+
+Row 365 | 411106075 | Match: exact_name
+  CSV: خالد نصوح المير
+  DB:   خالد نصوح المير
+
+Row 366 | 411105079 | Match: partial_name
+  CSV: خضر عز الدين Societe Ivoire Investissement
+  DB:  خضر عز الدين Societe Ivoire Investissement
+
+Row 367 | 411101023 | Match: exact_name
+  CSV: خليل فايز القلي
+  DB:   خليل فايز القلي
+
+Row 368 | 411103042 | Match: exact_name
+  CSV: خليل كوثراني
+  DB:   خليل كوثراني
+
+Row 369 | 411101306 | Match: exact_name
+  CSV: خليل مارون
+  DB:   خليل مارون
+
+Row 370 | 411101514 | Match: exact_name
+  CSV: خليل مسلم
+  DB:   خليل مسلم
+
+Row 371 | 411106069 | Match: exact_name
+  CSV: داغر حوماني
+  DB:   داغر حوماني
+
+Row 372 | 411101381 | Match: exact_name
+  CSV: دانيال الخليل
+  DB:   دانيال الخليل
+
+Row 373 | 411101294 | Match: exact_name
+  CSV: دانيال شاهين
+  DB:   دانيال شاهين
+
+Row 374 | 411101091 | Match: exact_name
+  CSV: دانيال عبود
+  DB:   دانيال عبود
+
+Row 375 | 411101322 | Match: exact_name
+  CSV: داوود فقيه
+  DB:   داوود فقيه
+
+Row 376 | 411106022 | Match: exact_name
+  CSV: دريد رمضان حتري
+  DB:   دريد رمضان حتري
+
+Row 377 | 411104001 | Match: exact_name
+  CSV: رائد معرباني
+  DB:   رائد معرباني
+
+Row 378 | 411103057 | Match: exact_name
+  CSV: راجح المقداد
+  DB:   راجح المقداد
+
+Row 379 | 411106032 | Match: exact_name
+  CSV: رامي مهند عزت
+  DB:   رامي مهند عزت
+
+Row 380 | 411104102 | Match: exact_name
+  CSV: راني شعبان
+  DB:   راني شعبان
+
+Row 381 | 411106033 | Match: exact_name
+  CSV: رايق فواز جوهرة
+  DB:   رايق فواز جوهرة
+
+Row 382 | 411104111 | Match: partial_name
+  CSV: رباح حداد Z Pour le Commerce Et L'industrie
+  DB:  رباح حداد Z Pour le Commerce Et L'industrie
+
+Row 383 | 411101387 | Match: partial_name
+  CSV: ربيع ابي فراج Paresa لصاحبتها نبيلة شيّا
+  DB:  ربيع ابي فراج Paresa لصاحبتها نبيلة شيّا
+
+Row 384 | 411101345 | Match: exact_name
+  CSV: ربيع احمد
+  DB:   ربيع احمد
+
+Row 385 | 411104163 | Match: partial_name
+  CSV: ربيع الطبر جورج الطبر
+  DB:  ربيع الطبر جورج الطبر
+
+Row 386 | 411101114 | Match: exact_name
+  CSV: ربيع العنان
+  DB:   ربيع العنان
+
+Row 387 | 411101190 | Match: exact_name
+  CSV: ربيع بارود
+  DB:   ربيع بارود
+
+Row 388 | 411101211 | Match: exact_name
+  CSV: ربيع عرابي
+  DB:   ربيع عرابي
+
+Row 389 | 411101269 | Match: exact_name
+  CSV: ربيع مراد
+  DB:   ربيع مراد
+
+Row 390 | 411104115 | Match: exact_name
+  CSV: رضا حداد
+  DB:   رضا حداد
+
+Row 391 | 411101251 | Match: exact_name
+  CSV: رضا نايف
+  DB:   رضا نايف
+
+Row 392 | 411101194 | Match: partial_name
+  CSV: رضوان ابو شعر رضوان احمد ابو شعر
+  DB:  رضوان ابو شعر رضوان احمد ابو شعر
+
+Row 393 | 411101527 | Match: exact_name
+  CSV: رفيق البواب وشركاه ش.م.ل
+  DB:  زياد الكيلاني رفيق البواب وشركاه ش.م.ل
+
+Row 394 | 411101357 | Match: exact_name
+  CSV: رفيق رزق
+  DB:   رفيق رزق
+
+Row 395 | 411106076 | Match: exact_name
+  CSV: رنا سهيل عبد الملك
+  DB:   رنا سهيل عبد الملك
+
+Row 396 | 411101507 | Match: exact_name
+  CSV: رواد زهر الدين
+  DB:   رواد زهر الدين
+
+Row 397 | 411101325 | Match: partial_name
+  CSV: روبير دفوني GHORAYEB TECHNOTEL
+  DB:  روبير دفوني GHORAYEB TECHNOTEL
+
+Row 398 | 411101377 | Match: exact_name
+  CSV: روني الاشقر
+  DB:   روني الاشقر
+
+Row 399 | 411106012 | Match: exact_name
+  CSV: زاهر قندقجي
+  DB:   زاهر قندقجي
+
+Row 400 | 411101139 | Match: exact_name
+  CSV: زاهي بو فخر الدين
+  DB:   زاهي بو فخر الدين
+
+Row 401 | 411101000 | Match: exact_name
+  CSV: زبائن نقدية
+  DB:   زبائن نقدية
+
+Row 402 | 411101275 | Match: exact_name
+  CSV: زكي عقيل
+  DB:   زكي عقيل
+
+Row 403 | 411103000 | Match: exact_name
+  CSV: زهير المقداد
+  DB:   زهير المقداد
+
+Row 404 | 411102182 | Match: exact_name
+  CSV: زهير خليفة
+  DB:   زهير خليفة
+
+Row 405 | 411101338 | Match: exact_name
+  CSV: زهير رمضان
+  DB:   زهير رمضان
+
+Row 406 | 411102102 | Match: partial_name
+  CSV: زياد الكيلاني الكيلاني للامينيوم والزجاج
+  DB:   الكيلاني للامينيوم والزجاج
+
+Row 407 | 411102190 | Match: partial_name
+  CSV: زياد الكيلاني شركة شاديز فود الباب وشريكه
+  DB:  زياد الكيلاني شركة شاديز فود الباب وشريكه
+
+Row 408 | 411102189 | Match: partial_name
+  CSV: زياد الكيلاني مؤسسة نادر عزام للبناء والمقاولات
+  DB:  زياد الكيلاني مؤسسة نادر عزام للبناء والمقاولات
+
+Row 409 | 411101006 | Match: exact_name
+  CSV: زياد جمعة
+  DB:   زياد جمعة
+
+Row 410 | 411101458 | Match: exact_name
+  CSV: زياد مطاوع
+  DB:   زياد مطاوع
+
+Row 411 | 411101249 | Match: exact_name
+  CSV: سامر السيد
+  DB:   سامر السيد
+
+Row 412 | 411101109 | Match: partial_name
+  CSV: سامر الشيخ(ابو عمر) الشيخ للزجاج
+  DB:  سامر الشيخ(ابو عمر) الشيخ للزجاج
+
+Row 413 | 411102100 | Match: exact_name
+  CSV: سامر حبلة
+  DB:   سامر حبلة
+
+Row 414 | 411101098 | Match: exact_name
+  CSV: سامي الطويل
+  DB:   سامي الطويل
+
+Row 415 | 411101307 | Match: exact_name
+  CSV: سامي بحسون
+  DB:   سامي بحسون
+
+Row 416 | 411102166 | Match: exact_name
+  CSV: سامي عوض
+  DB:   سامي عوض
+
+Row 417 | 411104149 | Match: exact_name
+  CSV: سعد الدهيبي
+  DB:   سعد الدهيبي
+
+Row 418 | 411101174 | Match: exact_name
+  CSV: سعد غريب
+  DB:   سعد غريب
+
+Row 419 | 411105076 | Match: exact_name
+  CSV: سعد للاستيراد والتصدير
+  DB:  احمد ملحم سعد للاستيراد والتصدير
+
+Row 420 | 411101258 | Match: exact_name
+  CSV: سعيد الراسي
+  DB:   سعيد الراسي
+
+Row 421 | 411101066 | Match: exact_name
+  CSV: سلمان مراد
+  DB:   سلمان مراد
+
+Row 422 | 411101478 | Match: exact_name
+  CSV: سليم برادعي
+  DB:  الاب سليم برادعي
+
+Row 423 | 411105088 | Match: partial_name
+  CSV: سليم كتورة SKYALU
+  DB:  سليم كتورة SKYALU
+
+Row 424 | 411106043 | Match: exact_name
+  CSV: سليمان اشرف وردة
+  DB:   سليمان اشرف وردة
+
+Row 425 | 411103031 | Match: exact_name
+  CSV: سليمان سليمان
+  DB:   سليمان سليمان
+
+Row 426 | 411103048 | Match: exact_name
+  CSV: سليمان كحيل
+  DB:   سليمان كحيل
+
+Row 427 | 411101199 | Match: exact_name
+  CSV: سميح القليط
+  DB:   سميح القليط
+
+Row 428 | 411101400 | Match: exact_name
+  CSV: سميح حميداني
+  DB:   سميح حميداني
+
+Row 429 | 411103046 | Match: exact_name
+  CSV: سمير الحاج حسن
+  DB:   سمير الحاج حسن
+
+Row 430 | 411101080 | Match: exact_name
+  CSV: سمير غانم
+  DB:   سمير غانم
+
+Row 431 | 411101238 | Match: exact_name
+  CSV: سمير فياض
+  DB:   سمير فياض
+
+Row 432 | 411101304 | Match: exact_name
+  CSV: سمير كرنيب
+  DB:   سمير كرنيب
+
+Row 433 | 411106062 | Match: exact_name
+  CSV: سمير ملالة
+  DB:   سمير ملالة
+
+Row 434 | 411103056 | Match: exact_name
+  CSV: سمير يزبك
+  DB:   سمير يزبك
+
+Row 435 | 411101257 | Match: exact_name
+  CSV: سهيل الحسن
+  DB:   سهيل الحسن
+
+Row 436 | 411102174 | Match: exact_name
+  CSV: سهيل بزي
+  DB:   سهيل بزي
+
+Row 437 | 411101065 | Match: exact_name
+  CSV: سهيل زعيتر
+  DB:   سهيل زعيتر
+
+Row 438 | 411101085 | Match: exact_name
+  CSV: سهيل شعبان سرور
+  DB:   سهيل شعبان سرور
+
+Row 439 | 411106014 | Match: exact_name
+  CSV: سومر يوسف دريوسي
+  DB:   سومر يوسف دريوسي
+
+Row 440 | 411103073 | Match: partial_name
+  CSV: سيف الدين الكردي Euro Win Company
+  DB:  سيف الدين الكردي Euro Win Company
+
+Row 441 | 411101534 | Match: partial_name
+  CSV: شادي المبيض هوم ديكو & كو ش.م.م
+  DB:  شادي المبيض هوم ديكو & كو ش.م.م
+
+Row 442 | 411101593 | Match: partial_name
+  CSV: شادي جابر الخزائن المبتكرة ش.م.م
+  DB:  حسين كريم 
+
+Row 443 | 411101310 | Match: exact_name
+  CSV: شادي عواضة
+  DB:   شادي عواضة
+
+Row 444 | 411101086 | Match: exact_name
+  CSV: شارل الجمال
+  DB:   شارل الجمال
+
+Row 445 | 411104119 | Match: exact_name
+  CSV: شربل الاشقر
+  DB:   شربل الاشقر
+
+Row 446 | 411101321 | Match: exact_name
+  CSV: شربل المبيض
+  DB:   شربل المبيض
+
+Row 447 | 411101389 | Match: exact_name
+  CSV: شربل سعد
+  DB:   شربل سعد
+
+Row 448 | 411101207 | Match: exact_name
+  CSV: شربل عون
+  DB:   شربل عون
+
+Row 449 | 411101054 | Match: exact_name
+  CSV: شربل كرم
+  DB:   شربل كرم
+
+Row 450 | 411106023 | Match: exact_name
+  CSV: شرف ياسر الآدمي
+  DB:   شرف ياسر الآدمي
+
+Row 451 | 411103014 | Match: partial_name
+  CSV: شركة Dalbo                                     خال
+  DB:  حسين كريم 
+
+Row 452 | 411101198 | Match: exact_name
+  CSV: شركة ابناء مكرم عبده للمصاعد
+  DB:   شركة ابناء مكرم عبده للمصاعد
+
+Row 453 | 411101410 | Match: exact_name
+  CSV: شركة اسعد وجورج خوري
+  DB:   شركة اسعد وجورج خوري
+
+Row 454 | 411102233 | Match: exact_name
+  CSV: شركة اكسبرس للحج والعمرة
+  DB:  الكيلاني شركة اكسبرس للحج والعمرة
+
+Row 455 | 411101423 | Match: exact_name
+  CSV: شركة اكوسيستم  ليبان ش.م.م
+  DB:  ايلي عجيل شركة اكوسيستم  ليبان ش.م.م
+
+Row 456 | 411101001 | Match: exact_name
+  CSV: شركة الازدهار
+  DB:  sos شركة الازدهار
+
+Row 457 | 411101180 | Match: exact_name
+  CSV: شركة الحاج محمد علي الغول للصناعة والتجارة العامة
+  DB:   شركة الحاج محمد علي الغول للصناعة والتجارة العامة
+
+Row 458 | 411102083 | Match: exact_name
+  CSV: شركة الرضا التجارية/ احمد الجبيلي
+  DB:   شركة الرضا التجارية/ احمد الجبيلي
+
+Row 459 | 411102082 | Match: exact_name
+  CSV: شركة الشامية للزجاج والمرايا
+  DB:   شركة الشامية للزجاج والمرايا
+
+Row 460 | 411102125 | Match: exact_name
+  CSV: شركة الشماس للالمينيوم
+  DB:   شركة الشماس للالمينيوم
+
+Row 461 | 411103019 | Match: exact_name
+  CSV: شركة الفرح لتجارة الزجاج
+  DB:  باسل دلباني شركة الفرح لتجارة الزجاج
+
+Row 462 | 411101546 | Match: exact_name
+  CSV: شركة الهندسة والبناء ابكو (بيطار) ش.م.م
+  DB:  عباس امهز شركة الهندسة والبناء ابكو (بيطار) ش.م.م
+
+Row 463 | 411104063 | Match: exact_name
+  CSV: شركة الو غلاس - موريس بصبوص وأولاده
+  DB:   شركة الو غلاس - موريس بصبوص وأولاده
+
+Row 464 | 411101524 | Match: exact_name
+  CSV: شركة امزل للتجارة والخدمات والمقولات العامة ش.م.م
+  DB:  خضر المحمد شركة امزل للتجارة والخدمات والمقولات العامة ش.م.م
+
+Row 465 | 411101521 | Match: exact_name
+  CSV: شركة انتر لامينايت ش م م
+  DB:  السبع اعين شركة انتر لامينايت ش م م
+
+Row 466 | 411102231 | Match: exact_name
+  CSV: شركة اونيكس غلاس ش.م.م
+  DB:  عدنان خضرا Onix Glass شركة اونيكس غلاس ش.م.م
+
+Row 467 | 411101129 | Match: partial_name
+  CSV: شركة ايتيفير – حكيم لصناعة الزجاج ش م ل
+  DB:  حسين كريم 
+
+Row 468 | 411101062 | Match: exact_name
+  CSV: شركة بلان
+  DB:   شركة بلان
+
+Row 469 | 411101540 | Match: exact_name
+  CSV: شركة جمالو غروب ش.م.م
+  DB:  عمر النداف شركة جمالو غروب ش.م.م
+
+Row 470 | 411101141 | Match: exact_name
+  CSV: شركة حمصي و طويل
+  DB:   شركة حمصي و طويل
+
+Row 471 | 411102065 | Match: partial_name
+  CSV: شركة خضرا للزجاج ش.م.
+  DB:  Khadra رضوان خضرا شركة خضرا للزجاج ش.م.م
+
+Row 472 | 411104176 | Match: partial_name
+  CSV: شركة دايموند غلاس ش.م.م
+  DB:  حسين كريم 
+
+Row 473 | 411101407 | Match: exact_name
+  CSV: شركة دنش للمقاولات
+  DB:   شركة دنش للمقاولات
+
+Row 474 | 411101099 | Match: exact_name
+  CSV: شركة روبير قشوع للتجارة والصناعة
+  DB:   شركة روبير قشوع للتجارة والصناعة
+
+Row 475 | 4111010991 | Match: partial_name
+  CSV: شركة روبير قشوع للتجارة والصناعة - 2
+  DB:   شركة روبير قشوع للتجارة والصناعة
+
+Row 476 | 411101009 | Match: exact_name
+  CSV: شركة زكريا عرقجي واولاده
+  DB:   شركة زكريا عرقجي واولاده
+
+Row 477 | 411102104 | Match: exact_name
+  CSV: شركة سعد الدين عرنوسS.M.A
+  DB:   شركة سعد الدين عرنوسS.M.A
+
+Row 478 | 411101513 | Match: exact_name
+  CSV: شركة سليم حامض ش.م.م
+  DB:   شركة سليم حامض ش.م.م
+
+Row 480 | 411101179 | Match: exact_name
+  CSV: شركة صلاح الغول واولاده
+  DB:   شركة صلاح الغول واولاده
+
+Row 481 | 411101018 | Match: exact_name
+  CSV: شركة غلاس برو ش.م.ل
+  DB:  GLASS PRO / يحي عرقجي شركة غلاس برو ش.م.ل
+
+Row 482 | 411101019 | Match: exact_name
+  CSV: شركة غلاس متال ش.م.م
+  DB:  GLASS METAL / احمد حلواني شركة غلاس متال ش.م.م
+
+Row 483 | 411102136 | Match: exact_name
+  CSV: شركة غليز لين ش.م.م
+  DB:   شركة غليز لين ش.م.م
+
+Row 484 | 411102241 | Match: exact_name
+  CSV: شركة فايز ابي الشيخ التجارية
+  DB:  الكيلاني شركة فايز ابي الشيخ التجارية
+
+Row 485 | 411101069 | Match: exact_name
+  CSV: شركة كوراني فريمز
+  DB:   شركة كوراني فريمز
+
+Row 486 | 411101227 | Match: exact_name
+  CSV: شركة ليفكو
+  DB:   شركة ليفكو
+
+Row 487 | 411102207 | Match: exact_name
+  CSV: شركة محسن بدر الدين واولاده
+  DB:  يوسف بدر الدين شركة محسن بدر الدين واولاده
+
+Row 488 | 411101528 | Match: exact_name
+  CSV: شركة مكتب المهندس جورج صفير ش م م BEGAS SARL
+  DB:  مازن طيفور شركة مكتب المهندس جورج صفير ش م م BEGAS SARL
+
+Row 489 | 411101491 | Match: exact_name
+  CSV: شركة ميليو غلاس ش.م.م
+  DB:  برنار ابي رعد شركة ميليو غلاس ش.م.م
+
+Row 490 | 411104062 | Match: exact_name
+  CSV: شركة وهيبه للتجارة والصناعة / مفيد وهيبة
+  DB:   شركة وهيبه للتجارة والصناعة / مفيد وهيبة
+
+Row 492 | 411101248 | Match: exact_name
+  CSV: شمعون مدور
+  DB:   شمعون مدور
+
+Row 493 | 411103060 | Match: exact_name
+  CSV: شهاب علي الدلباني
+  DB:   شهاب علي الدلباني
+
+Row 494 | 411102155 | Match: exact_name
+  CSV: شوقي عبد اللله
+  DB:   شوقي عبد اللله
+
+Row 495 | 411101209 | Match: partial_name
+  CSV: شوقي كمال الدين شركة اتحاد للتجارة ش م م
+  DB:  شوقي كمال الدين شركة اتحاد للتجارة ش م م
+
+Row 496 | 411106067 | Match: exact_name
+  CSV: صادق الحسيني
+  DB:   صادق الحسيني
+
+Row 497 | 411103070 | Match: exact_name
+  CSV: صالح محمود زعيتر
+  DB:   صالح محمود زعيتر
+
+Row 498 | 411104109 | Match: exact_name
+  CSV: صبحي برغل
+  DB:   صبحي برغل
+
+Row 499 | 411101004 | Match: exact_name
+  CSV: صفا ترايدنغ / لبيب الجردي
+  DB:   صفا ترايدنغ / لبيب الجردي
+
+Row 500 | 411101413 | Match: exact_name
+  CSV: صفي الدين للزجاج والمرايا
+  DB:   صفي الدين للزجاج والمرايا
+
+Row 501 | 411101153 | Match: exact_name
+  CSV: ضاهر مرتضى
+  DB:   ضاهر مرتضى
+
+Row 507 | 411106018 | Match: exact_name
+  CSV: ضرغام ياسر شحوار
+  DB:   ضرغام ياسر شحوار
+
+Row 508 | 411106017 | Match: exact_name
+  CSV: ضياء رضا جاكيش
+  DB:   ضياء رضا جاكيش
+
+Row 509 | 411106010 | Match: exact_name
+  CSV: طارق احمد دعبول
+  DB:   طارق احمد دعبول
+
+Row 510 | 411101075 | Match: exact_name
+  CSV: طارق البروش
+  DB:   طارق البروش
+
+Row 511 | 411101094 | Match: exact_name
+  CSV: طارق بيروتي
+  DB:   طارق بيروتي
+
+Row 512 | 411101344 | Match: exact_name
+  CSV: طارق مروة
+  DB:   طارق مروة
+
+Row 513 | 411101071 | Match: exact_name
+  CSV: طانيوس رحمة
+  DB:   طانيوس رحمة
+
+Row 514 | 411101417 | Match: partial_name
+  CSV: طاهر شهيب وسام ابي نجم
+  DB:  طاهر شهيب وسام ابي نجم
+
+Row 515 | 411104004 | Match: exact_name
+  CSV: طلال احمد فوزي النشار
+  DB:   طلال احمد فوزي النشار
+
+Row 516 | 411106034 | Match: exact_name
+  CSV: طلال عماد كولكجي
+  DB:   طلال عماد كولكجي
+
+Row 517 | 411101246 | Match: exact_name
+  CSV: طوني ابي عاد
+  DB:   طوني ابي عاد
+
+Row 518 | 411101492 | Match: partial_name
+  CSV: طوني عبود Glass Wall
+  DB:  طوني عبود Glass Wall
+
+Row 519 | 411104108 | Match: exact_name
+  CSV: طوني عبيد
+  DB:   طوني عبيد
+
+Row 520 | 411101162 | Match: exact_name
+  CSV: طوني قبلان
+  DB:   طوني قبلان
+
+Row 521 | 411101487 | Match: exact_name
+  CSV: عاصي ستيل ش.م.م
+  DB:  ابراهيم عاصي عاصي ستيل ش.م.م
+
+Row 522 | 411101102 | Match: exact_name
+  CSV: عاطف قاووق
+  DB:   عاطف قاووق
+
+Row 523 | 411105064 | Match: partial_name
+  CSV: عباس ابراهيم هادي الزين ETS NG.P.
+  DB:  عباس ابراهيم ETS NG.P.
+
+Row 524 | 411101138 | Match: exact_name
+  CSV: عباس بيطار
+  DB:   عباس بيطار
+
+Row 525 | 411102140 | Match: partial_name
+  CSV: عباس شور PRO GLASS
+  DB:  عباس شور PRO GLASS
+
+Row 526 | 411105070 | Match: partial_name
+  CSV: عباس وهب AYACHE HAYTHAM AYACHKO IMPORT-EXPORT
+  DB:  عباس وهب AYACHE HAYTHAM AYACHKO IMPORT-EXPORT
+
+Row 527 | 411103062 | Match: exact_name
+  CSV: عبد الحميد كيال
+  DB:   عبد الحميد كيال
+
+Row 528 | 411104071 | Match: exact_name
+  CSV: عبد الرؤوف عبيد
+  DB:   عبد الرؤوف عبيد
+
+Row 529 | 411106007 | Match: exact_name
+  CSV: عبد الرزاق رعد
+  DB:   عبد الرزاق رعد
+
+Row 530 | 411104020 | Match: exact_name
+  CSV: عبد الرزاق كتوب
+  DB:   عبد الرزاق كتوب
+
+Row 531 | 411106021 | Match: exact_name
+  CSV: عبد السلام صيوح
+  DB:   عبد السلام صيوح
+
+Row 532 | 411104025 | Match: exact_name
+  CSV: عبد القادر معرباني
+  DB:   عبد القادر معرباني
+
+Row 533 | 411101466 | Match: partial_name
+  CSV: عبد الكريم عبيد Warde Steel And Metals s.a.r.l
+  DB:  عبد الكريم عبيد Warde Steel And Metals s.a.r.l
+
+Row 534 | 411101464 | Match: partial_name
+  CSV: عبد الكريم عبيد يوسف جوخدار Metal Tech sarl
+  DB:  عبد الكريم عبيد Metal Tech sarl
+
+Row 535 | 411106035 | Match: exact_name
+  CSV: عبد الكريم مؤيد القصير
+  DB:   عبد الكريم مؤيد القصير
+
+Row 536 | 411106060 | Match: exact_name
+  CSV: عبد اللطيف  شريف
+  DB:   عبد اللطيف  شريف
+
+Row 537 | 411106046 | Match: exact_name
+  CSV: عبد اللله الموسوي
+  DB:   عبد اللله الموسوي
+
+Row 538 | 411101352 | Match: exact_name
+  CSV: عبد اللله كلش
+  DB:   عبد اللله كلش
+
+Row 539 | 411103071 | Match: exact_name
+  CSV: عبد النبي مندو
+  DB:   عبد النبي مندو
+
+Row 540 | 411101132 | Match: exact_name
+  CSV: عبد بيطار
+  DB:   عبد بيطار
+
+Row 541 | 411101397 | Match: exact_name
+  CSV: عبد فخر الدين
+  DB:   عبد فخر الدين
+
+Row 542 | 411101414 | Match: exact_name
+  CSV: عبد محمد الغول
+  DB:   عبد محمد الغول
+
+Row 543 | 411102158 | Match: exact_name
+  CSV: عدنان عيسى
+  DB:   عدنان عيسى
+
+Row 544 | 411102167 | Match: exact_name
+  CSV: عزات المحمود
+  DB:   عزات المحمود
+
+Row 545 | 411104055 | Match: exact_name
+  CSV: عزام الشيخ
+  DB:   عزام الشيخ
+
+Row 546 | 4111040651 | Match: partial_name
+  CSV: عزام دندشي 2- الشركة الاوروبية التجارية الصناعية
+  DB:  عزام دندشي الشركة الاوروبية التجارية الصناعية
+
+Row 547 | 411104065 | Match: partial_name
+  CSV: عزام دندشي الشركة الاوروبية التجارية الصناعية
+  DB:  عزام دندشي الشركة الاوروبية التجارية الصناعية
+
+Row 548 | 411104050 | Match: exact_name
+  CSV: عزت مصرية
+  DB:   عزت مصرية
+
+Row 549 | 411101220 | Match: exact_name
+  CSV: عقيل الشيخ حسين
+  DB:   عقيل الشيخ حسين
+
+Row 550 | 411106006 | Match: exact_name
+  CSV: علاء الزحيلي
+  DB:   علاء الزحيلي
+
+Row 551 | 411101055 | Match: exact_name
+  CSV: علي ابراهيم
+  DB:   علي ابراهيم
+
+Row 552 | 411103044 | Match: exact_name
+  CSV: علي الرضا نصر اللله
+  DB:   علي الرضا نصر اللله
+
+Row 553 | 411101064 | Match: exact_name
+  CSV: علي اللمع
+  DB:   علي اللمع
+
+Row 554 | 411103024 | Match: exact_name
+  CSV: علي جمال الدين
+  DB:   علي جمال الدين
+
+Row 555 | 411101439 | Match: exact_name
+  CSV: علي جمعة
+  DB:   علي جمعة
+
+Row 556 | 411106011 | Match: exact_name
+  CSV: علي حريصي
+  DB:   علي حريصي
+
+Row 557 | 411103023 | Match: exact_name
+  CSV: علي حسن الجوهري
+  DB:   علي حسن الجوهري
+
+Row 558 | 411101348 | Match: exact_name
+  CSV: علي حمدان
+  DB:   علي حمدان
+
+Row 559 | 411102153 | Match: exact_name
+  CSV: علي زهرة
+  DB:   علي زهرة
+
+Row 560 | 411102188 | Match: exact_name
+  CSV: علي سعادة
+  DB:   علي سعادة
+
+Row 561 | 411103041 | Match: exact_name
+  CSV: علي سلمان
+  DB:   علي سلمان
+
+Row 562 | 411101411 | Match: exact_name
+  CSV: علي شعبان
+  DB:   علي شعبان
+
+Row 563 | 411105052 | Match: partial_name
+  CSV: علي عباس / علي عبد النبي علي هاشم بدر الدين OASIS
+  DB:  حسين كريم 
+
+Row 564 | 411102139 | Match: exact_name
+  CSV: علي غدار
+  DB:   علي غدار
+
+Row 565 | 411101197 | Match: exact_name
+  CSV: علي كستارو
+  DB:   علي كستارو
+
+Row 566 | 411101380 | Match: exact_name
+  CSV: علي كمال
+  DB:   علي كمال
+
+Row 567 | 411101025 | Match: partial_name
+  CSV: علي نجم مؤسسة أ نجم
+  DB:  علي نجم مؤسسة أ نجم
+
+Row 568 | 411101233 | Match: exact_name
+  CSV: علي ياسين
+  DB:   علي ياسين
+
+Row 569 | 411101363 | Match: exact_name
+  CSV: عليان للالمينيوم
+  DB:   عليان للالمينيوم
+
+Row 570 | 411102156 | Match: exact_name
+  CSV: عماد الحريري
+  DB:   عماد الحريري
+
+Row 571 | 411101324 | Match: exact_name
+  CSV: عماد السيد
+  DB:   عماد السيد
+
+Row 572 | 411101235 | Match: exact_name
+  CSV: عماد بحمد
+  DB:   عماد بحمد
+
+Row 573 | 411105020 | Match: partial_name
+  CSV: عماد جابر C.O.R.E MAT
+  DB:  عماد جابر C.O.R.E MAT
+
+Row 574 | 411102130 | Match: partial_name
+  CSV: عماد شرف الدين
+  DB:  حسين كريم 
+
+Row 575 | 411101290 | Match: exact_name
+  CSV: عماد عوض
+  DB:   عماد عوض
+
+Row 576 | 411103066 | Match: exact_name
+  CSV: عماد مشيك
+  DB:   عماد مشيك
+
+Row 578 | 411106003 | Match: exact_name
+  CSV: عمر يوسف مرتضى
+  DB:   عمر يوسف مرتضى
+
+Row 579 | 411106042 | Match: exact_name
+  CSV: عهد مهند عروس
+  DB:   عهد مهند عروس
+
+Row 580 | 411101350 | Match: exact_name
+  CSV: عيسى ابراهيم
+  DB:   عيسى ابراهيم
+
+Row 581 | 411103004 | Match: exact_name
+  CSV: غانم غانم
+  DB:   غانم غانم
+
+Row 582 | 411103084 | Match: partial_name
+  CSV: غانم غانم Sabouri Home
+  DB:   غانم غانم
+
+Row 583 | 411101163 | Match: exact_name
+  CSV: غسان حرب
+  DB:   غسان حرب
+
+Row 584 | 411101189 | Match: exact_name
+  CSV: غسان مرتضى
+  DB:   غسان مرتضى
+
+Row 585 | 411105077 | Match: partial_name
+  CSV: غسان نجم AYACHE HAYTHAM 'AYACHKO IMPORT-EXPORT'
+  DB:  غسان نجم AYACHE HAYTHAM 'AYACHKO IMPORT-EXPORT'
+
+Row 586 | 411101010 | Match: exact_name
+  CSV: غلاس بريميوم ش.م.م
+  DB:  بول مارون- GLASS PREMIUM غلاس بريميوم ش.م.م
+
+Row 587 | 411102170 | Match: exact_name
+  CSV: فؤاد صولي
+  DB:   فؤاد صولي
+
+Row 588 | 411101126 | Match: exact_name
+  CSV: فادي ابو شاهين
+  DB:   فادي ابو شاهين
+
+Row 589 | 411101250 | Match: exact_name
+  CSV: فادي خزعل
+  DB:   فادي خزعل
+
+Row 590 | 411101295 | Match: exact_name
+  CSV: فادي علوية
+  DB:   فادي علوية
+
+Row 591 | 411101168 | Match: exact_name
+  CSV: فادي عليق
+  DB:   فادي عليق
+
+Row 592 | 411101201 | Match: exact_name
+  CSV: فارس البعلبكي
+  DB:   فارس البعلبكي
+
+Row 593 | 411101255 | Match: exact_name
+  CSV: فاروق المستراح
+  DB:   فاروق المستراح
+
+Row 594 | 411106059 | Match: exact_name
+  CSV: فايز بكري
+  DB:   فايز بكري
+
+Row 595 | 411101261 | Match: exact_name
+  CSV: فخري ابو اسماعيل
+  DB:   فخري ابو اسماعيل
+
+Row 596 | 411106027 | Match: exact_name
+  CSV: فداء نواف دلا
+  DB:   فداء نواف دلا
+
+Row 597 | 411101247 | Match: exact_name
+  CSV: فراس دكاش
+  DB:   فراس دكاش
+
+Row 598 | 411105009 | Match: partial_name
+  CSV: فراس مرشاد ALUMCO  LIBERIA
+  DB:  فراس مرشاد ALUMCO  LIBERIA
+
+Row 599 | 411101225 | Match: exact_name
+  CSV: فرانسو الحاج
+  DB:   فرانسو الحاج
+
+Row 600 | 411106025 | Match: exact_name
+  CSV: فرحان منصور العلي
+  DB:   فرحان منصور العلي
+
+Row 601 | 411101239 | Match: exact_name
+  CSV: فرنسوا سلامة
+  DB:   فرنسوا سلامة
+
+Row 603 | 411102171 | Match: exact_name
+  CSV: فريد الزين
+  DB:   فريد الزين
+
+Row 604 | 411104037 | Match: exact_name
+  CSV: فريد مرعي
+  DB:   فريد مرعي
+
+Row 605 | 411102172 | Match: exact_name
+  CSV: فضل اللله عطوي
+  DB:   فضل اللله عطوي
+
+Row 606 | 411199 | Match: exact_name
+  CSV: فواتير
+  DB:   فواتير
+
+Row 607 | 411101366 | Match: exact_name
+  CSV: فيتراكو ش.م.م
+  DB:  عصام الصياح VITRACO فيتراكو ش.م.م
+
+Row 608 | 411101061 | Match: exact_name
+  CSV: فيصل حمود
+  DB:   فيصل حمود
+
+Row 609 | 411102157 | Match: exact_name
+  CSV: فيصل دقيق
+  DB:   فيصل دقيق
+
+Row 610 | 411104107 | Match: exact_name
+  CSV: فيكتور توما
+  DB:   فيكتور توما
+
+Row 611 | 411103054 | Match: exact_name
+  CSV: قاسم برجي
+  DB:   قاسم برجي
+
+Row 612 | 411106013 | Match: exact_name
+  CSV: قاصف النجار
+  DB:   قاصف النجار
+
+Row 613 | 411104134 | Match: partial_name
+  CSV: قرعلي محمود قره علي
+  DB:  قرعلي محمود قره علي
+
+Row 614 | 411101459 | Match: exact_name
+  CSV: ك - غلاس ش.م.م
+  DB:  رولان خوري ك - غلاس ش.م.م
+
+Row 615 | 411104034 | Match: exact_name
+  CSV: كاليري ارز لبنان للمفروشات
+  DB:   كاليري ارز لبنان للمفروشات
+
+Row 616 | 411101390 | Match: exact_name
+  CSV: كاليري السعادة
+  DB:   كاليري السعادة
+
+Row 617 | 411102173 | Match: exact_name
+  CSV: كامل بركات
+  DB:   كامل بركات
+
+Row 618 | 411101367 | Match: exact_name
+  CSV: كامل مروة
+  DB:   كامل مروة
+
+Row 619 | 411103045 | Match: exact_name
+  CSV: كامل هاشم
+  DB:   كامل هاشم
+
+Row 620 | 411101382 | Match: exact_name
+  CSV: كرم رحمة
+  DB:   كرم رحمة
+
+Row 621 | 411102068 | Match: exact_name
+  CSV: كرم فياض
+  DB:   كرم فياض
+
+Row 622 | 411101108 | Match: exact_name
+  CSV: كريم احمدية
+  DB:   كريم احمدية
+
+Row 623 | 411101143 | Match: exact_name
+  CSV: كميل مزهر
+  DB:   كميل مزهر
+
+Row 624 | 411101068 | Match: exact_name
+  CSV: كونتيننتال غلاس ش.م.ل
+  DB:  Continental / سمير موسى كونتيننتال غلاس ش.م.ل
+
+Row 625 | 411101334 | Match: exact_name
+  CSV: لبنان سعادة
+  DB:   لبنان سعادة
+
+Row 626 | 411101218 | Match: exact_name
+  CSV: لطفي المهتار
+  DB:   لطفي المهتار
+
+Row 627 | 411102071 | Match: exact_name
+  CSV: مؤسسة ابراهيم فحص التجارية
+  DB:   مؤسسة ابراهيم فحص التجارية
+
+Row 628 | 411102297 | Match: partial_name
+  CSV: مؤسسة اثر للهندسة والمقاولات العامة (هيثم اسماعيل)
+  DB:  حسين كريم 
+
+Row 629 | 411102129 | Match: exact_name
+  CSV: مؤسسة احمد الكردي
+  DB:   مؤسسة احمد الكردي
+
+Row 630 | 411101360 | Match: exact_name
+  CSV: مؤسسة احمد خليل شقير
+  DB:   مؤسسة احمد خليل شقير
+
+Row 631 | 411101420 | Match: exact_name
+  CSV: مؤسسة الغول للصناعات الزجاجية والديكور
+  DB:  ابو جمال الغول مؤسسة الغول للصناعات الزجاجية والديكور
+
+Row 632 | 411103033 | Match: exact_name
+  CSV: مؤسسة المختار
+  DB:  علي علام مؤسسة المختار
+
+Row 633 | 411101500 | Match: exact_name
+  CSV: مؤسسة المهندس حسين طباجة للهندسة والمقاولات
+  DB:  محمد صباغ مؤسسة المهندس حسين طباجة للهندسة والمقاولات
+
+Row 635 | 411101287 | Match: exact_name
+  CSV: مؤسسة انطوان حجار التجارية
+  DB:   مؤسسة انطوان حجار التجارية
+
+Row 636 | 411101365 | Match: exact_name
+  CSV: مؤسسة انطون ابراهيم للتجارة والصناعة
+  DB:   مؤسسة انطون ابراهيم للتجارة والصناعة
+
+Row 637 | 411101134 | Match: exact_name
+  CSV: مؤسسة بهاء اديب الاشقر
+  DB:   مؤسسة بهاء اديب الاشقر
+
+Row 638 | 411104060 | Match: exact_name
+  CSV: مؤسسة بولص
+  DB:  ريشار بولص مؤسسة بولص
+
+Row 639 | 411101477 | Match: exact_name
+  CSV: مؤسسة جود
+  DB:  احمد سلام (موقوفة) مؤسسة جود
+
+Row 640 | 411101058 | Match: exact_name
+  CSV: مؤسسة حمود للزجاج والالمينيوم
+  DB:   مؤسسة حمود للزجاج والالمينيوم
+
+Row 641 | 411101280 | Match: exact_name
+  CSV: مؤسسة روبير دفوني
+  DB:   مؤسسة روبير دفوني
+
+Row 642 | 411101016 | Match: exact_name
+  CSV: مؤسسة زخور
+  DB:  الياس زخور مؤسسة زخور
+
+Row 643 | 411101523 | Match: exact_name
+  CSV: مؤسسة عادل الشامي للتجارة العامة
+  DB:   مؤسسة عادل الشامي للتجارة العامة
+
+Row 644 | 411102079 | Match: exact_name
+  CSV: مؤسسة عبداللله فحص التجارية
+  DB:   مؤسسة عبداللله فحص التجارية
+
+Row 645 | 411104013 | Match: exact_name
+  CSV: مؤسسة عدنان زكزك الصناعية التجارية
+  DB:   مؤسسة عدنان زكزك الصناعية التجارية
+
+Row 646 | 411103009 | Match: exact_name
+  CSV: مؤسسة علي الدلباني
+  DB:   مؤسسة علي الدلباني
+
+Row 647 | 411101131 | Match: partial_name
+  CSV: مؤسسة عيتاني للالمنيوم والزجاج والمرايا / احمد عيت
+  DB:   مؤسسة عيتاني للالمنيوم والزجاج والمرايا / احمد عيتاني
+
+Row 648 | 411104022 | Match: exact_name
+  CSV: مؤسسة فوزي النشار للزجاج والمرايا
+  DB:   مؤسسة فوزي النشار للزجاج والمرايا
+
+Row 649 | 411104059 | Match: exact_name
+  CSV: مؤسسة مصرية للزجاج والمرايا / نبيل مصرية
+  DB:   مؤسسة مصرية للزجاج والمرايا / نبيل مصرية
+
+Row 650 | 411101206 | Match: exact_name
+  CSV: مؤسسة ملك الزجاج والمرايا والبراويز/حسين الموسوي
+  DB:   مؤسسة ملك الزجاج والمرايا والبراويز/حسين الموسوي
+
+Row 651 | 411101532 | Match: exact_name
+  CSV: مؤسسة منير ابو عزي للتعهدات والتجارة
+  DB:  ايلي عازار مؤسسة منير ابو عزي للتعهدات والتجارة
+
+Row 652 | 411104072 | Match: exact_name
+  CSV: مؤسسة نديم كاميلوس واولاده
+  DB:   مؤسسة نديم كاميلوس واولاده
+
+Row 653 | 411106031 | Match: exact_name
+  CSV: مؤيد حسن شبلة
+  DB:   مؤيد حسن شبلة
+
+Row 654 | 411101498 | Match: exact_name
+  CSV: مارون حنا
+  DB:   مارون حنا
+
+Row 655 | 411101286 | Match: exact_name
+  CSV: مارون شهاب
+  DB:   مارون شهاب
+
+Row 656 | 411101505 | Match: partial_name
+  CSV: مازن صفا MAS TRADE AND REAL ESTATE
+  DB:  مازن صفا MAS TRADE AND REAL ESTATE
+
+Row 657 | 411101368 | Match: exact_name
+  CSV: مازن صليبا
+  DB:   مازن صليبا
+
+Row 658 | 411101484 | Match: partial_name
+  CSV: مازن طيفور Tayfour For Glass
+  DB:  مازن طيفور Tayfour For Glass
+
+Row 659 | 411106002 | Match: exact_name
+  CSV: مازن فارس
+  DB:   مازن فارس
+
+Row 660 | 411105021 | Match: partial_name
+  CSV: مالك الحسيني Premium Inc.
+  DB:  مالك الحسيني Premium Inc.
+
+Row 661 | 411101351 | Match: exact_name
+  CSV: مالك الغول
+  DB:   مالك الغول
+
+Row 662 | 411103055 | Match: exact_name
+  CSV: مالك المقداد
+  DB:   مالك المقداد
+
+Row 663 | 411103078 | Match: partial_name
+  CSV: ماهر البوش حسن عبد الرحمن رزاق الراجي للتجارة
+  DB:  ماهر البوش الراجي للتجارة
+
+Row 664 | 411104099 | Match: exact_name
+  CSV: ماهر طليس
+  DB:   ماهر طليس
+
+Row 665 | 411101182 | Match: exact_name
+  CSV: محلات رحيمي للتجارةالعامة
+  DB:   محلات رحيمي للتجارةالعامة
+
+Row 666 | 411101224 | Match: exact_name
+  CSV: محلات محمد حمدان للتجارة العامة
+  DB:   محلات محمد حمدان للتجارة العامة
+
+Row 667 | 411102067 | Match: exact_name
+  CSV: محمد الشامية
+  DB:   محمد الشامية
+
+Row 668 | 411105061 | Match: partial_name
+  CSV: محمد العقاد ايمن المنلا
+  DB:  محمد العقاد ايمن المنلا
+
+Row 669 | 411103063 | Match: exact_name
+  CSV: محمد الكردي
+  DB:   محمد الكردي
+
+Row 670 | 411102090 | Match: exact_name
+  CSV: محمد باقر
+  DB:   محمد باقر
+
+Row 671 | 411102186 | Match: exact_name
+  CSV: محمد جنّون
+  DB:   محمد جنّون
+
+Row 672 | 411105053 | Match: partial_name
+  CSV: محمد خضرا Index
+  DB:  محمد خضرا Index
+
+Row 673 | 411102226 | Match: exact_name
+  CSV: محمد دره
+  DB:   محمد دره
+
+Row 674 | 411104091 | Match: exact_name
+  CSV: محمد دندل
+  DB:   محمد دندل
+
+Row 675 | 411101292 | Match: exact_name
+  CSV: محمد زراقط
+  DB:   محمد زراقط
+
+Row 676 | 411101394 | Match: exact_name
+  CSV: محمد سعد
+  DB:   محمد سعد
+
+Row 677 | 411101043 | Match: exact_name
+  CSV: محمد سلامة
+  DB:   محمد سلامة
+
+Row 678 | 411102181 | Match: exact_name
+  CSV: محمد شعيتو
+  DB:   محمد شعيتو
+
+Row 679 | 411101167 | Match: exact_name
+  CSV: محمد صالح
+  DB:   محمد صالح
+
+Row 680 | 411101421 | Match: exact_name
+  CSV: محمد طلعت العشي واحمد سمير ماضي
+  DB:  غسان مرتضى محمد طلعت العشي واحمد سمير ماضي
+
+Row 681 | 411105073 | Match: partial_name
+  CSV: محمد عجمي Ste Siglass
+  DB:  محمد عجمي Ste Siglass
+
+Row 682 | 411105047 | Match: partial_name
+  CSV: محمد عساف Modern Aluminium Factory
+  DB:  حسين كريم 
+
+Row 683 | 411103021 | Match: exact_name
+  CSV: محمد عصام رحيمة
+  DB:   محمد عصام رحيمة
+
+Row 684 | 411103008 | Match: exact_name
+  CSV: محمد علي حيدر
+  DB:   محمد علي حيدر
+
+Row 685 | 411105014 | Match: partial_name
+  CSV: محمد عمار عباس بيطار
+  DB:   عباس بيطار
+
+Row 686 | 411106036 | Match: exact_name
+  CSV: محمد فرحان زوكار
+  DB:   محمد فرحان زوكار
+
+Row 687 | 411102081 | Match: exact_name
+  CSV: محمد فقيه
+  DB:   محمد فقيه
+
+Row 688 | 411102223 | Match: exact_name
+  CSV: محمد ياسين شعبان
+  DB:   محمد ياسين شعبان
+
+Row 689 | 411101446 | Match: partial_name
+  CSV: محمود الشمعة يزن للزجاج والالمنيوم والتجارة العامة
+  DB:  حسين كريم 
+
+Row 690 | 411101298 | Match: exact_name
+  CSV: محمود الهادي
+  DB:   محمود الهادي
+
+Row 691 | 411105022 | Match: partial_name
+  CSV: محمود جزيني Gabriel mbaga nchama
+  DB:  محمود جزيني Gabriel mbaga nchama
+
+Row 692 | 411102187 | Match: exact_name
+  CSV: محمود حبلي
+  DB:   محمود حبلي
+
+Row 693 | 411102077 | Match: exact_name
+  CSV: محمود حمادة
+  DB:   محمود حمادة
+
+Row 694 | 411103012 | Match: exact_name
+  CSV: محمود ضيا
+  DB:   محمود ضيا
+
+Row 695 | 411103065 | Match: exact_name
+  CSV: محمود طه
+  DB:   محمود طه
+
+Row 696 | 411101039 | Match: exact_name
+  CSV: محمود فرحات
+  DB:   محمود فرحات
+
+Row 697 | 411101309 | Match: exact_name
+  CSV: محمود قوصان
+  DB:   محمود قوصان
+
+Row 698 | 411101157 | Match: exact_name
+  CSV: محمود موسى
+  DB:   محمود موسى
+
+Row 699 | 411101482 | Match: exact_name
+  CSV: مدرسة القلب الاقدس
+  DB:   مدرسة القلب الاقدس
+
+Row 700 | 411101264 | Match: exact_name
+  CSV: مدين داوود
+  DB:   مدين داوود
+
+Row 701 | 411102150 | Match: exact_name
+  CSV: مرتضى قبلان
+  DB:   مرتضى قبلان
+
+Row 702 | 411101301 | Match: exact_name
+  CSV: مرتضى مرتضى
+  DB:   مرتضى مرتضى
+
+Row 703 | 411101120 | Match: exact_name
+  CSV: مروان سرور
+  DB:   مروان سرور
+
+Row 704 | 411101142 | Match: exact_name
+  CSV: مروان شومان
+  DB:   مروان شومان
+
+Row 705 | 411103079 | Match: exact_name
+  CSV: مستشفى دار الامل الجامعي
+  DB:  علي علام مستشفى دار الامل الجامعي
+
+Row 706 | 411101152 | Match: exact_name
+  CSV: مسعود هزيمة
+  DB:   مسعود هزيمة
+
+Row 707 | 411101230 | Match: exact_name
+  CSV: مسلم حمود
+  DB:   مسلم حمود
+
+Row 708 | 411101100 | Match: exact_name
+  CSV: مصطفى الغول
+  DB:   مصطفى الغول
+
+Row 709 | 411105033 | Match: partial_name
+  CSV: مصطفى بدر الدين ONE TECH
+  DB:  مصطفى بدر الدين ONE TECH
+
+Row 710 | 411101403 | Match: exact_name
+  CSV: مصطفى طه
+  DB:   مصطفى طه
+
+Row 711 | 411104007 | Match: exact_name
+  CSV: مصطفى علم الدين
+  DB:   مصطفى علم الدين
+
+Row 712 | 411106053 | Match: exact_name
+  CSV: مصطفى فضل اللله
+  DB:   مصطفى فضل اللله
+
+Row 713 | 411101263 | Match: exact_name
+  CSV: مصنع نزيه ابو عرم / ناجي ابو عرم
+  DB:   مصنع نزيه ابو عرم / ناجي ابو عرم
+
+Row 714 | 411101048 | Match: exact_name
+  CSV: معين ترو
+  DB:   معين ترو
+
+Row 715 | 411106044 | Match: exact_name
+  CSV: مفضل سمير خدوش
+  DB:   مفضل سمير خدوش
+
+Row 716 | 411101337 | Match: exact_name
+  CSV: منذر فقيه
+  DB:   منذر فقيه
+
+Row 717 | 411106087 | Match: exact_name
+  CSV: منهل جميل أبو درهمين
+  DB:   منهل جميل أبو درهمين
+
+Row 718 | 411101082 | Match: partial_name
+  CSV: منير دعبول دعبول للتعهدات العامة
+  DB:  منير دعبول دعبول للتعهدات العامة
+
+Row 719 | 411101050 | Match: exact_name
+  CSV: منير عيتاني
+  DB:   منير عيتاني
+
+Row 720 | 411106063 | Match: exact_name
+  CSV: مهدي  الحص
+  DB:   مهدي  الحص
+
+Row 721 | 411103018 | Match: exact_name
+  CSV: مهدي الدلباني وشركاه
+  DB:   مهدي الدلباني وشركاه
+
+Row 722 | 411101379 | Match: exact_name
+  CSV: مهدي العبد اللله
+  DB:   مهدي العبد اللله
+
+Row 723 | 411101205 | Match: exact_name
+  CSV: مهدي سبيتي
+  DB:   مهدي سبيتي
+
+Row 724 | 411103047 | Match: exact_name
+  CSV: مهدي ضنيط
+  DB:   مهدي ضنيط
+
+Row 725 | 411101391 | Match: exact_name
+  CSV: مهدي عبد النبي
+  DB:   مهدي عبد النبي
+
+Row 726 | 411101467 | Match: exact_name
+  CSV: مهند البزال
+  DB:   مهند البزال
+
+Row 727 | 411106029 | Match: exact_name
+  CSV: مهند زهران بدور
+  DB:   مهند زهران بدور
+
+Row 728 | 411101177 | Match: exact_name
+  CSV: مهند سنان
+  DB:   مهند سنان
+
+Row 729 | 411106016 | Match: exact_name
+  CSV: مهند محمد حميشو
+  DB:   مهند محمد حميشو
+
+Row 730 | 411102151 | Match: exact_name
+  CSV: موسى ترحيني
+  DB:   موسى ترحيني
+
+Row 731 | 411102162 | Match: exact_name
+  CSV: موسى حسين
+  DB:   موسى حسين
+
+Row 732 | 411102064 | Match: exact_name
+  CSV: ميشال رزق
+  DB:   ميشال رزق
+
+Row 733 | 411103067 | Match: exact_name
+  CSV: ميشال مهنا
+  DB:   ميشال مهنا
+
+Row 734 | 411102109 | Match: exact_name
+  CSV: ناجي مراد
+  DB:   ناجي مراد
+
+Row 735 | 411104011 | Match: exact_name
+  CSV: ناجي ورور
+  DB:   ناجي ورور
+
+Row 736 | 411101262 | Match: exact_name
+  CSV: نادر جبق
+  DB:   نادر جبق
+
+Row 737 | 411102097 | Match: exact_name
+  CSV: نبيل برادعي
+  DB:   نبيل برادعي
+
+Row 738 | 411101260 | Match: exact_name
+  CSV: نبيل حمود
+  DB:   نبيل حمود
+
+Row 739 | 411104019 | Match: exact_name
+  CSV: نجا فرح
+  DB:   نجا فرح
+
+Row 740 | 411101253 | Match: exact_name
+  CSV: نزار اسماعيل
+  DB:   نزار اسماعيل
+
+Row 741 | 411105082 | Match: partial_name
+  CSV: نسيم ابو رافع محمود حمود Fanar Trading
+  DB:  نسيم ابو رافع محمود حمود Fanar Trading
+
+Row 742 | 411101057 | Match: exact_name
+  CSV: نضال حمود
+  DB:   نضال حمود
+
+Row 743 | 411101305 | Match: exact_name
+  CSV: نيو غلاس (طاهر ريدان شهيب)
+  DB:  New Glass نيو غلاس (طاهر ريدان شهيب)
+
+Row 744 | 411101193 | Match: exact_name
+  CSV: هادي عز الدين
+  DB:   هادي عز الدين
+
+Row 745 | 411101196 | Match: exact_name
+  CSV: هاني عبيد
+  DB:   هاني عبيد
+
+Row 746 | 411101308 | Match: exact_name
+  CSV: هشام بركات
+  DB:   هشام بركات
+
+Row 747 | 411105084 | Match: partial_name
+  CSV: هوراز شهسواري ASTRO COMPANY
+  DB:  هوراز شهسواري ASTRO COMPANY
+
+Row 748 | 411102061 | Match: exact_name
+  CSV: هيثم فاعور
+  DB:   هيثم فاعور
+
+Row 749 | 411106024 | Match: exact_name
+  CSV: هيثم معروف العنيتي
+  DB:   هيثم معروف العنيتي
+
+Row 750 | 411101044 | Match: exact_name
+  CSV: هيثم هاشم
+  DB:   هيثم هاشم
+
+Row 751 | 411102271 | Match: exact_name
+  CSV: هيثم همام
+  DB:   هيثم همام
+
+Row 752 | 411103039 | Match: exact_name
+  CSV: وائل الدلباني
+  DB:   وائل الدلباني
+
+Row 753 | 411106040 | Match: exact_name
+  CSV: وائل عفيف تجور
+  DB:   وائل عفيف تجور
+
+Row 754 | 411101101 | Match: exact_name
+  CSV: وحيد كامل
+  DB:   وحيد كامل
+
+Row 755 | 411102160 | Match: exact_name
+  CSV: وديع عليق
+  DB:   وديع عليق
+
+Row 756 | 411102164 | Match: exact_name
+  CSV: وديع مراد
+  DB:   وديع مراد
+
+Row 757 | 411101148 | Match: exact_name
+  CSV: وسام عمرو
+  DB:   وسام عمرو
+
+Row 758 | 411101502 | Match: exact_name
+  CSV: وسماركو غروب ش.م.م
+  DB:  مروان بهجت الجوهري وسماركو غروب ش.م.م
+
+Row 759 | 411101314 | Match: exact_name
+  CSV: وفيق عيتاني
+  DB:   وفيق عيتاني
+
+Row 760 | 411102080 | Match: exact_name
+  CSV: وليد النقوزي
+  DB:   وليد النقوزي
+
+Row 761 | 411104042 | Match: exact_name
+  CSV: وليد ايعالي
+  DB:   وليد ايعالي
+
+Row 762 | 411102154 | Match: exact_name
+  CSV: وليد سرور
+  DB:   وليد سرور
+
+Row 763 | 411101221 | Match: exact_name
+  CSV: وليد عكنان
+  DB:   وليد عكنان
+
+Row 764 | 411104097 | Match: exact_name
+  CSV: وليد علم الدين
+  DB:   وليد علم الدين
+
+Row 765 | 411106058 | Match: exact_name
+  CSV: ياسين حناوي
+  DB:   ياسين حناوي
+
+Row 766 | 411104051 | Match: exact_name
+  CSV: ياسين خزندار
+  DB:   ياسين خزندار
+
+Row 767 | 411101541 | Match: exact_name
+  CSV: ياسين غروب ش.م.ل
+  DB:  فضل ياسين ياسين غروب ش.م.ل
+
+Row 768 | 411106039 | Match: exact_name
+  CSV: يامن سلطان سبأ
+  DB:   يامن سلطان سبأ
+
+Row 769 | 411101245 | Match: exact_name
+  CSV: يحيى ادريس
+  DB:   يحيى ادريس
+
+Row 770 | 411102138 | Match: exact_name
+  CSV: يحيى قريش
+  DB:   يحيى قريش
+
+Row 771 | 411101488 | Match: exact_name
+  CSV: يوسف ابو رجيلي
+  DB:   يوسف ابو رجيلي
+
+Row 772 | 411101259 | Match: exact_name
+  CSV: يوسف الخرفان
+  DB:   يوسف الخرفان
+
+Row 773 | 411105075 | Match: partial_name
+  CSV: يوسف بدر الدين G.A.F
+  DB:  يوسف بدر الدين G.A.F
+
+Row 774 | 411103064 | Match: exact_name
+  CSV: يوسف بعلبكي
+  DB:   يوسف بعلبكي
+
+Row 775 | 411102092 | Match: exact_name
+  CSV: يوسف داوود
+  DB:   يوسف داوود
+
+Row 776 | 411101117 | Match: exact_name
+  CSV: يوسف عبد المولى
+  DB:   يوسف عبد المولى
+
+Row 777 | 411102137 | Match: partial_name
+  CSV: يوسف عثمان - Elite Glass اليت غلاس ش.م.م
+  DB:   يوسف عثمان
+
+Row 778 | 411102179 | Match: exact_name
+  CSV: يونس علاء الدين
+  DB:   يونس علاء الدين
+
+
+
+STILL MISSING SUPPLIERS
+================================================================================
+Row 5 | 401129 | SHAHE CITY Luck Glass Technology
+Row 26 | 401123 | AGC Flat Europe  SA/NV
+Row 99 | 401115 | PILKINGTON UNITED KINGDOM
+Row 121 | 401113 | SAINT-GOBAIN GLASS EGYPT
+Row 491 | 4011847 | شمعون - حساب تحاويل
+Row 779 | 4018 | فواتير لم تصل بعد
+
+
+STILL MISSING CUSTOMERS
+================================================================================
+
+
+MISSING ACCOUNTS
+================================================================================
+Row 10 | 675102 | فروقات صرف سلبية
+Row 231 | 45303 | انصبة ارباح برسم الدفع - علي شمعون
+Row 232 | 45306 | انصبة ارباح برسم الدفع - عماد شمعون
+Row 233 | 45302 | انصبة ارباح برسم الدفع - غسان شمعون
+Row 234 | 45304 | انصبة ارباح برسم الدفع - محمد شمعون
+Row 235 | 45305 | انصبة ارباح برسم الدفع - وسام شمعون
+Row 502 | 44303 | ضرائب متوجبة خارج الاستثمار - علي شمعون
+Row 503 | 44306 | ضرائب متوجبة خارج الاستثمار - عماد شمعون
+Row 504 | 44302 | ضرائب متوجبة خارج الاستثمار - غسان شمعون
+Row 505 | 44304 | ضرائب متوجبة خارج الاستثمار - محمد ايز شمعون
+Row 506 | 44305 | ضرائب متوجبة خارج الاستثمار - وسام شمعون
+Row 602 | 775102 | فروقات صرف ايجابية

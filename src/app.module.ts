@@ -39,6 +39,7 @@ import { RecomputeModule } from './recomputeTransfersAndPurchases/recompute.modu
 import { InventoryAuditModule } from './inventory-audit/inventory-audit.module';
 import { AuthModule } from "./auth/auth.module";
 import { AuditSaleInvoiceModule } from './audit-salesinvoice/audit-salesinvoice.module';
+import { CsvImportModule } from './HistoryPrices/HistoryPrices.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -49,7 +50,7 @@ import { AuditSaleInvoiceModule } from './audit-salesinvoice/audit-salesinvoice.
         port: Number(process.env.DB_PORT || 3306),
         username: process.env.DB_USER || 'root',
         password: process.env.DB_PASS || '70631859HADI',
-        database: process.env.DB_NAME || 'pos_v3',
+        database: process.env.DB_NAME || 'pos_v1',
         autoLoadEntities: true,
         synchronize: true,
       }),
@@ -90,7 +91,8 @@ import { AuditSaleInvoiceModule } from './audit-salesinvoice/audit-salesinvoice.
     RecomputeModule,
     InventoryAuditModule,
     AuthModule,
-    AuditSaleInvoiceModule
+    AuditSaleInvoiceModule,
+    CsvImportModule
   ],
 })
 export class AppModule {}

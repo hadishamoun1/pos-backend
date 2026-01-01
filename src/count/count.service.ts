@@ -10,6 +10,7 @@ import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { CountType } from '../entities/inventory/count.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 import { DataSource } from 'typeorm';
+import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity'; // adjust path
 
 @Injectable()
 export class InventoryCountService {
@@ -28,8 +29,12 @@ export class InventoryCountService {
 
     @InjectRepository(ItemNameDescription)
     private readonly itemNameDescriptionRepo: Repository<ItemNameDescription>,
+    @InjectRepository(PurchaseInvoiceItem)
+private readonly purchaseInvoiceItemRepo: Repository<PurchaseInvoiceItem>,
+
 
     private readonly dataSource: DataSource,
+
   ) {}
 
   async create(
@@ -89,9 +94,9 @@ export class InventoryCountService {
       default:
         rawSqm = rawSqmofr = 0;
     }
-    const sqm = Number(rawSqm.toFixed(2));
+    let sqm = Number(rawSqm.toFixed(2));
     const sqmofr = Number(rawSqmofr.toFixed(2));
-
+if (type === 'G') sqm = 0;
     // 4) compute finalCost fields
     let fc = 0,
       fco = 0;
@@ -125,6 +130,7 @@ if (type === 'RVR' && Number(fc) > 0 && (variant as any).itemNameDescription) {
       count,
       type,
       sqm,
+      sqmOfr: sqmofr,  
       finalCost: fc,
       finalCostOfr: fco,
     });
@@ -1104,15 +1110,16 @@ async createSingleopening(data: any): Promise<InventoryCount> {
   }
 
   // ✅ Step 5: Save inventory count
-  const inventoryCount = this.inventoryCountRepo.create({
-    itemVariant: variant,
-    date,
-    count,
-    type,
-    sqm,
-    finalCost: fc,
-    finalCostOfr: fco,
-  });
+const inventoryCount = this.inventoryCountRepo.create({
+  itemVariant: variant,
+  date,
+  count,
+  type,
+  sqm,
+  sqmOfr: sqmofr, // ✅ fill sqmOfr correctly
+  finalCost: fc,
+  finalCostOfr: fco,
+});
   const savedCount = await this.inventoryCountRepo.save(inventoryCount);
 
   // ✅ Step 6: Save inventory transaction
@@ -2037,6 +2044,360 @@ async deleteCountsStrictRecomputeFromCounts(params: { ids: number[] }) {
   }
 }
 
+
+
+
+
+async createOpeningSnapshotG(params: {
+  asOf: string; // 'YYYY-MM-DD'
+  deleteExisting?: boolean; // default true
+  skipZeroRows?: boolean; // default true
+}) {
+  const asOf = params.asOf;
+  const deleteExisting = params.deleteExisting ?? true;
+  const skipZeroRows = params.skipZeroRows ?? true;
+
+  // Basic date validation
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+    throw new BadRequestException(`asOf must be YYYY-MM-DD (got "${asOf}")`);
+  }
+
+  // 0) Delete existing opening counts for that date/type (safe rerun)
+  if (deleteExisting) {
+    const existing = await this.inventoryCountRepo.find({
+      where: { date: asOf as any, type: CountType.G },
+      select: ['id'],
+    });
+
+    const ids = existing.map((x: any) => x.id);
+    if (ids.length) {
+      // delete linked txns first (safe even if FK cascade exists)
+      await this.inventoryTxnRepo.delete({ inventoryCountId: In(ids) });
+      await this.inventoryCountRepo.delete({ id: In(ids) });
+    }
+  }
+
+  // 1) Snapshot per batch+variant from InventoryTransaction up to date (inclusive)
+  // qty snapshot for G = SUM(quantityofr)
+  // sqm snapshot for G = SUM(sqmofr)
+  const snapshotRows = await this.inventoryTxnRepo
+    .createQueryBuilder('t')
+    .select('t.itemBatchId', 'itemBatchId')
+    .addSelect('t.itemVariantId', 'itemVariantId')
+    .addSelect('SUM(COALESCE(t.quantityofr, 0))', 'qtyOfr')
+    .addSelect('SUM(COALESCE(t.sqmofr, 0))', 'sqmOfr')
+    .where(`DATE(COALESCE(t.dateForEachInvoice, t.transactionDate)) <= :asOf`, {
+      asOf,
+    })
+    .andWhere('t.itemBatchId IS NOT NULL')
+    .groupBy('t.itemBatchId')
+    .addGroupBy('t.itemVariantId')
+    .getRawMany();
+
+  // 2) Build cost map (Average Cost, NOT VM) as-of the date
+  // Priority:
+  //   A) latest PurchaseInvoiceItem.averageCost where PurchaseInvoice.date <= asOf
+  //   B) if no purchases: earliest InventoryCount.finalCostOfr for that variant (MIN(date))
+  //   C) fallback: ItemVariant.averageCost
+
+  // A) Latest purchase averageCost per variant (deterministic) — MySQL 8+ window function
+  const purchaseCostRows = await this.purchaseInvoiceItemRepo.query(
+    `
+    SELECT itemVariantId, averageCost AS avgCost
+    FROM (
+      SELECT
+        pii.itemVariantId,
+        pii.averageCost,
+        ROW_NUMBER() OVER (
+          PARTITION BY pii.itemVariantId
+          ORDER BY pi.date DESC, pii.id DESC
+        ) AS rn
+      FROM purchase_invoice_items pii
+      INNER JOIN purchase_invoices pi ON pi.id = pii.invoiceId
+      WHERE pi.date <= ?
+    ) x
+    WHERE x.rn = 1
+    `,
+    [asOf],
+  );
+
+  const purchaseCostByVariant = new Map<number, number>();
+  for (const r of purchaseCostRows) {
+    purchaseCostByVariant.set(Number(r.itemVariantId), Number(r.avgCost || 0));
+  }
+
+  // B) Earliest count finalCostOfr per variant (for variants with no purchases)
+  const countCostRows = await this.inventoryCountRepo.query(
+    `
+    SELECT ic.itemVariantId, ic.finalCostOfr AS avgCost
+    FROM inventory_count ic
+    INNER JOIN (
+      SELECT itemVariantId, MIN(date) AS minDate
+      FROM inventory_count
+      WHERE finalCostOfr > 0
+      GROUP BY itemVariantId
+    ) m ON m.itemVariantId = ic.itemVariantId AND m.minDate = ic.date
+    INNER JOIN (
+      SELECT itemVariantId, date, MAX(id) AS maxId
+      FROM inventory_count
+      WHERE finalCostOfr > 0
+      GROUP BY itemVariantId, date
+    ) pick ON pick.itemVariantId = ic.itemVariantId AND pick.date = ic.date AND pick.maxId = ic.id
+    `,
+  );
+
+  const firstCountCostByVariant = new Map<number, number>();
+  for (const r of countCostRows) {
+    firstCountCostByVariant.set(Number(r.itemVariantId), Number(r.avgCost || 0));
+  }
+
+  // C) fallback: ItemVariant.averageCost
+  const variants = await this.itemVariantRepo.find({
+    select: ['id', 'averageCost'],
+  });
+
+  const fallbackAvgCost = new Map<number, number>();
+  for (const v of variants) {
+    fallbackAvgCost.set(Number(v.id), Number((v as any).averageCost || 0));
+  }
+
+  const resolveAvgCost = (itemVariantId: number) => {
+    const a = purchaseCostByVariant.get(itemVariantId) ?? 0;
+    if (a > 0) return a;
+
+    const b = firstCountCostByVariant.get(itemVariantId) ?? 0;
+    if (b > 0) return b;
+
+    return fallbackAvgCost.get(itemVariantId) ?? 0;
+  };
+
+  // 3) Convert snapshot rows to payload rows for your create()
+  // unit='sqm' => sqmofr = countOFR (exact snapshot sqmofr)
+  // IMPORTANT: InventoryCount.count is int => if qtyOfr has decimals, we CANNOT represent it.
+  const fractionalQty: Array<{
+    itemBatchId: number;
+    itemVariantId: number;
+    qtyOfr: number;
+  }> = [];
+
+  const payloadRows = snapshotRows
+    .map((r: any) => {
+      const itemBatchId = Number(r.itemBatchId);
+      const itemVariantId = Number(r.itemVariantId);
+      const qtyOfr = Number(r.qtyOfr || 0);
+      const sqmOfr = Number(r.sqmOfr || 0);
+
+      if (!Number.isFinite(itemBatchId) || !Number.isFinite(itemVariantId))
+        return null;
+
+      if (skipZeroRows && qtyOfr === 0 && sqmOfr === 0) return null;
+
+      // check fraction
+      const frac = Math.abs(qtyOfr - Math.round(qtyOfr));
+      if (frac > 0.0001) {
+        fractionalQty.push({ itemBatchId, itemVariantId, qtyOfr });
+      }
+
+      const avgCost = resolveAvgCost(itemVariantId);
+
+      return {
+        itemBatchId,
+        date: asOf,
+        type: CountType.G,
+        unit: 'sqm',
+
+        // ✅ For G: qty snapshot comes from SUM(quantityofr)
+        count: Math.round(qtyOfr),
+
+        // ✅ For unit='sqm': sqmofr = countOFR (exact snapshot sqmofr)
+        countOFR: Number(sqmOfr.toFixed(2)),
+
+        finalCost: 0,
+
+        // ✅ finalCostOfr should equal average cost (NOT VM)
+        finalCostOfr: Number((avgCost || 0).toFixed(2)),
+      };
+    })
+    .filter((x): x is any => !!x);
+
+  if (fractionalQty.length) {
+    const sample = fractionalQty.slice(0, 20);
+    throw new BadRequestException(
+      `Opening snapshot has fractional quantityofr values but InventoryCount.count is INT. ` +
+        `Fix the data or change schema. Sample: ` +
+        sample
+          .map(
+            (x) =>
+              `batch ${x.itemBatchId}, variant ${x.itemVariantId}, qtyOfr=${x.qtyOfr}`,
+          )
+          .join(' | '),
+    );
+  }
+
+  if (!payloadRows.length) {
+    return {
+      ok: true,
+      asOf,
+      created: 0,
+      message: 'No rows to create (all snapshot rows are zero or none matched).',
+    };
+  }
+
+  // 4) Create using YOUR existing create() => will create inventory_count + inventory_transaction rows
+  const created = await this.create(payloadRows);
+
+  // 5) Verify that every created InventoryCount has an InventoryTransaction row
+  const createdArr = Array.isArray(created) ? created : [created];
+  const createdIds = createdArr.map((c: any) => Number(c.id)).filter(Boolean);
+
+  if (createdIds.length) {
+    const txns = await this.inventoryTxnRepo.find({
+      where: { inventoryCountId: In(createdIds) },
+      select: ['inventoryCountId'],
+    });
+
+    const txnSet = new Set(txns.map((t: any) => Number(t.inventoryCountId)));
+    const missingTxnIds = createdIds.filter((id) => !txnSet.has(id));
+
+    if (missingTxnIds.length) {
+      throw new BadRequestException(
+        `Some InventoryCounts were created without InventoryTransaction rows. Missing for count IDs: ${missingTxnIds
+          .slice(0, 50)
+          .join(', ')}${missingTxnIds.length > 50 ? ' ...' : ''}`,
+      );
+    }
+  }
+
+  return {
+    ok: true,
+    asOf,
+    created: createdArr.length,
+    verifiedTransactions: true,
+  };
+}
+
+
+
+async auditCountTransactions(params: {
+    asOf?: string;           // filter by count.date = asOf
+    type?: CountType;        // filter by count.type
+    limit?: number;          // cap returned rows
+  }) {
+    const { asOf, type } = params;
+    const limit = Math.min(Math.max(Number(params.limit ?? 500), 1), 5000);
+
+    if (asOf && !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+      throw new BadRequestException(`asOf must be YYYY-MM-DD (got "${asOf}")`);
+    }
+
+    const whereParts: string[] = [];
+    const args: any[] = [];
+
+    if (asOf) {
+      whereParts.push(`c.date = ?`);
+      args.push(asOf);
+    }
+    if (type) {
+      whereParts.push(`c.type = ?`);
+      args.push(type);
+    }
+
+    const whereSql = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+
+    // Total counts in scope
+    const totalRes = await this.inventoryCountRepo.query(
+      `SELECT COUNT(*) AS totalCounts
+       FROM inventory_count c
+       ${whereSql}`,
+      args,
+    );
+    const totalCounts = Number(totalRes?.[0]?.totalCounts || 0);
+
+    // Missing "Count" transactions (0 rows)
+    const missing = await this.inventoryCountRepo.query(
+      `
+      SELECT
+        c.id,
+        c.itemVariantId,
+        c.date,
+        c.type
+      FROM inventory_count c
+      LEFT JOIN inventory_transaction t
+        ON t.inventoryCountId = c.id
+       AND t.transactionType = 'Count'
+      ${whereSql}
+      GROUP BY c.id, c.itemVariantId, c.date, c.type
+      HAVING COUNT(t.id) = 0
+      ORDER BY c.id ASC
+      LIMIT ${limit}
+      `,
+      args,
+    );
+
+    // Duplicate "Count" transactions (>1 rows)
+    const duplicates = await this.inventoryCountRepo.query(
+      `
+      SELECT
+        c.id,
+        c.itemVariantId,
+        c.date,
+        c.type,
+        COUNT(t.id) AS txnCount
+      FROM inventory_count c
+      LEFT JOIN inventory_transaction t
+        ON t.inventoryCountId = c.id
+       AND t.transactionType = 'Count'
+      ${whereSql}
+      GROUP BY c.id, c.itemVariantId, c.date, c.type
+      HAVING COUNT(t.id) > 1
+      ORDER BY txnCount DESC, c.id ASC
+      LIMIT ${limit}
+      `,
+      args,
+    );
+
+    // Counts that have transactions linked but none of them are transactionType='Count'
+    // (rare, but useful to detect)
+    const wrongType = await this.inventoryCountRepo.query(
+      `
+      SELECT
+        c.id,
+        c.itemVariantId,
+        c.date,
+        c.type,
+        COUNT(tAll.id) AS totalLinkedTxns,
+        SUM(CASE WHEN tAll.transactionType = 'Count' THEN 1 ELSE 0 END) AS countTypeTxns
+      FROM inventory_count c
+      LEFT JOIN inventory_transaction tAll
+        ON tAll.inventoryCountId = c.id
+      ${whereSql}
+      GROUP BY c.id, c.itemVariantId, c.date, c.type
+      HAVING COUNT(tAll.id) > 0 AND SUM(CASE WHEN tAll.transactionType = 'Count' THEN 1 ELSE 0 END) = 0
+      ORDER BY c.id ASC
+      LIMIT ${limit}
+      `,
+      args,
+    );
+
+    const missingCount = Array.isArray(missing) ? missing.length : 0;
+    const duplicateCount = Array.isArray(duplicates) ? duplicates.length : 0;
+    const wrongTypeCount = Array.isArray(wrongType) ? wrongType.length : 0;
+
+    return {
+      ok: missingCount === 0 && duplicateCount === 0 && wrongTypeCount === 0,
+      scope: { asOf: asOf ?? null, type: type ?? null },
+      totals: {
+        totalCounts,
+        missingCount,
+        duplicateCount,
+        wrongTypeCount,
+        limit,
+      },
+      missing,      // list of count rows with 0 Count-transactions
+      duplicates,   // list with txnCount > 1
+      wrongType,    // list where linked txns exist but none are type='Count'
+    };
+  }
 
 
 }

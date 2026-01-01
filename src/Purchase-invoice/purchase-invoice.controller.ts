@@ -81,6 +81,12 @@ export class PurchaseInvoiceController {
   getOne(@Param('id') id: string) {
     return this.service.findOne(+id);
   }
+
+
+  @Get(':id/journal-vouchers')
+async getJournalVouchers(@Param('id', ParseIntPipe) id: number) {
+  return await this.service.getJournalVouchersForInvoice(id);
+}
 @Put(':id')
 @RequirePerms('purchases.update')
 async update(

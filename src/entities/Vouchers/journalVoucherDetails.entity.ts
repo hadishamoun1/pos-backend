@@ -117,7 +117,7 @@ export class JournalVoucherDetail {
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
   exRateEUROToUSD: number;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   exRateUSD: number;
 
   @Column({ type: 'varchar', nullable: true })
