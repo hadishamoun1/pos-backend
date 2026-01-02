@@ -29,7 +29,7 @@ export class RequestService {
   ) {}
 
 async createRequest(data: any): Promise<Request> {
-  const { requestDate, totalAmount, vatAmount, grandTotal, customerId, details } = data;
+  const { requestDate, totalAmount, vatAmount,vatPercentage, grandTotal, customerId, details } = data;
 
   // ✅ Validate Customer
   const customer = await this.customerRepo.findOne({ where: { id: customerId } });
@@ -97,6 +97,7 @@ async createRequest(data: any): Promise<Request> {
     requestDate,
     totalAmount,
     vatAmount,
+     vatPercentage: vatPercentage != null ? Number(vatPercentage) : 0,
     grandTotal,
     customer,
     details: requestDetails,
@@ -111,6 +112,7 @@ async createRequest(data: any): Promise<Request> {
     requestDate: savedRequest.requestDate,
     totalAmount: savedRequest.totalAmount,
     vatAmount: savedRequest.vatAmount,
+     vatPercentage: savedRequest.vatPercentage,
     grandTotal: savedRequest.grandTotal,
     customerName: customer.customerName,
     invoiceType: customer.invoiceType,
@@ -156,7 +158,7 @@ async getRequestById(id: number): Promise<any> {
     totalAmount: request.totalAmount,
     vatAmount: request.vatAmount,
     grandTotal: request.grandTotal,
-
+    vatPercentage: request.vatPercentage,
     customerId: request.customer?.id ?? null,
     customerName: request.customer?.customerName ?? 'Unknown',
     invoiceType: request.customer?.invoiceType ?? 'Both',
@@ -232,6 +234,7 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
       totalAmount: request.totalAmount,
       vatAmount: request.vatAmount,
       grandTotal: request.grandTotal,
+      vatPercentage: request.vatPercentage,
       customerName: request.customer.customerName,
       invoiceType: request.customer.invoiceType,
     })),
@@ -246,7 +249,7 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
 
 
   async updateRequest(id: number, data: any): Promise<Request> {
-  const { requestDate, totalAmount, vatAmount, grandTotal, customerId, details } = data;
+  const { requestDate, totalAmount, vatAmount, vatPercentage, grandTotal, customerId, details } = data;
 
   if (!Array.isArray(details) || details.length === 0) {
     throw new BadRequestException('details must be a non-empty array');
@@ -317,6 +320,8 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
     request.totalAmount = totalAmount;
     request.vatAmount = vatAmount;
     request.grandTotal = grandTotal;
+        request.vatPercentage = vatPercentage != null ? Number(vatPercentage) : 0;
+
     request.customer = customer;
 
     await qr.manager.save(Request, request);

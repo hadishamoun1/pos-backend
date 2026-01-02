@@ -30,6 +30,10 @@ export class Request {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   vatAmount: number;
 
+  
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  vatPercentage: number;
+
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   grandTotal: number;
 
