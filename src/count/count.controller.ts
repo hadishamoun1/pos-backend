@@ -18,9 +18,10 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import { RequirePerms } from "../auth/permissions.decorator";
 import { CountType } from '../entities/inventory/count.entity';
+import { use } from "passport";
 
 @Controller("inventory-count")
-
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class InventoryCountController {
   constructor(private readonly svc: InventoryCountService) {}
 
