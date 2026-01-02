@@ -30,7 +30,7 @@ export class Invoice {
   @Column({ type: 'enum', enum: ['S', 'G', 'RVR', 'RTN'] })
   invoiceType: 'S' | 'G' | 'RVR' | 'RTN';
 
-  @Column({ type: 'varchar', length: 50 })
+  @Column({ type: 'varchar', length: 50 ,unique: true})
   invoiceNumber: string;
 
   @Column({ type: 'varchar', length: 50, nullable: true })

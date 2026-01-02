@@ -19,7 +19,7 @@ export class PurchaseInvoice {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar', nullable: true ,unique: true})
   invoiceNumber: string;
 
   @Column({
