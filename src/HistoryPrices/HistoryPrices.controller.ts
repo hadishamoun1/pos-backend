@@ -59,18 +59,27 @@ export class CsvImportController {
    * GET /csv-imports/customers/:name/history
    * Get customer's purchase history with pagination
    */
-  @Get('customers/:name/history')
-  async getCustomerHistory(
-    @Param('name') customerName: string,
-    @Query('page') page: string = '1',
-    @Query('limit') limit: string = '50',
-  ) {
-    return await this.csvImportService.getCustomerHistory(
-      decodeURIComponent(customerName),
-      parseInt(page),
-      parseInt(limit),
-    );
-  }
+@Get('customers/:name/history')
+async getCustomerHistory(
+  @Param('name') customerName: string,
+  @Query('page') page: string = '1',
+  @Query('limit') limit: string = '50',
+  @Query('itemName') itemName?: string,
+  @Query('length') length?: string,
+  @Query('width') width?: string,
+) {
+  return await this.csvImportService.getCustomerHistory(
+    decodeURIComponent(customerName),
+    parseInt(page),
+    parseInt(limit),
+    {
+      itemName,
+      length: length ? parseFloat(length) : undefined,
+      width: width ? parseFloat(width) : undefined,
+    }
+  );
+}
+
 
   /**
    * GET /csv-imports/customers/:name/top-items

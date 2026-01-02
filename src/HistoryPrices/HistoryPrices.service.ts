@@ -110,15 +110,41 @@ async getCustomerHistory(
   customerName: string,
   page: number = 1,
   limit: number = 50,
+  filters?: { itemName?: string; length?: number; width?: number }
 ) {
   const safePage = Math.max(1, Number(page) || 1);
   const safeLimit = Math.min(200, Math.max(1, Number(limit) || 50));
   const skip = (safePage - 1) * safeLimit;
 
-  // Get paginated orders - NOW WITH ALL FIELDS
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  // ✅ ALWAYS filter by selected customer
+  conditions.push("customerName = ?");
+  params.push(customerName);
+
+  // ✅ Optional filters
+  if (filters?.itemName) {
+    conditions.push("itemName LIKE ?");
+    params.push(`%${filters.itemName}%`);
+  }
+
+  if (filters?.length !== undefined && filters?.length !== null) {
+    conditions.push("length = ?");
+    params.push(filters.length);
+  }
+
+  if (filters?.width !== undefined && filters?.width !== null) {
+    conditions.push("width = ?");
+    params.push(filters.width);
+  }
+
+  const whereClause = `WHERE ${conditions.join(" AND ")}`;
+
   const query = `
     SELECT 
       id,
+      customerName,
       invoiceDate,
       invoiceNbr,
       itemName,
@@ -135,27 +161,24 @@ async getCustomerHistory(
       width,
       ROUND(qty * itemSalePrice, 2) as lineTotal
     FROM \`history-prices\`
-    WHERE customerName = ?
+    ${whereClause}
     ORDER BY invoiceDate DESC, id DESC
     LIMIT ? OFFSET ?
   `;
 
-  // Count total orders
   const countQuery = `
     SELECT COUNT(*) as total
     FROM \`history-prices\`
-    WHERE customerName = ?
+    ${whereClause}
   `;
 
   const data = await this.csvImportRepo.query(query, [
-    customerName,
+    ...params,
     safeLimit,
     skip,
   ]);
 
-  const totalResult = await this.csvImportRepo.query(countQuery, [
-    customerName,
-  ]);
+  const totalResult = await this.csvImportRepo.query(countQuery, params);
   const total = totalResult[0].total;
 
   return {
@@ -168,6 +191,8 @@ async getCustomerHistory(
     },
   };
 }
+
+
 
   // ✅ Get customer's top purchased items
   async getCustomerTopItems(customerName: string, limit: number = 10) {
