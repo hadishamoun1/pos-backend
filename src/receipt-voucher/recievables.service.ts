@@ -764,6 +764,8 @@ async getJournalVoucherForReceiptEntry(receiptEntryId: number) {
 
 // Add this updated method to your RecievablesService class
 
+// Fixed getDailyReceivables method for RecievablesService
+
 async getDailyReceivables(params: {
   date: string; // 'YYYY-MM-DD'
   type?: 'G' | 'S' | 'ALL' | 'RVR';
@@ -796,7 +798,7 @@ async getDailyReceivables(params: {
 
   const entries = await qb.getMany();
 
-  // Calculate totals by currency
+  // ✅ FIXED: Initialize totals as numbers with 0
   const totals = {
     usd: {
       cash: 0,
@@ -813,7 +815,8 @@ async getDailyReceivables(params: {
 
   // Map entries and calculate totals
   const data = entries.map((entry) => {
-    const amount = entry.cashNumber;
+    // ✅ FIXED: Convert to number explicitly
+    const amount = Number(entry.cashNumber);
     const currency = entry.currency;
     const paymentType = entry.pmtType;
 
@@ -838,7 +841,7 @@ async getDailyReceivables(params: {
       id: entry.id,
       customerId: entry.customerId,
       customerName: entry.customer?.customerName,
-      customerAccountNumber: entry.customer?.customerAccountNumber || null, // ✅ Added
+      customerAccountNumber: entry.customer?.customerAccountNumber || null,
       date: entry.date,
       invoiceId: entry.invoiceId,
       invoiceNumber: entry.invoice?.invoiceNumber ?? null,
