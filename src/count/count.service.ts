@@ -1167,7 +1167,7 @@ const inventoryCount = this.inventoryCountRepo.create({
   const txn = this.inventoryTxnRepo.create({
     itemVariant: variant,
     itemBatchId: batch.id,
-    transactionType: 'Opening Count',
+    transactionType: 'Count',
     sqm: txnSqm,
     sqmofr: txnSqmOFR,
     quantity: qty,
@@ -1574,7 +1574,7 @@ async rebuildOpeningCountsKeepDate(params: {
       .createQueryBuilder()
       .delete()
       .from(InventoryTransaction)
-      .where('transactionType = :tt', { tt: 'Opening Count' })
+      .where('transactionType = :tt', { tt: 'Count' })
       .andWhere('inventoryCountId IN (:...ids)', { ids: [...keepIds, ...deleteIds] })
       .execute();
 
@@ -1694,7 +1694,7 @@ async rebuildOpeningCountsKeepDate(params: {
       }
 
       newTxns.push({
-        transactionType: 'Opening Count',
+        transactionType: 'Count',
         itemVariantId: v.id,
         itemBatchId: b.id,
         inventoryCountId: c.id,
@@ -1907,7 +1907,7 @@ async deleteCountsStrictRecomputeFromCounts(params: { ids: number[] }) {
           SELECT inventoryCountId, MIN(itemBatchId) AS itemBatchId
           FROM inventory_transaction
           WHERE inventoryCountId IS NOT NULL
-            AND transactionType IN ('Count','Opening Count')
+            AND transactionType IN ('Count','Count')
           GROUP BY inventoryCountId
         ) m ON m.inventoryCountId = ic.id
         WHERE m.itemBatchId IN (${bph})
