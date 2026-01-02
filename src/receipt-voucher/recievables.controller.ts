@@ -92,7 +92,20 @@ export class RecievablesController {
 async getJournalVoucher(@Param('id', ParseIntPipe) id: number) {
   return await this.service.getJournalVoucherForReceiptEntry(id);
 }
+// Add this method to your RecievablesController class
 
+@Get('daily')
+async getDailyReceivables(
+  @Query('date') date: string,
+  @Query('type') type?: 'G' | 'S' | 'ALL' | 'RVR',
+  @Query('pmtType') pmtType?: 'Cash' | 'Check' | 'ALL',
+) {
+  return this.service.getDailyReceivables({
+    date,
+    type: type || 'ALL',
+    pmtType: pmtType || 'ALL',
+  });
+}
 
    @Delete(':id')
   delete(@Param('id', ParseIntPipe) id: number) {

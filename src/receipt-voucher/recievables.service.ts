@@ -759,5 +759,114 @@ async getJournalVoucherForReceiptEntry(receiptEntryId: number) {
 }
 
 
+
+// Add this method to your RecievablesService class (before the closing brace)
+
+// Add this updated method to your RecievablesService class
+
+async getDailyReceivables(params: {
+  date: string; // 'YYYY-MM-DD'
+  type?: 'G' | 'S' | 'ALL' | 'RVR';
+  pmtType?: 'Cash' | 'Check' | 'ALL';
+}) {
+  const { date, type = 'ALL', pmtType = 'ALL' } = params;
+
+  // Build the query
+  const qb = this.entryRepo
+    .createQueryBuilder('entry')
+    .leftJoinAndSelect('entry.customer', 'customer')
+    .leftJoinAndSelect('entry.journalVoucher', 'jv')
+    .leftJoinAndSelect('entry.invoice', 'invoice')
+    .where('DATE(entry.date) = :date', { date })
+    .orderBy('entry.id', 'DESC');
+
+  // Apply type filter
+  if (type === 'ALL') {
+    // ALL means both S and G (excludes RVR)
+    qb.andWhere('entry.type IN (:...types)', { types: ['S', 'G'] });
+  } else if (type === 'S' || type === 'G' || type === 'RVR') {
+    // Specific type
+    qb.andWhere('entry.type = :type', { type });
+  }
+
+  // Apply payment type filter if not 'ALL'
+  if (pmtType !== 'ALL') {
+    qb.andWhere('entry.pmtType = :pmtType', { pmtType });
+  }
+
+  const entries = await qb.getMany();
+
+  // Calculate totals by currency
+  const totals = {
+    usd: {
+      cash: 0,
+      check: 0,
+      total: 0,
+    },
+    ll: {
+      cash: 0,
+      check: 0,
+      total: 0,
+    },
+    overall: 0,
+  };
+
+  // Map entries and calculate totals
+  const data = entries.map((entry) => {
+    const amount = entry.cashNumber;
+    const currency = entry.currency;
+    const paymentType = entry.pmtType;
+
+    // Add to totals
+    if (currency === 'USD') {
+      totals.usd.total += amount;
+      if (paymentType === 'Cash') {
+        totals.usd.cash += amount;
+      } else {
+        totals.usd.check += amount;
+      }
+    } else if (currency === 'LL') {
+      totals.ll.total += amount;
+      if (paymentType === 'Cash') {
+        totals.ll.cash += amount;
+      } else {
+        totals.ll.check += amount;
+      }
+    }
+
+    return {
+      id: entry.id,
+      customerId: entry.customerId,
+      customerName: entry.customer?.customerName,
+      customerAccountNumber: entry.customer?.customerAccountNumber || null, // ✅ Added
+      date: entry.date,
+      invoiceId: entry.invoiceId,
+      invoiceNumber: entry.invoice?.invoiceNumber ?? null,
+      cashNumber: entry.cashNumber,
+      currency: entry.currency,
+      exchangeRate: entry.exchangeRate,
+      amountExchanged: entry.amountExchanged,
+      comments: entry.comments,
+      type: entry.type,
+      pmtType: entry.pmtType,
+      jvNumber: entry.journalVoucher?.jvNumber,
+    };
+  });
+
+  // Calculate overall total (USD equivalent)
+  totals.overall = totals.usd.total;
+
+  return {
+    date,
+    filters: {
+      type,
+      pmtType,
+    },
+    count: entries.length,
+    totals,
+    data,
+  };
+}
+
   
 }
