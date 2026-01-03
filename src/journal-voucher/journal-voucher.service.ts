@@ -879,6 +879,24 @@ async getCustomerBalancesReport(params: {
     }
   }
 
+  // ✅ NEW: Sort by account number (smallest to greatest)
+  results.sort((a, b) => {
+    const accA = a.customerAccountNumber || '';
+    const accB = b.customerAccountNumber || '';
+    
+    // Try to parse as numbers for proper numeric sorting
+    const numA = parseInt(accA, 10);
+    const numB = parseInt(accB, 10);
+    
+    // If both are valid numbers, compare numerically
+    if (!isNaN(numA) && !isNaN(numB)) {
+      return numA - numB;
+    }
+    
+    // Otherwise, fall back to string comparison
+    return accA.localeCompare(accB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+
   return {
     reportDate: toDate,
     type,
@@ -890,7 +908,6 @@ async getCustomerBalancesReport(params: {
     },
   };
 }
-
 
 
 async getAccountStatementOFR(params: {
