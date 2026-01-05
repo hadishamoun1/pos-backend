@@ -109,11 +109,11 @@ export class CsvImportService {
 async getCustomerHistory(
   customerName: string,
   page: number = 1,
-  limit: number = 50,
+  limit: number = 10000000,
   filters?: { itemName?: string; length?: number; width?: number }
 ) {
   const safePage = Math.max(1, Number(page) || 1);
-  const safeLimit = Math.min(200, Math.max(1, Number(limit) || 50));
+  const safeLimit = Math.min(10000000, Math.max(1, Number(limit) || 50));
   const skip = (safePage - 1) * safeLimit;
 
   const conditions: string[] = [];

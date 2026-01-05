@@ -940,9 +940,10 @@ async getInvoiceById(invoiceId: number): Promise<any> {
       "customer.account",
       "items",
       "items.itemVariant",
+      "items.itemVariant.itemNameDescription", // ✅ FIXED: itemNameDescription is on ItemVariant, not Item
       "items.itemVariant.thickness",
       "items.itemVariant.thickness.item",
-      "items.itemBatch", // ✅ needed
+      "items.itemBatch",
     ],
   });
 
@@ -1029,6 +1030,7 @@ async getInvoiceById(invoiceId: number): Promise<any> {
       const thickness = variant?.thickness;
       const itemData = thickness?.item; // Item table
       const batch = (item as any).itemBatch ?? null;
+      const itemNameDescription = variant?.itemNameDescription ?? null; // ✅ FIXED: Get from variant
 
       // ✅ itemType + stockMode (from Item table)
       const itemType = itemData?.type ?? null; // 'box' | 'sheet' | 'sqm' | 'unit'
@@ -1081,6 +1083,9 @@ async getInvoiceById(invoiceId: number): Promise<any> {
 
       const sqmpieceId = (item as any).sqmPieceId ?? null;
 
+      // ✅ NEW: Get itemNumber from ItemNameDescription (accessed through variant)
+      const itemNumber = itemNameDescription?.itemNumber ?? null;
+
       return {
         invoiceItemId: item.id,
         sqm: item.sqm,
@@ -1089,10 +1094,11 @@ async getInvoiceById(invoiceId: number): Promise<any> {
         vat: item.vat,
         quantity: item.quantity,
 
-        itemBatchId, // ✅ fixed (works for units too)
+        itemBatchId,
 
         itemVariantId: variant?.id ?? null,
         itemName: itemData?.itemName ?? null,
+        itemNumber, // ✅ NEW: Added itemNumber from variant.itemNameDescription
         itemType,
         stockMode,
 
@@ -1174,8 +1180,6 @@ async getInvoiceById(invoiceId: number): Promise<any> {
 
  
 
-// invoices.service.ts
-// invoices.service.ts (or wherever your previous methods lived)
 
 async getBrowsingInvoices(
   customerId: number,
