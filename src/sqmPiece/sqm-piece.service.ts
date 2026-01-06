@@ -1018,182 +1018,181 @@ export class SqmPiecesService {
    *  - increment transferItem.sqmTrashUnallocated
    *  - (pieces remain unchanged)
    */
-  async trashUnallocatedForLine(
-    transferItemId: number,
-    body: { sqmToTrash: number; date?: string | Date },
-  ) {
-    const sqmToTrash = num(body?.sqmToTrash);
-    if (sqmToTrash <= 0) {
-      throw new BadRequestException('sqmToTrash must be > 0.');
+async trashUnallocatedForLine(
+  transferItemId: number,
+  body: { sqmToTrash: number; date?: string | Date },
+) {
+  const sqmToTrash = num(body?.sqmToTrash);
+  if (sqmToTrash <= 0) {
+    throw new BadRequestException('sqmToTrash must be > 0.');
+  }
+
+  const txDate =
+    body?.date instanceof Date
+      ? body.date
+      : body?.date
+      ? new Date(body.date)
+      : new Date();
+
+  return this.sqmPieceRepo.manager.transaction(async (manager) => {
+    const ti = await manager.getRepository(TransferItem).findOne({
+      where: { id: transferItemId },
+      relations: [
+        'transfer',
+        'itemBatch',
+        'itemBatch.itemVariant',
+        'itemBatch.itemVariant.thickness',
+        'itemBatch.itemVariant.thickness.item',
+        'sqmPieces',
+      ],
+    });
+
+    if (!ti) {
+      throw new NotFoundException(
+        `TransferItem #${transferItemId} not found.`,
+      );
+    }
+    if (!ti.transfer || ti.transfer.location !== 'BOSTS') {
+      throw new BadRequestException(
+        'Can only trash unallocated sqm for BOSTS lines.',
+      );
     }
 
-    const txDate =
-      body?.date instanceof Date
-        ? body.date
-        : body?.date
-        ? new Date(body.date)
-        : new Date();
+    const fromBatch = ti.itemBatch;
+    const fromVariant = fromBatch?.itemVariant;
+    const parentItem = fromVariant?.thickness?.item;
 
-    return this.sqmPieceRepo.manager.transaction(async (manager) => {
-      const ti = await manager.getRepository(TransferItem).findOne({
-        where: { id: transferItemId },
-        relations: [
-          'transfer',
-          'itemBatch',
-          'itemBatch.itemVariant',
-          'itemBatch.itemVariant.thickness',
-          'itemBatch.itemVariant.thickness.item',
-          'sqmPieces',
-        ],
-      });
-
-      if (!ti) {
-        throw new NotFoundException(
-          `TransferItem #${transferItemId} not found.`,
-        );
-      }
-      if (!ti.transfer || ti.transfer.location !== 'BOSTS') {
-        throw new BadRequestException(
-          'Unallocated sqm trash is only allowed for BOSTS lines.',
-        );
-      }
-
-      const fromBatch = ti.itemBatch;
-      if (!fromBatch || !fromBatch.itemVariant) {
-        throw new BadRequestException(
-          'TransferItem has no source batch / variant.',
-        );
-      }
-
-      const fromVariant = fromBatch.itemVariant;
-      const parentItem = fromVariant.thickness.item;
-
-      const lineSqm = num(ti.sqm);
-      const pieces = ti.sqmPieces || [];
-      const allocatedSqm = pieces.reduce(
-        (sum, p) => sum + num(p.sqmTotal),
-        0,
+    if (!fromBatch || !fromVariant || !parentItem) {
+      throw new BadRequestException(
+        'TransferItem has no valid source batch / variant / item.',
       );
-      const alreadyTrashUnallocated = num((ti as any).sqmTrashUnallocated);
-      const remainingUnallocated =
-        lineSqm - allocatedSqm - alreadyTrashUnallocated;
+    }
 
-      if (remainingUnallocated <= 0.0001) {
-        throw new BadRequestException(
-          'No unallocated sqm left on this line to trash.',
-        );
-      }
+    const totalSqmLine = num(ti.sqm);
+    const existingPieces = ti.sqmPieces || [];
 
-      if (sqmToTrash - remainingUnallocated > 0.0001) {
-        throw new BadRequestException(
-          `Cannot trash ${sqmToTrash.toFixed(
-            4,
-          )} sqm because only ${remainingUnallocated.toFixed(
-            4,
-          )} sqm remains unallocated on this line.`,
-        );
-      }
+    const allocatedSqm = existingPieces.reduce(
+      (sum, p) => sum + num(p.sqmTotal),
+      0,
+    );
 
-      // Resolve sqm thickness + variant (same as BOSTS / savePiecesForLine)
-      const sqmThickness = await manager
-        .getRepository(Thickness)
-        .createQueryBuilder('th')
-        .innerJoin(
-          'th.item',
-          'it',
-          'it.itemName = :name AND it.type = :type',
-          {
-            name: parentItem.itemName,
-            type: 'sqm',
-          },
-        )
-        .where('th.thickness = :thick', {
-          thick: fromVariant.thickness.thickness,
-        })
-        .getOne();
+    const trashUnallocatedSqmSaved = num((ti as any).sqmTrashUnallocated ?? 0);
+    let unallocatedSqm = totalSqmLine - allocatedSqm - trashUnallocatedSqmSaved;
+    if (!Number.isFinite(unallocatedSqm)) unallocatedSqm = 0;
+    if (unallocatedSqm < 0) unallocatedSqm = 0;
 
-      if (!sqmThickness) {
-        throw new NotFoundException(
-          `No "sqm" thickness ${fromVariant.thickness.thickness} for ${parentItem.itemName}`,
-        );
-      }
+    if (sqmToTrash - unallocatedSqm > 0.0001) {
+      throw new BadRequestException(
+        `Cannot trash ${sqmToTrash.toFixed(
+          4,
+        )} sqm because only ${unallocatedSqm.toFixed(
+          4,
+        )} sqm are unallocated on this line.`,
+      );
+    }
 
-      const sqmVariants = await manager.getRepository(ItemVariant).find({
-        where: {
-          thickness: { id: sqmThickness.id } as any,
+    // ----- Resolve sqm thickness + variant -----
+    const sqmThickness = await manager
+      .getRepository(Thickness)
+      .createQueryBuilder('th')
+      .innerJoin(
+        'th.item',
+        'it',
+        'it.itemName = :name AND it.type = :type',
+        {
+          name: parentItem.itemName,
+          type: 'sqm',
         },
-      });
+      )
+      .where('th.thickness = :thick', {
+        thick: fromVariant.thickness.thickness,
+      })
+      .getOne();
 
-      if (!sqmVariants.length) {
-        throw new NotFoundException(
-          `No sqm variant for ${parentItem.itemName}, thickness=${fromVariant.thickness.thickness}`,
-        );
-      }
+    if (!sqmThickness) {
+      throw new NotFoundException(
+        `No "sqm" thickness ${fromVariant.thickness.thickness} for ${parentItem.itemName}`,
+      );
+    }
 
-      const sqmVariant =
-        sqmVariants.find(
-          (v: any) =>
-            v.realDescriptionId !== null && v.realDescriptionId !== undefined,
-        ) || sqmVariants[0];
-
-      // find or create the sqm batch (same condition + dateReceived)
-      let sqmBatch = await manager.getRepository(ItemBatch).findOne({
-        where: {
-          itemVariant: { id: sqmVariant.id } as any,
-          condition: fromBatch.condition,
-          dateReceived: fromBatch.dateReceived,
-        },
-      });
-
-      if (!sqmBatch) {
-        sqmBatch = manager.getRepository(ItemBatch).create({
-          itemVariant: sqmVariant,
-          condition: fromBatch.condition,
-          dateReceived: fromBatch.dateReceived,
-        });
-        await manager.getRepository(ItemBatch).save(sqmBatch);
-      }
-
-      // 1) Create InventoryTransaction
-      const invTx = manager.getRepository(InventoryTransaction).create({
-        itemVariantId: sqmVariant.id,
-        itemBatchId: sqmBatch.id,
-        transactionType: 'SqmTrash',
-        quantity: 0,
-        quantityofr: -sqmToTrash,
-        sqm: 0,
-        sqmofr: -sqmToTrash,
-        finalcost: 0,
-        finalcostofr: 0,
-        transferId: ti.transfer?.id ?? null,
-        dateForEachInvoice: txDate,
-      });
-      await manager.getRepository(InventoryTransaction).save(invTx);
-
-      // 2) Update batch OFR totals
-      sqmBatch.outOFR = num(sqmBatch.outOFR) + sqmToTrash;
-      sqmBatch.balanceOFR =
-        num(sqmBatch.startOFR) +
-        num(sqmBatch.inOFR) -
-        num(sqmBatch.outOFR);
-      await manager.getRepository(ItemBatch).save(sqmBatch);
-
-      // 3) Update variant OFR totals
-      sqmVariant.totalOutOFR = num(sqmVariant.totalOutOFR) + sqmToTrash;
-      sqmVariant.totalBalanceOFR =
-        num(sqmVariant.totalStartOFR) +
-        num(sqmVariant.totalInOFR) -
-        num(sqmVariant.totalOutOFR);
-      await manager.getRepository(ItemVariant).save(sqmVariant);
-
-      // 4) Update TransferItem summary field
-      (ti as any).sqmTrashUnallocated = alreadyTrashUnallocated + sqmToTrash;
-      await manager.getRepository(TransferItem).save(ti);
-
-      // Return refreshed line header + pieces
-      return this.getPiecesForLine(transferItemId);
+    const sqmVariants = await manager.getRepository(ItemVariant).find({
+      where: {
+        thickness: { id: sqmThickness.id } as any,
+      },
     });
-  }
+
+    if (!sqmVariants.length) {
+      throw new NotFoundException(
+        `No sqm variant for ${parentItem.itemName}, thickness=${fromVariant.thickness.thickness}`,
+      );
+    }
+
+    const sqmVariant =
+      sqmVariants.find(
+        (v: any) =>
+          v.realDescriptionId !== null && v.realDescriptionId !== undefined,
+      ) || sqmVariants[0];
+
+    // ----- Find/Create sqm batch -----
+    let sqmBatch = await manager.getRepository(ItemBatch).findOne({
+      where: {
+        itemVariant: { id: sqmVariant.id } as any,
+        condition: fromBatch.condition,
+        dateReceived: fromBatch.dateReceived,
+      },
+    });
+
+    if (!sqmBatch) {
+      sqmBatch = manager.getRepository(ItemBatch).create({
+        itemVariant: sqmVariant,
+        condition: fromBatch.condition,
+        dateReceived: fromBatch.dateReceived,
+      });
+      await manager.getRepository(ItemBatch).save(sqmBatch);
+    }
+
+    // ✅ 1) Create InventoryTransaction with SqmTrash type
+    const invTx = manager.getRepository(InventoryTransaction).create({
+      itemVariantId: sqmVariant.id,
+      itemBatchId: sqmBatch.id,
+      transactionType: 'SqmTrash',
+      quantity: 0,           // ✅ Zero for regular quantity
+      quantityofr: -sqmToTrash, // ✅ Negative for OFR quantity
+      sqm: 0,                // ✅ Zero for regular sqm
+      sqmofr: -sqmToTrash,   // ✅ Negative for OFR sqm
+      finalcost: 0,
+      finalcostofr: 0,
+      transferId: ti.transfer?.id || null,
+      dateForEachInvoice: txDate,
+    });
+    await manager.getRepository(InventoryTransaction).save(invTx);
+
+    // ✅ 2) Update batch OFR
+    sqmBatch.outOFR = num(sqmBatch.outOFR) + sqmToTrash;
+    sqmBatch.balanceOFR =
+      num(sqmBatch.startOFR) + num(sqmBatch.inOFR) - num(sqmBatch.outOFR);
+    await manager.getRepository(ItemBatch).save(sqmBatch);
+
+    // ✅ 3) Update variant OFR
+    sqmVariant.totalOutOFR = num(sqmVariant.totalOutOFR) + sqmToTrash;
+    sqmVariant.totalBalanceOFR =
+      num(sqmVariant.totalStartOFR) +
+      num(sqmVariant.totalInOFR) -
+      num(sqmVariant.totalOutOFR);
+    await manager.getRepository(ItemVariant).save(sqmVariant);
+
+    // ✅ 4) Update TransferItem to track trashed unallocated sqm
+    (ti as any).sqmTrashUnallocated =
+      trashUnallocatedSqmSaved + sqmToTrash;
+    await manager.getRepository(TransferItem).save(ti);
+
+    return {
+      transferItemId,
+      sqmTrashed: sqmToTrash,
+      totalSqmTrashUnallocated: (ti as any).sqmTrashUnallocated,
+    };
+  });
+}
 
   /**
    * Restore previously trashed *unallocated* sqm on a BOSTS transfer line.
@@ -1478,6 +1477,9 @@ async trashAllForGroup(body: { groupKey: string; date?: string | Date }) {
 }
 
 
+// ========================================
+// Method 1: Restore all trashed unallocated for a group
+// ========================================
 async restoreAllUnallocatedForGroup(body: { groupKey: string; date?: string | Date }) {
   const groupKey = (body?.groupKey ?? '').trim();
   if (!groupKey) {
@@ -1525,7 +1527,8 @@ async restoreAllUnallocatedForGroup(body: { groupKey: string; date?: string | Da
       const trashedUnalloc = num((ti as any).sqmTrashUnallocated ?? 0);
       if (trashedUnalloc <= 0.0001) continue;
 
-      // restore ALL trashed unallocated sqm for this line
+      // ✅ restore ALL trashed unallocated sqm for this line
+      // This will create positive inventory transactions inside restoreUnallocatedForLine
       await this.restoreUnallocatedForLine(ti.id, {
         sqmToRestore: trashedUnalloc,
         date: body?.date,
@@ -1556,6 +1559,11 @@ async restoreAllUnallocatedForGroup(body: { groupKey: string; date?: string | Da
     totalRestoredSqm: restoredUnallocatedSqm,
   };
 }
+
+// ========================================
+// Method 2: Restore unallocated for a single line
+// ========================================
+
 
 
  /**
