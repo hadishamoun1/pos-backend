@@ -134,13 +134,15 @@ async createRequest(data: any): Promise<Request> {
     });
   }
 
+
+  
 async getRequestById(id: number): Promise<any> {
   const request = await this.requestRepo.findOne({
     where: { id },
     relations: [
       'customer',
       'details',
-      'details.itemBatch', // ✅ added
+      'details.itemBatch',
       'details.itemVariant',
       'details.itemVariant.thickness',
       'details.itemVariant.thickness.item',
@@ -165,6 +167,7 @@ async getRequestById(id: number): Promise<any> {
 
     details: (request.details || []).map((detail) => {
       const item = detail.itemVariant?.thickness?.item;
+      const itemVariant = detail.itemVariant;
 
       // ✅ robust: prefer FK column if it exists, else relation
       const rawBatchId =
@@ -177,15 +180,15 @@ async getRequestById(id: number): Promise<any> {
 
       return {
         itemVariantId: detail.itemVariant?.id ?? null,
+        itemBatchId,
 
-        // ✅ batch id
-        itemBatchId, // ✅ ADD THIS
-
+        // ✅ NEW: Include invoiceDisplayName
         itemName: item?.itemName ?? 'Unknown',
+        invoiceDisplayName: itemVariant?.invoiceDisplayName ?? null,
+        
         thickness: detail.itemVariant?.thickness?.thickness ?? 'Unknown',
-
-        itemType: item?.type ?? 'Unknown',        // box/sheet/sqm/unit
-        stockMode: item?.stockMode ?? 'SQM',      // SQM/QTY/NONE (fallback)
+        itemType: item?.type ?? 'Unknown',
+        stockMode: item?.stockMode ?? 'SQM',
 
         length: detail.itemVariant?.length ?? 0,
         width: detail.itemVariant?.width ?? 0,
