@@ -578,16 +578,12 @@ export class TransfersService {
   // -----------------------------
   // CRUD (NO forward recompute)
   // -----------------------------
- async create(data: any): Promise<Transfer[]> {
-  console.log(
-    "🛠️ TransfersService.create payload:",
-    JSON.stringify(data, null, 2)
-  );
+async create(data: any): Promise<Transfer[]> {
+  console.log("🛠️ TransfersService.create payload:", JSON.stringify(data, null, 2));
+  console.log("📊 Number of items in payload:", data?.items?.length);
 
   const items = Array.isArray(data?.items) ? data.items : [];
   if (items.length === 0) {
-    // you can throw BadRequestException if you want
-    // throw new BadRequestException("Transfer must contain at least 1 item");
     return [];
   }
 
@@ -595,39 +591,33 @@ export class TransfersService {
     async (manager) => {
       const year2 = await this.getActiveYearSuffix(manager);
       const prefix = this.getPrefixFromLocation(data.location);
-
       const results: Transfer[] = [];
 
       for (const item of items) {
-        const transferNumber = await this.nextTransferNumber(
-          manager,
-          prefix,
-          year2
-        );
+        const transferNumber = await this.nextTransferNumber(manager, prefix, year2);
 
-        // create a new transfer header with ONLY this item
         const transfer = await this.saveTransferHeaderAndItems(manager, {
           ...data,
           transferNumber,
           items: [item],
         });
 
-        // apply logic only for this single item
-        await this.applyTransferLogic(manager, transfer, [item]);
+        console.log(`✅ Created NEW transfer #${transfer.id}`); // ← ADD THIS
 
+        await this.applyTransferLogic(manager, transfer, [item]);
         results.push(transfer);
       }
 
+      console.log(`📦 Returning ${results.length} transfers:`, results.map(t => t.id)); // ← ADD THIS
       return results;
     }
   );
 
-  // emit once after everything is created
-  await this.emitActivityNowAndSoon();
+  console.log(`🎉 Transaction complete. Created transfers:`, createdTransfers.map(t => t.id)); // ← ADD THIS
 
+  await this.emitActivityNowAndSoon();
   return createdTransfers;
 }
-
 
   async updateTransfer(transferId: number, data: any): Promise<Transfer> {
     const updated = await this.transfersRepo.manager.transaction(async (manager) => {
@@ -1033,26 +1023,42 @@ export class TransfersService {
   // - NO forward transfer recompute
   // -----------------------------
   private async applyTransferLogic(
-    manager: EntityManager,
-    transfer: Transfer,
-    rawItems: any[] = [],
-  ): Promise<void> {
-    const num = (v: any): number => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
-    };
+ manager: EntityManager,
+  transfer: Transfer,
+  rawItems: any[] = [],
+): Promise<void> {
+  // ✅ ADD THESE LOGS HERE - BEFORE ANYTHING ELSE
+  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  console.log(`🔧 applyTransferLogic START`);
+  console.log(`   Transfer ID: ${(transfer as any).id}`);
+  console.log(`   Location: ${(transfer as any).location}`);
+  console.log(`   Items in transfer object: ${(transfer as any).items?.length || 0}`);
+  console.log(`   rawItems parameter: ${rawItems?.length || 0}`);
+  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-    const persisted = await manager.getRepository(TransferItem).find({
-      where: { transferId: (transfer as any).id } as any,
-      relations: [
-        'itemBatch',
-        'itemBatch.itemVariant',
-        'itemBatch.itemVariant.thickness',
-        'itemBatch.itemVariant.thickness.item',
-      ] as any,
-    });
+  const num = (v: any): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
 
-    // InventoryTransaction: only these 2 exist in your schema
+  const persisted = await manager
+    .getRepository(TransferItem)
+    .createQueryBuilder('ti')
+    .leftJoinAndSelect('ti.itemBatch', 'batch')
+    .leftJoinAndSelect('batch.itemVariant', 'variant')
+    .leftJoinAndSelect('variant.thickness', 'thickness')
+    .leftJoinAndSelect('thickness.item', 'item')
+    .where('ti.transferId = :tid', { tid: (transfer as any).id })
+    .getMany();
+
+  console.log('🔍 Loaded transfer items:', persisted.map((ti: any) => ({
+    id: ti.id,
+    itemBatchId: ti.itemBatchId,
+    toItemVariantId: ti.toItemVariantId,
+  })));
+
+
+    // InventoryTransaction: only these 2 exist in your schem
     const setTxCosts = (tx: any, costs: CostBundle) => {
       tx.finalcostofr = costs.ofr; // OFR
       tx.finalcost = costs.vm;     // VM
@@ -1278,136 +1284,260 @@ export class TransfersService {
     // -----------------------------
     // FJ: sheet → box
     // -----------------------------
-    if ((transfer as any).location === 'FJ') {
-      const cut = this.startOfDay(new Date((transfer as any).date));
-      const boxAgg = new Map<number, Agg>();
+if ((transfer as any).location === 'FJ') {
+  const cut = this.startOfDay(new Date((transfer as any).date));
+  const boxAgg = new Map<number, Agg>();
 
-      for (const ti of persisted) {
-        const qtyBoxes = num((ti as any).quantity);
-        const sqmVal = num((ti as any).sqm);
+  for (const ti of persisted) {
+    // ✅ quantity = number of SHEETS being transferred (not boxes!)
+    const qtySheets = num((ti as any).quantity);
+    const sqmVal = num((ti as any).sqm);
 
-        const fromBatch: any = (ti as any).itemBatch;
-        const fromVariant: any = fromBatch.itemVariant;
-        const parentItem: any = fromVariant.thickness.item;
+    const fromBatch: any = (ti as any).itemBatch;
+    const fromVariant: any = fromBatch.itemVariant;
+    const parentItem: any = fromVariant.thickness.item;
 
-        if (parentItem.type !== 'sheet') {
-          throw new BadRequestException(
-            `FJ transfers only accept sheet-type items. Found ${parentItem.itemName} (${parentItem.type})`,
-          );
-        }
-
-        const rawItem = (rawItems ?? []).find(
-          (row: any) => Number(row.itemBatchId) === Number((ti as any).itemBatchId),
-        );
-
-        const boxVariantId = Number((rawItem as any)?.toItemVariantId);
-        if (!boxVariantId) {
-          throw new BadRequestException(
-            'FJ transfer requires "toItemVariantId" (target box ItemVariant) on each line.',
-          );
-        }
-
-        const boxVariant: any = await manager.getRepository(ItemVariant).findOne({
-          where: { id: boxVariantId } as any,
-          relations: ['thickness', 'thickness.item'] as any,
-        });
-        if (!boxVariant) throw new NotFoundException(`Target box ItemVariant ${boxVariantId} not found.`);
-
-        const boxItem: any = boxVariant.thickness.item;
-        if (boxItem.type !== 'box') {
-          throw new BadRequestException(
-            `FJ target must be a "box" item. Got ${boxItem.itemName} (${boxItem.type}).`,
-          );
-        }
-
-        const { prev: prevCosts } = await this.getPrevQtyAndCosts(manager, fromVariant.id, cut);
-        const transferCosts: CostBundle = { ...prevCosts };
-
-        const toBatch = await this.ensureBatch(
-          manager,
-          boxVariant.id,
-          fromBatch.condition,
-          fromBatch.dateReceived,
-        );
-
-        const txOut: any = manager.getRepository(InventoryTransaction).create({
-          itemVariantId: fromVariant.id,
-          itemBatchId: fromBatch.id,
-          transactionType: 'MovedFrom',
-          quantity: 0,
-          quantityofr: -qtyBoxes,
-          sqm: 0,
-          sqmofr: -sqmVal,
-          transferId: (transfer as any).id,
-          dateForEachInvoice: new Date((transfer as any).date),
-        } as any);
-        setTxCosts(txOut, transferCosts);
-        this.logIfNaN(txOut, 'FJ.txOut');
-        await manager.getRepository(InventoryTransaction).save(txOut);
-
-        const txIn: any = manager.getRepository(InventoryTransaction).create({
-          itemVariantId: boxVariant.id,
-          itemBatchId: (toBatch as any).id,
-          transactionType: 'MovedTo',
-          quantity: 0,
-          quantityofr: qtyBoxes,
-          sqm: 0,
-          sqmofr: sqmVal,
-          transferId: (transfer as any).id,
-          dateForEachInvoice: new Date((transfer as any).date),
-        } as any);
-        setTxCosts(txIn, transferCosts);
-        this.logIfNaN(txIn, 'FJ.txIn');
-        const savedTxIn = await manager.getRepository(InventoryTransaction).save(txIn);
-
-        // totals
-        fromBatch.outOFR = num(fromBatch.outOFR) + sqmVal;
-        fromBatch.balanceOFR = num(fromBatch.startOFR) + num(fromBatch.inOFR) - num(fromBatch.outOFR);
-        await manager.getRepository(ItemBatch).save(fromBatch);
-
-        (toBatch as any).inOFR = num((toBatch as any).inOFR) + sqmVal;
-        (toBatch as any).balanceOFR =
-          num((toBatch as any).startOFR) + num((toBatch as any).inOFR) - num((toBatch as any).outOFR);
-        await manager.getRepository(ItemBatch).save(toBatch);
-
-        fromVariant.totalOutOFR = num(fromVariant.totalOutOFR) + sqmVal;
-        fromVariant.totalBalanceOFR =
-          num(fromVariant.totalStartOFR) + num(fromVariant.totalInOFR) - num(fromVariant.totalOutOFR);
-
-        boxVariant.totalInOFR = num(boxVariant.totalInOFR) + sqmVal;
-        boxVariant.totalBalanceOFR =
-          num(boxVariant.totalStartOFR) + num(boxVariant.totalInOFR) - num(boxVariant.totalOutOFR);
-
-        await manager.getRepository(ItemVariant).save([fromVariant, boxVariant]);
-
-        const key = Number(boxVariant.id);
-        const agg = boxAgg.get(key) ?? {
-          totalSqm: 0,
-          weightedCostOfr: 0,
-          transferItemIds: [],
-          txInIds: [],
-          copied: null,
-        };
-
-        agg.totalSqm += sqmVal;
-        agg.weightedCostOfr += sqmVal * transferCosts.ofr;
-        agg.transferItemIds.push((ti as any).id);
-        agg.txInIds.push((savedTxIn as any).id);
-        rememberCopied(agg, transferCosts);
-        boxAgg.set(key, agg);
-      }
-
-      for (const [destVariantId, agg] of boxAgg.entries()) {
-        if (agg.totalSqm <= 0) continue;
-
-        const { prevQty, prev: prevCostsDest } = await this.getPrevQtyAndCosts(manager, destVariantId, cut);
-        const inCostOfr = agg.weightedCostOfr / agg.totalSqm;
-        const newAvgOfr = this.computeNewAvgCost(prevQty, prevCostsDest.ofr, agg.totalSqm, inCostOfr);
-
-        const copied = agg.copied ?? { vm: prevCostsDest.vm, c: prevCostsDest.c, cvm: prevCostsDest.cvm };
-        await updateLinesAndTx(destVariantId, agg.transferItemIds, agg.txInIds, newAvgOfr, copied);
-      }
+    // =====================================================================
+    // VALIDATION: Must be sheet type
+    // =====================================================================
+    if (parentItem.type !== 'sheet') {
+      throw new BadRequestException(
+        `FJ transfers only accept sheet-type items. Found ${parentItem.itemName} (${parentItem.type})`,
+      );
     }
+
+    // =====================================================================
+    // GET TARGET BOX VARIANT ID
+    // =====================================================================
+    
+    // ✅ Try persisted first, then fallback to rawItems
+    let boxVariantId = (ti as any).toItemVariantId 
+      ? Number((ti as any).toItemVariantId) 
+      : null;
+
+    if (!boxVariantId) {
+      const rawItem = (rawItems ?? []).find(
+        (row: any) => Number(row.itemBatchId) === Number((ti as any).itemBatchId),
+      );
+      boxVariantId = rawItem?.toItemVariantId 
+        ? Number(rawItem.toItemVariantId) 
+        : null;
+    }
+
+    if (!boxVariantId) {
+      throw new BadRequestException(
+        `FJ transfer requires "toItemVariantId" for itemBatchId=${(ti as any).itemBatchId}`,
+      );
+    }
+
+    // =====================================================================
+    // LOAD TARGET BOX VARIANT
+    // =====================================================================
+    const boxVariant: any = await manager.getRepository(ItemVariant).findOne({
+      where: { id: boxVariantId } as any,
+      relations: ['thickness', 'thickness.item'] as any,
+    });
+    
+    if (!boxVariant) {
+      throw new NotFoundException(`Target box ItemVariant ${boxVariantId} not found.`);
+    }
+
+    const boxItem: any = boxVariant.thickness.item;
+    if (boxItem.type !== 'box') {
+      throw new BadRequestException(
+        `FJ target must be a "box" item. Got ${boxItem.itemName} (${boxItem.type}).`,
+      );
+    }
+
+    // =====================================================================
+    // VALIDATE DIVISIBILITY
+    // =====================================================================
+    const targetSheetsPerBox = num(boxVariant.sheetsPerBox);
+    
+    if (!targetSheetsPerBox || targetSheetsPerBox <= 0) {
+      throw new BadRequestException(
+        `Target box variant ${boxVariantId} has invalid sheetsPerBox (${targetSheetsPerBox}). Must be > 0.`,
+      );
+    }
+
+    // ✅ Check if quantity of sheets is divisible by sheetsPerBox
+    if (qtySheets % targetSheetsPerBox !== 0) {
+      throw new BadRequestException(
+        `Cannot convert ${qtySheets} sheets to boxes with ${targetSheetsPerBox} sheets/box. ` +
+        `Quantity must be divisible by ${targetSheetsPerBox}. ` +
+        `(${qtySheets} ÷ ${targetSheetsPerBox} = ${qtySheets / targetSheetsPerBox})`,
+      );
+    }
+
+    // ✅ Calculate how many boxes will be created
+    const qtyBoxes = qtySheets / targetSheetsPerBox;
+
+    console.log(
+      `✅ FJ: Converting ${qtySheets} sheets → ${qtyBoxes} boxes ` +
+      `(${targetSheetsPerBox} sheets/box, ${sqmVal} sqm)`
+    );
+
+    // =====================================================================
+    // GET COSTS FROM HISTORY
+    // =====================================================================
+    const { prev: prevCosts } = await this.getPrevQtyAndCosts(manager, fromVariant.id, cut);
+    const transferCosts: CostBundle = { ...prevCosts };
+
+    // =====================================================================
+    // ENSURE TARGET BATCH EXISTS
+    // =====================================================================
+    const toBatch = await this.ensureBatch(
+      manager,
+      boxVariant.id,
+      fromBatch.condition,
+      fromBatch.dateReceived,
+    );
+
+    // =====================================================================
+    // CREATE "OUT" TRANSACTION (Remove sheets from stock)
+    // =====================================================================
+    const txOut: any = manager.getRepository(InventoryTransaction).create({
+      itemVariantId: fromVariant.id,
+      itemBatchId: fromBatch.id,
+      transactionType: 'MovedFrom',
+      quantity: 0,
+      quantityofr: -qtySheets,              // ✅ Negative sheets OUT
+      sqm: 0,
+      sqmofr: -sqmVal,                      // ✅ Negative SQM OUT
+      transferId: (transfer as any).id,
+      dateForEachInvoice: new Date((transfer as any).date),
+    } as any);
+    
+    setTxCosts(txOut, transferCosts);
+    this.logIfNaN(txOut, 'FJ.txOut');
+    await manager.getRepository(InventoryTransaction).save(txOut);
+
+    // =====================================================================
+    // CREATE "IN" TRANSACTION (Add boxes to stock)
+    // =====================================================================
+    const txIn: any = manager.getRepository(InventoryTransaction).create({
+      itemVariantId: boxVariant.id,
+      itemBatchId: (toBatch as any).id,
+      transactionType: 'MovedTo',
+      quantity: 0,
+      quantityofr: qtyBoxes,                // ✅ Positive boxes IN
+      sqm: 0,
+      sqmofr: sqmVal,                       // ✅ Positive SQM IN
+      transferId: (transfer as any).id,
+      dateForEachInvoice: new Date((transfer as any).date),
+    } as any);
+    
+    setTxCosts(txIn, transferCosts);
+    this.logIfNaN(txIn, 'FJ.txIn');
+    const savedTxIn = await manager.getRepository(InventoryTransaction).save(txIn);
+
+    // =====================================================================
+    // UPDATE SOURCE BATCH TOTALS (SHEETS)
+    // =====================================================================
+    fromBatch.outOFR = num(fromBatch.outOFR) + sqmVal;
+    fromBatch.balanceOFR = 
+      num(fromBatch.startOFR) + 
+      num(fromBatch.inOFR) - 
+      num(fromBatch.outOFR);
+    
+    await manager.getRepository(ItemBatch).save(fromBatch);
+
+    // =====================================================================
+    // UPDATE DESTINATION BATCH TOTALS (BOXES)
+    // =====================================================================
+    (toBatch as any).inOFR = num((toBatch as any).inOFR) + sqmVal;
+    (toBatch as any).balanceOFR =
+      num((toBatch as any).startOFR) + 
+      num((toBatch as any).inOFR) - 
+      num((toBatch as any).outOFR);
+    
+    await manager.getRepository(ItemBatch).save(toBatch);
+
+    // =====================================================================
+    // UPDATE SOURCE VARIANT TOTALS (SHEETS)
+    // =====================================================================
+    fromVariant.totalOutOFR = num(fromVariant.totalOutOFR) + sqmVal;
+    fromVariant.totalBalanceOFR =
+      num(fromVariant.totalStartOFR) + 
+      num(fromVariant.totalInOFR) - 
+      num(fromVariant.totalOutOFR);
+
+    // =====================================================================
+    // UPDATE DESTINATION VARIANT TOTALS (BOXES)
+    // =====================================================================
+    boxVariant.totalInOFR = num(boxVariant.totalInOFR) + sqmVal;
+    boxVariant.totalBalanceOFR =
+      num(boxVariant.totalStartOFR) + 
+      num(boxVariant.totalInOFR) - 
+      num(boxVariant.totalOutOFR);
+
+    // ✅ SAVE BOTH VARIANTS
+    await manager.getRepository(ItemVariant).save([fromVariant, boxVariant]);
+
+    // =====================================================================
+    // ACCUMULATE FOR WEIGHTED AVERAGE (by destination box variant)
+    // =====================================================================
+    const key = Number(boxVariant.id);
+    const agg = boxAgg.get(key) ?? {
+      totalSqm: 0,
+      weightedCostOfr: 0,
+      transferItemIds: [],
+      txInIds: [],
+      copied: null,
+    };
+
+    agg.totalSqm += sqmVal;
+    agg.weightedCostOfr += sqmVal * transferCosts.ofr;
+    agg.transferItemIds.push((ti as any).id);
+    agg.txInIds.push((savedTxIn as any).id);
+    rememberCopied(agg, transferCosts);
+    
+    boxAgg.set(key, agg);
+  }
+
+  // =====================================================================
+  // UPDATE DESTINATION BOX VARIANT COSTS (Weighted Average)
+  // =====================================================================
+  for (const [destVariantId, agg] of boxAgg.entries()) {
+    if (agg.totalSqm <= 0) continue;
+
+    // Get previous quantity and costs for the box variant
+    const { prevQty, prev: prevCostsDest } = await this.getPrevQtyAndCosts(
+      manager, 
+      destVariantId, 
+      cut
+    );
+    
+    // Weighted average cost of incoming transfer
+    const inCostOfr = agg.weightedCostOfr / agg.totalSqm;
+    
+    // ✅ Compute NEW weighted average for OFR cost
+    const newAvgOfr = this.computeNewAvgCost(
+      prevQty, 
+      prevCostsDest.ofr, 
+      agg.totalSqm, 
+      inCostOfr
+    );
+
+    // ✅ VM/C/CVM are COPIED (not averaged)
+    const copied = agg.copied ?? { 
+      vm: prevCostsDest.vm, 
+      c: prevCostsDest.c, 
+      cvm: prevCostsDest.cvm 
+    };
+
+    // ✅ Update ItemVariant costs + ItemNameDescription costs + all transfer lines
+    await updateLinesAndTx(
+      destVariantId, 
+      agg.transferItemIds, 
+      agg.txInIds, 
+      newAvgOfr, 
+      copied
+    );
+  }
+}
+
+
 
     // -----------------------------
     // BOSTS: box/sheet → sqm

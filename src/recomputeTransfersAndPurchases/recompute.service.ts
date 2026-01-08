@@ -761,6 +761,7 @@ private async recomputeOneTransfer(transferId: number) {
       averageCostVM: (ti as any).averageCostVM ?? null,
       averageCostC: (ti as any).averageCostC ?? null,
       averageCostCVM: (ti as any).averageCostCVM ?? null,
+      toItemVariantId: (ti as any).toItemVariantId ?? null,
     }));
 
     // rollback + rebuild

@@ -38,21 +38,26 @@ export class TransferItem {
   @Column({ type: 'decimal', precision: 10, scale: 4, default: 0 })
   sqm: number;
 
-  // Existing: used as “price/cost” for the line (you already use this in places)
+  // Existing: used as "price/cost" for the line (you already use this in places)
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   price: number;
 
   // ✅ New fields you asked for
-    @Column({ type: 'decimal', precision: 12, scale: 4, default: 0,nullable:true })
+  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0, nullable: true })
   averageCost: number;
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0,nullable:true })
+  
+  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0, nullable: true })
   averageCostVM: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0,nullable:true })
+  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0, nullable: true })
   averageCostCVM: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 ,nullable:true})
+  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0, nullable: true })
   averageCostC: number;
+
+  // ✅ NEW: Target item variant for FJ transfers (sheet → box conversion)
+  @Column({ type: 'int', nullable: true })
+  toItemVariantId: number | null;
 
   @ManyToOne(() => ItemBatch, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'itemBatchId' })
