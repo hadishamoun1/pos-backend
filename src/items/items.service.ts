@@ -104,12 +104,13 @@ async getSelectedItemDetailsPaginated(opts?: {
   const page  = Math.max(1, Number(opts?.page ?? 1));
   const limit = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
 
-  // --- Pull everything we need: variant + thickness + item + realDescription
+  // --- Pull everything we need: variant + thickness + item + realDescription + batches
   const qb = this.itemVariantRepository
     .createQueryBuilder('v')
     .innerJoinAndSelect('v.thickness', 't')
     .innerJoinAndSelect('t.item', 'i')
     .leftJoinAndSelect('v.realDescription', 'rd')
+    .leftJoinAndSelect('v.batches', 'b') // ✅ Join batches to get balance
     .select([
       // Variant
       'v.id',
@@ -135,6 +136,11 @@ async getSelectedItemDetailsPaginated(opts?: {
       'rd.colorName',
       'rd.designName',
       'rd.sort_index_real_description',
+
+      // ✅ Batch info for balance calculation
+      'b.id',
+      'b.balance',
+      'b.balanceOFR',
     ])
 
     // ✅ Only rows where realDescription exists
@@ -190,20 +196,40 @@ async getSelectedItemDetailsPaginated(opts?: {
 
     const grp = groupsMap.get(key)!;
 
-    grp.variants.push({
-      variantId: v.id,
-      length: v.length,
-      width: v.width,
-      sheetsPerBox: v.sheetsPerBox,
-      origin: v.origin,
+    // ✅ Calculate total balance and balanceOFR from all batches
+    const batches = (v as any).batches || [];
+    let totalBalance = 0;
+    let totalBalanceOFR = 0;
 
-      thicknessId: v.thickness.id,
-      thickness: v.thickness.thickness,
+    for (const batch of batches) {
+      totalBalance += Number(batch.balance || 0);
+      totalBalanceOFR += Number(batch.balanceOFR || 0);
+    }
 
-      itemId: v.thickness.item.id,
-      itemName: v.thickness.item.itemName,
-      type: v.thickness.item.type,
-    });
+    // ✅ Check if this variant already exists in the group (avoid duplicates)
+    const existingVariant = grp.variants.find(vr => vr.variantId === v.id);
+    
+    if (!existingVariant) {
+      grp.variants.push({
+        variantId: v.id,
+        length: v.length,
+        width: v.width,
+        sheetsPerBox: v.sheetsPerBox,
+        origin: v.origin,
+
+        thicknessId: v.thickness.id,
+        thickness: v.thickness.thickness,
+
+        itemId: v.thickness.item.id,
+        itemName: v.thickness.item.itemName,
+        type: v.thickness.item.type,
+
+        // ✅ Add balance info
+        balance: totalBalance,
+        balanceOFR: totalBalanceOFR,
+        batchCount: batches.length,
+      });
+    }
   }
 
   // ---- Materialize, keep SQL order (already ordered by RD then thickness then length) ----

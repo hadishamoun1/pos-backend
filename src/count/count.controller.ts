@@ -124,34 +124,37 @@ export class InventoryCountController {
   }
 
   // Inventory check creation
-  @Post("v1/inventory-check")
-  @RequirePerms("inventoryCount.create")
-  async createInventoryCheck(
-    @Body()
-    body: {
-      itemBatchId: number;
-      itemType: "box" | "sheet" | "sqm";
-      length: number;
-      width: number;
-      sheetsPerBox: number;
-      records: {
-        count: number;
-        receivedDate: string;
-        status: "adj+" | "adj-" | "breakage";
-      }[];
-    }
-  ): Promise<void> {
-    const { itemBatchId, itemType, length, width, sheetsPerBox, records } = body;
-
-    await this.svc.createInventoryCheck(
-      itemBatchId,
-      itemType,
-      length,
-      width,
-      sheetsPerBox,
-      records
-    );
+@Post("v1/inventory-check")
+@RequirePerms("inventoryCount.create")
+async createInventoryCheck(
+  @Body()
+  body: {
+    itemBatchId: number;
+    itemType: "box" | "sheet" | "sqm";
+    length: number;
+    width: number;
+    sheetsPerBox: number;
+    records: {
+      count: number;
+      receivedDate: string | null;
+      condition: string | null;
+      status: "adj+" | "adj-" | "breakage";
+      targetBatchId?: number | null; // ✅ optional (only for adj+)
+    }[];
   }
+): Promise<void> {
+  const { itemBatchId, itemType, length, width, sheetsPerBox, records } = body;
+
+  await this.svc.createInventoryCheck(
+    itemBatchId,
+    itemType,
+    length,
+    width,
+    sheetsPerBox,
+    records
+  );
+}
+
 
   // UPDATE count
   @Patch(":id")

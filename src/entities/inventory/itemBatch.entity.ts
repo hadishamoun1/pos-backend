@@ -23,8 +23,8 @@ export class ItemBatch {
 
   @Column({ type: 'varchar', length: 100, nullable: true, default: null })
   condition: string;
-  @Column({ type: 'varchar', length: 7, nullable: true }) // Format: MM/YYYY
-  dateReceived: string;
+@Column({ type: 'varchar', length: 7, nullable: true, default: null })
+dateReceived: string | null;
 
   // 🔽 Inventory Tracking (TOTALS)
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })

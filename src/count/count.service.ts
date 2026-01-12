@@ -1264,179 +1264,233 @@ const inventoryCount = this.inventoryCountRepo.create({
 }
 
 
-  async createInventoryCheck(
-    itemBatchId: number,
-    itemType: 'box' | 'sheet' | 'sqm',
-    length: number,
-    width: number,
-    sheetsPerBox: number,
-    records: {
-      count: number;
-      receivedDate: string;
-      status: 'adj+' | 'adj-' | 'breakage';
-    }[],
-  ): Promise<void> {
-    const originalBatch = await this.itemBatchRepo.findOneOrFail({
-      where: { id: itemBatchId },
-      relations: ['itemVariant'],
-    });
+async createInventoryCheck(
+  itemBatchId: number,
+  itemType: 'box' | 'sheet' | 'sqm',
+  length: number,
+  width: number,
+  sheetsPerBox: number,
+  records: {
+    count: number;
+    receivedDate: string | null;
+    condition: string | null;
+    status: 'adj+' | 'adj-' | 'breakage';
+    targetBatchId?: number | null; // ✅ optional
+  }[],
+): Promise<void> {
+  const round2 = (n: any) => Number((Number(n || 0)).toFixed(2));
 
-    const itemVariantId = originalBatch.itemVariant.id;
-    const variant = originalBatch.itemVariant;
+  const normalizeMonth = (v: any): string | null => {
+    if (v == null) return null;
+    const s = String(v).trim();
+    if (!s) return null;
 
-    const sqmPerUnit =
-      itemType === 'sqm'
-        ? 1
-        : (length / 100) *
-          (width / 100) *
-          (itemType === 'box' ? sheetsPerBox : 1);
-
-    console.log('\n🔎 Original Batch Found:', {
-      id: originalBatch.id,
-      itemVariantId,
-      startOFR: originalBatch.startOFR,
-      balanceOFR: originalBatch.balanceOFR,
-      condition: originalBatch.condition,
-    });
-
-    for (const record of records) {
-      const { count, receivedDate, status } = record;
-      const totalSQM = count * sqmPerUnit;
-
-      console.log('\n📦 Processing Record:', {
-        count,
-        receivedDate,
-        status,
-        totalSQM,
-      });
-
-      if (status === 'adj+') {
-        let targetBatch = await this.itemBatchRepo.findOne({
-          where: {
-            itemVariant: { id: itemVariantId },
-            dateReceived: receivedDate,
-            condition: originalBatch.condition,
-          },
-        });
-
-        if (!targetBatch) {
-          targetBatch = this.itemBatchRepo.create({
-            itemVariant: { id: itemVariantId },
-            dateReceived: receivedDate,
-            condition: originalBatch.condition,
-            startOFR: 0,
-            balanceOFR: 0,
-          });
-          await this.itemBatchRepo.save(targetBatch);
-          console.log('🆕 Created new target batch:', targetBatch);
-        } else {
-          console.log('✅ Found existing target batch:', {
-            id: targetBatch.id,
-            startOFR: targetBatch.startOFR,
-            balanceOFR: targetBatch.balanceOFR,
-          });
-        }
-
-        // ✅ Deduct from original
-        originalBatch.startOFR = Number(originalBatch.startOFR) - totalSQM;
-        originalBatch.balanceOFR = Number(originalBatch.balanceOFR) - totalSQM;
-
-        // ✅ Add to target
-        targetBatch.startOFR = Number(targetBatch.startOFR) + totalSQM;
-        targetBatch.balanceOFR = Number(targetBatch.balanceOFR) + totalSQM;
-
-        console.log('📉 Deducting from original batch:', {
-          id: originalBatch.id,
-          deductedSQM: totalSQM,
-        });
-        console.log('📈 Adding to target batch:', {
-          id: targetBatch.id,
-          addedSQM: totalSQM,
-        });
-
-        await this.itemBatchRepo.save([originalBatch, targetBatch]);
-
-        await this.inventoryTxnRepo.save([
-          this.inventoryTxnRepo.create({
-            transactionType: 'adjustment -',
-            quantity: 0,
-            quantityofr: -count,
-            sqmofr: -totalSQM,
-            sqm: 0,
-            itemBatchId: originalBatch.id,
-            itemVariantId,
-            dateForEachInvoice: new Date(record.receivedDate),
-          }),
-          this.inventoryTxnRepo.create({
-            transactionType: 'adjustment +',
-            quantity: 0,
-            quantityofr: count,
-            sqmofr: totalSQM,
-            sqm: 0,
-            itemBatchId: targetBatch.id,
-            itemVariantId,
-            dateForEachInvoice: new Date(record.receivedDate),
-          }),
-        ]);
-      } else if (status === 'breakage') {
-        // ✅ Deduct from batch
-        originalBatch.startOFR = Number(originalBatch.startOFR) - totalSQM;
-        originalBatch.balanceOFR = Number(originalBatch.balanceOFR) - totalSQM;
-
-        // ✅ Deduct from variant (breakage only)
-        variant.totalStartOFR = Number(variant.totalStartOFR) - totalSQM;
-        variant.totalBalanceOFR = Number(variant.totalBalanceOFR) - totalSQM;
-
-        console.log(`📉 Deducting (breakage) from batch and variant:`, {
-          batchId: originalBatch.id,
-          deductedSQM: totalSQM,
-          variantId: variant.id,
-        });
-
-        await this.itemBatchRepo.save(originalBatch);
-        await this.itemVariantRepo.save(variant);
-
-        await this.inventoryTxnRepo.save(
-          this.inventoryTxnRepo.create({
-            transactionType: status,
-            quantity: 0,
-            quantityofr: -count,
-            sqmofr: -totalSQM,
-            sqm: 0,
-            itemBatchId: originalBatch.id,
-            itemVariantId,
-            dateForEachInvoice: new Date(record.receivedDate),
-          }),
-        );
-      } else {
-        // ✅ For adj- → deduct from batch only
-        originalBatch.startOFR = Number(originalBatch.startOFR) - totalSQM;
-        originalBatch.balanceOFR = Number(originalBatch.balanceOFR) - totalSQM;
-
-        console.log(`📉 Deducting (${status}) from original batch:`, {
-          id: originalBatch.id,
-          deductedSQM: totalSQM,
-        });
-
-        await this.itemBatchRepo.save(originalBatch);
-
-        await this.inventoryTxnRepo.save(
-          this.inventoryTxnRepo.create({
-            transactionType: status,
-            quantity: 0,
-            quantityofr: -count,
-            sqmofr: -totalSQM,
-            sqm: 0,
-            itemBatchId: originalBatch.id,
-            itemVariantId,
-            dateForEachInvoice: new Date(receivedDate),
-          }),
-        );
-      }
+    // UI gives YYYY-MM -> store MM/YYYY
+    if (/^\d{4}-\d{2}$/.test(s)) {
+      const [yyyy, mm] = s.split('-');
+      return `${mm}/${yyyy}`;
     }
 
-    console.log('\n✅ Inventory check completed.');
+    // already MM/YYYY
+    if (/^\d{2}\/\d{4}$/.test(s)) return s;
+
+    return null;
+  };
+
+  const cleanCondStored = (c: any) => String(c ?? '').trim().replace(/\s+/g, ' ');
+  const condKey = (c: any) => cleanCondStored(c).toLowerCase();
+
+  const recomputeBalanceOFR = (b: ItemBatch) => {
+    const startO = Number((b as any).startOFR || 0);
+    const inO = Number((b as any).inOFR || 0);
+    const outO = Number((b as any).outOFR || 0);
+    (b as any).balanceOFR = round2(startO + inO - outO);
+  };
+
+  const type = String(itemType || '').toLowerCase();
+  if (type !== 'box' && type !== 'sheet' && type !== 'sqm') {
+    throw new BadRequestException("itemType must be 'box' | 'sheet' | 'sqm'");
   }
+
+  const sqmPerUnit =
+    type === 'sqm'
+      ? 1
+      : (Number(length) / 100) *
+        (Number(width) / 100) *
+        (type === 'box' ? Math.max(1, Number(sheetsPerBox)) : 1);
+
+  if (!Number.isFinite(sqmPerUnit) || sqmPerUnit <= 0) {
+    throw new BadRequestException('Invalid dimensions / sqmPerUnit');
+  }
+
+  // ✅ transaction + row locking to avoid race conditions
+  await this.dataSource.transaction(async (manager) => {
+    const batchRepo = manager.getRepository(ItemBatch);
+
+    // 🔒 lock source batch
+    const originalBatch = await batchRepo
+      .createQueryBuilder('b')
+      .leftJoinAndSelect('b.itemVariant', 'v')
+      .where('b.id = :id', { id: itemBatchId })
+      .setLock('pessimistic_write')
+      .getOne();
+
+    if (!originalBatch) throw new BadRequestException('Source batch not found');
+
+    const variant = (originalBatch as any).itemVariant as ItemVariant;
+    const itemVariantId = variant?.id;
+    if (!itemVariantId) throw new BadRequestException('Batch has no variant');
+
+    // Normalize original identity for "same batch"
+    const originalDateNorm = normalizeMonth((originalBatch as any).dateReceived);
+    const originalCondStored = cleanCondStored((originalBatch as any).condition) || 'Clean';
+    const originalCondKey = condKey(originalCondStored);
+
+    const ensureEnough = (needSqm: number) => {
+      recomputeBalanceOFR(originalBatch);
+      const have = Number((originalBatch as any).balanceOFR || 0);
+      if (have + 1e-9 < needSqm) {
+        throw new BadRequestException(
+          `Not enough stock in source batch (need ${needSqm}, have ${have})`,
+        );
+      }
+    };
+
+    // ✅ robust find/create target (avoids duplicates caused by case/spaces)
+    const findOrCreateTargetByCondDate = async (
+      targetCondStored: string,
+      targetDateNorm: string | null,
+    ): Promise<ItemBatch> => {
+      // lock all batches for this variant+date
+      const qb = batchRepo
+        .createQueryBuilder('b')
+        .where('b.itemVariantId = :vid', { vid: itemVariantId })
+        .setLock('pessimistic_write');
+
+      if (targetDateNorm == null) qb.andWhere('b.dateReceived IS NULL');
+      else qb.andWhere('b.dateReceived = :dr', { dr: targetDateNorm });
+
+      const candidates: ItemBatch[] = await qb.getMany();
+
+      const wantedKey = condKey(targetCondStored);
+      const found = candidates.find((b) => condKey((b as any).condition) === wantedKey);
+      if (found) return found;
+
+      // ✅ IMPORTANT FIX: do NOT call create({ ... } as any) (can pick array overload)
+      // Create empty entity then assign fields -> always single ItemBatch
+      const created = batchRepo.create();
+
+      // link by id only (no extra DB fetch)
+      (created as any).itemVariant = { id: itemVariantId };
+      (created as any).condition = targetCondStored;
+      (created as any).dateReceived = targetDateNorm;
+
+      (created as any).startOFR = 0;
+      (created as any).inOFR = 0;
+      (created as any).outOFR = 0;
+      (created as any).balanceOFR = 0;
+
+      (created as any).start = 0;
+      (created as any).in = 0;
+      (created as any).out = 0;
+      (created as any).balance = 0;
+
+      const saved = await batchRepo.save(created); // ✅ returns ItemBatch
+      return saved;
+    };
+
+    for (const rec of records || []) {
+      const qty = Number(rec?.count || 0);
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+
+      const totalSQM = round2(qty * sqmPerUnit);
+
+      const targetDateNorm = normalizeMonth(rec.receivedDate);
+      const targetCondStored = cleanCondStored(rec.condition) || originalCondStored || 'Clean';
+      const targetCondKey = condKey(targetCondStored);
+
+      const isSameBatch =
+        targetCondKey === originalCondKey &&
+        (targetDateNorm ?? null) === (originalDateNorm ?? null);
+
+      // -------------------------
+      // adj+ : move FROM source batch TO target batch
+      // -------------------------
+      if (rec.status === 'adj+') {
+        if (isSameBatch) continue;
+
+        ensureEnough(totalSQM);
+
+        let targetBatch: ItemBatch | null = null;
+
+        // ✅ If caller provides targetBatchId, use it directly
+        if (rec.targetBatchId) {
+          targetBatch = await batchRepo
+            .createQueryBuilder('b')
+            .where('b.id = :id', { id: Number(rec.targetBatchId) })
+            .setLock('pessimistic_write')
+            .getOne();
+
+          if (!targetBatch) {
+            throw new BadRequestException(`Target batch not found: ${rec.targetBatchId}`);
+          }
+
+          // safety: must be same variant
+          const targetVariantId = (targetBatch as any).itemVariantId;
+          if (Number(targetVariantId) !== Number(itemVariantId)) {
+            throw new BadRequestException(`Target batch must belong to the same item variant`);
+          }
+        } else {
+          // ✅ fallback: same variant + same dateReceived + same condition (create if missing)
+          targetBatch = await findOrCreateTargetByCondDate(targetCondStored, targetDateNorm);
+        }
+
+        // movement => out from source, in to target
+        (originalBatch as any).outOFR = round2(Number((originalBatch as any).outOFR || 0) + totalSQM);
+        (targetBatch as any).inOFR = round2(Number((targetBatch as any).inOFR || 0) + totalSQM);
+
+        recomputeBalanceOFR(originalBatch);
+        recomputeBalanceOFR(targetBatch);
+
+        // You can keep array-save; it works at runtime.
+        // If you ever get TS unions elsewhere, swap to 2 separate saves.
+        await batchRepo.save([originalBatch, targetBatch]);
+
+        continue;
+      }
+
+      // -------------------------
+      // breakage : out only
+      // -------------------------
+      if (rec.status === 'breakage') {
+        ensureEnough(totalSQM);
+
+        (originalBatch as any).outOFR = round2(Number((originalBatch as any).outOFR || 0) + totalSQM);
+        recomputeBalanceOFR(originalBatch);
+
+        await batchRepo.save(originalBatch);
+        continue;
+      }
+
+      // -------------------------
+      // adj- : out only
+      // -------------------------
+      if (rec.status === 'adj-') {
+        ensureEnough(totalSQM);
+
+        (originalBatch as any).outOFR = round2(Number((originalBatch as any).outOFR || 0) + totalSQM);
+        recomputeBalanceOFR(originalBatch);
+
+        await batchRepo.save(originalBatch);
+        continue;
+      }
+    }
+  });
+}
+
+
+
+
 
 
 
