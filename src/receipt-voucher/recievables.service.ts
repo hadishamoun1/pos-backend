@@ -12,6 +12,7 @@ import { RecievablesGateway } from './recievables.broadcast';
 import { Sequence } from 'mysql2/typings/mysql/lib/protocol/sequences/Sequence';
 import { Currency } from 'src/entities/currency.entity';
 import { Invoice } from '../entities/invoice.entity';
+import { AccountingResolverService } from 'src/accountRoleMap/accounting-resolver.service';
 
 type ReceiptType = 'G' | 'S' | 'RVR';
 
@@ -42,6 +43,7 @@ export class RecievablesService {
     private readonly invoiceRepo: Repository<Invoice>,
 
     private readonly gateway: RecievablesGateway,
+     private readonly accountingResolver: AccountingResolverService,
   ) {}
 
 
@@ -161,10 +163,11 @@ async create(data: {
   await this.jvRepo.save(jv);
 
   // 7) Create JV detail lines
-  const cashAcct = await this.accountRepo.findOneBy({
-    accountNumber: data.currency === 'USD' ? '5301' : '5302',
-  });
-  if (!cashAcct) throw new NotFoundException('Cash account not found');
+const cashRole = data.currency === 'USD' ? 'Cash_USD' : 'Cash_LL';
+const cashAcct = await this.accountingResolver.resolveAccount(cashRole, null);
+
+if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to an account`);
+
 
   // ✅ FIXED: Build description with static text + comments in parentheses
   let descriptionText: string | null = null;
@@ -424,10 +427,11 @@ async create(data: {
   // drop old lines & reinsert
   await this.jvDetailRepo.delete({ journalVoucherId: jv.id });
 
-  const cashAcct = await this.accountRepo.findOneBy({
-    accountNumber: data.currency === 'USD' ? '5301' : '5302',
-  });
-  if (!cashAcct) throw new NotFoundException('Cash account not found');
+const cashRole = data.currency === 'USD' ? 'Cash_USD' : 'Cash_LL';
+const cashAcct = await this.accountingResolver.resolveAccount(cashRole, null);
+
+if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to an account`);
+
 
   const drLine = this.jvDetailRepo.create({
     journalVoucherId: jv.id,

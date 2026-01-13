@@ -4,6 +4,8 @@ import { Like, Repository } from 'typeorm';
 import { Account } from '../entities/account.entity';
 import { Customer } from 'src/entities/customer.entity';
 import { Supplier } from 'src/entities/supplier.entity';
+import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
+
 type SearchKind = 'account' | 'customer' | 'supplier';
 
 interface UnifiedRow {
@@ -11,21 +13,44 @@ interface UnifiedRow {
   accountNumber: string;
   accountName: string;
   kind: SearchKind;
-  parentAccountNumber?: string; // e.g. 4111 for customers, 4011 for suppliers
+  parentAccountNumber?: string; // resolved (Customer_Index / Supplier_Index)
 }
 
 @Injectable()
 export class AccountsService {
-
-  
   constructor(
     @InjectRepository(Account)
     private readonly accountRepository: Repository<Account>,
     @InjectRepository(Customer)
-    private readonly customerRepository: Repository<Customer>, // Inject CustomerRepository
+    private readonly customerRepository: Repository<Customer>,
     @InjectRepository(Supplier)
-    private readonly supplierRepository: Repository<Supplier>, // Inject SupplierRepository
+    private readonly supplierRepository: Repository<Supplier>,
+
+    private readonly accountingResolver: AccountingResolverService,
   ) {}
+
+  /** Resolve parent account numbers from indexes (no hardcoding) */
+  private async getIndexParents(): Promise<{
+    customerParent: string;
+    supplierParent: string;
+  }> {
+    const custParentAcc = await this.accountingResolver.resolveAccount(
+      'Customer_Index',
+      null,
+    );
+    const suppParentAcc = await this.accountingResolver.resolveAccount(
+      'Supplier_Index',
+      null,
+    );
+
+    const customerParent = String(custParentAcc?.accountNumber ?? '').trim();
+    const supplierParent = String(suppParentAcc?.accountNumber ?? '').trim();
+
+    if (!customerParent) throw new Error('Customer_Index resolved to empty accountNumber');
+    if (!supplierParent) throw new Error('Supplier_Index resolved to empty accountNumber');
+
+    return { customerParent, supplierParent };
+  }
 
   async createAccount(accountData: Partial<Account>): Promise<Account> {
     const account = this.accountRepository.create(accountData);
@@ -45,10 +70,7 @@ export class AccountsService {
     });
   }
 
-  async updateAccount(
-    id: number,
-    accountData: Partial<Account>,
-  ): Promise<Account> {
+  async updateAccount(id: number, accountData: Partial<Account>): Promise<Account> {
     await this.accountRepository.update(id, accountData);
     return this.getAccountById(id);
   }
@@ -56,69 +78,73 @@ export class AccountsService {
   async deleteAccount(id: number): Promise<void> {
     await this.accountRepository.delete(id);
   }
-// src/accounts/accounts.service.ts
-async getCombinedAccounts(): Promise<any[]> {
-  // Fetch plain accounts (no relations — because we removed parent/children)
-  const accounts = await this.accountRepository.find();
 
-  // Fetch customer accounts
-  const customers = await this.customerRepository.find({
-    select: ['id', 'customerAccountNumber', 'customerName'],
-  });
+  // src/accounts/accounts.service.ts
+  async getCombinedAccounts(): Promise<any[]> {
+    const { customerParent, supplierParent } = await this.getIndexParents();
 
-  // Fetch supplier accounts
-  const suppliers = await this.supplierRepository.find({
-    select: ['id', 'supplierAccountNumber', 'supplierName'],
-  });
+    // Fetch plain accounts (no relations — because we removed parent/children)
+    const accounts = await this.accountRepository.find();
 
-  // Build flat list, then React will build the hierarchy using parentNumber
-  const combinedData = accounts.map((account) => {
-    const node: any = {
-      id: account.id,
-      accountNumber: account.accountNumber,
-      accountName: account.accountName,
-      arabicAccountName: account.arabicAccountName,
-      parentNumber: account.parentNumber, // this is what you care about
-      accessible: account.accessible,
-      children: [] as any[],              // we fill this only for 4111/4011
-    };
+    // Fetch customer accounts
+    const customers = await this.customerRepository.find({
+      select: ['id', 'customerAccountNumber', 'customerName'],
+    });
 
-    // Attach customers under 4111
-    if (account.accountNumber === '4111') {
-      node.children.push(
-        ...customers.map((customer) => ({
-          id: customer.id,
-          accountNumber: customer.customerAccountNumber,
-          accountName: customer.customerName,
-          parentNumber: '4111',
-          isCustomer: true,
-          children: [],
-        })),
-      );
-    }
+    // Fetch supplier accounts
+    const suppliers = await this.supplierRepository.find({
+      select: ['id', 'supplierAccountNumber', 'supplierName'],
+    });
 
-    // Attach suppliers under 4011
-    if (account.accountNumber === '4011') {
-      node.children.push(
-        ...suppliers.map((supplier) => ({
-          id: supplier.id,
-          accountNumber: supplier.supplierAccountNumber,
-          accountName: supplier.supplierName,
-          parentNumber: '4011',
-          isSupplier: true,
-          children: [],
-        })),
-      );
-    }
+    // Build flat list, then React will build the hierarchy using parentNumber
+    const combinedData = accounts.map((account) => {
+      const node: any = {
+        id: account.id,
+        accountNumber: account.accountNumber,
+        accountName: account.accountName,
+        arabicAccountName: account.arabicAccountName,
+        parentNumber: account.parentNumber,
+        accessible: account.accessible,
+        children: [] as any[],
+      };
 
-    return node;
-  });
+      // Attach customers under Customer_Index parent
+      if (account.accountNumber === customerParent) {
+        node.children.push(
+          ...customers.map((customer) => ({
+            id: customer.id,
+            accountNumber: customer.customerAccountNumber,
+            accountName: customer.customerName,
+            parentNumber: customerParent,
+            isCustomer: true,
+            children: [],
+          })),
+        );
+      }
 
-  return combinedData;
-}
+      // Attach suppliers under Supplier_Index parent
+      if (account.accountNumber === supplierParent) {
+        node.children.push(
+          ...suppliers.map((supplier) => ({
+            id: supplier.id,
+            accountNumber: supplier.supplierAccountNumber,
+            accountName: supplier.supplierName,
+            parentNumber: supplierParent,
+            isSupplier: true,
+            children: [],
+          })),
+        );
+      }
 
+      return node;
+    });
+
+    return combinedData;
+  }
 
   async getAccounts(): Promise<any[]> {
+    const { customerParent, supplierParent } = await this.getIndexParents();
+
     // Fetch accounts with parent-child relationships
     const accounts = await this.accountRepository.find({
       relations: ['parent', 'children'],
@@ -134,11 +160,7 @@ async getCombinedAccounts(): Promise<any[]> {
       select: ['id', 'supplierAccountNumber', 'supplierName'],
     });
 
-    // Function to recursively transform and sort accounts
-    const transformAccounts = (
-      accounts: any[],
-      parentNumber: string | null = null,
-    ): any[] => {
+    const transformAccounts = (accounts: any[], parentNumber: string | null = null): any[] => {
       return accounts
         .filter((account) => account.parent?.accountNumber === parentNumber)
         .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber))
@@ -151,8 +173,8 @@ async getCombinedAccounts(): Promise<any[]> {
             children: [],
           };
 
-          // Add customers under '4111'
-          if (account.accountNumber === '4111') {
+          // Add customers under Customer_Index parent
+          if (account.accountNumber === customerParent) {
             transformedAccount.children.push(
               ...customers.map((customer) => ({
                 id: customer.id,
@@ -164,8 +186,8 @@ async getCombinedAccounts(): Promise<any[]> {
             );
           }
 
-          // Add suppliers under '4011'
-          if (account.accountNumber === '4011') {
+          // Add suppliers under Supplier_Index parent
+          if (account.accountNumber === supplierParent) {
             transformedAccount.children.push(
               ...suppliers.map((supplier) => ({
                 id: supplier.id,
@@ -177,12 +199,8 @@ async getCombinedAccounts(): Promise<any[]> {
             );
           }
 
-          // Recursively transform children
-          transformedAccount.children.push(
-            ...transformAccounts(accounts, account.accountNumber),
-          );
+          transformedAccount.children.push(...transformAccounts(accounts, account.accountNumber));
 
-          // Sort children by accountNumber
           transformedAccount.children.sort((a, b) =>
             a.accountNumber.localeCompare(b.accountNumber),
           );
@@ -191,87 +209,85 @@ async getCombinedAccounts(): Promise<any[]> {
         });
     };
 
-    // Start transformation from root accounts (those without a parent)
     return transformAccounts(accounts);
   }
+
   // ✅ Add this method to your AccountsService
-async getFlatSimplifiedAccounts(): Promise<any[]> {
-  const accounts = await this.accountRepository.find();
+  async getFlatSimplifiedAccounts(): Promise<any[]> {
+    const { customerParent, supplierParent } = await this.getIndexParents();
 
-  const customers = await this.customerRepository.find({
-    select: ['id', 'customerAccountNumber', 'customerName'],
-  });
+    const accounts = await this.accountRepository.find();
 
-  const suppliers = await this.supplierRepository.find({
-    select: ['id', 'supplierAccountNumber', 'supplierName'],
-  });
+    const customers = await this.customerRepository.find({
+      select: ['id', 'customerAccountNumber', 'customerName'],
+    });
 
-  const normalizeParent = (v?: string | null): string | null => {
-    if (!v) return null;
-    const trimmed = v.toString().trim();
-    return trimmed === '' ? null : trimmed;
-  };
+    const suppliers = await this.supplierRepository.find({
+      select: ['id', 'supplierAccountNumber', 'supplierName'],
+    });
 
-  const buildHierarchy = (parentNumber: string | null = null): any[] => {
-    return accounts
-      .filter((acc) => normalizeParent(acc.parentNumber) === parentNumber)
-      .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber))
-      .map((acc) => {
-        const node: any = {
-          id: acc.id,
-          accountNumber: acc.accountNumber,
-          accountName: acc.arabicAccountName,
-          parentNumber: acc.parentNumber || null,
-          kind: 'account',          // ✅ NEW
-          refId: acc.id,            // ✅ NEW (explicit)
-          children: [],
-        };
+    const normalizeParent = (v?: string | null): string | null => {
+      if (!v) return null;
+      const trimmed = v.toString().trim();
+      return trimmed === '' ? null : trimmed;
+    };
 
-        if (acc.accountNumber === '4111') {
-          node.children.push(
-            ...customers.map((cust) => ({
-              id: cust.id,
-              accountNumber: cust.customerAccountNumber,
-              accountName: cust.customerName,
-              parentNumber: '4111',
-              kind: 'customer',      // ✅ NEW
-              refId: cust.id,        // ✅ NEW
-              children: [],
-            })),
-          );
-        }
+    const buildHierarchy = (parentNumber: string | null = null): any[] => {
+      return accounts
+        .filter((acc) => normalizeParent(acc.parentNumber) === parentNumber)
+        .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber))
+        .map((acc) => {
+          const node: any = {
+            id: acc.id,
+            accountNumber: acc.accountNumber,
+            accountName: acc.arabicAccountName,
+            parentNumber: acc.parentNumber || null,
+            kind: 'account',
+            refId: acc.id,
+            children: [],
+          };
 
-        if (acc.accountNumber === '4011') {
-          node.children.push(
-            ...suppliers.map((supp) => ({
-              id: supp.id,
-              accountNumber: supp.supplierAccountNumber,
-              accountName: supp.supplierName,
-              parentNumber: '4011',
-              kind: 'supplier',      // ✅ NEW
-              refId: supp.id,        // ✅ NEW
-              children: [],
-            })),
-          );
-        }
+          if (acc.accountNumber === customerParent) {
+            node.children.push(
+              ...customers.map((cust) => ({
+                id: cust.id,
+                accountNumber: cust.customerAccountNumber,
+                accountName: cust.customerName,
+                parentNumber: customerParent,
+                kind: 'customer',
+                refId: cust.id,
+                children: [],
+              })),
+            );
+          }
 
-        node.children.push(...buildHierarchy(acc.accountNumber));
-        return node;
-      });
-  };
+          if (acc.accountNumber === supplierParent) {
+            node.children.push(
+              ...suppliers.map((supp) => ({
+                id: supp.id,
+                accountNumber: supp.supplierAccountNumber,
+                accountName: supp.supplierName,
+                parentNumber: supplierParent,
+                kind: 'supplier',
+                refId: supp.id,
+                children: [],
+              })),
+            );
+          }
 
-  return buildHierarchy(null);
-}
+          node.children.push(...buildHierarchy(acc.accountNumber));
+          return node;
+        });
+    };
 
+    return buildHierarchy(null);
+  }
 
-
-
-
-    private normalizeDigits(s: string): string {
+  private normalizeDigits(s: string): string {
     if (!s) return '';
     const map: Record<string, string> = {
-      '٠':'0','١':'1','٢':'2','٣':'3','٤':'4',
-      '٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
+      '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+      '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
     };
     return s.replace(/[٠-٩]/g, (d) => map[d] ?? d);
   }
@@ -284,31 +300,26 @@ async getFlatSimplifiedAccounts(): Promise<any[]> {
     if (a.startsWith(b)) return 2;
     if (a.includes(b)) return 1;
     return 0;
-    // tweak scoring if you want, e.g., weight number vs name differently
   }
-  
 
- async searchCombinedAccounts(
-    q: string,
-    type?: SearchKind,
-    page: number = 1,
-    limit: number = 50,
-  ) {
+  async searchCombinedAccounts(q: string, type?: SearchKind, page: number = 1, limit: number = 50) {
+    const { customerParent, supplierParent } = await this.getIndexParents();
+
     const query = this.normalizeDigits((q || '').trim());
     if (!query) return { page, limit, total: 0, data: [] };
 
     const pattern = `%${query}%`;
 
-    // 1) ACCOUNTS (exclude 4111* and 4011* here so those come ONLY from their tables)
+    // 1) ACCOUNTS (exclude Customer_Index subtree and Supplier_Index subtree here)
     const accounts = await this.accountRepository
       .createQueryBuilder('a')
       .where('(a.accountNumber LIKE :pattern OR a.accountName LIKE :pattern)', { pattern })
-      .andWhere('a.accountNumber NOT LIKE :cPrefix', { cPrefix: '4111%' })
-      .andWhere('a.accountNumber NOT LIKE :sPrefix', { sPrefix: '4011%' })
+      .andWhere('a.accountNumber NOT LIKE :cPrefix', { cPrefix: `${customerParent}%` })
+      .andWhere('a.accountNumber NOT LIKE :sPrefix', { sPrefix: `${supplierParent}%` })
       .take(500)
       .getMany();
 
-    // 2) CUSTOMERS (4111 subtree)
+    // 2) CUSTOMERS
     const customers = await this.customerRepository.find({
       select: ['id', 'customerAccountNumber', 'customerName'],
       where: [
@@ -318,7 +329,7 @@ async getFlatSimplifiedAccounts(): Promise<any[]> {
       take: 500,
     });
 
-    // 3) SUPPLIERS (4011 subtree)
+    // 3) SUPPLIERS
     const suppliers = await this.supplierRepository.find({
       select: ['id', 'supplierAccountNumber', 'supplierName'],
       where: [
@@ -328,32 +339,30 @@ async getFlatSimplifiedAccounts(): Promise<any[]> {
       take: 500,
     });
 
-    // 4) UNIFY (note: 4111/4011 families come ONLY from their own tables now)
+    // 4) UNIFY
     const unifiedRaw: UnifiedRow[] = [
-      ...accounts.map(a => ({
+      ...accounts.map((a) => ({
         id: a.id,
         accountNumber: a.accountNumber,
         accountName: a.accountName || '',
         kind: 'account' as const,
       })),
-      ...customers.map(c => ({
-        id: c.id, // real customer id
+      ...customers.map((c) => ({
+        id: c.id,
         accountNumber: c.customerAccountNumber,
         accountName: c.customerName,
         kind: 'customer' as const,
-        parentAccountNumber: '4111',
+        parentAccountNumber: customerParent,
       })),
-      ...suppliers.map(s => ({
-        id: s.id, // real supplier id
+      ...suppliers.map((s) => ({
+        id: s.id,
         accountNumber: s.supplierAccountNumber,
         accountName: s.supplierName,
         kind: 'supplier' as const,
-        parentAccountNumber: '4011',
+        parentAccountNumber: supplierParent,
       })),
     ];
 
-    // OPTIONAL: if any duplicate accountNumber appears from multiple sources,
-    // prefer customer/supplier label over generic account.
     const bestByNumber = new Map<string, UnifiedRow>();
     const pref = (k: SearchKind) => (k === 'customer' ? 3 : k === 'supplier' ? 2 : 1);
     for (const r of unifiedRaw) {
@@ -363,14 +372,11 @@ async getFlatSimplifiedAccounts(): Promise<any[]> {
     }
     const unified = Array.from(bestByNumber.values());
 
-    // Optional filter by kind=account|customer|supplier
-    const filtered = type ? unified.filter(u => u.kind === type) : unified;
+    const filtered = type ? unified.filter((u) => u.kind === type) : unified;
 
-    // 5) relevance & pagination
-    const scored = filtered.map(row => {
+    const scored = filtered.map((row) => {
       const sNum = this.rank(query, row.accountNumber);
       const sName = this.rank(query, row.accountName);
-      // small boost for 'account' in tie if you want; or set to 0
       const kindBoost = 0;
       return { row, score: sNum * 10 + sName * 5 + kindBoost };
     });
@@ -378,10 +384,8 @@ async getFlatSimplifiedAccounts(): Promise<any[]> {
 
     const total = scored.length;
     const start = (page - 1) * limit;
-    const data = scored.slice(start, start + limit).map(x => x.row);
+    const data = scored.slice(start, start + limit).map((x) => x.row);
 
     return { page, limit, total, data };
   }
 }
-
-

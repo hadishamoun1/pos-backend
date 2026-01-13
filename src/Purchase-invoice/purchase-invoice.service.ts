@@ -29,6 +29,8 @@ import { Item } from '../entities/inventory/item.entity';
 import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
 import { Settings } from 'src/entities/settings.entity';
+import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service'; 
+
 
 export type Chain = 'OFR' | 'VM';
 
@@ -94,6 +96,8 @@ export class PurchaseInvoiceService {
 
     @InjectRepository(Settings)
 private readonly settingsRepo: Repository<Settings>,
+
+private readonly accountingResolver: AccountingResolverService,
   ) {}
 
   // ────────────────────────────────────────────────────────────
@@ -781,10 +785,9 @@ private readonly settingsRepo: Repository<Settings>,
       return;
     }
 
-    const expenseAcct = await this.accountRepo.findOne({
-      where: { accountNumber: '6011' } as any,
-    });
-    if (!expenseAcct) throw new Error('GL account 6011 not found');
+const expenseAcct = await this.accountingResolver.resolveAccount('Purchases_USD', null);
+// if role not configured, resolveAccount will throw NotFoundException with a clear message
+
 
     let normalTotal = 0;
     let ofrTotal = 0;

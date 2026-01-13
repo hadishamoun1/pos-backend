@@ -12,6 +12,7 @@ import { Settings } from '../entities/settings.entity';
 import { RecievablesGateway } from './recievables.broadcast';
 import { Currency } from 'src/entities/currency.entity';
 import { Invoice } from '../entities/invoice.entity';
+import { AccountingModule } from 'src/accountRoleMap/accounting.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { Invoice } from '../entities/invoice.entity';
       Currency,
       Invoice
     ]),
+     AccountingModule,
   ],
   controllers: [RecievablesController],
   providers: [RecievablesService, RecievablesGateway],

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Invoice } from '../entities/invoice.entity';
 import { Customer } from '../entities/customer.entity';
@@ -20,6 +20,8 @@ import { InventoryCount } from 'src/entities/inventory/count.entity';
 import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
 import { Request as RequestEntity } from '../entities/request.entity';
 import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails.entity';
+import { AccountingResolverService } from 'src/accountRoleMap/accounting-resolver.service';
+import { AccountingModule } from '../accountRoleMap/accounting.module';
 
 @Module({
   imports: [
@@ -40,8 +42,10 @@ import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails
       InventoryCount,
       SqmPiece,
       RequestEntity,
-      RequestDetailEntity 
+      RequestDetailEntity,
+      
     ]),
+    forwardRef(() => AccountingModule),
   ],
   providers: [InvoiceService, InventoryTransaction, InvoiceGateway],
   controllers: [InvoiceController],

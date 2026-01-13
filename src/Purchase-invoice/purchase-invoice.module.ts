@@ -15,6 +15,7 @@ import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
 import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
 import { InvoiceItem } from 'src/entities/invoiceItem.entity';
 import { Settings } from 'src/entities/settings.entity';
+import { AccountingModule } from '../accountRoleMap/accounting.module';
 
 
 import { RecomputeModule } from 'src/recomputeTransfersAndPurchases/recompute.module';
@@ -34,8 +35,10 @@ import { RecomputeModule } from 'src/recomputeTransfersAndPurchases/recompute.mo
       JournalVoucherDetail,
       ItemBatch,
       InvoiceItem,
-      Settings
+      Settings,
+     
     ]),
+     AccountingModule, 
 
     // ✅ module import (NOT inside forFeature)
     forwardRef(() => RecomputeModule),

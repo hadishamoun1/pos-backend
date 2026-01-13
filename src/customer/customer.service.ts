@@ -5,6 +5,7 @@ import { Customer } from '../entities/customer.entity';
 import { Account } from '../entities/account.entity';
 import { Currency } from '../entities/currency.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 
 
 export type CustomerBasicWithBalances = {
@@ -34,7 +35,7 @@ export class CustomerService {
     @InjectRepository(JournalVoucherDetail)
     private journalVoucherDetailRepository: Repository<JournalVoucherDetail>,
 
-    
+    private readonly accountingResolver: AccountingResolverService,
   ) {}
 
   // --- area → code mapping (case-insensitive); `as const` keeps literal key types ---
@@ -71,30 +72,32 @@ export class CustomerService {
    * 4111 + areaCode(2) + sequence(3)
    * Example (Beirut): 4111 01 001  ->  "411101001"
    */
-  private async generateCustomerAccountNumber(area?: string): Promise<string> {
-    const base = '4111';
-    const areaKey  = this.normalizeArea(area);
-    const areaCode = CustomerService.AREA_CODES[areaKey];
-    const prefix   = `${base}${areaCode}`; // e.g. 411101
+private async generateCustomerAccountNumber(
+  baseAccountNumber: string,
+  area?: string,
+): Promise<string> {
+  const base = String(baseAccountNumber).trim(); // e.g. "4111" or whatever Customer_Index maps to
+  const areaKey = this.normalizeArea(area);
+  const areaCode = CustomerService.AREA_CODES[areaKey];
+  const prefix = `${base}${areaCode}`;
 
-    const lastForArea = await this.customerRepository.find({
-      where: { customerAccountNumber: Like(`${prefix}%`) },
-      select: ['customerAccountNumber'],
-      order: { customerAccountNumber: 'DESC' },
-      take: 1,
-    });
+  const lastForArea = await this.customerRepository.find({
+    where: { customerAccountNumber: Like(`${prefix}%`) },
+    select: ['customerAccountNumber'],
+    order: { customerAccountNumber: 'DESC' },
+    take: 1,
+  });
 
-    let nextSeq = 1;
-    if (lastForArea.length) {
-      const last = lastForArea[0].customerAccountNumber ?? '';
-      const tail = last.slice(-3);         // last 3 digits
-      const parsed = parseInt(tail, 10);
-      if (Number.isFinite(parsed)) nextSeq = parsed + 1;
-    }
-
-    const seqStr = nextSeq.toString().padStart(3, '0');
-    return `${prefix}${seqStr}`; // e.g. 411101001
+  let nextSeq = 1;
+  if (lastForArea.length) {
+    const last = lastForArea[0].customerAccountNumber ?? '';
+    const tail = last.slice(-3);
+    const parsed = parseInt(tail, 10);
+    if (Number.isFinite(parsed)) nextSeq = parsed + 1;
   }
+
+  return `${prefix}${String(nextSeq).padStart(3, '0')}`;
+}
 
   /**
    * Create customer with full support for new columns and area-based numbering.
@@ -140,57 +143,45 @@ export class CustomerService {
     throw new NotFoundException(`Currency with ID ${currencyId} not found.`);
   }
 
-  // Link to the 4111 parent account
-  const parentAccountNumber = '4111';
-  const account = await this.accountRepository.findOne({
-    where: { accountNumber: parentAccountNumber },
-  });
-  if (!account) {
-    throw new NotFoundException(
-      `Account with number ${parentAccountNumber} not found.`,
-    );
-  }
+ // ✅ resolve parent account from role map
+const parentAccount = await this.accountingResolver.resolveAccount('Customer_Index', null);
 
-  // Account number: use provided or generate based on area bucket
-  const customerAccountNumber =
-    providedNumber && String(providedNumber).trim().length > 0
-      ? String(providedNumber).trim()
-      : await this.generateCustomerAccountNumber(area);
+// ✅ Account number: use provided or generate based on parent account + area
+const customerAccountNumber =
+  providedNumber && String(providedNumber).trim().length > 0
+    ? String(providedNumber).trim()
+    : await this.generateCustomerAccountNumber(parentAccount.accountNumber, area);
 
-  // Normalize invoice type if needed
-  const normalizedInvoiceType =
-    this.normalizeInvoiceType(invoiceType as any) ?? (invoiceType as any);
+const normalizedInvoiceType =
+  this.normalizeInvoiceType(invoiceType as any) ?? (invoiceType as any);
 
-  // Normalize area string for storage (you can store raw `area` if you prefer)
-  const areaNormalized = this.normalizeArea(area);
+const areaNormalized = this.normalizeArea(area);
 
-  const customer = this.customerRepository.create({
-    customerAccountNumber,
-    customerName,
+const customer = this.customerRepository.create({
+  customerAccountNumber,
+  customerName,
 
-    // ✅ NEW FIELDS
-    firstName,
-    middleName,
-    lastName,
-    paymentTerms,
-    area: areaNormalized,
-    companyType,
-    address,
-    phoneNumber,
-    financialNumber,
-    invoiceType: normalizedInvoiceType, // 'S' | 'G' | 'Both' | undefined
-    vat,
+  firstName,
+  middleName,
+  lastName,
+  paymentTerms,
+  area: areaNormalized,
+  companyType,
+  address,
+  phoneNumber,
+  financialNumber,
+  invoiceType: normalizedInvoiceType,
+  vat,
 
-    // relations
-    currency,
-    account,
+  // ✅ relations
+  currency,
+  account: parentAccount,
 
-    // any extras from caller (kept for compatibility)
-    ...rest,
-  });
+  ...rest,
+});
 
-  return this.customerRepository.save(customer);
-}
+return this.customerRepository.save(customer);
+ }
 
 
   async getAllCustomers(): Promise<Customer[]> {

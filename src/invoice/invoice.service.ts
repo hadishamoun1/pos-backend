@@ -22,6 +22,7 @@ import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
 import { Request as RequestEntity } from '../entities/request.entity';
 import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails.entity';
 import { TransferItem } from '../entities/inventory/transferItem.entity';
+import { AccountingResolverService } from 'src/accountRoleMap/accounting-resolver.service';
 
 
 @Injectable()
@@ -62,10 +63,10 @@ export class InvoiceService {
     private readonly requestDetailRepo: Repository<RequestDetailEntity>,
 
     private readonly invoiceGateway: InvoiceGateway,
+    private readonly accountingResolver: AccountingResolverService, 
+
   ) {}
-  /**
-   * ✅ Generate a unique Invoice Number (S25-001 or G25-001)
-   */
+  
 
 
 async createInvoice(data: any): Promise<Invoice> {
@@ -526,29 +527,17 @@ async createInvoice(data: any): Promise<Invoice> {
     const useVAT = data.vatPercentage > 0;
     const rate = Number(data.currencyRate);
 
-    let salesAccNumber = '';
-    let vatAccNumber = '';
 
-    if (useVAT) {
-      salesAccNumber = currencyCode === 'USD' ? '701101' : '701102';
-      vatAccNumber = currencyCode === 'USD' ? '443101' : '443102';
-    } else {
-      salesAccNumber = '701103';
-    }
 
-    const salesAccount = await this.accountRepo.findOneBy({
-      accountNumber: salesAccNumber,
-    });
-    if (!salesAccount)
-      throw new NotFoundException(`Sales account ${salesAccNumber} not found`);
+const salesRole = currencyCode === 'USD' ? 'Sales_USD' : 'Sales_LL';
+const vatRole   = currencyCode === 'USD' ? 'Vat_USD'   : 'Vat_LL';
 
-    const vatAccount = useVAT
-      ? await this.accountRepo.findOneBy({ accountNumber: vatAccNumber })
-      : null;
+const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
 
-    if (useVAT && !vatAccount && !isG) {
-      throw new NotFoundException(`VAT account ${vatAccNumber} not found`);
-    }
+const vatAccount = useVAT
+  ? await this.accountingResolver.resolveAccount(vatRole, null)
+  : null;
+
 
     const total = Number(data.grandTotal);
     const totalWithoutVAT = Number(data.totalWithoutVAT);
@@ -2821,18 +2810,15 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     let salesAccNumber = '';
     let vatAccNumber = '';
 
-    if (useVAT) {
-      salesAccNumber = currencyCode === 'USD' ? '701101' : '701102';
-      vatAccNumber = currencyCode === 'USD' ? '443101' : '443102';
-    } else {
-      salesAccNumber = '701103';
-    }
+const salesRole = currencyCode === 'USD' ? 'Sales_USD' : 'Sales_LL';
+const vatRole   = currencyCode === 'USD' ? 'Vat_USD'   : 'Vat_LL';
 
-    const salesAccount = await this.accountRepo.findOneBy({ accountNumber: salesAccNumber });
-    if (!salesAccount) throw new NotFoundException(`Sales account ${salesAccNumber} not found`);
+const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
 
-    const vatAccount = useVAT ? await this.accountRepo.findOneBy({ accountNumber: vatAccNumber }) : null;
-    if (useVAT && !vatAccount && !isG) throw new NotFoundException(`VAT account ${vatAccNumber} not found`);
+const vatAccount = useVAT
+  ? await this.accountingResolver.resolveAccount(vatRole, null)
+  : null;
+
 
     const total = Number((savedInvoice as any).grandTotal);
     const totalWithoutVAT = Number((savedInvoice as any).totalWithoutVAT);
@@ -3361,32 +3347,18 @@ async createReturnInvoice(
     const currencyCode = original.currencyId === 2 ? "LL" : "USD";
     const rate = Number(original.currencyRate);
     const useVAT = Number(original.vatPercentage) > 0;
+    
+const salesRole = currencyCode === 'USD' ? 'Sales_USD' : 'Sales_LL';
+const vatRole   = currencyCode === 'USD' ? 'Vat_USD'   : 'Vat_LL';
 
-    let salesAccNumber = "";
-    let vatAccNumber = "";
+const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
 
-    if (useVAT) {
-      salesAccNumber = currencyCode === "USD" ? "701101" : "701102";
-      vatAccNumber = currencyCode === "USD" ? "443101" : "443102";
-    } else {
-      salesAccNumber = "701103";
-    }
+const vatAccount = useVAT
+  ? await this.accountingResolver.resolveAccount(vatRole, null)
+  : null;
 
-    const salesAccount = await queryRunner.manager
-      .getRepository(this.accountRepo.target as any)
-      .findOneBy({ accountNumber: salesAccNumber });
 
-    if (!salesAccount) throw new NotFoundException(`Sales account ${salesAccNumber} not found`);
 
-    const vatAccount = useVAT
-      ? await queryRunner.manager
-          .getRepository(this.accountRepo.target as any)
-          .findOneBy({ accountNumber: vatAccNumber })
-      : null;
-
-    if (useVAT && !vatAccount && !baseIsG) {
-      throw new NotFoundException(`VAT account ${vatAccNumber} not found`);
-    }
 
     const total = Number(original.grandTotal);
     const totalWithoutVAT2 = Number(original.totalWithoutVAT);

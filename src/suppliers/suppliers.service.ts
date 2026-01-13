@@ -4,6 +4,7 @@ import { Repository, Like } from 'typeorm';
 import { Supplier } from '../entities/supplier.entity';
 import { Account } from '../entities/account.entity';
 import { Currency } from '../entities/currency.entity';
+import { AccountingResolverService } from 'src/accountRoleMap/accounting-resolver.service';
 
 @Injectable()
 export class SupplierService {
@@ -14,6 +15,8 @@ export class SupplierService {
     private accountRepository: Repository<Account>,
     @InjectRepository(Currency)
     private currencyRepository: Repository<Currency>,
+    private readonly accountingResolver: AccountingResolverService,
+
   ) {}
 
   /**
@@ -42,33 +45,23 @@ export class SupplierService {
       ...rest
     } = supplierData;
 
-    if (!supplierName) {
-      throw new NotFoundException('supplierName is required.');
-    }
-    if (!currencyId) {
-      throw new NotFoundException('currencyId is required.');
-    }
+    if (!supplierName) throw new NotFoundException('supplierName is required.');
+    if (!currencyId) throw new NotFoundException('currencyId is required.');
 
-    // Validate currency
     const currency = await this.currencyRepository.findOne({ where: { id: currencyId } });
-    if (!currency) {
-      throw new NotFoundException(`Currency with ID ${currencyId} not found.`);
-    }
+    if (!currency) throw new NotFoundException(`Currency with ID ${currencyId} not found.`);
 
-    // Link to the 4011 parent account
-    const parentAccountNumber = '4011';
-    const account = await this.accountRepository.findOne({ where: { accountNumber: parentAccountNumber } });
-    if (!account) {
-      throw new NotFoundException(`Account with number ${parentAccountNumber} not found.`);
-    }
+    // ✅ NEW: resolve parent account from role map
+    const parentAccount = await this.accountingResolver.resolveAccount('Supplier_Index', null);
+    const prefix = String((parentAccount as any).accountNumber ?? '').trim();
+    if (!prefix) throw new NotFoundException('Supplier_Index returned empty accountNumber');
 
-    // Use provided supplierAccountNumber or generate next 4011#### sequence
+    // ✅ Use provided supplierAccountNumber or generate next PREFIX#### sequence
     const supplierAccountNumber =
       providedNumber && String(providedNumber).trim()
         ? String(providedNumber).trim()
-        : await this.generateSupplierAccountNumber();
+        : await this.generateSupplierAccountNumber(prefix);
 
-    // Create supplier
     const supplier = this.supplierRepository.create({
       supplierAccountNumber,
       supplierName,
@@ -82,16 +75,20 @@ export class SupplierService {
       financialNumber,
       vat,
       currency,
-      account,
+
+      // ✅ Link supplier to the resolved parent account
+      account: parentAccount as any,
+
       ...rest,
     });
 
     return this.supplierRepository.save(supplier);
   }
 
-  /** Generate next "4011####" based on the current max */
-  private async generateSupplierAccountNumber(): Promise<string> {
-    const accountPrefix = '4011';
+  /** ✅ Generate next "PREFIX####" based on the current max */
+  private async generateSupplierAccountNumber(prefix: string): Promise<string> {
+    const accountPrefix = String(prefix).trim();
+
     const last = await this.supplierRepository.find({
       where: { supplierAccountNumber: Like(`${accountPrefix}%`) },
       order: { supplierAccountNumber: 'DESC' },
@@ -100,7 +97,7 @@ export class SupplierService {
 
     const nextNum =
       last.length > 0
-        ? parseInt(last[0].supplierAccountNumber.replace(accountPrefix, ''), 10) + 1
+        ? parseInt(String(last[0].supplierAccountNumber).replace(accountPrefix, ''), 10) + 1
         : 1;
 
     return `${accountPrefix}${nextNum.toString().padStart(4, '0')}`;
