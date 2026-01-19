@@ -740,46 +740,26 @@ private async recomputeOneTransfer(transferId: number) {
     });
     if (!header) throw new NotFoundException(`Transfer ${transferId} not found`);
 
-    const items = await manager.getRepository(TransferItem).find({
-      where: { transferId } as any,
-    });
+    // ✅ rollback derived tx only (keep transfer_items + sqm_pieces)
+    await (this.transfersService as any).rollbackTransfer(manager, transferId, { keepItems: true });
 
-    // ✅ include avg fields so recompute doesn't wipe them
-    const itemsPayload = (items as any[]).map((ti) => ({
-      itemBatchId: ti.itemBatchId ?? null,
-      itemVariantId: (ti as any).itemVariantId ?? null,
-
-      quantity: Number((ti as any).quantity ?? 0),
-      sqm: Number((ti as any).sqm ?? 0),
-      price: (ti as any).price ?? null,
-
-      transactionType: (ti as any).transactionType,
-      reason: (ti as any).reason,
-      condition: (ti as any).condition,
-
-      averageCost: (ti as any).averageCost ?? null,
-      averageCostVM: (ti as any).averageCostVM ?? null,
-      averageCostC: (ti as any).averageCostC ?? null,
-      averageCostCVM: (ti as any).averageCostCVM ?? null,
-      toItemVariantId: (ti as any).toItemVariantId ?? null,
-    }));
-
-    // rollback + rebuild
-    await (this.transfersService as any).rollbackTransfer(manager, transferId);
-
-    await manager.getRepository(Transfer).update(
-      { id: transferId } as any,
-      {
-        transferNumber: (header as any).transferNumber,
-        date: (header as any).date,
-        type: (header as any).type,
-        location: (header as any).location,
-      } as any,
-    );
-
-    await (this.transfersService as any).insertTransferItems(manager, transferId, itemsPayload);
-
+    // reload transfer + apply logic again (will recreate tx + totals + costs)
     const reloaded = await (this.transfersService as any).mustGetTransfer(manager, transferId);
+
+    // rawItems optional; applyTransferLogic mostly uses persisted, but pass something safe
+    const itemsPayload = ((reloaded as any).items ?? []).map((ti: any) => ({
+      id: ti.id,
+      itemBatchId: ti.itemBatchId,
+      quantity: Number(ti.quantity ?? 0),
+      sqm: Number(ti.sqm ?? 0),
+      price: ti.price ?? null,
+      averageCost: ti.averageCost ?? null,
+      averageCostVM: ti.averageCostVM ?? null,
+      averageCostC: ti.averageCostC ?? null,
+      averageCostCVM: ti.averageCostCVM ?? null,
+      toItemVariantId: ti.toItemVariantId ?? null,
+      invoiceItemId: ti.invoiceItemId ?? null,
+    }));
 
     await (this.transfersService as any).applyTransferLogic(manager, reloaded, itemsPayload);
   });

@@ -140,12 +140,12 @@ async getRequestById(id: number): Promise<any> {
   const request = await this.requestRepo.findOne({
     where: { id },
     relations: [
-      'customer',
-      'details',
-      'details.itemBatch',
-      'details.itemVariant',
-      'details.itemVariant.thickness',
-      'details.itemVariant.thickness.item',
+      "customer",
+      "details",
+      "details.itemBatch",
+      "details.itemVariant",
+      "details.itemVariant.thickness",
+      "details.itemVariant.thickness.item",
     ],
   });
 
@@ -161,9 +161,14 @@ async getRequestById(id: number): Promise<any> {
     vatAmount: request.vatAmount,
     grandTotal: request.grandTotal,
     vatPercentage: request.vatPercentage,
+
     customerId: request.customer?.id ?? null,
-    customerName: request.customer?.customerName ?? 'Unknown',
-    invoiceType: request.customer?.invoiceType ?? 'Both',
+    customerName: request.customer?.customerName ?? "Unknown",
+    invoiceType: request.customer?.invoiceType ?? "Both",
+
+    // ✅ NEW: customer info
+    customerAddress: request.customer?.address ?? null,
+    customerPhoneNumber: request.customer?.phoneNumber ?? null,
 
     details: (request.details || []).map((detail) => {
       const item = detail.itemVariant?.thickness?.item;
@@ -182,18 +187,18 @@ async getRequestById(id: number): Promise<any> {
         itemVariantId: detail.itemVariant?.id ?? null,
         itemBatchId,
 
-        // ✅ NEW: Include invoiceDisplayName
-        itemName: item?.itemName ?? 'Unknown',
+        // ✅ Include invoiceDisplayName
+        itemName: item?.itemName ?? "Unknown",
         invoiceDisplayName: itemVariant?.invoiceDisplayName ?? null,
-        
-        thickness: detail.itemVariant?.thickness?.thickness ?? 'Unknown',
-        itemType: item?.type ?? 'Unknown',
-        stockMode: item?.stockMode ?? 'SQM',
 
-        length: detail.itemVariant?.length ?? 0,
-        width: detail.itemVariant?.width ?? 0,
-        origin: detail.itemVariant?.origin ?? 'Unknown',
-        sheetsPerBox: detail.itemVariant?.sheetsPerBox ?? 0,
+        thickness: detail.itemVariant?.thickness?.thickness ?? "Unknown",
+        itemType: item?.type ?? "Unknown",
+        stockMode: item?.stockMode ?? "SQM",
+
+        length: itemVariant?.length ?? 0,
+        width: itemVariant?.width ?? 0,
+        origin: itemVariant?.origin ?? "Unknown",
+        sheetsPerBox: itemVariant?.sheetsPerBox ?? 0,
 
         quantity: detail.quantity ?? 0,
         sqm: detail.sqm ?? 0,
@@ -203,6 +208,7 @@ async getRequestById(id: number): Promise<any> {
     }),
   };
 }
+
 
 
 

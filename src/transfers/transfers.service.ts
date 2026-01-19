@@ -529,51 +529,58 @@ export class TransfersService {
   // -----------------------------
   // ROLLBACK ONLY THIS TRANSFER (qty totals only)
   // -----------------------------
-  private async rollbackTransfer(
-    manager: EntityManager,
-    transferId: number,
-  ): Promise<void> {
-    const num = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+private async rollbackTransfer(
+  manager: EntityManager,
+  transferId: number,
+  opts?: { keepItems?: boolean },
+): Promise<void> {
+  const num = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
-    const txs = await manager.getRepository(InventoryTransaction).find({
-      where: { transferId } as any,
-      relations: ['itemBatch', 'itemBatch.itemVariant'],
-    });
+  const txs = await manager.getRepository(InventoryTransaction).find({
+    where: { transferId } as any,
+    relations: ['itemBatch', 'itemBatch.itemVariant'],
+  });
 
-    for (const tx of txs) {
-      const batch: any = (tx as any).itemBatch;
-      const variant: any = batch?.itemVariant;
-      if (!batch || !variant) continue;
+  for (const tx of txs) {
+    const batch: any = (tx as any).itemBatch;
+    const variant: any = batch?.itemVariant;
+    if (!batch || !variant) continue;
 
-      const sqm = Math.abs(num((tx as any).sqmofr));
+    const sqm = Math.abs(num((tx as any).sqmofr));
 
-      if (
-        (tx as any).transactionType === 'MovedFrom' ||
-        (tx as any).transactionType === 'Breakage' ||
-        (tx as any).transactionType === 'Defects' ||
-        (tx as any).transactionType === 'Adjustment -'
-      ) {
-        batch.outOFR = num(batch.outOFR) - sqm;
-        variant.totalOutOFR = num(variant.totalOutOFR) - sqm;
-      } else if (
-        (tx as any).transactionType === 'MovedTo' ||
-        (tx as any).transactionType === 'Adjustment +'
-      ) {
-        batch.inOFR = num(batch.inOFR) - sqm;
-        variant.totalInOFR = num(variant.totalInOFR) - sqm;
-      }
-
-      batch.balanceOFR = num(batch.startOFR) + num(batch.inOFR) - num(batch.outOFR);
-      variant.totalBalanceOFR =
-        num(variant.totalStartOFR) + num(variant.totalInOFR) - num(variant.totalOutOFR);
-
-      await manager.getRepository(ItemBatch).save(batch);
-      await manager.getRepository(ItemVariant).save(variant);
+    if (
+      (tx as any).transactionType === 'MovedFrom' ||
+      (tx as any).transactionType === 'Breakage' ||
+      (tx as any).transactionType === 'Defects' ||
+      (tx as any).transactionType === 'Adjustment -'
+    ) {
+      batch.outOFR = num(batch.outOFR) - sqm;
+      variant.totalOutOFR = num(variant.totalOutOFR) - sqm;
+    } else if (
+      (tx as any).transactionType === 'MovedTo' ||
+      (tx as any).transactionType === 'Adjustment +'
+    ) {
+      batch.inOFR = num(batch.inOFR) - sqm;
+      variant.totalInOFR = num(variant.totalInOFR) - sqm;
     }
 
-    await manager.getRepository(InventoryTransaction).delete({ transferId } as any);
+    batch.balanceOFR = num(batch.startOFR) + num(batch.inOFR) - num(batch.outOFR);
+    variant.totalBalanceOFR =
+      num(variant.totalStartOFR) + num(variant.totalInOFR) - num(variant.totalOutOFR);
+
+    await manager.getRepository(ItemBatch).save(batch);
+    await manager.getRepository(ItemVariant).save(variant);
+  }
+
+  // always delete derived tx
+  await manager.getRepository(InventoryTransaction).delete({ transferId } as any);
+
+  // ✅ only delete transfer_items when you REALLY want to destroy lines
+  if (!opts?.keepItems) {
     await manager.getRepository(TransferItem).delete({ transferId } as any);
   }
+}
+
 
   // -----------------------------
   // CRUD (NO forward recompute)
@@ -619,40 +626,91 @@ async create(data: any): Promise<Transfer[]> {
   return createdTransfers;
 }
 
-  async updateTransfer(transferId: number, data: any): Promise<Transfer> {
-    const updated = await this.transfersRepo.manager.transaction(async (manager) => {
-      console.log('♻️ Updating transfer:', transferId);
+async updateTransfer(transferId: number, data: any): Promise<Transfer> {
+  const updated = await this.transfersRepo.manager.transaction(async (manager) => {
+    console.log('♻️ Updating transfer:', transferId);
 
-      const existing = await this.mustGetTransfer(manager, transferId);
-      const transferNumber = (existing as any).transferNumber;
+    const existing = await this.mustGetTransfer(manager, transferId);
+    const transferNumber = (existing as any).transferNumber;
 
-      // rollback ONLY this transfer
-      await this.rollbackTransfer(manager, transferId);
+    // ✅ rollback derived tx only (DO NOT delete transfer_items)
+    await this.rollbackTransfer(manager, transferId, { keepItems: true });
 
-      // update header (keep same id + same transferNumber)
-      await manager.getRepository(Transfer).update(
-        { id: transferId } as any,
-        {
-          transferNumber,
-          date: data.date,
-          type: data.type,
-          location: data.location,
-        } as any,
-      );
+    // update header (keep same id + same transferNumber)
+    await manager.getRepository(Transfer).update(
+      { id: transferId } as any,
+      {
+        transferNumber,
+        date: data.date,
+        type: data.type,
+        location: data.location,
+      } as any,
+    );
 
-      // re-insert items
-      await this.insertTransferItems(manager, transferId, data.items ?? []);
+    const repo = manager.getRepository(TransferItem);
 
-      // reload + apply logic
-      const reloaded = await this.mustGetTransfer(manager, transferId);
-      await this.applyTransferLogic(manager, reloaded, data.items ?? []);
+    const incoming: any[] = Array.isArray(data?.items) ? data.items : [];
 
-      return reloaded;
+    // load current items WITH sqmPieces so we can prevent accidental loss
+    const current = await repo.find({
+      where: { transferId } as any,
+      relations: ['sqmPieces'] as any,
     });
 
-    await this.emitActivityNowAndSoon();
-    return updated;
-  }
+    const currentById = new Map<number, any>();
+    for (const c of current as any[]) currentById.set(Number(c.id), c);
+
+    const incomingIds = new Set<number>(
+      incoming.map((x) => Number(x.id)).filter((n) => Number.isFinite(n) && n > 0),
+    );
+
+    // 1) upsert (update existing by id, insert new without id)
+    const toSave = incoming.map((i: any) => ({
+      id: i.id ? Number(i.id) : undefined,
+      transferId,
+      itemBatchId: i.itemBatchId,
+      quantity: i.quantity,
+      sqm: i.sqm,
+      price: i.price,
+
+      averageCost: (i as any).averageCost ?? null,
+      averageCostVM: (i as any).averageCostVM ?? null,
+      averageCostC: (i as any).averageCostC ?? null,
+      averageCostCVM: (i as any).averageCostCVM ?? null,
+
+      toItemVariantId: (i as any).toItemVariantId ?? null,
+      invoiceItemId: i.invoiceItemId ?? null,
+    }));
+
+    await repo.save(toSave as any);
+
+    // 2) delete removed lines SAFELY
+    const removed = (current as any[]).filter((c) => !incomingIds.has(Number(c.id)));
+
+    // ✅ if removed lines have sqmPieces, block deletion to avoid silent data loss
+    const blocked = removed.filter((r) => Array.isArray(r.sqmPieces) && r.sqmPieces.length > 0);
+    if (blocked.length) {
+      throw new BadRequestException(
+        `Cannot remove ${blocked.length} transfer line(s) because they have sqmPieces linked. ` +
+        `Remove/resolve pieces first or keep the line and set qty/sqm to 0.`,
+      );
+    }
+
+    if (removed.length) {
+      await repo.delete({ id: In(removed.map((r) => Number(r.id))) } as any);
+    }
+
+    // 3) re-apply logic → recreates tx + totals + costs
+    const reloaded = await this.mustGetTransfer(manager, transferId);
+    await this.applyTransferLogic(manager, reloaded, incoming);
+
+    return reloaded;
+  });
+
+  await this.emitActivityNowAndSoon();
+  return updated;
+}
+
 
   async remove(id: number): Promise<void> {
     await this.transfersRepo.manager.transaction(async (manager) => {
