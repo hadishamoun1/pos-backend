@@ -680,6 +680,11 @@ export class SqmPiecesService {
           'SqmPiece is missing sqmVariant or sqmBatch relations.',
         );
       }
+      
+const costs = {
+  ofr: num(variant.averageCost),
+  vm: num(variant.averageCostVM),
+};
 
       // 1) Create InventoryTransaction for the trash
       const invTx = manager.getRepository(InventoryTransaction).create({
@@ -690,8 +695,8 @@ export class SqmPiecesService {
         quantityofr: -sqmToTrash,
         sqm: 0,
         sqmofr: -sqmToTrash,
-        finalcost: 0,
-        finalcostofr: 0,
+       finalcostofr: costs.ofr,
+  finalcost: costs.vm, 
         transferId: null,
         dateForEachInvoice: txDate,
       });
@@ -776,6 +781,11 @@ export class SqmPiecesService {
         );
       }
 
+      const costs = {
+  ofr: num(variant.averageCost),
+  vm: num(variant.averageCostVM),
+};
+
       // 1) InventoryTransaction for restore
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: piece.sqmVariantId,
@@ -785,8 +795,8 @@ export class SqmPiecesService {
         quantityofr: sqmToRestore, // positive (add back)
         sqm: 0,
         sqmofr: sqmToRestore,
-        finalcost: 0,
-        finalcostofr: 0,
+       finalcostofr: costs.ofr, 
+  finalcost: costs.vm, 
         transferId: null,
         dateForEachInvoice: txDate,
       });
@@ -958,6 +968,10 @@ export class SqmPiecesService {
         await manager.getRepository(ItemBatch).save(sqmBatch);
       }
 
+      const costs = {
+        ofr: num((sqmVariant as any).averageCost),
+        vm: num((sqmVariant as any).averageCostVM),
+      };
       // ----- 1) InventoryTransaction "SqmTrash" -----
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: sqmVariant.id,
@@ -967,8 +981,8 @@ export class SqmPiecesService {
         quantityofr: -sqmToTrash,
         sqm: 0,
         sqmofr: -sqmToTrash,
-        finalcost: 0,
-        finalcostofr: 0,
+     finalcost: costs.vm,      
+        finalcostofr: costs.ofr,
         transferId: null, // or ti.transferId if you have that column
         dateForEachInvoice: txDate,
       });
@@ -1150,6 +1164,10 @@ async trashUnallocatedForLine(
       });
       await manager.getRepository(ItemBatch).save(sqmBatch);
     }
+          const costs = {
+        ofr: num((sqmVariant as any).averageCost),
+        vm: num((sqmVariant as any).averageCostVM),
+      };
 
     // ✅ 1) Create InventoryTransaction with SqmTrash type
     const invTx = manager.getRepository(InventoryTransaction).create({
@@ -1160,8 +1178,8 @@ async trashUnallocatedForLine(
       quantityofr: -sqmToTrash, // ✅ Negative for OFR quantity
       sqm: 0,                // ✅ Zero for regular sqm
       sqmofr: -sqmToTrash,   // ✅ Negative for OFR sqm
-      finalcost: 0,
-      finalcostofr: 0,
+       finalcost: costs.vm,        // ✅ Add actual VM cost
+        finalcostofr: costs.ofr,        // ✅ Add actual OFR cost
       transferId: ti.transfer?.id || null,
       dateForEachInvoice: txDate,
     });
@@ -1321,6 +1339,12 @@ async trashUnallocatedForLine(
         await manager.getRepository(ItemBatch).save(sqmBatch);
       }
 
+
+            const costs = {
+        ofr: num((sqmVariant as any).averageCost),
+        vm: num((sqmVariant as any).averageCostVM),
+      };
+      
       // ── 3) Create inverse InventoryTransaction for restore ──
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: sqmVariant.id,
@@ -1330,8 +1354,8 @@ async trashUnallocatedForLine(
         quantityofr: sqmToRestore,
         sqm: 0,
         sqmofr: sqmToRestore,
-        finalcost: 0,
-        finalcostofr: 0,
+          finalcost: costs.vm,        // ✅ Add actual VM cost
+        finalcostofr: costs.ofr,
         transferId: ti.transferId ?? null,
         dateForEachInvoice: txDate,
       });
