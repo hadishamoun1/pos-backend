@@ -1,7 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { PurchaseInvoiceSetting } from '../entities/purchaseInvoiceSettings';
+import { PurchaseInvoiceSetting } from '../entities/purchaseInvoiceSettings.entity';
 import { Account } from '../entities/account.entity';
 import { Customer } from '../entities/customer.entity';
 import { Supplier } from '../entities/supplier.entity';

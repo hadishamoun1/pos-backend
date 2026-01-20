@@ -9,7 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { PurchaseInvoiceSettingService } from './purchase-invoice-settings.service';
-import { PurchaseInvoiceSetting } from '../entities/purchaseInvoiceSettings';
+import { PurchaseInvoiceSetting } from '../entities/purchaseInvoiceSettings.entity';
 
 // ✅ auth + perms
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';

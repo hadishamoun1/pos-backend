@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { PurchaseInvoiceSetting } from '../entities/purchaseInvoiceSettings';
+import { PurchaseInvoiceSetting } from '../entities/purchaseInvoiceSettings.entity';
 import { PurchaseInvoiceSettingService } from './purchase-invoice-settings.service';
 import { PurchaseInvoiceSettingController } from './purchase-invoice-settings.controller';
 import { Account } from '../entities/account.entity';

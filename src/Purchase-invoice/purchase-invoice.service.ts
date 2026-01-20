@@ -1,6 +1,6 @@
 // src/Purchase-invoice/purchase-invoice.service.ts
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
+import { InjectRepository, } from '@nestjs/typeorm';
 import {
   Repository,
   In,
@@ -8,6 +8,7 @@ import {
   EntityManager,
   SelectQueryBuilder,
   Brackets,
+  DeepPartial 
 } from 'typeorm';
 import { Transfer } from 'src/entities/inventory/transfer.entity';
 
@@ -773,281 +774,329 @@ private readonly accountingResolver: AccountingResolverService,
   // ────────────────────────────────────────────────────────────
   // JV creation (typed fixes applied)
   // ────────────────────────────────────────────────────────────
-  private async createOrRebuildJVForPurchaseInvoice(
-    invoice: PurchaseInvoice,
-    items: PurchaseInvoiceItem[],
-    unitPriceRows: any[] | undefined,
+private async createOrRebuildJVForPurchaseInvoice(
+  invoice: PurchaseInvoice,
+  items: PurchaseInvoiceItem[],
+  unitPriceRows: any[] | undefined,
+) {
+  if (
+    (invoice as any).status !== 'Recieved' ||
+    !['G', 'S', 'SR'].includes((invoice as any).type as any)
   ) {
-    if (
-      (invoice as any).status !== 'Recieved' ||
-      !['G', 'S', 'SR'].includes((invoice as any).type as any)
-    ) {
-      return;
-    }
-
-const expenseAcct = await this.accountingResolver.resolveAccount('Purchases_USD', null);
-// if role not configured, resolveAccount will throw NotFoundException with a clear message
-
-
-    let normalTotal = 0;
-    let ofrTotal = 0;
-
-    if ((invoice as any).type === 'G') {
-      for (const row of items as any[]) ofrTotal += Number(row.totalOFR ?? 0);
-    } else if ((invoice as any).type === 'S') {
-      for (const row of items as any[]) {
-        normalTotal += Number(row.totalAmount ?? 0);
-        ofrTotal += Number(row.totalAmount ?? 0);
-      }
-    } else {
-      for (const row of items as any[]) {
-        normalTotal += Number(row.totalAmount ?? 0);
-        ofrTotal += Number(row.totalOFR ?? 0);
-      }
-    }
-
-    const rate = Number((invoice as any).exchangeRate ?? 1);
-    const normalLL = normalTotal * rate;
-    const ofrLL = ofrTotal * rate;
-
-    let prefix = 'PV';
-    if ((invoice as any).type === 'G') prefix = 'PVG';
-
-    const last = await this.journalVoucherRepo
-      .find({
-        where: { jvNumber: Like(`${prefix} - %`) } as any,
-        order: { jvNumber: 'DESC' } as any,
-        take: 1,
-      })
-      .then((arr) => arr[0]);
-
-    const seq = last ? parseInt((last as any).jvNumber.split(' - ')[1], 10) + 1 : 1;
-    const jvNumber = `${prefix} - ${String(seq).padStart(5, '0')}`;
-
-    let hdrDr = 0,
-      hdrDrUSD = 0,
-      hdrDrLL = 0;
-    let hdrDrOFR = 0,
-      hdrDrUSDOFR = 0,
-      hdrDrLLOFR = 0;
-    let hdrCr = 0,
-      hdrCrUSD = 0,
-      hdrCrLL = 0;
-    let hdrCrOFR = 0,
-      hdrCrUSDOFR = 0,
-      hdrCrLLOFR = 0;
-
-    if ((invoice as any).type === 'G') {
-      hdrDrOFR = ofrTotal;
-      hdrDrUSDOFR = ofrTotal;
-      hdrDrLLOFR = ofrLL;
-
-      hdrCrOFR = ofrTotal;
-      hdrCrUSDOFR = ofrTotal;
-      hdrCrLLOFR = ofrLL;
-    } else if ((invoice as any).type === 'S') {
-      hdrDr = normalTotal;
-      hdrDrUSD = normalTotal;
-      hdrDrLL = normalLL;
-      hdrDrOFR = normalTotal;
-      hdrDrUSDOFR = normalTotal;
-      hdrDrLLOFR = normalLL;
-
-      hdrCr = normalTotal;
-      hdrCrUSD = normalTotal;
-      hdrCrLL = normalLL;
-      hdrCrOFR = normalTotal;
-      hdrCrUSDOFR = normalTotal;
-      hdrCrLLOFR = normalLL;
-    } else {
-      hdrDr = normalTotal;
-      hdrDrUSD = normalTotal;
-      hdrDrLL = normalLL;
-      hdrDrOFR = ofrTotal;
-      hdrDrUSDOFR = ofrTotal;
-      hdrDrLLOFR = ofrLL;
-
-      hdrCr = normalTotal;
-      hdrCrUSD = normalTotal;
-      hdrCrLL = normalLL;
-      hdrCrOFR = ofrTotal;
-      hdrCrUSDOFR = ofrTotal;
-      hdrCrLLOFR = ofrLL;
-    }
-
-    const debitLine: JournalVoucherDetail =
-      (this.journalVoucherDetailRepo.create({
-        accountId: (expenseAcct as any).id,
-        description: 'فاتورة شراء',
-        docNbr: jvNumber,
-        dr: hdrDr,
-        drUSD: hdrDrUSD,
-        drLL: hdrDrLL,
-        drOFR: hdrDrOFR,
-        drUSDOFR: hdrDrUSDOFR,
-        drLLOFR: hdrDrLLOFR,
-        cr: 0,
-        crUSD: 0,
-        crLL: 0,
-        crOFR: 0,
-        crUSDOFR: 0,
-        crLLOFR: 0,
-        exchangeRateAcc: null,
-        exchangeRateUSD: null,
-      } as any) as any);
-
-    const creditLine: JournalVoucherDetail =
-      (this.journalVoucherDetailRepo.create({
-        supplierId: (invoice as any).supplierId,
-        description: 'فاتورة شراء',
-        docNbr: jvNumber,
-        dr: 0,
-        drUSD: 0,
-        drLL: 0,
-        drOFR: 0,
-        drUSDOFR: 0,
-        drLLOFR: 0,
-        cr: hdrCr,
-        crUSD: hdrCrUSD,
-        crLL: hdrCrLL,
-        crOFR: hdrCrOFR,
-        crUSDOFR: hdrCrUSDOFR,
-        crLLOFR: hdrCrLLOFR,
-        exchangeRateAcc: null,
-        exchangeRateUSD: null,
-      } as any) as any);
-
-    const extraJVDetails: JournalVoucherDetail[] = [];
-
-    if (unitPriceRows?.length) {
-      for (const row of unitPriceRows as any[]) {
-        const value = Number(row.value || 0);
-        const valueOFR = Number(row.valueOFR || 0);
-        const valueLL = value * rate;
-        const valueOFRLL = valueOFR * rate;
-
-        let dr = 0,
-          drUSD = 0,
-          drLL = 0,
-          drOFR = 0,
-          drUSDOFR = 0,
-          drLLOFR = 0;
-
-        let cr = 0,
-          crUSD = 0,
-          crLL = 0,
-          crOFR = 0,
-          crUSDOFR = 0,
-          crLLOFR = 0;
-
-        if ((invoice as any).type === 'G') {
-          drOFR = valueOFR;
-          drUSDOFR = valueOFR;
-          drLLOFR = valueOFRLL;
-
-          crOFR = valueOFR;
-          crUSDOFR = valueOFR;
-          crLLOFR = valueOFRLL;
-        } else if ((invoice as any).type === 'S') {
-          dr = value;
-          drUSD = value;
-          drLL = valueLL;
-          drOFR = value;
-          drUSDOFR = value;
-          drLLOFR = valueLL;
-
-          cr = value;
-          crUSD = value;
-          crLL = valueLL;
-          crOFR = value;
-          crUSDOFR = value;
-          crLLOFR = valueLL;
-        } else if ((invoice as any).type === 'SR') {
-          dr = value;
-          drUSD = value;
-          drLL = valueLL;
-          drOFR = valueOFR;
-          drUSDOFR = valueOFR;
-          drLLOFR = valueOFRLL;
-
-          cr = value;
-          crUSD = value;
-          crLL = valueLL;
-          crOFR = valueOFR;
-          crUSDOFR = valueOFR;
-          crLLOFR = valueOFRLL;
-        }
-
-        const drLine: JournalVoucherDetail =
-          (this.journalVoucherDetailRepo.create({
-            accountId: row.accountId ?? null,
-            description: 'فاتورة شراء',
-            docNbr: jvNumber,
-            dr,
-            drUSD,
-            drLL,
-            drOFR,
-            drUSDOFR,
-            drLLOFR,
-            cr: 0,
-            crUSD: 0,
-            crLL: 0,
-            crOFR: 0,
-            crUSDOFR: 0,
-            crLLOFR: 0,
-            exchangeRateAcc: null,
-            exchangeRateUSD: null,
-          } as any) as any);
-
-        const crLine: JournalVoucherDetail =
-          (this.journalVoucherDetailRepo.create({
-            supplierId: row.supplierId ?? null,
-            description: 'فاتورة شراء',
-            docNbr: jvNumber,
-            dr: 0,
-            drUSD: 0,
-            drLL: 0,
-            drOFR: 0,
-            drUSDOFR: 0,
-            drLLOFR: 0,
-            cr,
-            crUSD,
-            crLL,
-            crOFR,
-            crUSDOFR,
-            crLLOFR,
-            exchangeRateAcc: null,
-            exchangeRateUSD: null,
-          } as any) as any);
-
-        extraJVDetails.push(drLine, crLine);
-      }
-    }
-
-    const jv = this.journalVoucherRepo.create({
-      jvNumber,
-      purchaseInvoiceId: (invoice as any).id,
-      date: (invoice as any).jvDate,
-      jvType: (invoice as any).type,
-      totalDr: hdrDr,
-      totalDrUSD: hdrDrUSD,
-      totalDrLL: hdrDrLL,
-      totalDrOFR: hdrDrOFR,
-      totalDrUSDOFR: hdrDrUSDOFR,
-      totalDrLLOFR: hdrDrLLOFR,
-      totalCr: hdrCr,
-      totalCrUSD: hdrCrUSD,
-      totalCrLL: hdrCrLL,
-      totalCrOFR: hdrCrOFR,
-      totalCrUSDOFR: hdrCrUSDOFR,
-      totalCrLLOFR: hdrCrLLOFR,
-      exchangeRateAcc: null,
-      exchangeRateUSD: null,
-      details: [debitLine, creditLine, ...extraJVDetails],
-    } as any);
-
-    await this.journalVoucherRepo.save(jv);
+    return;
   }
+
+  // ✅ Purchases expense account (role-based)
+  const expenseAcct = await this.accountingResolver.resolveAccount(
+    'Purchases_USD',
+    null,
+  );
+
+  let normalTotal = 0;
+  let ofrTotal = 0;
+
+  if ((invoice as any).type === 'G') {
+    for (const row of items as any[]) ofrTotal += Number(row.totalOFR ?? 0);
+  } else if ((invoice as any).type === 'S') {
+    for (const row of items as any[]) {
+      normalTotal += Number(row.totalAmount ?? 0);
+      ofrTotal += Number(row.totalAmount ?? 0);
+    }
+  } else {
+    for (const row of items as any[]) {
+      normalTotal += Number(row.totalAmount ?? 0);
+      ofrTotal += Number(row.totalOFR ?? 0);
+    }
+  }
+
+  const rate = Number((invoice as any).exchangeRate ?? 1);
+  const normalLL = normalTotal * rate;
+  const ofrLL = ofrTotal * rate;
+
+  let prefix = 'PV';
+  if ((invoice as any).type === 'G') prefix = 'PVG';
+
+  const last = await this.journalVoucherRepo
+    .find({
+      where: { jvNumber: Like(`${prefix} - %`) } as any,
+      order: { jvNumber: 'DESC' } as any,
+      take: 1,
+    })
+    .then((arr) => arr[0]);
+
+  const seq = last ? parseInt((last as any).jvNumber.split(' - ')[1], 10) + 1 : 1;
+  const jvNumber = `${prefix} - ${String(seq).padStart(5, '0')}`;
+
+  let hdrDr = 0,
+    hdrDrUSD = 0,
+    hdrDrLL = 0;
+  let hdrDrOFR = 0,
+    hdrDrUSDOFR = 0,
+    hdrDrLLOFR = 0;
+  let hdrCr = 0,
+    hdrCrUSD = 0,
+    hdrCrLL = 0;
+  let hdrCrOFR = 0,
+    hdrCrUSDOFR = 0,
+    hdrCrLLOFR = 0;
+
+  if ((invoice as any).type === 'G') {
+    hdrDrOFR = ofrTotal;
+    hdrDrUSDOFR = ofrTotal;
+    hdrDrLLOFR = ofrLL;
+
+    hdrCrOFR = ofrTotal;
+    hdrCrUSDOFR = ofrTotal;
+    hdrCrLLOFR = ofrLL;
+  } else if ((invoice as any).type === 'S') {
+    hdrDr = normalTotal;
+    hdrDrUSD = normalTotal;
+    hdrDrLL = normalLL;
+    hdrDrOFR = normalTotal;
+    hdrDrUSDOFR = normalTotal;
+    hdrDrLLOFR = normalLL;
+
+    hdrCr = normalTotal;
+    hdrCrUSD = normalTotal;
+    hdrCrLL = normalLL;
+    hdrCrOFR = normalTotal;
+    hdrCrUSDOFR = normalTotal;
+    hdrCrLLOFR = normalLL;
+  } else {
+    hdrDr = normalTotal;
+    hdrDrUSD = normalTotal;
+    hdrDrLL = normalLL;
+    hdrDrOFR = ofrTotal;
+    hdrDrUSDOFR = ofrTotal;
+    hdrDrLLOFR = ofrLL;
+
+    hdrCr = normalTotal;
+    hdrCrUSD = normalTotal;
+    hdrCrLL = normalLL;
+    hdrCrOFR = ofrTotal;
+    hdrCrUSDOFR = ofrTotal;
+    hdrCrLLOFR = ofrLL;
+  }
+
+const debitLine = this.journalVoucherDetailRepo.create(
+  {
+    accountId: (expenseAcct as any).id,
+    description: 'فاتورة شراء',
+    docNbr: jvNumber,
+
+    dr: hdrDr,
+    drUSD: hdrDrUSD,
+    drLL: hdrDrLL,
+    drOFR: hdrDrOFR,
+    drUSDOFR: hdrDrUSDOFR,
+    drLLOFR: hdrDrLLOFR,
+
+    cr: 0,
+    crUSD: 0,
+    crLL: 0,
+    crOFR: 0,
+    crUSDOFR: 0,
+    crLLOFR: 0,
+
+    exchangeRateAcc: null,
+    exchangeRateUSD: null,
+  } as DeepPartial<JournalVoucherDetail>,
+);
+
+const creditLine = this.journalVoucherDetailRepo.create(
+  {
+    supplierId: (invoice as any).supplierId,
+    description: 'فاتورة شراء',
+    docNbr: jvNumber,
+
+    dr: 0,
+    drUSD: 0,
+    drLL: 0,
+    drOFR: 0,
+    drUSDOFR: 0,
+    drLLOFR: 0,
+
+    cr: hdrCr,
+    crUSD: hdrCrUSD,
+    crLL: hdrCrLL,
+    crOFR: hdrCrOFR,
+    crUSDOFR: hdrCrUSDOFR,
+    crLLOFR: hdrCrLLOFR,
+
+    exchangeRateAcc: null,
+    exchangeRateUSD: null,
+  } as DeepPartial<JournalVoucherDetail>,
+);
+
+
+  const extraJVDetails: JournalVoucherDetail[] = [];
+
+  if (unitPriceRows?.length) {
+    for (const row of unitPriceRows as any[]) {
+      const value = Number(row.value || 0);
+      const valueOFR = Number(row.valueOFR || 0);
+      const valueLL = value * rate;
+      const valueOFRLL = valueOFR * rate;
+
+      let dr = 0,
+        drUSD = 0,
+        drLL = 0,
+        drOFR = 0,
+        drUSDOFR = 0,
+        drLLOFR = 0;
+
+      let cr = 0,
+        crUSD = 0,
+        crLL = 0,
+        crOFR = 0,
+        crUSDOFR = 0,
+        crLLOFR = 0;
+
+      if ((invoice as any).type === 'G') {
+        drOFR = valueOFR;
+        drUSDOFR = valueOFR;
+        drLLOFR = valueOFRLL;
+
+        crOFR = valueOFR;
+        crUSDOFR = valueOFR;
+        crLLOFR = valueOFRLL;
+      } else if ((invoice as any).type === 'S') {
+        dr = value;
+        drUSD = value;
+        drLL = valueLL;
+        drOFR = value;
+        drUSDOFR = value;
+        drLLOFR = valueLL;
+
+        cr = value;
+        crUSD = value;
+        crLL = valueLL;
+        crOFR = value;
+        crUSDOFR = value;
+        crLLOFR = valueLL;
+      } else if ((invoice as any).type === 'SR') {
+        dr = value;
+        drUSD = value;
+        drLL = valueLL;
+        drOFR = valueOFR;
+        drUSDOFR = valueOFR;
+        drLLOFR = valueOFRLL;
+
+        cr = value;
+        crUSD = value;
+        crLL = valueLL;
+        crOFR = valueOFR;
+        crUSDOFR = valueOFR;
+        crLLOFR = valueOFRLL;
+      }
+
+      // debit side (your existing row.accountId stays the same)
+ const drLine = this.journalVoucherDetailRepo.create(
+  {
+    accountId: row.accountId ?? row.account?.id ?? null,
+    description: 'فاتورة شراء',
+    docNbr: jvNumber,
+
+    dr,
+    drUSD,
+    drLL,
+    drOFR,
+    drUSDOFR,
+    drLLOFR,
+
+    cr: 0,
+    crUSD: 0,
+    crLL: 0,
+    crOFR: 0,
+    crUSDOFR: 0,
+    crLLOFR: 0,
+
+    exchangeRateAcc: null,
+    exchangeRateUSD: null,
+  } as DeepPartial<JournalVoucherDetail>,
+);
+
+      // ✅ CREDIT side uses “Supplier of Tax” selection
+      const taxAccountId =
+        row.taxAccountId != null
+          ? Number(row.taxAccountId)
+          : row.taxAccount?.id != null
+          ? Number(row.taxAccount.id)
+          : null;
+
+      const taxSupplierId =
+        row.taxSupplierId != null
+          ? Number(row.taxSupplierId)
+          : row.taxSupplier?.id != null
+          ? Number(row.taxSupplier.id)
+          : null;
+
+      // rule: account wins; fallback to old supplierId if none provided
+      const creditAccountId = taxAccountId;
+      const creditSupplierId = creditAccountId
+        ? null
+        : (taxSupplierId ?? (row.supplierId ?? row.supplier?.id ?? null));
+
+  const crLine = this.journalVoucherDetailRepo.create(
+  {
+    accountId: creditAccountId,
+    supplierId: creditSupplierId,
+
+    description: 'فاتورة شراء',
+    docNbr: jvNumber,
+
+    dr: 0,
+    drUSD: 0,
+    drLL: 0,
+    drOFR: 0,
+    drUSDOFR: 0,
+    drLLOFR: 0,
+
+    cr,
+    crUSD,
+    crLL,
+    crOFR,
+    crUSDOFR,
+    crLLOFR,
+
+    exchangeRateAcc: null,
+    exchangeRateUSD: null,
+  } as DeepPartial<JournalVoucherDetail>,
+);
+
+      extraJVDetails.push(drLine, crLine);
+    }
+  }
+
+  const jv = this.journalVoucherRepo.create({
+    jvNumber,
+    purchaseInvoiceId: (invoice as any).id,
+    date: (invoice as any).jvDate,
+    jvType: (invoice as any).type,
+
+    totalDr: hdrDr,
+    totalDrUSD: hdrDrUSD,
+    totalDrLL: hdrDrLL,
+    totalDrOFR: hdrDrOFR,
+    totalDrUSDOFR: hdrDrUSDOFR,
+    totalDrLLOFR: hdrDrLLOFR,
+
+    totalCr: hdrCr,
+    totalCrUSD: hdrCrUSD,
+    totalCrLL: hdrCrLL,
+    totalCrOFR: hdrCrOFR,
+    totalCrUSDOFR: hdrCrUSDOFR,
+    totalCrLLOFR: hdrCrLLOFR,
+
+    exchangeRateAcc: null,
+    exchangeRateUSD: null,
+
+    details: [debitLine, creditLine, ...extraJVDetails],
+  } as any);
+
+  await this.journalVoucherRepo.save(jv);
+}
+
 
 
 
@@ -1085,276 +1134,131 @@ private async getNextPurchaseInvoiceNumber(type: 'S' | 'G' | 'SR' | 'RVR'): Prom
   // ────────────────────────────────────────────────────────────
   // CREATE (no recompute functions, no applyPurchaseCostsForInvoice)
   // ────────────────────────────────────────────────────────────
-  async create(data: Partial<PurchaseInvoice>) {
-
-      // ✅ generate invoiceNumber like PV25-001
+async create(data: Partial<PurchaseInvoice>) {
   const type = (data as any).type ?? 'S';
   (data as any).invoiceNumber = await this.getNextPurchaseInvoiceNumber(type);
-    // 1) save invoice + items
-    const invoice = this.invoiceRepo.create(data as any);
-    const savedInvoice = await this.invoiceRepo.save(invoice as any);
 
-    // 2) record inventory tx + batch updates + variant totals (your existing logic)
-    if ((savedInvoice as any).status === 'Recieved') {
-      const invTxs: InventoryTransaction[] = [];
-      const invoiceDate = new Date((savedInvoice as any).date);
+  // 1) save invoice + items
+  const invoice = this.invoiceRepo.create(data as any);
+  const savedInvoice = await this.invoiceRepo.save(invoice as any);
 
-      for (const item of ((savedInvoice as any).items ?? []) as any[]) {
-        let qty = Number(item.quantity ?? 0);
-        let sqm = Number(item.sqm ?? 0);
-        
-        let qtyOfr = 0;
-        let sqmOfr = 0;
+  // 2) record inventory tx + batch updates + variant totals
+  if ((savedInvoice as any).status === 'Recieved') {
+    const invTxs: InventoryTransaction[] = [];
+    const invoiceDate = new Date((savedInvoice as any).date);
 
-        switch ((savedInvoice as any).type) {
-          case 'S':
-          case 'SR':
-            qtyOfr = qty;
-            sqmOfr = sqm;
-            break;
-          case 'G':
-            qtyOfr = qty;
-            sqmOfr = Number((item as any).sqmOfr ?? 0);
-            qty = 0;
-            sqm = 0;
-            break;
-          case 'RVR':
-            qtyOfr = 0;
-            sqmOfr = 0;
-            break;
-          default:
-            qtyOfr = qty;
-            sqmOfr = sqm;
-        }
+    for (const item of (((savedInvoice as any).items ?? []) as any[])) {
+      let qty = Number(item.quantity ?? 0);
+      let sqm = Number(item.sqm ?? 0);
 
-        const condition = item.condition || 'Clean';
-        const dateReceived = null;
+      let qtyOfr = 0;
+      let sqmOfr = 0;
 
-        let itemBatch: ItemBatch | null = await this.itemBatchRepo.findOne({
-          where: {
-            itemVariant: { id: item.itemVariantId },
-            condition,
-            dateReceived,
-          } as any,
-          relations: ['itemVariant'],
-        });
-
-  if (!itemBatch) {
-  const newBatch = this.itemBatchRepo.create(); // ✅ always ItemBatch (not array)
-
-  Object.assign(newBatch, {
-    itemVariant: { id: item.itemVariantId } as any,
-    condition,
-    dateReceived: null,
-
-    start: 0,
-    in: 0,
-    out: 0,
-    balance: 0,
-
-    startOFR: 0,
-    inOFR: 0,
-    outOFR: 0,
-    balanceOFR: 0,
-  });
-
-  itemBatch = await this.itemBatchRepo.save(newBatch);
-}
-
-
-        const tx: InventoryTransaction =
-          (this.inventoryTxRepo.create({
-            itemVariantId: item.itemVariantId,
-            itemBatchId: (itemBatch as any).id,
-            transactionType: 'purchase',
-            quantity: qty,
-            sqm: sqm,
-            quantityofr: qtyOfr,
-            sqmofr: sqmOfr,
-            finalcost: Number(item.finalCost ?? 0),
-            finalcostofr: Number(item.finalOFR ?? 0),
-            purchaseInvoiceItemId: item.id,
-            invoiceItemId: null,
-            transferId: null,
-            inventoryCountId: null,
-            dateForEachInvoice: invoiceDate,
-          } as any) as any);
-
-        invTxs.push(tx);
+      switch ((savedInvoice as any).type) {
+        case 'S':
+        case 'SR':
+          qtyOfr = qty;
+          sqmOfr = sqm;
+          break;
+        case 'G':
+          qtyOfr = qty;
+          sqmOfr = Number((item as any).sqmOfr ?? 0);
+          qty = 0;
+          sqm = 0;
+          break;
+        case 'RVR':
+          qtyOfr = 0;
+          sqmOfr = 0;
+          break;
+        default:
+          qtyOfr = qty;
+          sqmOfr = sqm;
       }
 
-      if (invTxs.length) {
-        await this.inventoryTxRepo.save(invTxs);
-      }
+      const condition = item.condition || 'Clean';
+      const dateReceived = null;
 
-      // rebuild batches + variant totals based on tx (keeps your behavior)
-      await this.rebuildInventoryForPurchaseInvoice(
-        { ...(savedInvoice as any), items: (savedInvoice as any).items } as any,
-        [],
-      );
-
-      // JV
-      await this.createOrRebuildJVForPurchaseInvoice(
-        savedInvoice as any,
-        ((savedInvoice as any).items ?? []) as any,
-        (data as any)?.unitPriceRows,
-      );
-
-      // unit price rows (your existing logic)
-      if ((data as any)?.unitPriceRows?.length) {
-        const normalized = (data as any).unitPriceRows.map((r: any) => {
-          const v = Number(r.value ?? 0);
-          const o = Number(r.valueOFR ?? 0);
-          const ex = Number(r.valueExch ?? 0);
-          const eo = Number(r.valueExchOFR ?? 0);
-          return {
-            ...r,
-            value: v,
-            valueOFR: v > 0 && o === 0 ? v : o,
-            valueExch: ex,
-            valueExchOFR: ex > 0 && eo === 0 ? ex : eo,
-          };
-        });
-
-        const rowsToSave = normalized.map((row: any) =>
-          this.rowRepo.create({
-            invoice: { id: (savedInvoice as any).id } as any,
-            invoiceId: (savedInvoice as any).id,
-            purchaseInvoiceSettingId: row.purchaseInvoiceSettingId ?? null,
-            chargeName: row.chargeName,
-            chargeType: row.chargeType,
-            value: row.value,
-            valueOFR: row.valueOFR,
-            currency: row.currency,
-            valueExch: row.valueExch,
-            valueExchOFR: row.valueExchOFR,
-            addToItemCost: row.addToItemCost,
-            invoiceNbTax: row.invoiceNbTax,
-            supplierId: row.supplierId ?? null,
-            accountId: row.accountId ?? null,
-            shipping: row.shipping,
-          } as any),
-        );
-
-        await this.rowRepo.save(rowsToSave as any);
-      }
-
-      // ✅ compute averages ONLY for this invoice
-      await this.computeAndWriteCostsForInvoice((savedInvoice as any).id);
-    }
-
-    return savedInvoice;
-  }
-
-  // ────────────────────────────────────────────────────────────
-  // UPDATE (no recompute functions, no applyPurchaseCostsForInvoice)
-  // ────────────────────────────────────────────────────────────
-  async update(id: number, data: Partial<PurchaseInvoice>) {
-    const existing = await this.invoiceRepo.findOne({
-      where: { id } as any,
-      relations: ['items', 'items.itemVariant'],
-    });
-    if (!existing) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
-
-    const prevItemIds = (((existing as any).items ?? []) as any[])
-      .map((it: any) => Number(it.id))
-      .filter((n: number) => Number.isFinite(n) && n > 0);
-
-    // old batch ids from txs (so deleted items batches get fixed)
-    let oldBatchIds: number[] = [];
-    if (prevItemIds.length) {
-      const oldTxs = await this.inventoryTxRepo.find({
-        where: { purchaseInvoiceItemId: In(prevItemIds) } as any,
+      let itemBatch: ItemBatch | null = await this.itemBatchRepo.findOne({
+        where: {
+          itemVariant: { id: item.itemVariantId },
+          condition,
+          dateReceived,
+        } as any,
+        relations: ['itemVariant'],
       });
-      oldBatchIds = Array.from(
-        new Set(
-          oldTxs
-            .map((tx: any) => Number(tx.itemBatchId))
-            .filter((n: number) => Number.isFinite(n) && n > 0),
-        ),
+
+      if (!itemBatch) {
+        const newBatch = this.itemBatchRepo.create();
+
+        Object.assign(newBatch, {
+          itemVariant: { id: item.itemVariantId } as any,
+          condition,
+          dateReceived: null,
+
+          start: 0,
+          in: 0,
+          out: 0,
+          balance: 0,
+
+          startOFR: 0,
+          inOFR: 0,
+          outOFR: 0,
+          balanceOFR: 0,
+        });
+
+        itemBatch = await this.itemBatchRepo.save(newBatch);
+      }
+
+      const tx = this.inventoryTxRepo.create(
+        {
+          itemVariantId: item.itemVariantId,
+          itemBatchId: (itemBatch as any).id,
+          transactionType: 'purchase',
+
+          quantity: qty,
+          sqm: sqm,
+          quantityofr: qtyOfr,
+          sqmofr: sqmOfr,
+
+          finalcost: Number(item.finalCost ?? 0),
+          finalcostofr: Number(item.finalOFR ?? 0),
+
+          purchaseInvoiceItemId: item.id,
+          invoiceItemId: null,
+          transferId: null,
+          inventoryCountId: null,
+
+          dateForEachInvoice: invoiceDate,
+        } as DeepPartial<InventoryTransaction>,
       );
+
+      invTxs.push(tx);
     }
 
-    const { items: incomingItemsPayload, unitPriceRows: incomingUnitPriceRowsPayload, ...headerPayload } =
-      (data as any) || {};
-
-    Object.assign(existing as any, headerPayload);
-    (existing as any).unitPriceRows = undefined;
-
-    // upsert items
-    const incomingItems = (incomingItemsPayload ?? []).map((it: any) => ({ ...it }));
-    const incomingItemIdSet = new Set<number>(
-      incomingItems.filter((i: any) => i.id).map((i: any) => Number(i.id)),
-    );
-
-    const toDeleteItemIds = prevItemIds.filter((oldId) => !incomingItemIdSet.has(oldId));
-
-    if (toDeleteItemIds.length) {
-      await this.inventoryTxRepo.delete({ purchaseInvoiceItemId: In(toDeleteItemIds) } as any);
-      await this.itemRepo.delete(toDeleteItemIds as any);
+    if (invTxs.length) {
+      await this.inventoryTxRepo.save(invTxs);
     }
 
-    for (const raw of incomingItems) {
-      if (raw.id) {
-        await this.itemRepo.update(raw.id, { ...raw, invoiceId: (existing as any).id } as any);
-      } else {
-        const created = this.itemRepo.create({
-          ...raw,
-          invoice: { id: (existing as any).id } as any,
-          invoiceId: (existing as any).id,
-        } as any);
-        await this.itemRepo.save(created as any);
-      }
-    }
-
-    // reload items
-    (existing as any).items = await this.itemRepo.find({
-      where: { invoice: { id: (existing as any).id } } as any,
-    });
-
-    // save header
-    const savedInvoice = await this.invoiceRepo.save(existing as any);
-
-    // delete ALL old txs for previous items (safe)
-    if (prevItemIds.length) {
-      await this.inventoryTxRepo.delete({ purchaseInvoiceItemId: In(prevItemIds) } as any);
-    }
-
-    // rebuild inventory tx/batches/variant totals for updated invoice
+    // rebuild batches + variant totals based on tx
     await this.rebuildInventoryForPurchaseInvoice(
-      { ...(savedInvoice as any), items: (existing as any).items } as any,
-      oldBatchIds,
+      { ...(savedInvoice as any), items: (savedInvoice as any).items } as any,
+      [],
     );
 
-    // rebuild JV (delete old, recreate)
-    const existingJvs = await this.journalVoucherRepo.find({
-      where: { purchaseInvoiceId: (savedInvoice as any).id } as any,
-    });
-
-    if (existingJvs.length) {
-      const jvIds = existingJvs.map((j: any) => Number(j.id)).filter((n: number) => Number.isFinite(n) && n > 0);
-      if (jvIds.length) {
-        await this.journalVoucherDetailRepo.delete({ journalVoucherId: In(jvIds) } as any);
-        await this.journalVoucherRepo.delete({ id: In(jvIds) } as any);
-      }
-    }
-
+    // JV
     await this.createOrRebuildJVForPurchaseInvoice(
-      { ...(savedInvoice as any), items: (existing as any).items } as any,
-      (existing as any).items,
-      incomingUnitPriceRowsPayload,
+      savedInvoice as any,
+      (((savedInvoice as any).items ?? []) as any),
+      (data as any)?.unitPriceRows,
     );
 
-    // rebuild unit price rows
-    await this.rowRepo.delete({ invoiceId: (savedInvoice as any).id } as any);
-
-    if (incomingUnitPriceRowsPayload?.length) {
-      const normalized = incomingUnitPriceRowsPayload.map((r: any) => {
+    // ✅ unit price rows (NOW also persists taxAccount / taxSupplier correctly)
+    if ((data as any)?.unitPriceRows?.length) {
+      const normalized = (data as any).unitPriceRows.map((r: any) => {
         const v = Number(r.value ?? 0);
         const o = Number(r.valueOFR ?? 0);
         const ex = Number(r.valueExch ?? 0);
         const eo = Number(r.valueExchOFR ?? 0);
-
         return {
           ...r,
           value: v,
@@ -1379,40 +1283,246 @@ private async getNextPurchaseInvoiceNumber(type: 'S' | 'G' | 'SR' | 'RVR'): Prom
             ? Number(row.supplier.id)
             : null;
 
-        const { id: _rowId, account, supplier, ...rest } = row;
+        const taxAccountId =
+          row.taxAccountId != null
+            ? Number(row.taxAccountId)
+            : row.taxAccount?.id != null
+            ? Number(row.taxAccount.id)
+            : null;
+
+        const taxSupplierId =
+          row.taxSupplierId != null
+            ? Number(row.taxSupplierId)
+            : row.taxSupplier?.id != null
+            ? Number(row.taxSupplier.id)
+            : null;
 
         return this.rowRepo.create({
           invoice: { id: (savedInvoice as any).id } as any,
           invoiceId: (savedInvoice as any).id,
 
-          purchaseInvoiceSettingId: rest.purchaseInvoiceSettingId ?? null,
-          chargeName: rest.chargeName,
-          chargeType: rest.chargeType,
-          value: rest.value,
-          valueOFR: rest.valueOFR,
-          currency: rest.currency,
-          valueExch: rest.valueExch,
-          valueExchOFR: rest.valueExchOFR,
-          addToItemCost: rest.addToItemCost,
-          invoiceNbTax: rest.invoiceNbTax,
-          shipping: rest.shipping,
+          purchaseInvoiceSettingId: row.purchaseInvoiceSettingId ?? null,
+          chargeName: row.chargeName,
+          chargeType: row.chargeType,
+          value: Number(row.value ?? 0),
+          valueOFR: Number(row.valueOFR ?? 0),
+          currency: row.currency,
+          valueExch: Number(row.valueExch ?? 0),
+          valueExchOFR: Number(row.valueExchOFR ?? 0),
 
-          accountId,
-          account: accountId ? ({ id: accountId } as any) : null,
-
+          addToItemCost: row.addToItemCost,
+          invoiceNbTax: row.invoiceNbTax,
           supplierId,
-          supplier: supplierId ? ({ id: supplierId } as any) : null,
+          accountId,
+          shipping: row.shipping,
+
+          // ✅ NEW: SAVE RELATIONS (so FK persists even if taxAccountId property isn't declared)
+          taxAccount: taxAccountId ? ({ id: taxAccountId } as any) : null,
+          taxSupplier: taxSupplierId ? ({ id: taxSupplierId } as any) : null,
         } as any);
       });
 
       await this.rowRepo.save(rowsToSave as any);
     }
 
-    // ✅ compute averages ONLY for this invoice (no chain recompute)
+    // ✅ compute averages ONLY for this invoice
     await this.computeAndWriteCostsForInvoice((savedInvoice as any).id);
-
-    return savedInvoice;
   }
+
+  return savedInvoice;
+}
+
+
+
+  // ────────────────────────────────────────────────────────────
+  // UPDATE (no recompute functions, no applyPurchaseCostsForInvoice)
+  // ────────────────────────────────────────────────────────────
+async update(id: number, data: Partial<PurchaseInvoice>) {
+  const existing = await this.invoiceRepo.findOne({
+    where: { id } as any,
+    relations: ['items', 'items.itemVariant'],
+  });
+  if (!existing) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+
+  const prevItemIds = (((existing as any).items ?? []) as any[])
+    .map((it: any) => Number(it.id))
+    .filter((n: number) => Number.isFinite(n) && n > 0);
+
+  // old batch ids from txs (so deleted items batches get fixed)
+  let oldBatchIds: number[] = [];
+  if (prevItemIds.length) {
+    const oldTxs = await this.inventoryTxRepo.find({
+      where: { purchaseInvoiceItemId: In(prevItemIds) } as any,
+    });
+    oldBatchIds = Array.from(
+      new Set(
+        oldTxs
+          .map((tx: any) => Number(tx.itemBatchId))
+          .filter((n: number) => Number.isFinite(n) && n > 0),
+      ),
+    );
+  }
+
+  const {
+    items: incomingItemsPayload,
+    unitPriceRows: incomingUnitPriceRowsPayload,
+    ...headerPayload
+  } = (data as any) || {};
+
+  Object.assign(existing as any, headerPayload);
+  (existing as any).unitPriceRows = undefined;
+
+  // upsert items
+  const incomingItems = (incomingItemsPayload ?? []).map((it: any) => ({ ...it }));
+  const incomingItemIdSet = new Set<number>(
+    incomingItems.filter((i: any) => i.id).map((i: any) => Number(i.id)),
+  );
+
+  const toDeleteItemIds = prevItemIds.filter((oldId) => !incomingItemIdSet.has(oldId));
+
+  if (toDeleteItemIds.length) {
+    await this.inventoryTxRepo.delete({ purchaseInvoiceItemId: In(toDeleteItemIds) } as any);
+    await this.itemRepo.delete(toDeleteItemIds as any);
+  }
+
+  for (const raw of incomingItems) {
+    if (raw.id) {
+      await this.itemRepo.update(raw.id, { ...raw, invoiceId: (existing as any).id } as any);
+    } else {
+      const created = this.itemRepo.create({
+        ...raw,
+        invoice: { id: (existing as any).id } as any,
+        invoiceId: (existing as any).id,
+      } as any);
+      await this.itemRepo.save(created as any);
+    }
+  }
+
+  // reload items
+  (existing as any).items = await this.itemRepo.find({
+    where: { invoice: { id: (existing as any).id } } as any,
+  });
+
+  // save header
+  const savedInvoice = await this.invoiceRepo.save(existing as any);
+
+  // delete ALL old txs for previous items (safe)
+  if (prevItemIds.length) {
+    await this.inventoryTxRepo.delete({ purchaseInvoiceItemId: In(prevItemIds) } as any);
+  }
+
+  // rebuild inventory tx/batches/variant totals for updated invoice
+  await this.rebuildInventoryForPurchaseInvoice(
+    { ...(savedInvoice as any), items: (existing as any).items } as any,
+    oldBatchIds,
+  );
+
+  // rebuild JV (delete old, recreate)
+  const existingJvs = await this.journalVoucherRepo.find({
+    where: { purchaseInvoiceId: (savedInvoice as any).id } as any,
+  });
+
+  if (existingJvs.length) {
+    const jvIds = existingJvs
+      .map((j: any) => Number(j.id))
+      .filter((n: number) => Number.isFinite(n) && n > 0);
+
+    if (jvIds.length) {
+      await this.journalVoucherDetailRepo.delete({ journalVoucherId: In(jvIds) } as any);
+      await this.journalVoucherRepo.delete({ id: In(jvIds) } as any);
+    }
+  }
+
+  await this.createOrRebuildJVForPurchaseInvoice(
+    { ...(savedInvoice as any), items: (existing as any).items } as any,
+    (existing as any).items,
+    incomingUnitPriceRowsPayload,
+  );
+
+  // rebuild unit price rows
+  await this.rowRepo.delete({ invoiceId: (savedInvoice as any).id } as any);
+
+  if (incomingUnitPriceRowsPayload?.length) {
+    const normalized = incomingUnitPriceRowsPayload.map((r: any) => {
+      const v = Number(r.value ?? 0);
+      const o = Number(r.valueOFR ?? 0);
+      const ex = Number(r.valueExch ?? 0);
+      const eo = Number(r.valueExchOFR ?? 0);
+
+      return {
+        ...r,
+        value: v,
+        valueOFR: v > 0 && o === 0 ? v : o,
+        valueExch: ex,
+        valueExchOFR: ex > 0 && eo === 0 ? ex : eo,
+      };
+    });
+
+    const rowsToSave = normalized.map((row: any) => {
+      const accountId =
+        row.accountId != null
+          ? Number(row.accountId)
+          : row.account?.id != null
+          ? Number(row.account.id)
+          : null;
+
+      const supplierId =
+        row.supplierId != null
+          ? Number(row.supplierId)
+          : row.supplier?.id != null
+          ? Number(row.supplier.id)
+          : null;
+
+      const taxAccountId =
+        row.taxAccountId != null
+          ? Number(row.taxAccountId)
+          : row.taxAccount?.id != null
+          ? Number(row.taxAccount.id)
+          : null;
+
+      const taxSupplierId =
+        row.taxSupplierId != null
+          ? Number(row.taxSupplierId)
+          : row.taxSupplier?.id != null
+          ? Number(row.taxSupplier.id)
+          : null;
+
+      const { id: _rowId, account, supplier, taxAccount, taxSupplier, ...rest } = row;
+
+      return this.rowRepo.create({
+        invoice: { id: (savedInvoice as any).id } as any,
+        invoiceId: (savedInvoice as any).id,
+
+        purchaseInvoiceSettingId: rest.purchaseInvoiceSettingId ?? null,
+        chargeName: rest.chargeName,
+        chargeType: rest.chargeType,
+        value: Number(rest.value ?? 0),
+        valueOFR: Number(rest.valueOFR ?? 0),
+        currency: rest.currency,
+        valueExch: Number(rest.valueExch ?? 0),
+        valueExchOFR: Number(rest.valueExchOFR ?? 0),
+        addToItemCost: rest.addToItemCost,
+        invoiceNbTax: rest.invoiceNbTax,
+        shipping: rest.shipping,
+
+        accountId,
+        supplierId,
+
+        // ✅ NEW: SAVE RELATIONS (so FK persists even if taxAccountId property isn't declared)
+        taxAccount: taxAccountId ? ({ id: taxAccountId } as any) : null,
+        taxSupplier: taxSupplierId ? ({ id: taxSupplierId } as any) : null,
+      } as any);
+    });
+
+    await this.rowRepo.save(rowsToSave as any);
+  }
+
+  // ✅ compute averages ONLY for this invoice (no chain recompute)
+  await this.computeAndWriteCostsForInvoice((savedInvoice as any).id);
+
+  return savedInvoice;
+}
+
 
   // ────────────────────────────────────────────────────────────
   // READS
@@ -1429,22 +1539,26 @@ private async getNextPurchaseInvoiceNumber(type: 'S' | 'G' | 'SR' | 'RVR'): Prom
     });
   }
 
-  async findOne(id: number) {
-    return this.invoiceRepo.findOne({
-      where: { id } as any,
-      relations: [
-        'supplier',
-        'items',
-        'items.itemVariant',
-        'items.itemVariant.thickness',
-        'items.itemVariant.thickness.item',
-        'unitPriceRows',
-        'unitPriceRows.supplier',
-        'unitPriceRows.supplier.account',
-        'unitPriceRows.purchaseInvoiceSetting',
-      ] as any,
-    });
-  }
+ async findOne(id: number) {
+  return this.invoiceRepo.findOne({
+    where: { id } as any,
+    relations: [
+      'supplier',
+      'items',
+      'items.itemVariant',
+      'items.itemVariant.thickness',
+      'items.itemVariant.thickness.item',
+      'unitPriceRows',
+      'unitPriceRows.supplier',
+      'unitPriceRows.supplier.account',
+      'unitPriceRows.purchaseInvoiceSetting',
+
+      // ✅ NEW
+      'unitPriceRows.taxAccount',
+      'unitPriceRows.taxSupplier',
+    ] as any,
+  });
+}
 
   async findMinimalInvoices() {
     return this.invoiceRepo
