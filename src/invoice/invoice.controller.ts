@@ -173,14 +173,29 @@ export class InvoiceController {
   }
 
   // return invoice creation
-  @Post(":id/return")
-  @RequirePerms("invoices.return")
-  createReturnInvoice(
-    @Param("id") id: string,
-    @Body() body: { date?: string; note?: string }
-  ) {
-    return this.invoiceService.createReturnInvoice(Number(id), body);
-  }
+@Post(":id/return")
+createReturnInvoice(
+  @Param("id") id: string,
+  @Body()
+  body: {
+    date?: string;
+    note?: string;
+    items: Array<{
+      sourceInvoiceItemId?: number;
+      itemBatchId: number;
+      itemVariantId?: number;
+      sqmPieceId?: number | null;
+      length?: number | null;
+      width?: number | null;
+      quantity?: number;
+      sqm?: number;
+      note?: string;
+    }>;
+  },
+) {
+  return this.invoiceService.createReturnInvoice(Number(id), body);
+}
+
 
   // update display names / fill defaults
   @Put("v1/invoice-display-names/fill-defaults")

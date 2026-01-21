@@ -64,6 +64,7 @@ export class InvoiceService {
 
     private readonly invoiceGateway: InvoiceGateway,
     private readonly accountingResolver: AccountingResolverService, 
+    
 
   ) {}
   
@@ -2997,11 +2998,60 @@ this.invoiceGateway.emitInvoiceUpdated({
 
 async createReturnInvoice(
   originalInvoiceId: number,
-  body: { date?: string; note?: string },
+  body: {
+    date?: string;
+    note?: string;
+    items: Array<{
+      // Recommended (solves ambiguity if same batch appears multiple times):
+      sourceInvoiceItemId?: number;
+
+      // What you said you will send:
+      itemBatchId: number;
+
+      // Optional but helps matching:
+      itemVariantId?: number;
+      sqmPieceId?: number | null;
+      length?: number | null;
+      width?: number | null;
+
+      // Partial quantities:
+      quantity?: number; // for unit/qty mode OR if you want ratio-based sqm calc
+      sqm?: number; // for sqm mode OR exact sqm return
+
+      // Optional per-line note if you have a column for it (ignore if not)
+      note?: string;
+    }>;
+  },
 ): Promise<Invoice> {
   const queryRunner = this.dataSource.createQueryRunner();
   await queryRunner.connect();
   await queryRunner.startTransaction();
+
+  // ---- helpers
+  const EPS = 0.0001;
+  const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+  const normalizeStockMode = (m: any) => {
+    const s = String(m ?? "").trim().toLowerCase();
+    if (s === "unit") return "qty";
+    if (s === "none") return "none";
+    return s || "sqm";
+  };
+
+  const keyOf = (x: {
+    itemVariantId?: any;
+    itemBatchId?: any;
+    sqmPieceId?: any;
+    length?: any;
+    width?: any;
+  }) => {
+    const vId = n(x.itemVariantId);
+    const bId = n(x.itemBatchId);
+    const pId = n(x.sqmPieceId) || 0;
+    const L = x.length == null ? "" : String(x.length);
+    const W = x.width == null ? "" : String(x.width);
+    return `${vId}|${bId}|${pId}|${L}|${W}`;
+  };
 
   try {
     const setting = await this.settingsRepo.findOneBy({ isActive: true });
@@ -3019,23 +3069,18 @@ async createReturnInvoice(
       throw new BadRequestException("Cannot create a return from a RTN invoice.");
     }
 
+    if (!Array.isArray(body?.items) || body.items.length === 0) {
+      throw new BadRequestException("RTN items[] is required for partial return.");
+    }
+
     const baseType = original.invoiceType as "S" | "G" | "RVR";
     const baseIsG = baseType === "G";
     const baseIsRvr = baseType === "RVR";
 
-    // prevent duplicate return for same original
-    const existing = await queryRunner.manager.getRepository(Invoice).findOne({
-      where: { invoiceType: "RTN" as any, returnOfInvoiceId: original.id as any },
-    } as any);
-    if (existing) {
-      throw new BadRequestException(
-        `Return already created for invoice #${original.id} (${existing.invoiceNumber}).`,
-      );
-    }
+    // ✅ REMOVE: duplicate RTN prevention (partial allows multiple RTNs)
+    // const existing = ...
 
-    // 2) Numbering rules:
-    //    - Return of G => RG25-001 (separate sequence)
-    //    - Return of S/RVR => R25-001 (shared sequence)
+    // 2) Numbering rules (same as you had)
     const rtnPrefix = baseIsG ? `RG${yearSuffix}-` : `R${yearSuffix}-`;
 
     const lastRTN = await queryRunner.manager
@@ -3051,104 +3096,30 @@ async createReturnInvoice(
       const parts = lastRTN.invoiceNumber.split("-");
       seq = (parseInt(parts[1], 10) || 0) + 1;
     }
-
     const rtnNumber = `${rtnPrefix}${String(seq).padStart(3, "0")}`;
 
-    // 3) Create RTN invoice header
-    const invRepo = queryRunner.manager.getRepository(Invoice);
+    // 3) Load previous RTNs for this original to validate remaining
+    const prevRTNs = await queryRunner.manager.getRepository(Invoice).find({
+      where: { invoiceType: "RTN" as any, returnOfInvoiceId: original.id as any } as any,
+      relations: ["items"],
+    });
 
-    const rtn: Invoice = invRepo.create({
-      customerId: original.customerId,
-      date: body?.date ? new Date(body.date) : new Date(),
-      invoiceType: "RTN",
-      invoiceNumber: rtnNumber,
-      documentNumber: rtnNumber,
-      branchId: original.branchId,
-      currencyId: original.currencyId,
-      totalWithoutVAT: original.totalWithoutVAT,
-      totalVAT: original.totalVAT,
-      grandTotal: original.grandTotal,
-      currencyRate: original.currencyRate,
-      vatPercentage: original.vatPercentage,
-      returnOfInvoiceId: original.id,
-    } as DeepPartial<Invoice>) as Invoice;
+    // Build "returned so far" map (by key)
+    const returnedQtyByKey = new Map<string, number>();
+    const returnedSqmByKey = new Map<string, number>();
 
-    const savedRTN = await invRepo.save(rtn);
-
-    // 4) Create RTN items (FULL RETURN = copy original items)
-    const invItemRepo = queryRunner.manager.getRepository(InvoiceItem);
-
-    const rtnItems = (original.items || []).map((it) =>
-      invItemRepo.create({
-        invoiceId: savedRTN.id,
-        itemVariantId: it.itemVariantId,
-        itemBatchId: it.itemBatchId,
-        sqmPieceId: it.sqmPieceId ?? null,
-
-        length: it.length ?? null,
-        width: it.width ?? null,
-        sheetsPerBox: it.sheetsPerBox ?? null,
-
-        sqm: Number(it.sqm) || 0,
-        unitPrice: Number(it.unitPrice) || 0,
-        totalAmount: Number(it.totalAmount) || 0,
-        vat: Number(it.vat) || 0,
-        quantity: Number(it.quantity) || 0,
-
-        averageCost: it.averageCost ?? null,
-        averageCostC: it.averageCostC ?? null,
-        averageCostVM: it.averageCostVM ?? null,
-        averageCostCVM: it.averageCostCVM ?? null,
-        lastCost: it.lastCost ?? null,
-        lastCostC: it.lastCostC ?? null,
-        lastCostVM: it.lastCostVM ?? null,
-        lastCostCVM: it.lastCostCVM ?? null,
-
-        // ✅ OPTIONAL (recommended if these columns exist on InvoiceItem):
-        // itemType: it.itemType ?? null,
-        // stockMode: it.stockMode ?? null,
-      }),
-    );
-
-    const savedRTNItems: InvoiceItem[] = await invItemRepo.save(rtnItems);
-
-    // 5) SQM PIECES: add sqm back (reverse sold/remaining)
-    const sqmPieceRepo = queryRunner.manager.getRepository(SqmPiece);
-
-    for (const it of savedRTNItems) {
-      if (!it.sqmPieceId) continue;
-
-      const lineSqm = Number(it.sqm) || 0;
-      if (lineSqm <= 0) continue;
-
-      const piece = await sqmPieceRepo.findOne({ where: { id: it.sqmPieceId } });
-      if (!piece) throw new BadRequestException(`SQM piece ${it.sqmPieceId} not found.`);
-
-      const remainingBefore = Number(piece.sqmRemaining ?? 0);
-      const soldBefore = Number(piece.sqmSold ?? 0);
-
-      const newSoldRaw = soldBefore - lineSqm;
-      if (newSoldRaw < -0.0001) {
-        throw new BadRequestException(`Return sqm exceeds sold sqm for SQM piece #${it.sqmPieceId}.`);
+    for (const r of prevRTNs) {
+      for (const it of r.items || []) {
+        const k = keyOf(it as any);
+        returnedQtyByKey.set(k, (returnedQtyByKey.get(k) || 0) + n((it as any).quantity));
+        returnedSqmByKey.set(k, (returnedSqmByKey.get(k) || 0) + n((it as any).sqm));
       }
-
-      const newSold = newSoldRaw <= 0.0001 ? 0 : Number(newSoldRaw.toFixed(4));
-      const newRemaining = Number((remainingBefore + lineSqm).toFixed(4));
-
-      piece.sqmSold = newSold;
-      piece.sqmRemaining = newRemaining;
-      if (newRemaining > 0) piece.isActive = true;
-
-      await sqmPieceRepo.save(piece);
     }
 
-    // 6) INVENTORY TRANSACTIONS: reverse base invoice effect (mode aware)
+    // 4) stockMode map (same idea you had)
+    const invItems = original.items || [];
     const variantIds = Array.from(
-      new Set(
-        savedRTNItems
-          .map((x) => Number(x.itemVariantId))
-          .filter((n) => Number.isFinite(n) && n > 0),
-      ),
+      new Set(invItems.map((x) => n((x as any).itemVariantId)).filter((id) => id > 0)),
     );
 
     const stockModeMap = new Map<number, string>();
@@ -3164,32 +3135,262 @@ async createReturnInvoice(
         .getRawMany();
 
       for (const r of rows) {
-        const id = Number((r as any)?.id);
-        const mode = String((r as any)?.stockMode ?? "").trim().toLowerCase();
-        if (Number.isFinite(id) && id > 0) stockModeMap.set(id, mode);
+        const id = n((r as any)?.id);
+        const mode = normalizeStockMode((r as any)?.stockMode);
+        if (id > 0) stockModeMap.set(id, mode);
       }
     }
 
-    // ✅ FIX: treat NONE as "none" and do not default it to sqm
-    const normalizeStockMode = (m: any) => {
-      const s = String(m ?? "").trim().toLowerCase();
-      if (s === "unit") return "qty";
-      if (s === "none") return "none"; // ✅
-      return s || "sqm";
-    };
+    // 5) Resolve each requested line to a source original invoice item + validate remaining
+    const invItemRepo = queryRunner.manager.getRepository(InvoiceItem);
 
+    // index original by id
+    const origById = new Map<number, any>();
+    for (const it of invItems) origById.set(n((it as any).id), it);
+
+    // index original by key (might be ambiguous)
+    const origByKey = new Map<string, any[]>();
+    for (const it of invItems) {
+      const k = keyOf(it as any);
+      const arr = origByKey.get(k) || [];
+      arr.push(it);
+      origByKey.set(k, arr);
+    }
+
+    const createdItems: InvoiceItem[] = [];
+
+    // We'll compute totals from created lines
+    let totalWithoutVAT = 0;
+    let totalVAT = 0;
+
+    const vatPct = n((original as any).vatPercentage);
+    const hasVAT = vatPct > 0;
+
+    for (const req of body.items) {
+      const reqBatchId = n(req.itemBatchId);
+      if (!reqBatchId) throw new BadRequestException("Each RTN line must include itemBatchId.");
+
+      let src: any | undefined;
+
+      // best: sourceInvoiceItemId
+      if (req.sourceInvoiceItemId) {
+        src = origById.get(n(req.sourceInvoiceItemId));
+        if (!src) {
+          throw new BadRequestException(`sourceInvoiceItemId ${req.sourceInvoiceItemId} not found in original invoice.`);
+        }
+      } else {
+        // match by key-ish (using what the user sends + fallback to original)
+        const probe = {
+          itemVariantId: req.itemVariantId ?? undefined,
+          itemBatchId: reqBatchId,
+          sqmPieceId: req.sqmPieceId ?? undefined,
+          length: req.length ?? undefined,
+          width: req.width ?? undefined,
+        };
+
+        // If user didn't send variantId/length/width, try to infer by searching originals with same batchId
+        let candidates = invItems.filter((x: any) => n(x.itemBatchId) === reqBatchId);
+
+        if (req.itemVariantId) candidates = candidates.filter((x: any) => n(x.itemVariantId) === n(req.itemVariantId));
+        if (req.sqmPieceId != null) candidates = candidates.filter((x: any) => n(x.sqmPieceId) === n(req.sqmPieceId));
+        if (req.length != null) candidates = candidates.filter((x: any) => String(x.length ?? "") === String(req.length));
+        if (req.width != null) candidates = candidates.filter((x: any) => String(x.width ?? "") === String(req.width));
+
+        if (candidates.length === 0) {
+          throw new BadRequestException(`No matching original item found for batch ${reqBatchId}.`);
+        }
+        if (candidates.length > 1) {
+          throw new BadRequestException(
+            `Ambiguous match for batch ${reqBatchId}. Send sourceInvoiceItemId to choose the exact line.`,
+          );
+        }
+        src = candidates[0];
+      }
+
+      const vId = n(src.itemVariantId);
+      const mode = normalizeStockMode(stockModeMap.get(vId));
+
+      // stockMode NONE => you can allow RTN financially, but must not touch inventory.
+      // We'll still allow creating the line, just no inv tx / batch updates later (your existing logic already skips those).
+      const srcQty = n(src.quantity);
+      const srcSqm = n(src.sqm);
+
+      let qty = n(req.quantity);
+      let sqm = n(req.sqm);
+
+      // If sqm not provided, derive sqm ratio from original
+      if (sqm <= 0 && qty > 0 && srcQty > 0 && srcSqm > 0) {
+        const sqmPerQty = srcSqm / srcQty;
+        sqm = Number((qty * sqmPerQty).toFixed(4));
+      }
+
+      // If qty not provided, derive qty ratio from original
+      if (qty <= 0 && sqm > 0 && srcSqm > 0 && srcQty > 0) {
+        const qtyPerSqm = srcQty / srcSqm;
+        qty = Number((sqm * qtyPerSqm).toFixed(4));
+      }
+
+      if (qty <= 0 && sqm <= 0) {
+        throw new BadRequestException(`RTN line must include quantity and/or sqm (batch ${reqBatchId}).`);
+      }
+
+      // Remaining validation (by key)
+      const srcKey = keyOf(src as any);
+
+      const alreadyQty = returnedQtyByKey.get(srcKey) || 0;
+      const alreadySqm = returnedSqmByKey.get(srcKey) || 0;
+
+      const remQty = srcQty - alreadyQty;
+      const remSqm = srcSqm - alreadySqm;
+
+      // validate based on mode, but also protect both when available
+      if (mode === "qty") {
+        if (qty > remQty + EPS) {
+          throw new BadRequestException(
+            `Return qty exceeds remaining for batch ${reqBatchId}. Remaining qty: ${remQty}`,
+          );
+        }
+        // if original had sqm, also protect it
+        if (srcSqm > 0 && sqm > remSqm + EPS) {
+          throw new BadRequestException(
+            `Return sqm exceeds remaining for batch ${reqBatchId}. Remaining sqm: ${remSqm}`,
+          );
+        }
+      } else {
+        if (sqm > remSqm + EPS) {
+          throw new BadRequestException(
+            `Return sqm exceeds remaining for batch ${reqBatchId}. Remaining sqm: ${remSqm}`,
+          );
+        }
+        // if original had qty, also protect it
+        if (srcQty > 0 && qty > remQty + EPS) {
+          throw new BadRequestException(
+            `Return qty exceeds remaining for batch ${reqBatchId}. Remaining qty: ${remQty}`,
+          );
+        }
+      }
+
+      // price/vat math
+      const unitPrice = n(src.unitPrice);
+      const baseAmount = mode === "qty" ? unitPrice * qty : unitPrice * sqm;
+      const vatAmount = hasVAT ? baseAmount * (vatPct / 100) : 0;
+
+      const baseAmount2 = Number(baseAmount.toFixed(2));
+      const vatAmount2 = Number(vatAmount.toFixed(2));
+
+      totalWithoutVAT += baseAmount2;
+      totalVAT += vatAmount2;
+
+const item = invItemRepo.create({
+  itemVariantId: src.itemVariantId,
+  itemBatchId: src.itemBatchId,
+  sqmPieceId: src.sqmPieceId ?? null,
+  length: src.length ?? null,
+  width: src.width ?? null,
+  sheetsPerBox: src.sheetsPerBox ?? null,
+  sqm: sqm > 0 ? sqm : 0,
+  unitPrice,
+  totalAmount: baseAmount2,
+  vat: vatAmount2,
+  quantity: qty > 0 ? qty : 0,
+
+  averageCost: src.averageCost ?? null,
+  averageCostC: src.averageCostC ?? null,
+  averageCostVM: src.averageCostVM ?? null,
+  averageCostCVM: src.averageCostCVM ?? null,
+  lastCost: src.lastCost ?? null,
+  lastCostC: src.lastCostC ?? null,
+  lastCostVM: src.lastCostVM ?? null,
+  lastCostCVM: src.lastCostCVM ?? null,
+} as DeepPartial<InvoiceItem>);
+
+createdItems.push(item);
+
+
+      
+    }
+
+    const grandTotal = Number((totalWithoutVAT + totalVAT).toFixed(2));
+
+    // 6) Create RTN invoice header (totals from partial lines!)
+    const invRepo = queryRunner.manager.getRepository(Invoice);
+
+    const rtn: Invoice = invRepo.create({
+      customerId: original.customerId,
+      date: body?.date ? new Date(body.date) : new Date(),
+      invoiceType: "RTN",
+      invoiceNumber: rtnNumber,
+      documentNumber: rtnNumber,
+      branchId: original.branchId,
+      currencyId: original.currencyId,
+      totalWithoutVAT: Number(totalWithoutVAT.toFixed(2)),
+      totalVAT: Number(totalVAT.toFixed(2)),
+      grandTotal,
+      currencyRate: original.currencyRate,
+      vatPercentage: original.vatPercentage,
+      returnOfInvoiceId: original.id,
+      // if you have invoice note column:
+      // note: body?.note ?? null,
+    } as DeepPartial<Invoice>) as Invoice;
+
+    const savedRTN = await invRepo.save(rtn);
+
+    // 7) Save RTN items (partial)
+    for (const it of createdItems) (it as any).invoiceId = savedRTN.id;
+    const savedRTNItems: InvoiceItem[] = await queryRunner.manager.getRepository(InvoiceItem).save(createdItems);
+
+    // 8) SQM PIECES: add sqm back (reverse sold/remaining) — unchanged (but now partial)
+    const sqmPieceRepo = queryRunner.manager.getRepository(SqmPiece);
+
+    for (const it of savedRTNItems) {
+      if (!it.sqmPieceId) continue;
+
+      const lineSqm = n((it as any).sqm);
+      if (lineSqm <= 0) continue;
+
+      const piece = await sqmPieceRepo.findOne({ where: { id: it.sqmPieceId } });
+      if (!piece) throw new BadRequestException(`SQM piece ${it.sqmPieceId} not found.`);
+
+      const remainingBefore = n(piece.sqmRemaining);
+      const soldBefore = n(piece.sqmSold);
+
+      const newSoldRaw = soldBefore - lineSqm;
+      if (newSoldRaw < -EPS) {
+        throw new BadRequestException(`Return sqm exceeds sold sqm for SQM piece #${it.sqmPieceId}.`);
+      }
+
+      const newSold = newSoldRaw <= EPS ? 0 : Number(newSoldRaw.toFixed(4));
+      const newRemaining = Number((remainingBefore + lineSqm).toFixed(4));
+
+      piece.sqmSold = newSold;
+      piece.sqmRemaining = newRemaining;
+      if (newRemaining > 0) piece.isActive = true;
+
+      await sqmPieceRepo.save(piece);
+    }
+
+    // 9) INVENTORY TRANSACTIONS (only for returned lines) — your logic reused
+    const returnedVariantIds = Array.from(
+      new Set(
+        savedRTNItems
+          .map((x) => n((x as any).itemVariantId))
+          .filter((id) => id > 0),
+      ),
+    );
+
+    // stockModeMap already built for originals, but ensure missing ids handled:
     const invTxRepo = queryRunner.manager.getRepository(InventoryTransaction);
     const invTxs: InventoryTransaction[] = [];
 
     for (const it of savedRTNItems) {
-      const vId = Number(it.itemVariantId);
+      const vId = n((it as any).itemVariantId);
       const mode = normalizeStockMode(stockModeMap.get(vId));
 
-      // ✅ FIX: stockMode NONE -> no inventory transaction at all
+      // ✅ stockMode NONE -> no inventory transaction
       if (mode === "none") continue;
 
-      const qtyLine = Number(it.quantity) || 0;
-      const sqmLine = Number(it.sqm) || 0;
+      const qtyLine = n((it as any).quantity);
+      const sqmLine = n((it as any).sqm);
 
       let quantity = 0,
         sqm = 0,
@@ -3240,15 +3441,15 @@ async createReturnInvoice(
 
     if (invTxs.length) await invTxRepo.save(invTxs);
 
-    // 7) UPDATE BATCHES (reverse original effect) + recompute balances
+    // 10) UPDATE BATCHES + recompute balances (only for returned lines) — your logic reused
     const batchRepo = queryRunner.manager.getRepository(ItemBatch);
     const affectedVariantIds = new Set<number>();
 
     for (const it of savedRTNItems) {
-      const vId = Number(it.itemVariantId);
+      const vId = n((it as any).itemVariantId);
       const mode = normalizeStockMode(stockModeMap.get(vId));
 
-      // ✅ FIX: stockMode NONE -> do not touch batches/balances
+      // ✅ stockMode NONE -> do not touch batches
       if (mode === "none") continue;
 
       const batch = await batchRepo.findOne({
@@ -3257,34 +3458,34 @@ async createReturnInvoice(
       });
       if (!batch) throw new NotFoundException(`ItemBatch ${it.itemBatchId} not found`);
 
-      const variantId = Number(batch.itemVariant?.id ?? it.itemVariantId);
-      if (Number.isFinite(variantId) && variantId > 0) affectedVariantIds.add(variantId);
+      const variantId = n((batch as any).itemVariant?.id ?? (it as any).itemVariantId);
+      if (variantId > 0) affectedVariantIds.add(variantId);
 
-      const qtySqm = Number(it.sqm) || 0;
+      const qtySqm = n((it as any).sqm);
 
       if (baseType === "S") {
-        batch.out = Number(batch.out ?? 0) - qtySqm;
-        batch.outOFR = Number(batch.outOFR ?? 0) - qtySqm;
+        batch.out = n(batch.out) - qtySqm;
+        batch.outOFR = n(batch.outOFR) - qtySqm;
       } else if (baseType === "G") {
-        batch.outOFR = Number(batch.outOFR ?? 0) - qtySqm;
+        batch.outOFR = n(batch.outOFR) - qtySqm;
       } else if (baseType === "RVR") {
-        batch.in = Number(batch.in ?? 0) - qtySqm;
+        batch.in = n(batch.in) - qtySqm;
       }
 
       const keys = ["in", "out", "inOFR", "outOFR"] as const;
       for (const k of keys) {
-        if (Number(batch[k] ?? 0) < -0.0001) {
+        if (n((batch as any)[k]) < -EPS) {
           throw new BadRequestException(`Batch ${batch.id} would go negative on ${k} after return.`);
         }
-        if (Number(batch[k] ?? 0) < 0) (batch as any)[k] = 0;
+        if (n((batch as any)[k]) < 0) (batch as any)[k] = 0;
       }
 
-      const start = Number(batch.start ?? 0);
-      const inStd = Number(batch.in ?? 0);
-      const outStd = Number(batch.out ?? 0);
-      const startOfr = Number(batch.startOFR ?? 0);
-      const inOfr = Number(batch.inOFR ?? 0);
-      const outOfr = Number(batch.outOFR ?? 0);
+      const start = n(batch.start);
+      const inStd = n(batch.in);
+      const outStd = n(batch.out);
+      const startOfr = n(batch.startOFR);
+      const inOfr = n(batch.inOFR);
+      const outOfr = n(batch.outOFR);
 
       batch.balance = Number((start + inStd - outStd).toFixed(2));
       batch.balanceOFR = Number((startOfr + inOfr - outOfr).toFixed(2));
@@ -3292,7 +3493,7 @@ async createReturnInvoice(
       await batchRepo.save(batch);
     }
 
-    // 8) RECOMPUTE VARIANT TOTALS FROM BATCHES
+    // 11) RECOMPUTE VARIANT TOTALS FROM BATCHES — unchanged
     const variantRepo = queryRunner.manager.getRepository(ItemVariant);
 
     for (const variantId of affectedVariantIds) {
@@ -3309,29 +3510,29 @@ async createReturnInvoice(
         totalInOFR = 0,
         totalOutOFR = 0;
 
-      for (const b of variant.batches ?? []) {
-        totalStart += Number(b.start || 0);
-        totalIn += Number(b.in || 0);
-        totalOut += Number(b.out || 0);
-        totalStartOFR += Number(b.startOFR || 0);
-        totalInOFR += Number(b.inOFR || 0);
-        totalOutOFR += Number(b.outOFR || 0);
+      for (const b of (variant as any).batches ?? []) {
+        totalStart += n((b as any).start);
+        totalIn += n((b as any).in);
+        totalOut += n((b as any).out);
+        totalStartOFR += n((b as any).startOFR);
+        totalInOFR += n((b as any).inOFR);
+        totalOutOFR += n((b as any).outOFR);
       }
 
-      variant.totalStart = Number(totalStart.toFixed(2));
-      variant.totalIn = Number(totalIn.toFixed(2));
-      variant.totalOut = Number(totalOut.toFixed(2));
-      variant.totalBalance = Number((totalStart + totalIn - totalOut).toFixed(2));
+      (variant as any).totalStart = Number(totalStart.toFixed(2));
+      (variant as any).totalIn = Number(totalIn.toFixed(2));
+      (variant as any).totalOut = Number(totalOut.toFixed(2));
+      (variant as any).totalBalance = Number((totalStart + totalIn - totalOut).toFixed(2));
 
-      variant.totalStartOFR = Number(totalStartOFR.toFixed(2));
-      variant.totalInOFR = Number(totalInOFR.toFixed(2));
-      variant.totalOutOFR = Number(totalOutOFR.toFixed(2));
-      variant.totalBalanceOFR = Number((totalStartOFR + totalInOFR - totalOutOFR).toFixed(2));
+      (variant as any).totalStartOFR = Number(totalStartOFR.toFixed(2));
+      (variant as any).totalInOFR = Number(totalInOFR.toFixed(2));
+      (variant as any).totalOutOFR = Number(totalOutOFR.toFixed(2));
+      (variant as any).totalBalanceOFR = Number((totalStartOFR + totalInOFR - totalOutOFR).toFixed(2));
 
-      await variantRepo.save(variant);
+      await variantRepo.save(variant as any);
     }
 
-    // 9) JOURNAL VOUCHER for RTN (NO deletion of original JV)
+    // 12) JOURNAL VOUCHER for RTN — ✅ use RTN totals (not original totals)
     const jvPrefix = baseIsG ? "JVG" : "JV";
 
     const lastJV = await queryRunner.manager
@@ -3344,25 +3545,19 @@ async createReturnInvoice(
     const jvSeq = lastJV?.jvNumber ? parseInt(lastJV.jvNumber.split("-")[1]) + 1 : 1;
     const jvNumber = `${jvPrefix}${yearSuffix}-${String(jvSeq).padStart(3, "0")}`;
 
-    const currencyCode = original.currencyId === 2 ? "LL" : "USD";
-    const rate = Number(original.currencyRate);
-    const useVAT = Number(original.vatPercentage) > 0;
-    
-const salesRole = currencyCode === 'USD' ? 'Sales_USD' : 'Sales_LL';
-const vatRole   = currencyCode === 'USD' ? 'Vat_USD'   : 'Vat_LL';
+    const currencyCode = savedRTN.currencyId === 2 ? "LL" : "USD";
+    const rate = n(savedRTN.currencyRate);
+    const useVAT = n(savedRTN.vatPercentage) > 0;
 
-const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
+    const salesRole = currencyCode === "USD" ? "Sales_USD" : "Sales_LL";
+    const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
 
-const vatAccount = useVAT
-  ? await this.accountingResolver.resolveAccount(vatRole, null)
-  : null;
+    const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
+    const vatAccount = useVAT ? await this.accountingResolver.resolveAccount(vatRole, null) : null;
 
-
-
-
-    const total = Number(original.grandTotal);
-    const totalWithoutVAT2 = Number(original.totalWithoutVAT);
-    const totalVAT2 = Number(original.totalVAT);
+    const total = n(savedRTN.grandTotal);
+    const totalWithoutVAT2 = n(savedRTN.totalWithoutVAT);
+    const totalVAT2 = n(savedRTN.totalVAT);
 
     const totalLL = total * rate;
     const totalWithoutVATLL = totalWithoutVAT2 * rate;
@@ -3455,7 +3650,7 @@ const vatAccount = useVAT
     const details = this.journalVoucherDetailRepo.create(detailPartials);
 
     const sum = (field: keyof JournalVoucherDetail) =>
-      details.reduce((acc, entry) => acc + Number((entry as any)[field] || 0), 0);
+      details.reduce((acc, entry) => acc + n((entry as any)[field]), 0);
 
     const journalVoucher = this.journalVoucherRepo.create({
       jvNumber,
