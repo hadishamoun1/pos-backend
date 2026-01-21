@@ -561,7 +561,7 @@ async getCustomerStatementOFR(params: {
   };
 
   const fromStart = from ? ymdToStart(from) : null; // inclusive
-  const toNext = to ? ymdToStart(nextYMD(to)) : null; // exclusive (next day 00:00:00)
+  const toNext = to ? ymdToStart(nextYMD(to)) : null; // exclusive
 
   // 1) Load customer & infer currency
   const customer = await this.customerRepo.findOne({
@@ -596,58 +596,65 @@ async getCustomerStatementOFR(params: {
     BASE: { dr: "dr", cr: "cr" },
   } as const;
 
-  type RowKind = "S" | "G";
+  // ✅ Decide if THIS ROW should use OFR columns or Base columns
+  const isOfrRow = (jv: any, docNbr?: string | null) => {
+    const jvType = String(jv?.jvType ?? "").trim().toUpperCase();
+    const jvNumber = String(jv?.jvNumber ?? "").trim().toUpperCase();
+    const doc = String(docNbr ?? "").trim().toUpperCase();
 
-  const getColsFor = (rowKind: RowKind) => {
-    if (rowKind === "G") {
-      const p = ofrColMap[currencyCode] ?? ofrColMap.USD;
-      return {
-        drCol: p.dr as keyof JournalVoucherDetail,
-        crCol: p.cr as keyof JournalVoucherDetail,
-      };
-    }
-    const p = baseColMap[currencyCode] ?? baseColMap.USD;
+    // If "contains G" in your system means OFR vouchers:
+    if (jvType === "G") return true;
+    if (jvNumber.startsWith("JVG") || jvNumber.includes("JVG")) return true;
+
+    // Return / Reverse prefixes that indicate OFR
+    if (doc.startsWith("RG")) return true;
+    if (doc.startsWith("RVG")) return true;
+
+    return false;
+  };
+
+  const getColsForRow = (useOfr: boolean) => {
+    const map = useOfr
+      ? (ofrColMap[currencyCode] ?? ofrColMap.USD)
+      : (baseColMap[currencyCode] ?? baseColMap.USD);
+
     return {
-      drCol: p.dr as keyof JournalVoucherDetail,
-      crCol: p.cr as keyof JournalVoucherDetail,
+      drCol: map.dr as keyof JournalVoucherDetail,
+      crCol: map.cr as keyof JournalVoucherDetail,
     };
   };
 
-  // ✅ FIX: Determine kind using docNbr prefix first:
-  // RG... => G return
-  // R...  => S return
-  // fallback => jvType
-  const getRowKind = (jvType?: string | null, docNbr?: string | null): RowKind => {
-    const doc = String(docNbr ?? "").trim().toUpperCase();
-
-    if (doc.startsWith("RG")) return "G";
-    if (doc.startsWith("R")) return "S";
-
-    const t = String(jvType ?? "").trim().toUpperCase();
-    return t === "G" ? "G" : "S";
-  };
-
-  // ✅ FIX: Filter by type but include RG returns correctly
-  // - If asking for G: include rows where jvType='G' OR docNbr starts with 'RG'
-  // - If asking for S: exclude jvType='G' AND exclude docNbr starts with 'RG'
+  // ✅ Filter by OFR vs Base (NOT by docNbr only, NOT by jvType only)
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
-    if (type === "S") {
+    if (type === "G") {
       qb.andWhere(
-        "(jv.jvType != :gType AND (d.docNbr IS NULL OR UPPER(TRIM(d.docNbr)) NOT LIKE :rg))",
-        { gType: "G", rg: "RG%" }
+        `(
+          UPPER(jv.jvNumber) LIKE 'JVG%'
+          OR UPPER(TRIM(jv.jvType)) = 'G'
+          OR (d.docNbr IS NOT NULL AND (
+            UPPER(TRIM(d.docNbr)) LIKE 'RG%'
+            OR UPPER(TRIM(d.docNbr)) LIKE 'RVG%'
+          ))
+        )`
       );
-    } else if (type === "G") {
+    } else if (type === "S") {
       qb.andWhere(
-        "(jv.jvType = :gType OR (d.docNbr IS NOT NULL AND UPPER(TRIM(d.docNbr)) LIKE :rg))",
-        { gType: "G", rg: "RG%" }
+        `NOT (
+          UPPER(jv.jvNumber) LIKE 'JVG%'
+          OR UPPER(TRIM(jv.jvType)) = 'G'
+          OR (d.docNbr IS NOT NULL AND (
+            UPPER(TRIM(d.docNbr)) LIKE 'RG%'
+            OR UPPER(TRIM(d.docNbr)) LIKE 'RVG%'
+          ))
+        )`
       );
     }
     return qb;
   };
 
-  // 4) Main period query (full-day safe)
+  // 4) Main period query
   const qb = this.journalVoucherDetailRepository
     .createQueryBuilder("d")
     .leftJoinAndSelect("d.journalVoucher", "jv")
@@ -655,7 +662,7 @@ async getCustomerStatementOFR(params: {
     .where("d.customerId = :customerId", { customerId });
 
   if (fromStart) qb.andWhere("jv.date >= :fromStart", { fromStart });
-  if (toNext) qb.andWhere("jv.date < :toNext", { toNext }); // exclusive end
+  if (toNext) qb.andWhere("jv.date < :toNext", { toNext });
 
   applyTypeFilter(qb);
   qb.orderBy("jv.date", "ASC").addOrderBy("d.id", "ASC");
@@ -679,9 +686,8 @@ async getCustomerStatementOFR(params: {
     let openingCr = 0;
 
     for (const r of beforeRows) {
-      const rowKind = getRowKind(r.journalVoucher?.jvType ?? null, r.docNbr ?? null);
-      const { drCol, crCol } = getColsFor(rowKind);
-
+      const useOfr = isOfrRow(r.journalVoucher, r.docNbr);
+      const { drCol, crCol } = getColsForRow(useOfr);
       openingDr += Number((r as any)[drCol] || 0);
       openingCr += Number((r as any)[crCol] || 0);
     }
@@ -693,9 +699,9 @@ async getCustomerStatementOFR(params: {
   let running = openingBalance;
 
   const items = rows.map((r) => {
-    const rowKind = getRowKind(r.journalVoucher?.jvType ?? null, r.docNbr ?? null);
+    const useOfr = isOfrRow(r.journalVoucher, r.docNbr);
+    const { drCol, crCol } = getColsForRow(useOfr);
 
-    const { drCol, crCol } = getColsFor(rowKind);
     const debit = Number((r as any)[drCol] || 0);
     const credit = Number((r as any)[crCol] || 0);
 
@@ -708,7 +714,7 @@ async getCustomerStatementOFR(params: {
       jvType: r.journalVoucher?.jvType,
       description: r.description ?? null,
       docNbr: r.docNbr ?? null,
-      kind: rowKind,
+      usesOfr: useOfr, // ✅ debug flag so you can see why it picked OFR/Base
       debit,
       credit,
       balanceAfter: running,
@@ -727,17 +733,12 @@ async getCustomerStatementOFR(params: {
     { totalDebit: 0, totalCredit: 0 }
   );
 
-  // 7) Basis note (debug)
-  const exampleCols = getColsFor("S");
   const basis = {
     currency: currencyCode,
-    sUses: { debitColumn: exampleCols.drCol as string, creditColumn: exampleCols.crCol as string },
-    gUses: {
-      debitColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).dr,
-      creditColumn: (ofrColMap[currencyCode] ?? ofrColMap.USD).cr,
-    },
     selection: type,
     range: { fromStart, toNext },
+    baseUses: baseColMap[currencyCode] ?? baseColMap.USD,
+    ofrUses: ofrColMap[currencyCode] ?? ofrColMap.USD,
   };
 
   return {
@@ -754,6 +755,7 @@ async getCustomerStatementOFR(params: {
     basis,
   };
 }
+
 
 async getCustomerBalancesReport(params: {
   to?: string; // 'YYYY-MM-DD'
