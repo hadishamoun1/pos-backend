@@ -114,6 +114,20 @@ private readonly accountingResolver: AccountingResolverService,
     return Array.from(new Set(xs.map(Number).filter((n) => Number.isFinite(n) && n > 0)));
   }
 
+private intOrNull(v: any): number | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string' && v.trim() === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+private numOrZero(v: any): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+
+
   private clampPrevQty(raw: any) {
     let n = Number(raw);
     if (!Number.isFinite(n)) n = 0;
@@ -1311,7 +1325,7 @@ async create(data: Partial<PurchaseInvoice>) {
           valueExchOFR: Number(row.valueExchOFR ?? 0),
 
           addToItemCost: row.addToItemCost,
-          invoiceNbTax: row.invoiceNbTax,
+invoiceNbTax: this.intOrNull(row.invoiceNbTax),
           supplierId,
           accountId,
           shipping: row.shipping,
@@ -1502,7 +1516,7 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
         valueExch: Number(rest.valueExch ?? 0),
         valueExchOFR: Number(rest.valueExchOFR ?? 0),
         addToItemCost: rest.addToItemCost,
-        invoiceNbTax: rest.invoiceNbTax,
+        invoiceNbTax: this.intOrNull(row.invoiceNbTax),
         shipping: rest.shipping,
 
         accountId,
