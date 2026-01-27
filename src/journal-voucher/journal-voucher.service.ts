@@ -1116,9 +1116,10 @@ private static readonly TRAILING_DIGITS_EXPR =
 
 async searchBySeq(params?: {
   seq?: string;
+  q?: string; // ✅ NEW: customer/supplier/account search
   page?: number;
   limit?: number;
-  type?: string; // ✅ NEW: 'INVOICE'|'RECEIVABLE'|'JV' OR Arabic: 'فاتورة'|'دفعة'|'قيد يومي'
+  type?: string; // 'INVOICE'|'RECEIVABLE'|'JV' OR Arabic
 }): Promise<{
   data: {
     id: number;
@@ -1128,7 +1129,7 @@ async searchBySeq(params?: {
     description: string;
 
     name: string;
-    kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'JV';
+    kind: "INVOICE" | "RECEIVABLE" | "PURCHASE" | "JV";
     customerName?: string | null;
     invoiceNumber?: string | null;
     invoiceId?: number | null;
@@ -1143,88 +1144,125 @@ async searchBySeq(params?: {
   const page = Math.max(1, Number(params?.page ?? 1));
   const limit = Math.min(100, Math.max(1, Number(params?.limit ?? 100)));
 
-  const seqDigits = (params?.seq ?? '').replace(/\D+/g, '');
+  const seqDigits = (params?.seq ?? "").replace(/\D+/g, "");
   const seqExpr = "REGEXP_SUBSTR(jv.jvNumber, '[0-9]+$')";
 
   // ✅ normalize type filter (Arabic/English)
-  const rawType = (params?.type ?? '').trim();
+  const rawType = (params?.type ?? "").trim();
   const normType = (() => {
-    if (!rawType) return '';
+    if (!rawType) return "";
     const t = rawType.toUpperCase();
 
-    if (t === 'INVOICE') return 'INVOICE';
-    if (t === 'RECEIVABLE') return 'RECEIVABLE';
-    if (t === 'JV') return 'JV';
+    if (t === "INVOICE") return "INVOICE";
+    if (t === "RECEIVABLE") return "RECEIVABLE";
+    if (t === "JV") return "JV";
+    if (t === "PURCHASE") return "PURCHASE";
 
     // Arabic mapping
-    if (rawType.includes('فات')) return 'INVOICE';
-    if (rawType.includes('دف')) return 'RECEIVABLE';
-    if (rawType.includes('قيد')) return 'JV';
+    if (rawType.includes("فات")) return "INVOICE";
+    if (rawType.includes("دف")) return "RECEIVABLE";
+    if (rawType.includes("قيد")) return "JV";
 
     return t;
   })();
 
   const applyJoins = (qb: SelectQueryBuilder<JournalVoucher>) => {
     return qb
-      // Details (explicit join, MySQL-safe)
-      .leftJoin(JournalVoucherDetail, 'd', 'd.journalVoucherId = jv.id')
+      // Details
+      .leftJoin(JournalVoucherDetail, "d", "d.journalVoucherId = jv.id")
+
+      // ✅ Account join (so we can search accountName/accountNumber)
+      .leftJoin("accounts", "acc", "acc.id = d.accountId")
 
       // Receivable
-      .leftJoin(ReceiptEntry, 're', 're.journalVoucherId = jv.id')
-      .leftJoin('customers', 'rcust', 'rcust.id = re.customerId')
+      .leftJoin(ReceiptEntry, "re", "re.journalVoucherId = jv.id")
+      .leftJoin("customers", "rcust", "rcust.id = re.customerId")
 
       // Receipt -> Invoice (sales)
-      .leftJoin('invoices', 'sinv', 'sinv.id = re.invoiceId')
-      .leftJoin('customers', 'sinvCust', 'sinvCust.id = sinv.customerId')
+      .leftJoin("invoices", "sinv", "sinv.id = re.invoiceId")
+      .leftJoin("customers", "sinvCust", "sinvCust.id = sinv.customerId")
 
       // Purchase invoice
-      .leftJoin(PurchaseInvoice, 'pinv', 'pinv.id = jv.purchaseInvoiceId')
-      .leftJoin(Supplier, 'psup', 'psup.id = pinv.supplierId')
+      .leftJoin(PurchaseInvoice, "pinv", "pinv.id = jv.purchaseInvoiceId")
+      .leftJoin(Supplier, "psup", "psup.id = pinv.supplierId")
 
-      // ✅ DocNbr -> Invoice (fixes G / RTN / RVR)
-      .leftJoin('invoices', 'dinv', 'dinv.invoiceNumber = d.docNbr')
-      .leftJoin('customers', 'dinvCust', 'dinvCust.id = dinv.customerId');
+      // DocNbr -> Invoice (fixes G / RTN / RVR)
+      .leftJoin("invoices", "dinv", "dinv.invoiceNumber = d.docNbr")
+      .leftJoin("customers", "dinvCust", "dinvCust.id = dinv.customerId");
   };
 
   const applySeqFilter = (qb: SelectQueryBuilder<JournalVoucher>) => {
     if (!seqDigits) return;
     qb.andWhere(
       `(${seqExpr}) = :seq OR CAST((${seqExpr}) AS UNSIGNED) = :seqNum`,
-      { seq: seqDigits, seqNum: Number(seqDigits) },
+      { seq: seqDigits, seqNum: Number(seqDigits) }
     );
   };
 
-  // ✅ Type filter aligned with your summary priority:
-  // INVOICE if (receiptInvoice OR docInvoice OR purchaseInvoice)
-  // RECEIVABLE only if receiptEntry exists AND no invoice linked
-  // JV only if none of the above
+  // ✅ NEW: text filter (customer/supplier/account)
+  const applyTextFilter = (qb: SelectQueryBuilder<JournalVoucher>) => {
+    const raw = (params?.q ?? "").trim();
+    if (!raw) return;
+
+    const q = raw.replace(/\s+/g, " ");
+    const like = `%${q}%`;
+    const digits = q.replace(/\D+/g, "");
+
+    qb.andWhere(
+      new Brackets((w) => {
+        // customers (receipt + invoice)
+        w.where("rcust.customerName LIKE :like", { like })
+          .orWhere("sinvCust.customerName LIKE :like", { like })
+          .orWhere("dinvCust.customerName LIKE :like", { like })
+
+          // supplier
+          .orWhere("psup.supplierName LIKE :like", { like })
+
+          // account
+          .orWhere("acc.accountName LIKE :like", { like })
+          .orWhere("acc.accountNumber LIKE :like", { like });
+
+        // optional exact account number match if digits exist
+        if (digits) {
+          w.orWhere("acc.accountNumber = :accNum", { accNum: digits });
+        }
+      })
+    );
+  };
+
+  // ✅ Type filter
   const applyTypeFilter = (qb: SelectQueryBuilder<JournalVoucher>) => {
     if (!normType) return;
 
-    if (normType === 'INVOICE') {
+    if (normType === "INVOICE") {
       qb.andWhere(
         new Brackets((w) => {
-          w.where('sinv.id IS NOT NULL')
-            .orWhere('dinv.id IS NOT NULL')
-            .orWhere('pinv.id IS NOT NULL');
-        }),
+          w.where("sinv.id IS NOT NULL")
+            .orWhere("dinv.id IS NOT NULL")
+            .orWhere("pinv.id IS NOT NULL");
+        })
       );
       return;
     }
 
-    if (normType === 'RECEIVABLE') {
-      qb.andWhere('re.id IS NOT NULL')
-        .andWhere('sinv.id IS NULL')
-        .andWhere('dinv.id IS NULL')
-        .andWhere('pinv.id IS NULL');
+    if (normType === "RECEIVABLE") {
+      qb.andWhere("re.id IS NOT NULL")
+        .andWhere("sinv.id IS NULL")
+        .andWhere("dinv.id IS NULL")
+        .andWhere("pinv.id IS NULL");
       return;
     }
 
-    if (normType === 'JV') {
-      qb.andWhere('re.id IS NULL')
-        .andWhere('sinv.id IS NULL')
-        .andWhere('dinv.id IS NULL')
-        .andWhere('pinv.id IS NULL');
+    if (normType === "JV") {
+      qb.andWhere("re.id IS NULL")
+        .andWhere("sinv.id IS NULL")
+        .andWhere("dinv.id IS NULL")
+        .andWhere("pinv.id IS NULL");
+      return;
+    }
+
+    if (normType === "PURCHASE") {
+      qb.andWhere("pinv.id IS NOT NULL");
       return;
     }
   };
@@ -1232,12 +1270,13 @@ async searchBySeq(params?: {
   // -----------------------------
   // 1) COUNT
   // -----------------------------
-  const countQb = applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'));
+  const countQb = applyJoins(this.journalVoucherRepository.createQueryBuilder("jv"));
   applySeqFilter(countQb);
+  applyTextFilter(countQb);   // ✅ NEW
   applyTypeFilter(countQb);
 
   const countRow = await countQb
-    .select('COUNT(DISTINCT jv.id)', 'cnt')
+    .select("COUNT(DISTINCT jv.id)", "cnt")
     .getRawOne();
 
   const total = Number(countRow?.cnt || 0);
@@ -1251,16 +1290,17 @@ async searchBySeq(params?: {
   // -----------------------------
   // 2) PAGE OF IDS
   // -----------------------------
-  const idQb = applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'))
-    .select('jv.id', 'id');
+  const idQb = applyJoins(this.journalVoucherRepository.createQueryBuilder("jv"))
+    .select("jv.id", "id");
 
   applySeqFilter(idQb);
+  applyTextFilter(idQb);      // ✅ NEW
   applyTypeFilter(idQb);
 
   const idRows = await idQb
-    .groupBy('jv.id')
-    .orderBy('jv.date', 'DESC')
-    .addOrderBy('jv.id', 'DESC')
+    .groupBy("jv.id")
+    .orderBy("jv.date", "DESC")
+    .addOrderBy("jv.id", "DESC")
     .skip((page - 1) * limit)
     .take(limit)
     .getRawMany();
@@ -1273,42 +1313,42 @@ async searchBySeq(params?: {
   // -----------------------------
   // 3) FETCH FIELDS FOR THOSE IDS
   // -----------------------------
-  const rows = await applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'))
-    .select('jv.id', 'id')
-    .addSelect('jv.date', 'date')
-    .addSelect('jv.jvNumber', 'jvNumber')
-    .addSelect('jv.jvType', 'jvType')
-    .addSelect('MIN(CASE WHEN d.dr > 0 THEN d.description END)', 'description')
+  const rows = await applyJoins(this.journalVoucherRepository.createQueryBuilder("jv"))
+    .select("jv.id", "id")
+    .addSelect("jv.date", "date")
+    .addSelect("jv.jvNumber", "jvNumber")
+    .addSelect("jv.jvType", "jvType")
+    .addSelect("MIN(CASE WHEN d.dr > 0 THEN d.description END)", "description")
 
     // receivable
-    .addSelect('MAX(re.id)', 'receiptEntryId')
-    .addSelect('MAX(re.currency)', 'receiptCurrency')
-    .addSelect('MAX(rcust.customerName)', 'receiptCustomerName')
+    .addSelect("MAX(re.id)", "receiptEntryId")
+    .addSelect("MAX(re.currency)", "receiptCurrency")
+    .addSelect("MAX(rcust.customerName)", "receiptCustomerName")
 
     // receipt->invoice
-    .addSelect('MAX(sinv.id)', 'receiptInvoiceId')
-    .addSelect('MAX(sinv.invoiceNumber)', 'receiptInvoiceNumber')
-    .addSelect('MAX(sinv.invoiceType)', 'receiptInvoiceType')
-    .addSelect('MAX(sinvCust.customerName)', 'receiptInvoiceCustomerName')
+    .addSelect("MAX(sinv.id)", "receiptInvoiceId")
+    .addSelect("MAX(sinv.invoiceNumber)", "receiptInvoiceNumber")
+    .addSelect("MAX(sinv.invoiceType)", "receiptInvoiceType")
+    .addSelect("MAX(sinvCust.customerName)", "receiptInvoiceCustomerName")
 
     // docNbr->invoice
-    .addSelect('MAX(dinv.id)', 'docInvoiceId')
-    .addSelect('MAX(dinv.invoiceNumber)', 'docInvoiceNumber')
-    .addSelect('MAX(dinv.invoiceType)', 'docInvoiceType')
-    .addSelect('MAX(dinvCust.customerName)', 'docInvoiceCustomerName')
+    .addSelect("MAX(dinv.id)", "docInvoiceId")
+    .addSelect("MAX(dinv.invoiceNumber)", "docInvoiceNumber")
+    .addSelect("MAX(dinv.invoiceType)", "docInvoiceType")
+    .addSelect("MAX(dinvCust.customerName)", "docInvoiceCustomerName")
 
     // purchase
-    .addSelect('MAX(pinv.id)', 'purchaseInvoiceId')
-    .addSelect('MAX(pinv.invoiceNumber)', 'purchaseInvoiceNumber')
-    .addSelect('MAX(psup.supplierName)', 'purchaseSupplierName')
+    .addSelect("MAX(pinv.id)", "purchaseInvoiceId")
+    .addSelect("MAX(pinv.invoiceNumber)", "purchaseInvoiceNumber")
+    .addSelect("MAX(psup.supplierName)", "purchaseSupplierName")
 
-    .where('jv.id IN (:...ids)', { ids })
-    .groupBy('jv.id')
-    .addGroupBy('jv.date')
-    .addGroupBy('jv.jvNumber')
-    .addGroupBy('jv.jvType')
-    .orderBy('jv.date', 'DESC')
-    .addOrderBy('jv.id', 'DESC')
+    .where("jv.id IN (:...ids)", { ids })
+    .groupBy("jv.id")
+    .addGroupBy("jv.date")
+    .addGroupBy("jv.jvNumber")
+    .addGroupBy("jv.jvType")
+    .orderBy("jv.date", "DESC")
+    .addOrderBy("jv.id", "DESC")
     .getRawMany();
 
   // -----------------------------
@@ -1321,44 +1361,45 @@ async searchBySeq(params?: {
     const docInvoiceId = r.docInvoiceId != null ? Number(r.docInvoiceId) : null;
     const purchaseInvoiceId = r.purchaseInvoiceId != null ? Number(r.purchaseInvoiceId) : null;
 
-    // ✅ invoice priority: receipt invoice -> docNbr invoice -> purchase invoice
+    // invoice priority: receipt invoice -> docNbr invoice -> purchase invoice
     const invoiceId = receiptInvoiceId ?? docInvoiceId ?? purchaseInvoiceId ?? null;
-    const invoiceNumber = r.receiptInvoiceNumber ?? r.docInvoiceNumber ?? r.purchaseInvoiceNumber ?? null;
+    const invoiceNumber =
+      r.receiptInvoiceNumber ?? r.docInvoiceNumber ?? r.purchaseInvoiceNumber ?? null;
     const invoiceType = r.receiptInvoiceType ?? r.docInvoiceType ?? null;
 
     const invoiceCustomerName =
       r.receiptInvoiceCustomerName ?? r.docInvoiceCustomerName ?? null;
 
-    let kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'JV' = 'JV';
+    let kind: "INVOICE" | "RECEIVABLE" | "PURCHASE" | "JV" = "JV";
     let name = `قيد يومية - ${r.jvNumber}`.trim();
     let customerName: string | null = null;
 
     if (invoiceId && invoiceNumber) {
       // INVOICE or PURCHASE
       if (purchaseInvoiceId && !receiptInvoiceId && !docInvoiceId) {
-        kind = 'PURCHASE';
+        kind = "PURCHASE";
         customerName = r.purchaseSupplierName ?? null;
-        name = `فاتورة شراء - ${customerName ?? ''} - ${invoiceNumber}`.trim();
+        name = `فاتورة شراء - ${customerName ?? ""} - ${invoiceNumber}`.trim();
       } else {
-        kind = 'INVOICE';
+        kind = "INVOICE";
         customerName = invoiceCustomerName ?? null;
 
-        if (invoiceType === 'RTN') {
-          name = `مرتجع - ${customerName ?? ''} - ${invoiceNumber}`.trim();
+        if (invoiceType === "RTN") {
+          name = `مرتجع - ${customerName ?? ""} - ${invoiceNumber}`.trim();
         } else {
-          const tag = invoiceType ? ` ${invoiceType}` : '';
-          name = `فاتورة${tag} - ${customerName ?? ''} - ${invoiceNumber}`.trim();
+          const tag = invoiceType ? ` ${invoiceType}` : "";
+          name = `فاتورة${tag} - ${customerName ?? ""} - ${invoiceNumber}`.trim();
         }
       }
     } else if (receiptEntryId) {
-      kind = 'RECEIVABLE';
+      kind = "RECEIVABLE";
       customerName = r.receiptCustomerName ?? null;
 
-      const cur = String(r.receiptCurrency ?? '').toUpperCase();
-      const payTag = cur === 'USD' ? 'دفعة $$' : cur === 'LL' ? 'دفعة LL' : 'دفعة';
-      name = `${payTag} - ${customerName ?? ''} - ${r.jvNumber}`.trim();
+      const cur = String(r.receiptCurrency ?? "").toUpperCase();
+      const payTag = cur === "USD" ? "دفعة $$" : cur === "LL" ? "دفعة LL" : "دفعة";
+      name = `${payTag} - ${customerName ?? ""} - ${r.jvNumber}`.trim();
     } else {
-      kind = 'JV';
+      kind = "JV";
       name = `قيد يومية - ${r.jvNumber}`.trim();
     }
 
@@ -1367,7 +1408,7 @@ async searchBySeq(params?: {
       date: r.date,
       jvNumber: r.jvNumber,
       jvType: r.jvType,
-      description: r.description ?? 'No Description',
+      description: r.description ?? "No Description",
 
       name,
       kind,
@@ -1380,6 +1421,7 @@ async searchBySeq(params?: {
 
   return { data, page, limit, total, totalPages, hasMore };
 }
+
 
 
 

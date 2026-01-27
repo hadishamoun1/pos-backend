@@ -92,19 +92,18 @@ export class JournalVoucherController {
     return this.journalVoucherService.getVoucherSummary({ page: p, limit: l, q });
   }
 
-  @Get('v1/search-by-seq')
-  @RequirePerms('journal.view')
-  async searchBySeq(
-    @Query('seq') seq: string, // required
-    @Query('page') page?: string, // optional
-    @Query('limit') limit?: string, // optional
-  ) {
-    return this.journalVoucherService.searchBySeq({
-      seq,
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-    });
-  }
+// journal-voucher.controller.ts
+@Get("v1/search-by-seq")
+searchBySeq(@Query() query: any) {
+  return this.journalVoucherService.searchBySeq({
+    seq: query.seq,
+    q: query.q ?? query.query ?? "",   // ✅ accept both
+    page: query.page,
+    limit: query.limit,
+    type: query.type,
+  });
+}
+
 
   // Get a single Journal Voucher by ID
   @Get(':id')
