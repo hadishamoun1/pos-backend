@@ -22,7 +22,7 @@ export class UsersController {
 
   // List all users (without passwordHash)
   @Get()
-  @RequirePerms('users.manage')
+  @RequirePerms('users.list')
   async listUsers() {
     return this.usersService.listUsersSafe();
   }
