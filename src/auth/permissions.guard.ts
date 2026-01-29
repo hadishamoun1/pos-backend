@@ -16,9 +16,13 @@ export class PermissionsGuard implements CanActivate {
 
     const req = ctx.switchToHttp().getRequest();
     const user = req.user;
-    const perms: string[] = user?.permissions || [];
 
+    // ✅ allow admins always
+    if (user?.role === "ADMIN") return true;
+
+    const perms: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
     const ok = required.every((p) => perms.includes(p));
+
     if (!ok) throw new ForbiddenException("Not allowed");
     return true;
   }
