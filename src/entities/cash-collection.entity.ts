@@ -32,6 +32,9 @@ export class CashCollection {
   @JoinColumn({ name: "customerId" })
   customer: Customer;
 
+  @Column({ type: "varchar", length: 120, nullable: true })
+  driverName: string | null; 
+
   @Column()
   @Index()
   employeeId: number;
