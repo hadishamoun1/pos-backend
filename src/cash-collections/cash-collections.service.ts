@@ -1,7 +1,7 @@
 // src/cash-collections/cash-collections.service.ts
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, Brackets } from "typeorm";
+import { Repository, Brackets, In, IsNull } from "typeorm";
 import { CashCollection } from "../entities/cash-collection.entity";
 
 function toYmd(d: Date) {
@@ -68,9 +68,60 @@ export class CashCollectionsService {
       driverName: driverName || null,
 
       isPosted: false,
+
+      // ✅ NEW
+      receivableEntryId: null,
     });
 
     return this.repo.save(row);
+  }
+
+  /**
+   * ✅ NEW:
+   * Mark many cash collections as "converted" by linking them to a ReceiptEntry id.
+   * This is what prevents duplicates.
+   *
+   * Rules:
+   * - only updates rows where receivableEntryId IS NULL (idempotent)
+   * - non-admin can only mark his own rows
+   */
+  async markReceivableLink(params: {
+    ids: number[];
+    receivableEntryId: number;
+    employeeId: number;
+    canViewAny: boolean;
+  }) {
+    const ids = Array.isArray(params.ids)
+      ? params.ids.map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+      : [];
+
+    const receivableEntryId = Number(params.receivableEntryId);
+
+    if (!ids.length) throw new BadRequestException("ids[] is required");
+    if (!Number.isFinite(receivableEntryId) || receivableEntryId <= 0) {
+      throw new BadRequestException("receivableEntryId is required");
+    }
+
+    // Update only unlinked rows (idempotent)
+    const qb = this.repo
+      .createQueryBuilder()
+      .update(CashCollection)
+      .set({ receivableEntryId, isPosted: true }) 
+      .where({ id: In(ids), receivableEntryId: IsNull() });
+
+    // non-admin: only his rows
+    if (!params.canViewAny) {
+      qb.andWhere("employeeId = :employeeId", { employeeId: params.employeeId });
+    }
+
+    const result = await qb.execute();
+
+    return {
+      ok: true,
+      receivableEntryId,
+      requested: ids.length,
+      updated: result.affected || 0,
+    };
   }
 
   /**
@@ -174,7 +225,7 @@ export class CashCollectionsService {
       page,
       limit,
       total,
-      rows,
+      rows, // ✅ includes receivableEntryId now
     };
   }
 

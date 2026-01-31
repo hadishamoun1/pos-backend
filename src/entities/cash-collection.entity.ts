@@ -33,7 +33,7 @@ export class CashCollection {
   customer: Customer;
 
   @Column({ type: "varchar", length: 120, nullable: true })
-  driverName: string | null; 
+  driverName: string | null;
 
   @Column()
   @Index()
@@ -65,6 +65,11 @@ export class CashCollection {
 
   @Column({ type: "boolean", default: false })
   isPosted: boolean;
+
+  // ✅ NEW: link to ReceiptEntry (recievables) so we can avoid duplicates
+  @Column({ type: "int", nullable: true })
+  @Index()
+  receivableEntryId?: number | null;
 
   @CreateDateColumn()
   createdAt: Date;
