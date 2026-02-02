@@ -151,10 +151,12 @@ searchBySeq(@Query() query: any) {
 async getCustomerBalances(
   @Query('to') to?: string, // 'YYYY-MM-DD' - defaults to today
   @Query('type') type?: 'S' | 'G' | 'ALL', // defaults to ALL
+  @Query('minBalance') minBalance?: string, // minimum balance filter (e.g., '5')
 ) {
   return this.journalVoucherService.getCustomerBalancesReport({
     to,
     type: (type as any) || 'ALL',
+    minBalance: minBalance ? parseFloat(minBalance) : undefined,
   });
 }
 

@@ -760,8 +760,9 @@ async getCustomerStatementOFR(params: {
 async getCustomerBalancesReport(params: {
   to?: string; // 'YYYY-MM-DD'
   type?: 'S' | 'G' | 'ALL';
+  minBalance?: number; // NEW: minimum balance filter
 }) {
-  const { to, type = 'ALL' } = params;
+  const { to, type = 'ALL', minBalance } = params;
 
   // Helper: expand YMD to full-day datetime
   const ymdToStart = (ymd: string) => `${ymd} 00:00:00`;
@@ -880,21 +881,25 @@ async getCustomerBalancesReport(params: {
     }
 
     const balance = totalDr - totalCr;
+    const roundedBalance = Math.round(balance * 100) / 100; // round to 2 decimals
 
-    // Only include customers with non-zero balance or transactions
-    if (rows.length > 0 || balance !== 0) {
+    // Apply minBalance filter if provided
+    const meetsBalanceFilter = minBalance === undefined || roundedBalance >= minBalance;
+
+    // Only include customers with non-zero balance or transactions AND meets balance filter
+    if ((rows.length > 0 || balance !== 0) && meetsBalanceFilter) {
       results.push({
         customerId,
         customerName: (customer as any).customerName || '',
         customerAccountNumber,
         currencyCode,
-        balance: Math.round(balance * 100) / 100, // round to 2 decimals
+        balance: roundedBalance,
         transactionCount: rows.length,
       });
     }
   }
 
-  // ✅ NEW: Sort by account number (smallest to greatest)
+  // ✅ Sort by account number (smallest to greatest)
   results.sort((a, b) => {
     const accA = a.customerAccountNumber || '';
     const accB = b.customerAccountNumber || '';
@@ -915,6 +920,7 @@ async getCustomerBalancesReport(params: {
   return {
     reportDate: toDate,
     type,
+    minBalance, // Include in response so frontend knows what filter was applied
     customers: results,
     summary: {
       totalCustomers: results.length,
