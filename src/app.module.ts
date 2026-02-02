@@ -42,6 +42,7 @@ import { AuditSaleInvoiceModule } from './audit-salesinvoice/audit-salesinvoice.
 import { CsvImportModule } from './HistoryPrices/HistoryPrices.module';
 import { AccountingModule } from './accountRoleMap/accounting.module';
 import { CashCollectionsModule } from './cash-collections/cash-collections.module';
+import { EmployeesModule } from './Employee/Employee.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -97,7 +98,8 @@ TypeOrmModule.forRootAsync({
     AuditSaleInvoiceModule,
     CsvImportModule,
     AccountingModule,
-    CashCollectionsModule
+    CashCollectionsModule,
+    EmployeesModule
   ],
 })
 export class AppModule {}
