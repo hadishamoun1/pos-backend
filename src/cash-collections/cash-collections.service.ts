@@ -245,11 +245,21 @@ export class CashCollectionsService {
     return row;
   }
 
+  /**
+   * ✅ UPDATED: Allow deletion even if posted
+   * Deletes the cash collection record only.
+   * The linked receivable entry (if any) in the receivables table remains intact.
+   * This won't affect any posted receivable entries.
+   */
   async remove(id: number) {
     if (!id) throw new BadRequestException("id required");
     const row = await this.repo.findOne({ where: { id } });
     if (!row) throw new BadRequestException("not found");
-    if (row.isPosted) throw new BadRequestException("cannot delete posted collection");
+    
+    // ✅ REMOVED the isPosted check
+    // Now allows deletion regardless of isPosted status
+    // The receivableEntryId link in the receivables table remains (orphaned reference)
+    
     await this.repo.delete(id);
     return { ok: true };
   }
