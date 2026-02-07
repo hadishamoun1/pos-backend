@@ -6,6 +6,8 @@ import { Account } from '../entities/account.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { AccountRoleMap } from "../entities/accountRoleMap.entity";
+import { Customer } from '../entities/customer.entity';
+import { Supplier } from '../entities/supplier.entity';
 // ✅ adjust path/name to your project
 
 
@@ -55,6 +57,9 @@ export class ReportsService {
     private readonly jvRepo: Repository<JournalVoucher>,
       @InjectRepository(AccountRoleMap)
   private readonly accountRoleRepo: Repository<AccountRoleMap>,
+
+  @InjectRepository(Customer) private readonly customerRepo: Repository<Customer>,
+  @InjectRepository(Supplier) private readonly supplierRepo: Repository<Supplier>,
   ) {}
 
   /* ===== small helpers ===== */
@@ -467,9 +472,6 @@ export class ReportsService {
 
 
 
-/* ===== STANDARD ENDPOINT (JV-only rows, flat, prefix-friendly order, with parent info) ===== */
-/* ===== STANDARD ENDPOINT (JV-only rows; respects `currency` via getBaseCols) ===== */
-/* ===== STANDARD ENDPOINT (JV-only rows; respects `currency` via getBaseCols) ===== */
 async getTrialBalanceStandard(params: TrialBalanceParams) {
   const {
     from,
@@ -481,35 +483,30 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
     subFrom,
     subTo,
     mainPrefixes,
-    level, // unused
   } = params;
 
-  // 0) ✅ Resolve customer/supplier index from account roles (NO hardcode)
-  // Your AccountRoleMap entity has: role, currencyCode, accountNumber (NO tenantId, NO roleKey)
+  // 0) Read Customer/Supplier index from AccountRoleMap
   const roleRows = await this.accountRoleRepo.find({
-    select: { role: true, currencyCode: true, accountNumber: true },
+    select: ['role', 'currencyCode', 'accountNumber'],
   });
 
-  const norm = (s: any) => String(s ?? '').trim().toUpperCase();
+  const roleName = (r: AccountRoleMap) => String(r.role || '').trim().toLowerCase();
 
-  // Prefer DEFAULT mapping (currencyCode = null), fallback to any mapping
   const customerIndex =
-    roleRows.find((r) => norm(r.role) === 'AR_CUSTOMER' && r.currencyCode == null)?.accountNumber ??
-    roleRows.find((r) => norm(r.role) === 'AR_CUSTOMER')?.accountNumber ??
-    null;
+    roleRows.find((r) => roleName(r) === 'customer_index')?.accountNumber ?? null;
 
   const supplierIndex =
-    roleRows.find((r) => norm(r.role) === 'AP_SUPPLIER' && r.currencyCode == null)?.accountNumber ??
-    roleRows.find((r) => norm(r.role) === 'AP_SUPPLIER')?.accountNumber ??
-    null;
+    roleRows.find((r) => roleName(r) === 'supplier_index')?.accountNumber ?? null;
 
-  // 1) Accounts & selection
+  // 1) Load accounts
   const accounts = await this.accountRepo.find({
-    select: ['id', 'accountNumber', 'arabicAccountName', 'parentNumber'],
+    select: ['id', 'accountNumber', 'arabicAccountName', 'accountName', 'parentNumber'],
   });
 
-  const byCode = new Map<string, Account>(accounts.map((a) => [String(a.accountNumber), a]));
+  const byNumber = new Map<string, Account>(accounts.map((a) => [String(a.accountNumber), a]));
+  const byId = new Map<number, Account>(accounts.map((a) => [a.id, a]));
 
+  // 2) Apply your existing selection logic
   const prefixes = this.parsePrefixes(mainPrefixes);
   let selected = accounts;
 
@@ -518,34 +515,73 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
       prefixes.some((p) => this.digits(a.accountNumber).startsWith(this.digits(p))),
     );
   } else if (subFrom || subTo) {
-    selected = selected.filter((a) => this.withinPrefixBand(String(a.accountNumber), subFrom, subTo));
+    selected = selected.filter((a) =>
+      this.withinPrefixBand(String(a.accountNumber), subFrom, subTo),
+    );
   } else if (mainFrom || mainTo) {
-    selected = selected.filter((a) => this.withinPrefixBand(String(a.accountNumber), mainFrom, mainTo));
+    selected = selected.filter((a) =>
+      this.withinPrefixBand(String(a.accountNumber), mainFrom, mainTo),
+    );
   }
 
-  // ✅ Start selected IDs
   const selectedIds = new Set<number>(selected.map((a) => a.id));
 
-  // 1.1) ✅ Expand: include children under customer/supplier index IF the parent is in scope
-  const parentIsSelected = (code: string | null) => {
-    if (!code) return false;
-    const parent = String(code);
-    return selected.some((a) => String(a.accountNumber) === parent);
+  const isInScope = (indexAccNumber: string | null) => {
+    if (!indexAccNumber) return false;
+    const idx = String(indexAccNumber);
+
+    // if it exists in accounts and already selected, it's in scope
+    const idxAcc = byNumber.get(idx);
+    if (idxAcc && selectedIds.has(idxAcc.id)) return true;
+
+    // if prefixes exist and match index
+    if (prefixes.length && prefixes.some((p) => this.digits(idx).startsWith(this.digits(p))))
+      return true;
+
+    // otherwise: not in scope
+    return false;
   };
 
-  const expandUnderParent = (parentCode: string | null) => {
-    if (!parentCode) return;
-    const parent = String(parentCode);
+  const customerIndexInScope = isInScope(customerIndex);
+  const supplierIndexInScope = isInScope(supplierIndex);
 
-    for (const a of accounts) {
-      if (String(a.parentNumber ?? '') === parent) {
-        selectedIds.add(a.id);
+  // 3) (Optional) include customer/supplier ACCOUNTS if they exist in accounts table
+  //    This helps when JVD uses accountId (traditional TB) and parentNumber isn't set.
+  const forcedParentByAccountId = new Map<number, string>(); // accountId -> forced parentCode
+
+  if (customerIndexInScope && customerIndex) {
+    const customers = await this.customerRepo.find({
+      select: ['customerAccountNumber', 'customerName'],
+    });
+
+    for (const c of customers) {
+      const accNum = String(c.customerAccountNumber || '').trim();
+      if (!accNum) continue;
+
+      const acc = byNumber.get(accNum);
+      if (acc) {
+        selectedIds.add(acc.id);
+        forcedParentByAccountId.set(acc.id, String(customerIndex));
       }
     }
-  };
+  }
 
-  if (parentIsSelected(customerIndex)) expandUnderParent(customerIndex);
-  if (parentIsSelected(supplierIndex)) expandUnderParent(supplierIndex);
+  if (supplierIndexInScope && supplierIndex) {
+    const suppliers = await this.supplierRepo.find({
+      select: ['supplierAccountNumber', 'supplierName'],
+    });
+
+    for (const s of suppliers) {
+      const accNum = String(s.supplierAccountNumber || '').trim();
+      if (!accNum) continue;
+
+      const acc = byNumber.get(accNum);
+      if (acc) {
+        selectedIds.add(acc.id);
+        forcedParentByAccountId.set(acc.id, String(supplierIndex));
+      }
+    }
+  }
 
   if (!selectedIds.size) {
     return {
@@ -566,36 +602,36 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
     };
   }
 
-  // 2) Resolve base columns for chosen currency
+  // 4) Currency columns
   const { drCol, crCol } = this.getBaseCols(currency);
 
-  // 3) Invoice-type predicate
+  // 5) Invoice type predicate
   const invoiceTypeSql =
     invoiceType === 'S'
       ? "(jv.jvType = 'S' OR d.docNbr LIKE 'S%')"
       : invoiceType === 'G'
-      ? "(jv.jvType = 'G' OR d.docNbr LIKE 'G%')"
-      : '1=1';
+        ? "(jv.jvType = 'G' OR d.docNbr LIKE 'G%')"
+        : '1=1';
 
-  // 4) Aggregated query
+  // 6) Aggregate by accountId (classic TB)
   const qb = this.jvdRepo
     .createQueryBuilder('d')
     .leftJoin('d.journalVoucher', 'jv')
     .select('d.accountId', 'accountId')
-    // Opening sums (date < :from if from provided; else 0)
-    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${String(drCol)} ELSE 0 END)`, 'openDebit')
-    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${String(crCol)} ELSE 0 END)`, 'openCredit')
-    // Period sums (from..to if provided, else TRUE to include all)
     .addSelect(
-      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${String(
-        drCol,
-      )} ELSE 0 END)`,
+      `SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${drCol} ELSE 0 END)`,
+      'openDebit',
+    )
+    .addSelect(
+      `SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${crCol} ELSE 0 END)`,
+      'openCredit',
+    )
+    .addSelect(
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${drCol} ELSE 0 END)`,
       'perDebit',
     )
     .addSelect(
-      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${String(
-        crCol,
-      )} ELSE 0 END)`,
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${crCol} ELSE 0 END)`,
       'perCredit',
     )
     .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
@@ -613,33 +649,175 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
     perCredit: string;
   }>();
 
-  // 5) Fast lookup by accountId
-  const rawByAcc = new Map<number, typeof raw[number]>();
+  const rawByAcc = new Map<number, (typeof raw)[number]>();
   for (const r of raw) rawByAcc.set(Number(r.accountId), r);
 
-  // 6) Compose rows (use expanded IDs)
-  const rows = accounts
-    .filter((a) => selectedIds.has(a.id))
-    .map((acc) => {
-      const agg = rawByAcc.get(acc.id);
-      if (!agg) return null;
+  // 7) Aggregate by customerId and supplierId (so they show even if accountId is null)
+  let custAgg: Array<{
+    customerId: number | string;
+    accountNumber: string;
+    name: string;
+    openDebit: string;
+    openCredit: string;
+    perDebit: string;
+    perCredit: string;
+  }> = [];
 
-      const openDebit = +agg.openDebit || 0;
-      const openCredit = +agg.openCredit || 0;
-      const perDebit = +agg.perDebit || 0;
-      const perCredit = +agg.perCredit || 0;
+  if (customerIndexInScope && customerIndex) {
+    const custQb = this.jvdRepo
+      .createQueryBuilder('d')
+      .leftJoin('d.journalVoucher', 'jv')
+      .innerJoin('d.customer', 'c')
+      .select('d.customerId', 'customerId')
+      .addSelect('c.customerAccountNumber', 'accountNumber')
+      .addSelect('c.customerName', 'name')
+      .addSelect(
+        `SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${drCol} ELSE 0 END)`,
+        'openDebit',
+      )
+      .addSelect(
+        `SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${crCol} ELSE 0 END)`,
+        'openCredit',
+      )
+      .addSelect(
+        `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${drCol} ELSE 0 END)`,
+        'perDebit',
+      )
+      .addSelect(
+        `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${crCol} ELSE 0 END)`,
+        'perCredit',
+      )
+      .where('d.customerId IS NOT NULL')
+      .andWhere(invoiceTypeSql)
+      .groupBy('d.customerId')
+      .addGroupBy('c.customerAccountNumber')
+      .addGroupBy('c.customerName');
+
+    if (from) custQb.setParameter('from', from);
+    if (to) custQb.setParameter('to', to);
+
+    custAgg = await custQb.getRawMany();
+  }
+
+  let suppAgg: Array<{
+    supplierId: number | string;
+    accountNumber: string;
+    name: string;
+    openDebit: string;
+    openCredit: string;
+    perDebit: string;
+    perCredit: string;
+  }> = [];
+
+  if (supplierIndexInScope && supplierIndex) {
+    const suppQb = this.jvdRepo
+      .createQueryBuilder('d')
+      .leftJoin('d.journalVoucher', 'jv')
+      .innerJoin('d.supplier', 's')
+      .select('d.supplierId', 'supplierId')
+      .addSelect('s.supplierAccountNumber', 'accountNumber')
+      .addSelect('s.supplierName', 'name')
+      .addSelect(
+        `SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${drCol} ELSE 0 END)`,
+        'openDebit',
+      )
+      .addSelect(
+        `SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${crCol} ELSE 0 END)`,
+        'openCredit',
+      )
+      .addSelect(
+        `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${drCol} ELSE 0 END)`,
+        'perDebit',
+      )
+      .addSelect(
+        `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${crCol} ELSE 0 END)`,
+        'perCredit',
+      )
+      .where('d.supplierId IS NOT NULL')
+      .andWhere(invoiceTypeSql)
+      .groupBy('d.supplierId')
+      .addGroupBy('s.supplierAccountNumber')
+      .addGroupBy('s.supplierName');
+
+    if (from) suppQb.setParameter('from', from);
+    if (to) suppQb.setParameter('to', to);
+
+    suppAgg = await suppQb.getRawMany();
+  }
+
+  // 8) Build rows
+  const rows: any[] = [];
+
+  // 8.1) Account rows (by accountId)
+  for (const id of Array.from(selectedIds)) {
+    const acc = byId.get(id);
+    if (!acc) continue;
+
+    const agg = rawByAcc.get(acc.id);
+
+    // IMPORTANT:
+    // - Do not drop "index" accounts (Customer_Index/Supplier_Index) even if no movement
+    // - For other accounts: keep zeros or skip based on your preference
+    const openDebit = agg ? +agg.openDebit || 0 : 0;
+    const openCredit = agg ? +agg.openCredit || 0 : 0;
+    const perDebit = agg ? +agg.perDebit || 0 : 0;
+    const perCredit = agg ? +agg.perCredit || 0 : 0;
+
+    // If you want to hide empty accounts EXCEPT the indexes, use:
+    const isIndexAcc =
+      (customerIndex && String(acc.accountNumber) === String(customerIndex)) ||
+      (supplierIndex && String(acc.accountNumber) === String(supplierIndex));
+
+    if (!agg && !isIndexAcc) continue;
+
+    const openingBalance = openDebit - openCredit;
+    const balance = perDebit - perCredit;
+    const closingBalance = openingBalance + balance;
+
+    const forcedParent = forcedParentByAccountId.get(acc.id) ?? null;
+    const parentCode = forcedParent ?? (acc.parentNumber ? String(acc.parentNumber) : null);
+    const parentAcc = parentCode ? byNumber.get(parentCode) : undefined;
+
+    rows.push({
+      accountCode: String(acc.accountNumber),
+      accountName: String(acc.arabicAccountName ?? acc.accountName ?? ''),
+      parentCode,
+      parentName: parentAcc ? String(parentAcc.arabicAccountName ?? parentAcc.accountName ?? '') : null,
+
+      openingDebit: openDebit,
+      openingCredit: openCredit,
+      openingBalance,
+
+      periodDebit: perDebit,
+      periodCredit: perCredit,
+      balance,
+
+      closingBalance,
+    });
+  }
+
+  // 8.2) Customer rows (by customerId) under Customer_Index
+  if (customerIndexInScope && customerIndex) {
+    const parentAcc = byNumber.get(String(customerIndex));
+    const parentName = parentAcc
+      ? String(parentAcc.arabicAccountName ?? parentAcc.accountName ?? '')
+      : null;
+
+    for (const r of custAgg) {
+      const openDebit = +r.openDebit || 0;
+      const openCredit = +r.openCredit || 0;
+      const perDebit = +r.perDebit || 0;
+      const perCredit = +r.perCredit || 0;
 
       const openingBalance = openDebit - openCredit;
       const balance = perDebit - perCredit;
       const closingBalance = openingBalance + balance;
 
-      const parentAcc = acc.parentNumber ? byCode.get(String(acc.parentNumber)) : undefined;
-
-      return {
-        accountCode: String(acc.accountNumber),
-        accountName: String(acc.arabicAccountName ?? ''),
-        parentCode: acc.parentNumber ? String(acc.parentNumber) : null,
-        parentName: parentAcc ? String(parentAcc.arabicAccountName ?? '') : null,
+      rows.push({
+        accountCode: String(r.accountNumber),
+        accountName: String(r.name),
+        parentCode: String(customerIndex),
+        parentName,
 
         openingDebit: openDebit,
         openingCredit: openCredit,
@@ -650,34 +828,58 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
         balance,
 
         closingBalance,
-      };
-    })
-    .filter(Boolean)
-    // prefix-friendly order: digits-only, lexicographic (kept)
-    .sort((a, b) => this.cmpLexDigits((a as any).accountCode, (b as any).accountCode)) as Array<{
-    accountCode: string;
-    accountName: string;
-    parentCode: string | null;
-    parentName: string | null;
-    openingDebit: number;
-    openingCredit: number;
-    openingBalance: number;
-    periodDebit: number;
-    periodCredit: number;
-    balance: number;
-    closingBalance: number;
-  }>;
+      });
+    }
+  }
 
-  // 7) Totals
+  // 8.3) Supplier rows (by supplierId) under Supplier_Index
+  if (supplierIndexInScope && supplierIndex) {
+    const parentAcc = byNumber.get(String(supplierIndex));
+    const parentName = parentAcc
+      ? String(parentAcc.arabicAccountName ?? parentAcc.accountName ?? '')
+      : null;
+
+    for (const r of suppAgg) {
+      const openDebit = +r.openDebit || 0;
+      const openCredit = +r.openCredit || 0;
+      const perDebit = +r.perDebit || 0;
+      const perCredit = +r.perCredit || 0;
+
+      const openingBalance = openDebit - openCredit;
+      const balance = perDebit - perCredit;
+      const closingBalance = openingBalance + balance;
+
+      rows.push({
+        accountCode: String(r.accountNumber),
+        accountName: String(r.name),
+        parentCode: String(supplierIndex),
+        parentName,
+
+        openingDebit: openDebit,
+        openingCredit: openCredit,
+        openingBalance,
+
+        periodDebit: perDebit,
+        periodCredit: perCredit,
+        balance,
+
+        closingBalance,
+      });
+    }
+  }
+
+  // 9) Sort + totals
+  rows.sort((a, b) => this.cmpLexDigits(String(a.accountCode), String(b.accountCode)));
+
   const totals = rows.reduce(
     (t, r) => {
-      t.openingDebit += r.openingDebit;
-      t.openingCredit += r.openingCredit;
-      t.openingBalance += r.openingBalance;
-      t.periodDebit += r.periodDebit;
-      t.periodCredit += r.periodCredit;
-      t.balance += r.balance;
-      t.closingBalance += r.closingBalance;
+      t.openingDebit += Number(r.openingDebit) || 0;
+      t.openingCredit += Number(r.openingCredit) || 0;
+      t.openingBalance += Number(r.openingBalance) || 0;
+      t.periodDebit += Number(r.periodDebit) || 0;
+      t.periodCredit += Number(r.periodCredit) || 0;
+      t.balance += Number(r.balance) || 0;
+      t.closingBalance += Number(r.closingBalance) || 0;
       return t;
     },
     {
@@ -700,6 +902,7 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
     totals,
   };
 }
+
 
 
 /* ===== CURRENCIES ENDPOINT (JV-only rows, USD main + LL extra) ===== */
