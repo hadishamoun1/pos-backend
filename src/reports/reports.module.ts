@@ -7,13 +7,15 @@ import { ReportsService } from './reports.service';
 import { Account } from '../entities/account.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+import { AccountRoleMap } from "../entities/accountRoleMap.entity";
+
 
 // import the module, NOT the controller/service
 import { AccountsModule } from '../accounts/accounts.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Account, JournalVoucher, JournalVoucherDetail]),
+    TypeOrmModule.forFeature([Account, JournalVoucher, JournalVoucherDetail, AccountRoleMap]),
     AccountsModule, // <-- gives access to AccountsService via module export
   ],
   controllers: [ReportsController],

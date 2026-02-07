@@ -5,6 +5,9 @@ import { Repository } from 'typeorm';
 import { Account } from '../entities/account.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+import { AccountRoleMap } from "../entities/accountRoleMap.entity";
+// ✅ adjust path/name to your project
+
 
 type TrialBalanceParams = {
   from?: string | null;
@@ -18,6 +21,8 @@ type TrialBalanceParams = {
   subFrom?: string | null;
   subTo?: string | null;
   mainPrefixes?: string; // e.g. "601,705"
+    tenantId?: number; // ✅ add this
+
 };
 
 /* ===== Row shapes for rollup ===== */
@@ -48,6 +53,8 @@ export class ReportsService {
     private readonly jvdRepo: Repository<JournalVoucherDetail>,
     @InjectRepository(JournalVoucher)
     private readonly jvRepo: Repository<JournalVoucher>,
+      @InjectRepository(AccountRoleMap)
+  private readonly accountRoleRepo: Repository<AccountRoleMap>,
   ) {}
 
   /* ===== small helpers ===== */
@@ -462,39 +469,84 @@ export class ReportsService {
 
 /* ===== STANDARD ENDPOINT (JV-only rows, flat, prefix-friendly order, with parent info) ===== */
 /* ===== STANDARD ENDPOINT (JV-only rows; respects `currency` via getBaseCols) ===== */
+/* ===== STANDARD ENDPOINT (JV-only rows; respects `currency` via getBaseCols) ===== */
 async getTrialBalanceStandard(params: TrialBalanceParams) {
   const {
     from,
     to,
-    currency = 'USD',       // <-- respected here via getBaseCols(...)
+    currency = 'USD',
     invoiceType = 'ALL',
     mainFrom,
     mainTo,
     subFrom,
     subTo,
     mainPrefixes,
-    level,                  // kept for signature; not used in JV-only mode
+    level, // unused
   } = params;
 
-  // 1) Accounts & selection (kept as in your code)
+  // 0) ✅ Resolve customer/supplier index from account roles (NO hardcode)
+  // Your AccountRoleMap entity has: role, currencyCode, accountNumber (NO tenantId, NO roleKey)
+  const roleRows = await this.accountRoleRepo.find({
+    select: { role: true, currencyCode: true, accountNumber: true },
+  });
+
+  const norm = (s: any) => String(s ?? '').trim().toUpperCase();
+
+  // Prefer DEFAULT mapping (currencyCode = null), fallback to any mapping
+  const customerIndex =
+    roleRows.find((r) => norm(r.role) === 'AR_CUSTOMER' && r.currencyCode == null)?.accountNumber ??
+    roleRows.find((r) => norm(r.role) === 'AR_CUSTOMER')?.accountNumber ??
+    null;
+
+  const supplierIndex =
+    roleRows.find((r) => norm(r.role) === 'AP_SUPPLIER' && r.currencyCode == null)?.accountNumber ??
+    roleRows.find((r) => norm(r.role) === 'AP_SUPPLIER')?.accountNumber ??
+    null;
+
+  // 1) Accounts & selection
   const accounts = await this.accountRepo.find({
     select: ['id', 'accountNumber', 'arabicAccountName', 'parentNumber'],
   });
-  const byCode = new Map<string, Account>(accounts.map(a => [String(a.accountNumber), a]));
+
+  const byCode = new Map<string, Account>(accounts.map((a) => [String(a.accountNumber), a]));
 
   const prefixes = this.parsePrefixes(mainPrefixes);
   let selected = accounts;
+
   if (prefixes.length) {
-    selected = selected.filter(a =>
-      prefixes.some(p => this.digits(a.accountNumber).startsWith(this.digits(p))),
+    selected = selected.filter((a) =>
+      prefixes.some((p) => this.digits(a.accountNumber).startsWith(this.digits(p))),
     );
   } else if (subFrom || subTo) {
-    selected = selected.filter(a => this.withinPrefixBand(String(a.accountNumber), subFrom, subTo));
+    selected = selected.filter((a) => this.withinPrefixBand(String(a.accountNumber), subFrom, subTo));
   } else if (mainFrom || mainTo) {
-    selected = selected.filter(a => this.withinPrefixBand(String(a.accountNumber), mainFrom, mainTo));
+    selected = selected.filter((a) => this.withinPrefixBand(String(a.accountNumber), mainFrom, mainTo));
   }
 
-  const selectedIds = new Set<number>(selected.map(a => a.id));
+  // ✅ Start selected IDs
+  const selectedIds = new Set<number>(selected.map((a) => a.id));
+
+  // 1.1) ✅ Expand: include children under customer/supplier index IF the parent is in scope
+  const parentIsSelected = (code: string | null) => {
+    if (!code) return false;
+    const parent = String(code);
+    return selected.some((a) => String(a.accountNumber) === parent);
+  };
+
+  const expandUnderParent = (parentCode: string | null) => {
+    if (!parentCode) return;
+    const parent = String(parentCode);
+
+    for (const a of accounts) {
+      if (String(a.parentNumber ?? '') === parent) {
+        selectedIds.add(a.id);
+      }
+    }
+  };
+
+  if (parentIsSelected(customerIndex)) expandUnderParent(customerIndex);
+  if (parentIsSelected(supplierIndex)) expandUnderParent(supplierIndex);
+
   if (!selectedIds.size) {
     return {
       from: from ?? null,
@@ -503,19 +555,21 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
       invoiceType,
       rows: [],
       totals: {
-        openingDebit: 0, openingCredit: 0, openingBalance: 0,
-        periodDebit: 0, periodCredit: 0, balance: 0,
+        openingDebit: 0,
+        openingCredit: 0,
+        openingBalance: 0,
+        periodDebit: 0,
+        periodCredit: 0,
+        balance: 0,
         closingBalance: 0,
       },
     };
   }
 
-  // 2) Resolve base columns for the chosen currency
-  // getBaseCols(currency) should return the *column names* that exist on JVD rows
-  // e.g. { drCol: 'drUSD', crCol: 'crUSD' } or { drCol: 'drLL', crCol: 'crLL' } or { drCol: 'dr', crCol: 'cr' }
+  // 2) Resolve base columns for chosen currency
   const { drCol, crCol } = this.getBaseCols(currency);
 
-  // 3) Invoice-type predicate (kept behavior: S = S or docNbr S%, G = G or docNbr G%)
+  // 3) Invoice-type predicate
   const invoiceTypeSql =
     invoiceType === 'S'
       ? "(jv.jvType = 'S' OR d.docNbr LIKE 'S%')"
@@ -523,25 +577,25 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
       ? "(jv.jvType = 'G' OR d.docNbr LIKE 'G%')"
       : '1=1';
 
-  // 4) Single aggregated query (opening + period) using the base debit/credit columns
-  // Notes:
-  //  - Use getRawMany() to avoid instantiating entities for each detail row.
-  //  - Only join JV to access date (and type for the filter).
-  //  - Use 0/1 in CASE to remain MySQL-friendly.
+  // 4) Aggregated query
   const qb = this.jvdRepo
     .createQueryBuilder('d')
     .leftJoin('d.journalVoucher', 'jv')
     .select('d.accountId', 'accountId')
     // Opening sums (date < :from if from provided; else 0)
-    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${drCol} ELSE 0 END)`, 'openDebit')
-    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${crCol} ELSE 0 END)`, 'openCredit')
+    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${String(drCol)} ELSE 0 END)`, 'openDebit')
+    .addSelect(`SUM(CASE WHEN ${from ? 'jv.date < :from' : '0'} THEN d.${String(crCol)} ELSE 0 END)`, 'openCredit')
     // Period sums (from..to if provided, else TRUE to include all)
     .addSelect(
-      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${drCol} ELSE 0 END)`,
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${String(
+        drCol,
+      )} ELSE 0 END)`,
       'perDebit',
     )
     .addSelect(
-      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${crCol} ELSE 0 END)`,
+      `SUM(CASE WHEN ${(from ? 'jv.date >= :from' : '1')} AND ${(to ? 'jv.date <= :to' : '1')} THEN d.${String(
+        crCol,
+      )} ELSE 0 END)`,
       'perCredit',
     )
     .where('d.accountId IN (:...ids)', { ids: Array.from(selectedIds) })
@@ -553,76 +607,76 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
 
   const raw = await qb.getRawMany<{
     accountId: number | string;
-    openDebit: string; openCredit: string;
-    perDebit: string;  perCredit: string;
+    openDebit: string;
+    openCredit: string;
+    perDebit: string;
+    perCredit: string;
   }>();
 
   // 5) Fast lookup by accountId
   const rawByAcc = new Map<number, typeof raw[number]>();
   for (const r of raw) rawByAcc.set(Number(r.accountId), r);
 
-  // 6) Compose flat JV-only rows (include parent info but don't add parent rows)
-  const rows = selected
-    .map(acc => {
+  // 6) Compose rows (use expanded IDs)
+  const rows = accounts
+    .filter((a) => selectedIds.has(a.id))
+    .map((acc) => {
       const agg = rawByAcc.get(acc.id);
       if (!agg) return null;
 
-      const openDebit  = +agg.openDebit  || 0;
+      const openDebit = +agg.openDebit || 0;
       const openCredit = +agg.openCredit || 0;
-      const perDebit   = +agg.perDebit   || 0;
-      const perCredit  = +agg.perCredit  || 0;
+      const perDebit = +agg.perDebit || 0;
+      const perCredit = +agg.perCredit || 0;
 
       const openingBalance = openDebit - openCredit;
-      const balance        = perDebit - perCredit; // period net
+      const balance = perDebit - perCredit;
       const closingBalance = openingBalance + balance;
 
-      const parentAcc = acc.parentNumber ? byCode.get(acc.parentNumber) : undefined;
+      const parentAcc = acc.parentNumber ? byCode.get(String(acc.parentNumber)) : undefined;
 
       return {
         accountCode: String(acc.accountNumber),
         accountName: String(acc.arabicAccountName ?? ''),
-        parentCode:  String(acc.parentNumber) ,
-        parentName:  parentAcc ? String(parentAcc.arabicAccountName ?? '') : null,
+        parentCode: acc.parentNumber ? String(acc.parentNumber) : null,
+        parentName: parentAcc ? String(parentAcc.arabicAccountName ?? '') : null,
 
-        // Opening
-        openingDebit:  openDebit,
+        openingDebit: openDebit,
         openingCredit: openCredit,
         openingBalance,
 
-        // Period
-        periodDebit:   perDebit,
-        periodCredit:  perCredit,
+        periodDebit: perDebit,
+        periodCredit: perCredit,
         balance,
 
-        // Closing
         closingBalance,
       };
     })
     .filter(Boolean)
     // prefix-friendly order: digits-only, lexicographic (kept)
     .sort((a, b) => this.cmpLexDigits((a as any).accountCode, (b as any).accountCode)) as Array<{
-      accountCode: string;
-      accountName: string;
-      parentCode: string | null;
-      parentName: string | null;
-      openingDebit: number;
-      openingCredit: number;
-      openingBalance: number;
-      periodDebit: number;
-      periodCredit: number;
-      balance: number;
-      closingBalance: number;
-    }>;
+    accountCode: string;
+    accountName: string;
+    parentCode: string | null;
+    parentName: string | null;
+    openingDebit: number;
+    openingCredit: number;
+    openingBalance: number;
+    periodDebit: number;
+    periodCredit: number;
+    balance: number;
+    closingBalance: number;
+  }>;
 
-  // 7) Totals (sum of displayed rows)
+  // 7) Totals
   const totals = rows.reduce(
     (t, r) => {
-      t.openingDebit   += r.openingDebit;
-      t.openingCredit  += r.openingCredit;
+      t.openingDebit += r.openingDebit;
+      t.openingCredit += r.openingCredit;
       t.openingBalance += r.openingBalance;
-      t.periodDebit    += r.periodDebit;
-      t.periodCredit   += r.periodCredit;
-      t.balance        += r.balance;
+      t.periodDebit += r.periodDebit;
+      t.periodCredit += r.periodCredit;
+      t.balance += r.balance;
       t.closingBalance += r.closingBalance;
       return t;
     },
@@ -640,7 +694,7 @@ async getTrialBalanceStandard(params: TrialBalanceParams) {
   return {
     from: from ?? null,
     to: to ?? null,
-    currency,   // echoed; math uses getBaseCols(currency)
+    currency,
     invoiceType,
     rows,
     totals,
