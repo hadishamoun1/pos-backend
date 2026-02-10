@@ -1,4 +1,7 @@
-import { Injectable } from '@nestjs/common';
+// ✅ FIXED: Remove all references to 'parent' and 'children' relations
+// Your Account entity only has parentNumber as a string column, not a relation
+
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Like, Repository } from 'typeorm';
 import { Account } from '../entities/account.entity';
@@ -13,7 +16,7 @@ interface UnifiedRow {
   accountNumber: string;
   accountName: string;
   kind: SearchKind;
-  parentAccountNumber?: string; // resolved (Customer_Index / Supplier_Index)
+  parentAccountNumber?: string;
 }
 
 @Injectable()
@@ -52,25 +55,103 @@ export class AccountsService {
     return { customerParent, supplierParent };
   }
 
+  /**
+   * ✅ Validate that parent account exists
+   */
+  private async validateParentAccount(parentNumber: string): Promise<void> {
+    if (!parentNumber || parentNumber.trim() === '') {
+      throw new BadRequestException('Parent account is required.');
+    }
+
+    const parent = await this.accountRepository.findOne({
+      where: { accountNumber: parentNumber },
+    });
+
+    if (!parent) {
+      throw new BadRequestException(`Parent account "${parentNumber}" does not exist.`);
+    }
+  }
+
+  /**
+   * ✅ Prevent circular parent references
+   */
+  private async validateNoCircularReference(
+    accountId: number,
+    newParentNumber: string,
+  ): Promise<void> {
+    if (!newParentNumber) return;
+
+    const account = await this.accountRepository.findOne({ where: { id: accountId } });
+    if (!account) return;
+
+    // Account cannot be its own parent
+    if (account.accountNumber === newParentNumber) {
+      throw new BadRequestException('An account cannot be its own parent.');
+    }
+
+    // Check if new parent is a descendant of current account
+    const descendants = await this.getAllDescendants(account.accountNumber);
+    const descendantNumbers = descendants.map((d) => d.accountNumber);
+
+    if (descendantNumbers.includes(newParentNumber)) {
+      throw new BadRequestException(
+        'Cannot set a child account as parent. This would create a circular reference.',
+      );
+    }
+  }
+
+  /**
+   * ✅ Get all descendants of an account
+   */
+  private async getAllDescendants(accountNumber: string): Promise<Account[]> {
+    const accounts = await this.accountRepository.find();
+    const descendants: Account[] = [];
+
+    const findChildren = (parentNum: string) => {
+      const children = accounts.filter((a) => a.parentNumber === parentNum);
+      descendants.push(...children);
+      children.forEach((child) => findChildren(child.accountNumber));
+    };
+
+    findChildren(accountNumber);
+    return descendants;
+  }
+
+  // ✅ FIXED: createAccount with validation
   async createAccount(accountData: Partial<Account>): Promise<Account> {
+    // Validate parent account exists
+    if (!accountData.parentNumber) {
+      throw new BadRequestException('Parent account is required.');
+    }
+    
+    await this.validateParentAccount(accountData.parentNumber);
+
     const account = this.accountRepository.create(accountData);
     return this.accountRepository.save(account);
   }
 
+  // ✅ FIXED: getAccountById - REMOVED relations: ['parent', 'children']
   async getAccountById(id: number): Promise<Account> {
     return this.accountRepository.findOne({
       where: { id },
-      relations: ['parent', 'children'],
+      // ❌ REMOVED: relations: ['parent', 'children'] - these don't exist!
     });
   }
 
+  // ✅ FIXED: getAllAccounts - REMOVED relations
   async getAllAccounts(): Promise<Account[]> {
-    return this.accountRepository.find({
-      relations: ['parent', 'children'],
-    });
+    return this.accountRepository.find();
+    // ❌ REMOVED: relations: ['parent', 'children']
   }
 
+  // ✅ FIXED: updateAccount with validation
   async updateAccount(id: number, accountData: Partial<Account>): Promise<Account> {
+    // Validate parent if provided
+    if (accountData.parentNumber) {
+      await this.validateParentAccount(accountData.parentNumber);
+      await this.validateNoCircularReference(id, accountData.parentNumber);
+    }
+
     await this.accountRepository.update(id, accountData);
     return this.getAccountById(id);
   }
@@ -79,11 +160,10 @@ export class AccountsService {
     await this.accountRepository.delete(id);
   }
 
-  // src/accounts/accounts.service.ts
   async getCombinedAccounts(): Promise<any[]> {
     const { customerParent, supplierParent } = await this.getIndexParents();
 
-    // Fetch plain accounts (no relations — because we removed parent/children)
+    // Fetch plain accounts (no relations)
     const accounts = await this.accountRepository.find();
 
     // Fetch customer accounts
@@ -96,7 +176,6 @@ export class AccountsService {
       select: ['id', 'supplierAccountNumber', 'supplierName'],
     });
 
-    // Build flat list, then React will build the hierarchy using parentNumber
     const combinedData = accounts.map((account) => {
       const node: any = {
         id: account.id,
@@ -142,13 +221,12 @@ export class AccountsService {
     return combinedData;
   }
 
+  // ✅ FIXED: getAccounts - removed parent/children relations
   async getAccounts(): Promise<any[]> {
     const { customerParent, supplierParent } = await this.getIndexParents();
 
-    // Fetch accounts with parent-child relationships
-    const accounts = await this.accountRepository.find({
-      relations: ['parent', 'children'],
-    });
+    // Fetch accounts WITHOUT parent-child relationships (they don't exist as relations)
+    const accounts = await this.accountRepository.find();
 
     // Fetch customer accounts
     const customers = await this.customerRepository.find({
@@ -162,7 +240,7 @@ export class AccountsService {
 
     const transformAccounts = (accounts: any[], parentNumber: string | null = null): any[] => {
       return accounts
-        .filter((account) => account.parent?.accountNumber === parentNumber)
+        .filter((account) => account.parentNumber === parentNumber) // ✅ Use parentNumber string directly
         .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber))
         .map((account) => {
           const transformedAccount: any = {
@@ -212,7 +290,6 @@ export class AccountsService {
     return transformAccounts(accounts);
   }
 
-  // ✅ Add this method to your AccountsService
   async getFlatSimplifiedAccounts(): Promise<any[]> {
     const { customerParent, supplierParent } = await this.getIndexParents();
 

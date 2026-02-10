@@ -21,42 +21,10 @@ import { RequirePerms } from "../auth/permissions.decorator";
 export class AccountsController {
   constructor(private readonly accountsService: AccountsService) {}
 
-  // CREATE
-  @Post()
-  @RequirePerms("accounts.create")
-  async createAccount(@Body() accountData: Partial<Account>): Promise<Account> {
-    return this.accountsService.createAccount(accountData);
-  }
+  // ✅ IMPORTANT: Specific routes MUST come BEFORE parameterized routes (:id)
+  // Otherwise /accounts/v1/combined will match /accounts/:id with id="v1"
 
-  // READ
-  @Get()
-  @RequirePerms("accounts.view")
-  async getAllAccounts(): Promise<Account[]> {
-    return this.accountsService.getAllAccounts();
-  }
-
-  @Get(":id")
-  @RequirePerms("accounts.view")
-  async getAccountById(@Param("id") id: number): Promise<Account> {
-    return this.accountsService.getAccountById(id);
-  }
-
-  // UPDATE
-  @Put(":id")
-  @RequirePerms("accounts.update")
-  async updateAccount(
-    @Param("id") id: number,
-    @Body() accountData: Partial<Account>
-  ): Promise<Account> {
-    return this.accountsService.updateAccount(id, accountData);
-  }
-
-  // DELETE
-  @Delete(":id")
-  @RequirePerms("accounts.delete")
-  async deleteAccount(@Param("id") id: number): Promise<void> {
-    return this.accountsService.deleteAccount(id);
-  }
+  // ========== SPECIFIC ROUTES FIRST ==========
 
   // Combined / arranged views (still "view")
   @Get("v1/combined")
@@ -118,5 +86,45 @@ export class AccountsController {
       limit: res.limit,
       total: res.total,
     };
+  }
+
+  // ========== PARAMETERIZED ROUTES LAST ==========
+
+  // CREATE
+  @Post()
+  @RequirePerms("accounts.create")
+  async createAccount(@Body() accountData: Partial<Account>): Promise<Account> {
+    return this.accountsService.createAccount(accountData);
+  }
+
+  // READ ALL
+  @Get()
+  @RequirePerms("accounts.view")
+  async getAllAccounts(): Promise<Account[]> {
+    return this.accountsService.getAllAccounts();
+  }
+
+  // READ BY ID - ✅ This MUST come AFTER all specific routes
+  @Get(":id")
+  @RequirePerms("accounts.view")
+  async getAccountById(@Param("id") id: number): Promise<Account> {
+    return this.accountsService.getAccountById(id);
+  }
+
+  // UPDATE
+  @Put(":id")
+  @RequirePerms("accounts.update")
+  async updateAccount(
+    @Param("id") id: number,
+    @Body() accountData: Partial<Account>
+  ): Promise<Account> {
+    return this.accountsService.updateAccount(id, accountData);
+  }
+
+  // DELETE
+  @Delete(":id")
+  @RequirePerms("accounts.delete")
+  async deleteAccount(@Param("id") id: number): Promise<void> {
+    return this.accountsService.deleteAccount(id);
   }
 }
