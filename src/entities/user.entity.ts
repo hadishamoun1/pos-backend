@@ -1,4 +1,4 @@
-// src/users/user.entity.ts
+// src/entities/user.entity.ts
 import { Entity, PrimaryGeneratedColumn, Column, Index } from "typeorm";
 
 @Entity("users")
@@ -22,6 +22,9 @@ export class User {
   permissions: string[]; // e.g. ["items.delete", "items.update"]
   
   @Column({ type: "int", default: 1 })
-tokenVersion: number;
+  tokenVersion: number;
 
+  // ✅ NEW: Language preference
+  @Column({ type: "varchar", length: 2, default: "en" })
+  language: string; // 'en' or 'ar'
 }

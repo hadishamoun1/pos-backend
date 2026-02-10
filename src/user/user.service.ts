@@ -23,57 +23,93 @@ export class UsersService {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    const user = this.repo.create({ username, passwordHash, role, permissions });
+    const user = this.repo.create({ 
+      username, 
+      passwordHash, 
+      role, 
+      permissions,
+      language: "en" // ✅ Default language
+    });
     return this.repo.save(user);
   }
 
-
   async listUsersSafe() {
-  return this.repo.find({
-    select: ["id", "username", "role", "permissions"], // no passwordHash
-    order: { id: "ASC" },
-  });
-}
+    return this.repo.find({
+      select: ["id", "username", "role", "permissions"], // no passwordHash
+      order: { id: "ASC" },
+    });
+  }
 
-async setPermissions(userId: number, permissions: string[]) {
-  const user = await this.repo.findOne({ where: { id: userId } });
-  if (!user) throw new NotFoundException("User not found");
+  async setPermissions(userId: number, permissions: string[]) {
+    const user = await this.repo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found");
 
-  user.permissions = permissions || [];
-  const saved = await this.repo.save(user);
+    user.permissions = permissions || [];
+    const saved = await this.repo.save(user);
 
-  // return safe fields
-  return {
-    id: saved.id,
-    username: saved.username,
-    role: saved.role,
-    permissions: saved.permissions || [],
-  };
-}
+    return {
+      id: saved.id,
+      username: saved.username,
+      role: saved.role,
+      permissions: saved.permissions || [],
+    };
+  }
 
-async setRole(userId: number, role: string) {
-  const user = await this.repo.findOne({ where: { id: userId } });
-  if (!user) throw new NotFoundException("User not found");
+  async setRole(userId: number, role: string) {
+    const user = await this.repo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found");
 
-  user.role = role;
-  const saved = await this.repo.save(user);
+    user.role = role;
+    const saved = await this.repo.save(user);
 
-  return {
-    id: saved.id,
-    username: saved.username,
-    role: saved.role,
-    permissions: saved.permissions || [],
-  };
-}
-async updateUser(id: number, patch: Partial<User>) {
-  await this.repo.update({ id }, patch);
-  return this.repo.findOne({ where: { id } });
-}
+    return {
+      id: saved.id,
+      username: saved.username,
+      role: saved.role,
+      permissions: saved.permissions || [],
+    };
+  }
 
+  async updateUser(id: number, patch: Partial<User>) {
+    await this.repo.update({ id }, patch);
+    return this.repo.findOne({ where: { id } });
+  }
 
+  async hasAnyAdmin() {
+    const count = await this.repo.count({ where: { role: "ADMIN" } });
+    return count > 0;
+  }
 
-async hasAnyAdmin() {
-  const count = await this.repo.count({ where: { role: "ADMIN" } });
-  return count > 0;
-}
+  // ✅ NEW: Update user's language preference
+  async updateLanguage(userId: number, language: string) {
+    if (!['en', 'ar'].includes(language)) {
+      throw new BadRequestException("Language must be 'en' or 'ar'");
+    }
+
+    const user = await this.repo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found");
+
+    user.language = language;
+    const saved = await this.repo.save(user);
+
+    return {
+      id: saved.id,
+      username: saved.username,
+      language: saved.language,
+    };
+  }
+
+  // ✅ NEW: Get user profile (without password)
+  async getUserProfile(userId: number) {
+    const user = await this.repo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found");
+
+    return {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      permissions: user.permissions || [],
+      language: user.language || "en",
+    };
+  }
 }

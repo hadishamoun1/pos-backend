@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   UseGuards,
+  Request,
 } from '@nestjs/common';
 import { UsersService } from './user.service';
 
@@ -45,5 +46,22 @@ export class UsersController {
     @Body() body: { role: string },
   ) {
     return this.usersService.setRole(id, body.role);
+  }
+
+  // ✅ NEW: Update current user's language preference
+  @Patch('me/language')
+  async updateMyLanguage(
+    @Request() req: any,
+    @Body() body: { language: string },
+  ) {
+    const userId = req.user?.userId || req.user?.sub;
+    return this.usersService.updateLanguage(userId, body.language);
+  }
+
+  // ✅ NEW: Get current user's profile
+  @Get('me')
+  async getMyProfile(@Request() req: any) {
+    const userId = req.user?.userId || req.user?.sub;
+    return this.usersService.getUserProfile(userId);
   }
 }
