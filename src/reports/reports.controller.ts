@@ -50,6 +50,25 @@ export class ReportsController {
     });
   }
 
+
+  @Get('profitability')
+@RequirePerms('reports.view')
+async getProfitability(@Query() q: any) {
+  // ✅ Default: current year (2026-01-01 to today)
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const yearStart = `${currentYear}-01-01`;
+  const today = now.toISOString().slice(0, 10);
+
+  return this.reportsService.getProfitability({
+    from: q.from ?? yearStart,
+    to: q.to ?? today,
+    customerId: q.customerId ? Number(q.customerId) : undefined,
+    itemVariantId: q.itemVariantId ? Number(q.itemVariantId) : undefined,
+    invoiceType: q.invoiceType ?? 'ALL',
+  });
+}
+
   @Get('trial-balance/currencies')
   @RequirePerms('reports.view')
   async getTrialBalanceCurrencies(@Query() q: any) {
