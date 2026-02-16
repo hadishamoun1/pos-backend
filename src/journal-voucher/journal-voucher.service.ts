@@ -549,7 +549,6 @@ async getCustomerStatementOFR(params: {
 }) {
   const { customerId, type = "ALL", from, to } = params;
 
-  // Helpers: expand YMD range to full-day-safe datetime range
   const ymdToStart = (ymd: string) => `${ymd} 00:00:00`;
   const nextYMD = (ymd: string) => {
     const d = new Date(`${ymd}T00:00:00`);
@@ -563,68 +562,50 @@ async getCustomerStatementOFR(params: {
   const fromStart = from ? ymdToStart(from) : null; // inclusive
   const toNext = to ? ymdToStart(nextYMD(to)) : null; // exclusive
 
-  // 1) Load customer & infer currency
   const customer = await this.customerRepo.findOne({
     where: { id: customerId },
     relations: ["currency"],
   });
   if (!customer) throw new NotFoundException(`Customer ${customerId} not found`);
 
-  let currencyCode =
-    (customer as any)?.currency?.code as "USD" | "LL" | "EURO" | "BASE" | undefined;
-  if (!currencyCode) {
-    currencyCode = (customer as any).currencyId === 2 ? "LL" : "USD";
-  }
-
   const customerAccountNumber: string | null =
-    (customer as any)?.customerAccountNumber ?? (customer as any)?.accountNumber ?? null;
+    (customer as any)?.customerAccountNumber ??
+    (customer as any)?.accountNumber ??
+    null;
 
-  const customerInvoiceType: string | null = (customer as any)?.invoiceType ?? null;
+  const customerInvoiceType: string | null =
+    (customer as any)?.invoiceType ?? null;
 
-  // 2) Column maps
-  const ofrColMap = {
-    USD: { dr: "drUSDOFR", cr: "crUSDOFR" },
-    LL: { dr: "drLLOFR", cr: "crLLOFR" },
-    EURO: { dr: "drOFR", cr: "crOFR" },
-    BASE: { dr: "drOFR", cr: "crOFR" },
-  } as const;
+  const statementCurrency = "USD" as const;
 
-  const baseColMap = {
-    USD: { dr: "drUSD", cr: "crUSD" },
-    LL: { dr: "drLL", cr: "crLL" },
-    EURO: { dr: "dr", cr: "cr" },
-    BASE: { dr: "dr", cr: "cr" },
-  } as const;
-
-  // ✅ Decide if THIS ROW should use OFR columns or Base columns
   const isOfrRow = (jv: any, docNbr?: string | null) => {
     const jvType = String(jv?.jvType ?? "").trim().toUpperCase();
     const jvNumber = String(jv?.jvNumber ?? "").trim().toUpperCase();
     const doc = String(docNbr ?? "").trim().toUpperCase();
 
-    // If "contains G" in your system means OFR vouchers:
     if (jvType === "G") return true;
     if (jvNumber.startsWith("JVG") || jvNumber.includes("JVG")) return true;
 
-    // Return / Reverse prefixes that indicate OFR
     if (doc.startsWith("RG")) return true;
     if (doc.startsWith("RVG")) return true;
 
     return false;
   };
 
+  // USD-only columns
   const getColsForRow = (useOfr: boolean) => {
-    const map = useOfr
-      ? (ofrColMap[currencyCode] ?? ofrColMap.USD)
-      : (baseColMap[currencyCode] ?? baseColMap.USD);
-
-    return {
-      drCol: map.dr as keyof JournalVoucherDetail,
-      crCol: map.cr as keyof JournalVoucherDetail,
-    };
+    return useOfr
+      ? ({
+          drCol: "drUSDOFR" as keyof JournalVoucherDetail,
+          crCol: "crUSDOFR" as keyof JournalVoucherDetail,
+        })
+      : ({
+          drCol: "drUSD" as keyof JournalVoucherDetail,
+          crCol: "crUSD" as keyof JournalVoucherDetail,
+        });
   };
 
-  // ✅ Filter by OFR vs Base (NOT by docNbr only, NOT by jvType only)
+  // Type filter: if S => include S + RVR
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
@@ -640,21 +621,12 @@ async getCustomerStatementOFR(params: {
         )`
       );
     } else if (type === "S") {
-      qb.andWhere(
-        `NOT (
-          UPPER(jv.jvNumber) LIKE 'JVG%'
-          OR UPPER(TRIM(jv.jvType)) = 'G'
-          OR (d.docNbr IS NOT NULL AND (
-            UPPER(TRIM(d.docNbr)) LIKE 'RG%'
-            OR UPPER(TRIM(d.docNbr)) LIKE 'RVG%'
-          ))
-        )`
-      );
+      qb.andWhere(`UPPER(TRIM(jv.jvType)) IN ('S','RVR')`);
     }
     return qb;
   };
 
-  // 4) Main period query
+  // Main period query
   const qb = this.journalVoucherDetailRepository
     .createQueryBuilder("d")
     .leftJoinAndSelect("d.journalVoucher", "jv")
@@ -669,7 +641,7 @@ async getCustomerStatementOFR(params: {
 
   const rows = await qb.getMany();
 
-  // 5) Opening balance (everything BEFORE fromStart)
+  // Opening balance (before fromStart)
   let openingBalance = 0;
   if (fromStart) {
     const beforeQb = this.journalVoucherDetailRepository
@@ -695,8 +667,11 @@ async getCustomerStatementOFR(params: {
     openingBalance = openingDr - openingCr;
   }
 
-  // 6) Items + running balance
+  // Items + running balance
   let running = openingBalance;
+
+  const fmtLL = (n: number) =>
+    Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
 
   const items = rows.map((r) => {
     const useOfr = isOfrRow(r.journalVoucher, r.docNbr);
@@ -705,6 +680,23 @@ async getCustomerStatementOFR(params: {
     const debit = Number((r as any)[drCol] || 0);
     const credit = Number((r as any)[crCol] || 0);
 
+    // ✅ Build description with LL amount for "دفعة نقدا LL"
+    let description = (r.description ?? null) as string | null;
+    if (description && description.includes("دفعة نقدا LL")) {
+      const llDrCol = useOfr ? "drLLOFR" : "drLL";
+      const llCrCol = useOfr ? "crLLOFR" : "crLL";
+
+      // pick LL amount based on which side this row is (dr or cr)
+      const llAmount =
+        debit > 0
+          ? Number((r as any)[llDrCol] || 0)
+          : credit > 0
+          ? Number((r as any)[llCrCol] || 0)
+          : 0;
+
+      description = `${description} (${fmtLL(llAmount)})`;
+    }
+
     running += debit - credit;
 
     return {
@@ -712,15 +704,14 @@ async getCustomerStatementOFR(params: {
       date: r.journalVoucher?.date,
       jvNumber: r.journalVoucher?.jvNumber,
       jvType: r.journalVoucher?.jvType,
-      description: r.description ?? null,
+      description,
       docNbr: r.docNbr ?? null,
-      usesOfr: useOfr, // ✅ debug flag so you can see why it picked OFR/Base
+      usesOfr: useOfr,
       debit,
       credit,
       balanceAfter: running,
-      exRateUSD: currencyCode === "LL" ? Number((r as any).exRateUSD || 0) : undefined,
-      exRateEUROToUSD:
-        currencyCode === "EURO" ? Number((r as any).exRateEUROToUSD || 0) : undefined,
+      exRateUSD: Number((r as any).exRateUSD || 0),
+      exRateEUROToUSD: Number((r as any).exRateEUROToUSD || 0),
     };
   });
 
@@ -733,17 +724,9 @@ async getCustomerStatementOFR(params: {
     { totalDebit: 0, totalCredit: 0 }
   );
 
-  const basis = {
-    currency: currencyCode,
-    selection: type,
-    range: { fromStart, toNext },
-    baseUses: baseColMap[currencyCode] ?? baseColMap.USD,
-    ofrUses: ofrColMap[currencyCode] ?? ofrColMap.USD,
-  };
-
   return {
     customerId,
-    currencyCode,
+    statementCurrency,
     customerAccountNumber,
     customerInvoiceType,
     from: from ?? null,
@@ -752,9 +735,11 @@ async getCustomerStatementOFR(params: {
     totals,
     closingBalance: running,
     items,
-    basis,
   };
 }
+
+
+
 
 
 async getCustomerBalancesReport(params: {
