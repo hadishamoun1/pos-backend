@@ -56,7 +56,7 @@ TypeOrmModule.forRootAsync({
     password: process.env.DB_PASS || '',
     database: process.env.DB_NAME || 'pos_v1',
     autoLoadEntities: true,
-    synchronize: false,
+    synchronize: true,
   }),
 }),
 
