@@ -43,6 +43,7 @@ import { CsvImportModule } from './HistoryPrices/HistoryPrices.module';
 import { AccountingModule } from './accountRoleMap/accounting.module';
 import { CashCollectionsModule } from './cash-collections/cash-collections.module';
 import { EmployeesModule } from './Employee/Employee.module';
+import { CompanyModule } from './company/company.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -55,7 +56,7 @@ TypeOrmModule.forRootAsync({
     password: process.env.DB_PASS || '',
     database: process.env.DB_NAME || 'pos_v1',
     autoLoadEntities: true,
-    synchronize: process.env.NODE_ENV !== 'production',
+    synchronize: false,
   }),
 }),
 
@@ -99,7 +100,8 @@ TypeOrmModule.forRootAsync({
     CsvImportModule,
     AccountingModule,
     CashCollectionsModule,
-    EmployeesModule
+    EmployeesModule,
+    CompanyModule
   ],
 })
 export class AppModule {}
