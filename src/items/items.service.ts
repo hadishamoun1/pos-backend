@@ -4802,7 +4802,6 @@ async getVariantLedgerByItemNameDesc(params?: {
 
 
 
-
 async getVariantLedgerByRealDesc(params?: {
   q?: string;
   itemName?: string;
@@ -4823,15 +4822,15 @@ async getVariantLedgerByRealDesc(params?: {
   };
 
   const ARABIC_INDIC_MAP: Record<string, string> = {
-    '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
-    '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+    '\u0660':'0','\u0661':'1','\u0662':'2','\u0663':'3','\u0664':'4','\u0665':'5','\u0666':'6','\u0667':'7','\u0668':'8','\u0669':'9',
+    '\u06F0':'0','\u06F1':'1','\u06F2':'2','\u06F3':'3','\u06F4':'4','\u06F5':'5','\u06F6':'6','\u06F7':'7','\u06F8':'8','\u06F9':'9',
   };
 
   const normalizeDigitsAll = (input: string) =>
-    String(input || '').replace(/[٠-٩۰-۹]/g, d => ARABIC_INDIC_MAP[d] ?? d);
+    String(input || '').replace(/[\u0660-\u0669\u06F0-\u06F9]/g, d => ARABIC_INDIC_MAP[d] ?? d);
 
   const normalizeArabicAlef = (s: string) =>
-    String(s || '').replace(/أ|إ|آ/g, 'ا');
+    String(s || '').replace(/\u0623|\u0625|\u0622/g, '\u0627');
 
   const parseVariantQuery = (qRaw: string): {
     thickness?: number;
@@ -4844,7 +4843,7 @@ async getVariantLedgerByRealDesc(params?: {
     let q = normalizeDigitsAll(qRaw).trim().replace(/\s+/g, ' ');
     let working = q;
 
-    const thMatch = working.match(/(\d+(?:[.,]\d+)?)\s*(?:ملم|مم|م)(?=$|\s|[-/xX×*])/);
+    const thMatch = working.match(/(\d+(?:[.,]\d+)?)\s*(?:\u0645\u0644\u0645|\u0645\u0645|\u0645)(?=$|\s|[-\/xX\u00D7*])/);
     let thickness: number | undefined;
     if (thMatch) {
       const th = Number((thMatch[1] || '').replace(',', '.'));
@@ -4852,7 +4851,7 @@ async getVariantLedgerByRealDesc(params?: {
       working = working.replace(thMatch[0], ' ').replace(/\s+/g, ' ').trim();
     }
 
-    const dimRe = /(\d{2,5})\s*[xX×*]\s*(\d{2,5})(?:\s*[-/]\s*0?(\d{1,3}))?/;
+    const dimRe = /(\d{2,5})\s*[xX\u00D7*]\s*(\d{2,5})(?:\s*[-\/]\s*0?(\d{1,3}))?/;
     const dimMatch = working.match(dimRe);
     let lengthN: number | undefined;
     let widthN: number | undefined;
@@ -4865,7 +4864,7 @@ async getVariantLedgerByRealDesc(params?: {
     }
 
     working = working
-      .replace(/(?:^|[\s\-_/\\])(?:ملم|مم|م)(?=$|[\s\-_/\\])/g, ' ')
+      .replace(/(?:^|[\s\-_\/\\])(?:\u0645\u0644\u0645|\u0645\u0645|\u0645)(?=$|[\s\-_\/\\])/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
 
@@ -4878,30 +4877,6 @@ async getVariantLedgerByRealDesc(params?: {
     return { thickness, length: lengthN, width: widthN, sheetsPerBox: spb, nameTokens };
   };
 
-  const convertFromSqm = (args: {
-    itemType: string | null | undefined;
-    lengthCm: number;
-    widthCm: number;
-    sheetsPerBox: number;
-    valueSqm: number;
-  }) => {
-    const { itemType, lengthCm, widthCm, sheetsPerBox, valueSqm } = args;
-    const perSheetSqm =
-      toNum(lengthCm) > 0 && toNum(widthCm) > 0
-        ? (toNum(lengthCm) * toNum(widthCm)) / 10000
-        : 0;
-    const type = String(itemType || '').toLowerCase();
-
-    if (type === 'box') {
-      const perBoxSqm = perSheetSqm * Math.max(1, toNum(sheetsPerBox));
-      return perBoxSqm > 0 ? valueSqm / perBoxSqm : valueSqm;
-    }
-    if (type === 'sheet') {
-      return perSheetSqm > 0 ? valueSqm / perSheetSqm : valueSqm;
-    }
-    return valueSqm;
-  };
-
   // asOf validation
   const asOfRaw = (params?.asOf ?? '').trim();
   const asOfOk = !asOfRaw || /^\d{4}-\d{2}-\d{2}$/.test(asOfRaw);
@@ -4912,12 +4887,9 @@ async getVariantLedgerByRealDesc(params?: {
   // ---- schema helpers ----
   const getTableColumns = async (tableName: string): Promise<string[]> => {
     const rows = await this.itemVariantRepository.query(
-      `
-      SELECT COLUMN_NAME AS col
-      FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = ?
-      `,
+      `SELECT COLUMN_NAME AS col
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
       [tableName],
     );
     return (rows || []).map((r: any) => String(r.col));
@@ -4926,13 +4898,10 @@ async getVariantLedgerByRealDesc(params?: {
   const resolveTable = async (candidates: string[]): Promise<string | null> => {
     for (const cand of candidates) {
       const rows = await this.itemVariantRepository.query(
-        `
-        SELECT TABLE_NAME AS name
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = ?
-        LIMIT 1
-        `,
+        `SELECT TABLE_NAME AS name
+         FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+         LIMIT 1`,
         [cand],
       );
       if (rows?.length) return String(rows[0].name);
@@ -4943,14 +4912,11 @@ async getVariantLedgerByRealDesc(params?: {
   const getInvTxnColumns = async (): Promise<string[]> => {
     const cached = (this as any).__invTxnCols as string[] | undefined;
     if (cached) return cached;
-
-    const rows = await this.itemVariantRepository.query(`
-      SELECT COLUMN_NAME AS col
-      FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = 'inventory_transaction'
-    `);
-
+    const rows = await this.itemVariantRepository.query(
+      `SELECT COLUMN_NAME AS col
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inventory_transaction'`
+    );
     const cols = (rows || []).map((r: any) => String(r.col));
     (this as any).__invTxnCols = cols;
     return cols;
@@ -4967,7 +4933,7 @@ async getVariantLedgerByRealDesc(params?: {
   };
 
   const page  = Math.max(1, Number(params?.page ?? 1));
-  const limit = Math.min(200, Math.max(1, Number(params?.limit ?? 50)));
+  const limit = Math.min(500, Math.max(1, Number(params?.limit ?? 50)));
   const skip  = (page - 1) * limit;
 
   const qb = this.itemVariantRepository
@@ -5000,9 +4966,9 @@ async getVariantLedgerByRealDesc(params?: {
     if (Number.isFinite(parsed.thickness)) {
       qb.andWhere('ROUND(t.thickness, 1) = ROUND(:pth, 1)', { pth: Number(parsed.thickness) });
     }
-    if (Number.isFinite(parsed.length)) qb.andWhere('v.length = :plen', { plen: Number(parsed.length) });
-    if (Number.isFinite(parsed.width))  qb.andWhere('v.width  = :pwid', { pwid: Number(parsed.width) });
-    if (Number.isFinite(parsed.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :pspb', { pspb: Number(parsed.sheetsPerBox) });
+    if (Number.isFinite(parsed.length))       qb.andWhere('v.length = :plen',       { plen: Number(parsed.length) });
+    if (Number.isFinite(parsed.width))         qb.andWhere('v.width  = :pwid',       { pwid: Number(parsed.width) });
+    if (Number.isFinite(parsed.sheetsPerBox))  qb.andWhere('v.sheetsPerBox = :pspb', { pspb: Number(parsed.sheetsPerBox) });
 
     if (parsed.nameTokens?.length) {
       parsed.nameTokens.forEach((tok, idx) => {
@@ -5010,12 +4976,12 @@ async getVariantLedgerByRealDesc(params?: {
         const tokenRaw  = `%${tok}%`;
         qb.andWhere(
           `(
-            REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
+            REPLACE(REPLACE(REPLACE(i.itemName,'\u0623','\u0627'),'\u0625','\u0627'),'\u0622','\u0627') LIKE :tokN${idx}
             OR i.itemName LIKE :tokR${idx}
-            OR REPLACE(REPLACE(REPLACE(r.categoryName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
-            OR REPLACE(REPLACE(REPLACE(r.subCategory,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
-            OR REPLACE(REPLACE(REPLACE(r.colorName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
-            OR REPLACE(REPLACE(REPLACE(r.designName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
+            OR REPLACE(REPLACE(REPLACE(r.categoryName,'\u0623','\u0627'),'\u0625','\u0627'),'\u0622','\u0627') LIKE :tokN${idx}
+            OR REPLACE(REPLACE(REPLACE(r.subCategory,'\u0623','\u0627'),'\u0625','\u0627'),'\u0622','\u0627') LIKE :tokN${idx}
+            OR REPLACE(REPLACE(REPLACE(r.colorName,'\u0623','\u0627'),'\u0625','\u0627'),'\u0622','\u0627') LIKE :tokN${idx}
+            OR REPLACE(REPLACE(REPLACE(r.designName,'\u0623','\u0627'),'\u0625','\u0627'),'\u0622','\u0627') LIKE :tokN${idx}
             OR r.itemNumber LIKE :tokR${idx}
           )`,
           { [`tokN${idx}`]: tokenNorm, [`tokR${idx}`]: tokenRaw }
@@ -5027,374 +4993,305 @@ async getVariantLedgerByRealDesc(params?: {
   if (params?.itemName) {
     const nm = normalizeArabicAlef(params.itemName);
     qb.andWhere(
-      `(REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :nm OR i.itemName LIKE :nmRaw)`,
+      `(REPLACE(REPLACE(REPLACE(i.itemName,'\u0623','\u0627'),'\u0625','\u0627'),'\u0622','\u0627') LIKE :nm OR i.itemName LIKE :nmRaw)`,
       { nm: `%${nm}%`, nmRaw: `%${params.itemName}%` },
     );
   }
-  if (params?.type) qb.andWhere('i.type = :tp', { tp: params.type });
-  if (Number.isFinite(params?.thickness)) qb.andWhere('ROUND(t.thickness, 1) = ROUND(:th, 1)', { th: Number(params!.thickness) });
-  if (Number.isFinite(params?.length))    qb.andWhere('v.length = :len', { len: Number(params!.length) });
-  if (Number.isFinite(params?.width))     qb.andWhere('v.width  = :wid', { wid: Number(params!.width) });
-  if (Number.isFinite(params?.sheetsPerBox)) qb.andWhere('v.sheetsPerBox = :spb', { spb: Number(params!.sheetsPerBox) });
-  if (params?.origin) qb.andWhere('v.origin = :org', { org: params.origin });
+  if (params?.type)                           qb.andWhere('i.type = :tp',                 { tp:  params.type });
+  if (Number.isFinite(params?.thickness))     qb.andWhere('ROUND(t.thickness,1)=ROUND(:th,1)', { th:  Number(params!.thickness) });
+  if (Number.isFinite(params?.length))        qb.andWhere('v.length = :len',              { len: Number(params!.length) });
+  if (Number.isFinite(params?.width))         qb.andWhere('v.width  = :wid',              { wid: Number(params!.width) });
+  if (Number.isFinite(params?.sheetsPerBox))  qb.andWhere('v.sheetsPerBox = :spb',        { spb: Number(params!.sheetsPerBox) });
+  if (params?.origin)                         qb.andWhere('v.origin = :org',              { org: params.origin });
 
   qb
     .addSelect('CASE WHEN r.sort_index_real_description IS NULL THEN 1 ELSE 0 END', 'r_nulls')
     .addSelect(
-      `
-      CASE
-        WHEN UPPER(v.origin) = 'SISECAM' THEN 1
-        WHEN UPPER(v.origin) = 'AGC' THEN 2
-        WHEN UPPER(v.origin) = 'SPHINX' THEN 3
-        WHEN UPPER(v.origin) = 'RIDER' THEN 4
-        WHEN UPPER(v.origin) IN ('S.G','SG','S G') THEN 5
-        ELSE 99
-      END
-      `,
+      `CASE
+         WHEN UPPER(v.origin) = 'SISECAM' THEN 1
+         WHEN UPPER(v.origin) = 'AGC'     THEN 2
+         WHEN UPPER(v.origin) = 'SPHINX'  THEN 3
+         WHEN UPPER(v.origin) = 'RIDER'   THEN 4
+         WHEN UPPER(v.origin) IN ('S.G','SG','S G') THEN 5
+         ELSE 99
+       END`,
       'origin_priority',
     )
     .orderBy('r_nulls', 'ASC')
     .addOrderBy('r.sort_index_real_description', 'ASC')
-    .addOrderBy('i.itemName', 'ASC')
-    .addOrderBy('t.sort_index', 'ASC')
-    .addOrderBy('t.thickness', 'ASC')
+    .addOrderBy('i.itemName',      'ASC')
+    .addOrderBy('t.sort_index',    'ASC')
+    .addOrderBy('t.thickness',     'ASC')
     .addOrderBy('origin_priority', 'ASC')
-    .addOrderBy('v.origin', 'ASC')
-    .addOrderBy('v.length', 'ASC')
-    .addOrderBy('v.id', 'ASC')
+    .addOrderBy('v.origin',        'ASC')
+    .addOrderBy('v.length',        'ASC')
+    .addOrderBy('v.id',            'ASC')
     .skip(skip)
     .take(limit);
 
-  // ✅ getManyAndCount gives us the real total across all pages
   let [variants, totalCount] = await qb.getManyAndCount();
 
-  // asOf snapshots
+  // ✅ variantSnap used for BOTH asOf and live queries
   const variantSnap = new Map<number, { balU?: any; balOFR?: any }>();
   const batchSnap   = new Map<number, { balU?: any; balOFR?: any }>();
   const costSnap    = new Map<number, { avg?: number | null; last?: number | null }>();
 
   let variantIds = (variants as any[]).map(v => Number(v.id)).filter(n => Number.isFinite(n) && n > 0);
 
-  if (asOfRaw && variants.length) {
+  const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
+
+  // -------------------------------------------------------
+  // ALWAYS fetch live balances from inventory_transaction
+  // ✅ quantityofr → balU  → ones.balance             → Balance (Qty)
+  // ✅ sqmofr      → balOFR → ofrTotalsSqm.balanceOFR → Balance (SQM)
+  // -------------------------------------------------------
+  if (variantIds.length) {
     const cols = await getInvTxnColumns();
 
-    if (!pickCol(cols, ['dateForEachInvoice'])) {
-      throw new Error(
-        `inventory_transaction is missing dateForEachInvoice column — asOf snapshots are not supported`
-      );
-    }
-
+    // ✅ exact column names matching the entity definition
+    const qtyOfrCol = pickCol(cols, ['quantityofr']);   // entity: quantityofr
+    const sqmOfrCol = pickCol(cols, ['sqmofr']);        // entity: sqmofr
+    // fallbacks only if OFR columns somehow missing
     const qtyCol    = pickCol(cols, ['quantity']);
-    const qtyOfrCol = pickCol(cols, ['quantityofr', 'quantityOFR', 'quantity_ofr']);
     const sqmCol    = pickCol(cols, ['sqm']);
-    const sqmOfrCol = pickCol(cols, ['sqmofr', 'sqmOFR', 'sqm_ofr']);
 
-    const unitExpr = qtyCol ? `SUM(COALESCE(\`${qtyCol}\`,0))` : (sqmCol ? `SUM(COALESCE(\`${sqmCol}\`,0))` : null);
-    const ofrExpr  = sqmOfrCol ? `SUM(COALESCE(\`${sqmOfrCol}\`,0))` : (qtyOfrCol ? `SUM(COALESCE(\`${qtyOfrCol}\`,0))` : null);
+    // ✅ quantityofr is PRIMARY for balU (Balance Qty column)
+    // ✅ sqmofr      is PRIMARY for balOFR (Balance SQM column)
+    const qtyExpr    = qtyOfrCol ? `SUM(COALESCE(\`${qtyOfrCol}\`,0))` : (qtyCol    ? `SUM(COALESCE(\`${qtyCol}\`,0))`    : null);
+    const sqmOfrExpr = sqmOfrCol ? `SUM(COALESCE(\`${sqmOfrCol}\`,0))` : (sqmCol    ? `SUM(COALESCE(\`${sqmCol}\`,0))`    : null);
 
-    if (!unitExpr && !ofrExpr) {
-      throw new Error(
-        `inventory_transaction cannot make snapshots: missing quantity/sqm columns. Found: ${cols.join(', ')}`
-      );
-    }
-
-    const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
-
-    // -------------------------------------------------------
-    // 0) FILTER — remove variants that didn't exist yet at asOf
-    // -------------------------------------------------------
-    {
-      const sql = `
-        SELECT DISTINCT itemVariantId
-        FROM inventory_transaction
-        WHERE itemVariantId IN (${makeIn(variantIds)})
-          AND dateForEachInvoice <= ?
-      `;
-      const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfRaw]);
-      const validSet = new Set<number>(
-        (rows || []).map((r: any) => Number(r.itemVariantId)).filter((n: number) => Number.isFinite(n))
-      );
-
-      variants   = (variants as any[]).filter(v => validSet.has(Number(v.id)));
-      variantIds = variantIds.filter(id => validSet.has(id));
-
-      // ✅ adjust totalCount to reflect the existence-filtered set
-      totalCount = variants.length + skip;
-    }
-
-    if (variants.length) {
-      // -------------------------------------------------------
-      // 1) BALANCE snapshots — strictly by dateForEachInvoice
-      // -------------------------------------------------------
-      const batchIds: number[] = [];
-      for (const v of variants as any[]) {
-        for (const b of (v.batches ?? [])) {
-          const bid = Number(b?.id);
-          if (Number.isFinite(bid) && bid > 0) batchIds.push(bid);
+    if (qtyExpr || sqmOfrExpr) {
+      if (asOfRaw) {
+        // -------------------------------------------------------
+        // asOf path: filter by dateForEachInvoice
+        // -------------------------------------------------------
+        if (!pickCol(cols, ['dateForEachInvoice'])) {
+          throw new Error(`inventory_transaction is missing dateForEachInvoice — asOf not supported`);
         }
-      }
 
-      if (variantIds.length) {
+        // 0) Remove variants that didn't exist yet at asOf
+        {
+          const sql = `
+            SELECT DISTINCT itemVariantId
+            FROM inventory_transaction
+            WHERE itemVariantId IN (${makeIn(variantIds)})
+              AND dateForEachInvoice <= ?
+          `;
+          const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfRaw]);
+          const validSet = new Set<number>(
+            (rows || []).map((r: any) => Number(r.itemVariantId)).filter((n: number) => Number.isFinite(n))
+          );
+          variants   = (variants as any[]).filter(v => validSet.has(Number(v.id)));
+          variantIds = variantIds.filter(id => validSet.has(id));
+        }
+
+        // 1) Variant balance snapshots at asOf
+        if (variantIds.length) {
+          const sql = `
+            SELECT itemVariantId AS variantId
+              ${qtyExpr    ? `, ${qtyExpr}    AS balU`   : ''}
+              ${sqmOfrExpr ? `, ${sqmOfrExpr} AS balOFR` : ''}
+            FROM inventory_transaction
+            WHERE itemVariantId IN (${makeIn(variantIds)})
+              AND dateForEachInvoice <= ?
+            GROUP BY itemVariantId
+          `;
+          const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfRaw]);
+          for (const r of rows || []) {
+            const vid = Number(r.variantId);
+            if (Number.isFinite(vid)) variantSnap.set(vid, { balU: r.balU, balOFR: r.balOFR });
+          }
+        }
+
+        // 2) Batch balance snapshots at asOf
+        if (variants.length) {
+          const batchIds: number[] = [];
+          for (const v of variants as any[]) {
+            for (const b of (v.batches ?? [])) {
+              const bid = Number(b?.id);
+              if (Number.isFinite(bid) && bid > 0) batchIds.push(bid);
+            }
+          }
+          if (batchIds.length) {
+            const uniq = Array.from(new Set(batchIds));
+            const sql = `
+              SELECT itemBatchId AS batchId
+                ${qtyExpr    ? `, ${qtyExpr}    AS balU`   : ''}
+                ${sqmOfrExpr ? `, ${sqmOfrExpr} AS balOFR` : ''}
+              FROM inventory_transaction
+              WHERE itemBatchId IN (${makeIn(uniq)})
+                AND dateForEachInvoice <= ?
+              GROUP BY itemBatchId
+            `;
+            const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfRaw]);
+            for (const r of rows || []) {
+              const bid = Number(r.batchId);
+              if (Number.isFinite(bid)) batchSnap.set(bid, { balU: r.balU, balOFR: r.balOFR });
+            }
+          }
+        }
+
+      } else {
+        // -------------------------------------------------------
+        // ✅ Live path (no asOf): current totals, no date filter
+        // -------------------------------------------------------
         const sql = `
           SELECT itemVariantId AS variantId
-            ${unitExpr ? `, ${unitExpr} AS balU` : ``}
-            ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
+            ${qtyExpr    ? `, ${qtyExpr}    AS balU`   : ''}
+            ${sqmOfrExpr ? `, ${sqmOfrExpr} AS balOFR` : ''}
           FROM inventory_transaction
           WHERE itemVariantId IN (${makeIn(variantIds)})
-            AND dateForEachInvoice <= ?
           GROUP BY itemVariantId
         `;
-        const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfRaw]);
+        const rows = await this.itemVariantRepository.query(sql, variantIds);
         for (const r of rows || []) {
           const vid = Number(r.variantId);
-          if (Number.isFinite(vid)) {
-            variantSnap.set(vid, { balU: r.balU, balOFR: r.balOFR });
-          }
+          if (Number.isFinite(vid)) variantSnap.set(vid, { balU: r.balU, balOFR: r.balOFR });
         }
       }
+    }
+  }
 
-      if (batchIds.length) {
-        const uniq = Array.from(new Set(batchIds));
-        const sql = `
-          SELECT itemBatchId AS batchId
-            ${unitExpr ? `, ${unitExpr} AS balU` : ``}
-            ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
-          FROM inventory_transaction
-          WHERE itemBatchId IN (${makeIn(uniq)})
-            AND dateForEachInvoice <= ?
-          GROUP BY itemBatchId
-        `;
-        const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfRaw]);
-        for (const r of rows || []) {
-          const bid = Number(r.batchId);
-          if (Number.isFinite(bid)) {
-            batchSnap.set(bid, { balU: r.balU, balOFR: r.balOFR });
+  // -------------------------------------------------------
+  // COST snapshots — only needed for asOf
+  // -------------------------------------------------------
+  if (asOfRaw && variants.length && variantIds.length) {
+    const piiTable = await resolveTable([
+      'purchase_invoice_item','purchase_invoice_items',
+      'purchaseInvoiceItem','purchaseInvoiceItems',
+      'purchases_invoice_item','purchases_invoice_items',
+    ]);
+    const piTable = await resolveTable([
+      'purchase_invoice','purchase_invoices',
+      'purchaseInvoice','purchaseInvoices',
+      'purchases_invoice','purchases_invoices',
+    ]);
+
+    if (piiTable) {
+      const piiCols = await getTableColumns(piiTable);
+      const piiVariantCol   = pickCol(piiCols, ['itemVariantId','item_variant_id','variantId','variant_id']);
+      const piiIdCol        = pickCol(piiCols, ['id']) || 'id';
+      const piiInvoiceIdCol = pickCol(piiCols, ['purchaseInvoiceId','purchase_invoice_id','invoiceId','invoice_id']);
+      const avgCol          = pickCol(piiCols, ['averageCost','avgCost','average_cost']);
+      const lastCol         = pickCol(piiCols, ['lastCost','last_cost']);
+      const costCol         = pickCol(piiCols, ['cost','unitCost','unit_cost','price','unitPrice','unit_price','finalCost','final_cost']);
+      const piiDateCol      = pickCol(piiCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at']);
+
+      if (piiVariantCol) {
+        let useJoin = false, dateExpr = '', joinSql = '', whereDate = '';
+
+        if (piTable && piiInvoiceIdCol) {
+          const piCols    = await getTableColumns(piTable);
+          const piIdCol   = pickCol(piCols, ['id']) || 'id';
+          const piDateCol = pickCol(piCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at','dateForEachInvoice']);
+          if (piDateCol) {
+            useJoin   = true;
+            joinSql   = `INNER JOIN \`${piTable}\` pi ON pi.\`${piIdCol}\` = pii.\`${piiInvoiceIdCol}\``;
+            dateExpr  = `DATE(pi.\`${piDateCol}\`)`;
+            whereDate = `AND ${dateExpr} <= ?`;
           }
         }
-      }
+        if (!useJoin) {
+          if (piiDateCol) { dateExpr = `DATE(pii.\`${piiDateCol}\`)`; whereDate = `AND ${dateExpr} <= ?`; }
+          joinSql = '';
+        }
 
-      // -------------------------------------------------------
-      // 2) COST snapshots — A) purchase invoice, B) count type G
-      // -------------------------------------------------------
-      const piiTable = await resolveTable([
-        'purchase_invoice_item',
-        'purchase_invoice_items',
-        'purchaseInvoiceItem',
-        'purchaseInvoiceItems',
-        'purchases_invoice_item',
-        'purchases_invoice_items',
-      ]);
+        if (dateExpr) {
+          const missing = variantIds.filter(id => !costSnap.has(id));
+          if (missing.length) {
+            const avgExpr  = avgCol  ? `pii.\`${avgCol}\``  : lastCol ? `pii.\`${lastCol}\`` : costCol ? `pii.\`${costCol}\`` : 'NULL';
+            const lastExpr = lastCol ? `pii.\`${lastCol}\`` : costCol ? `pii.\`${costCol}\`` : avgCol  ? `pii.\`${avgCol}\``  : 'NULL';
 
-      const piTable = await resolveTable([
-        'purchase_invoice',
-        'purchase_invoices',
-        'purchaseInvoice',
-        'purchaseInvoices',
-        'purchases_invoice',
-        'purchases_invoices',
-      ]);
-
-      if (piiTable) {
-        const piiCols = await getTableColumns(piiTable);
-
-        const piiVariantCol   = pickCol(piiCols, ['itemVariantId','item_variant_id','variantId','variant_id']);
-        const piiIdCol        = pickCol(piiCols, ['id']) || 'id';
-        const piiInvoiceIdCol = pickCol(piiCols, [
-          'purchaseInvoiceId','purchase_invoice_id',
-          'invoiceId','invoice_id',
-        ]);
-
-        const avgCol  = pickCol(piiCols, ['averageCost','avgCost','average_cost']);
-        const lastCol = pickCol(piiCols, ['lastCost','last_cost']);
-        const costCol = pickCol(piiCols, ['cost','unitCost','unit_cost','price','unitPrice','unit_price','finalCost','final_cost']);
-        const piiDateCol = pickCol(piiCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at']);
-
-        if (piiVariantCol) {
-          let useJoin   = false;
-          let dateExpr  = '';
-          let joinSql   = '';
-          let whereDate = '';
-
-          if (piTable && piiInvoiceIdCol) {
-            const piCols    = await getTableColumns(piTable);
-            const piIdCol   = pickCol(piCols, ['id']) || 'id';
-            const piDateCol = pickCol(piCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at','dateForEachInvoice']);
-
-            if (piDateCol) {
-              useJoin   = true;
-              joinSql   = `INNER JOIN \`${piTable}\` pi ON pi.\`${piIdCol}\` = pii.\`${piiInvoiceIdCol}\``;
-              dateExpr  = `DATE(pi.\`${piDateCol}\`)`;
-              whereDate = `AND ${dateExpr} <= ?`;
-            }
-          }
-
-          if (!useJoin) {
-            if (piiDateCol) {
-              dateExpr  = `DATE(pii.\`${piiDateCol}\`)`;
-              whereDate = `AND ${dateExpr} <= ?`;
-            } else {
-              dateExpr  = '';
-              whereDate = '';
-            }
-            joinSql = '';
-          }
-
-          if (dateExpr) {
-            const missing = variantIds.filter(id => !costSnap.has(id));
-            if (missing.length) {
-              const avgExpr =
-                avgCol  ? `pii.\`${avgCol}\`` :
-                lastCol ? `pii.\`${lastCol}\`` :
-                costCol ? `pii.\`${costCol}\`` :
-                `NULL`;
-
-              const lastExpr =
-                lastCol ? `pii.\`${lastCol}\`` :
-                costCol ? `pii.\`${costCol}\`` :
-                avgCol  ? `pii.\`${avgCol}\`` :
-                `NULL`;
-
-              try {
-                const sql = `
-                  SELECT z.variantId, z.avgCost, z.lastCost
-                  FROM (
-                    SELECT
-                      pii.\`${piiVariantCol}\` AS variantId,
-                      ${avgExpr}  AS avgCost,
-                      ${lastExpr} AS lastCost,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY pii.\`${piiVariantCol}\`
-                        ORDER BY ${dateExpr} DESC, pii.\`${piiIdCol}\` DESC
-                      ) AS rn
-                    FROM \`${piiTable}\` pii
-                    ${joinSql}
-                    WHERE pii.\`${piiVariantCol}\` IN (${makeIn(missing)})
-                    ${whereDate}
-                  ) z
-                  WHERE z.rn = 1
-                `;
-                const rows = await this.itemVariantRepository.query(sql, [...missing, asOfRaw]);
-                for (const r of rows || []) {
-                  const vid = Number(r.variantId);
-                  if (!Number.isFinite(vid)) continue;
-                  const avg  = r.avgCost  != null ? Number(toNum(r.avgCost).toFixed(2))  : null;
-                  const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
-                  const avgFinal  = avg  != null ? avg  : (last != null ? last : null);
-                  const lastFinal = last != null ? last : (avg  != null ? avg  : null);
-                  if (avgFinal != null || lastFinal != null) {
-                    costSnap.set(vid, { avg: avgFinal, last: lastFinal });
-                  }
-                }
-              } catch {
-                const inMissing = makeIn(missing);
-                const sql = `
-                  SELECT
-                    pii.\`${piiVariantCol}\` AS variantId,
-                    ${avgExpr}  AS avgCost,
-                    ${lastExpr} AS lastCost
-                  FROM \`${piiTable}\` pii
-                  ${joinSql}
-                  INNER JOIN (
-                    SELECT
-                      pii2.\`${piiVariantCol}\` AS variantId,
-                      MAX(CONCAT(
-                        DATE_FORMAT(${dateExpr}, '%Y%m%d%H%i%s'),
-                        '-',
-                        LPAD(pii2.\`${piiIdCol}\`, 10, '0')
-                      )) AS mx
-                    FROM \`${piiTable}\` pii2
-                    ${joinSql ? joinSql.replace(/pii\./g, 'pii2.').replace(/ pi /g, ' pi2 ') : ''}
-                    WHERE pii2.\`${piiVariantCol}\` IN (${inMissing})
-                    ${whereDate ? whereDate.replace(/pi\./g, 'pi2.').replace(/pii\./g, 'pii2.') : ''}
-                    GROUP BY pii2.\`${piiVariantCol}\`
-                  ) t
-                    ON t.variantId = pii.\`${piiVariantCol}\`
-                   AND t.mx = CONCAT(
-                        DATE_FORMAT(${dateExpr}, '%Y%m%d%H%i%s'),
-                        '-',
-                        LPAD(pii.\`${piiIdCol}\`, 10, '0')
-                      )
-                `;
-                const rows = await this.itemVariantRepository.query(sql, [...missing, asOfRaw]);
-                for (const r of rows || []) {
-                  const vid = Number(r.variantId);
-                  if (!Number.isFinite(vid)) continue;
-                  const avg  = r.avgCost  != null ? Number(toNum(r.avgCost).toFixed(2))  : null;
-                  const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
-                  const avgFinal  = avg  != null ? avg  : (last != null ? last : null);
-                  const lastFinal = last != null ? last : (avg  != null ? avg  : null);
-                  if (avgFinal != null || lastFinal != null) {
-                    costSnap.set(vid, { avg: avgFinal, last: lastFinal });
-                  }
-                }
+            try {
+              const sql = `
+                SELECT z.variantId, z.avgCost, z.lastCost FROM (
+                  SELECT pii.\`${piiVariantCol}\` AS variantId,
+                         ${avgExpr} AS avgCost, ${lastExpr} AS lastCost,
+                         ROW_NUMBER() OVER (PARTITION BY pii.\`${piiVariantCol}\`
+                           ORDER BY ${dateExpr} DESC, pii.\`${piiIdCol}\` DESC) AS rn
+                  FROM \`${piiTable}\` pii ${joinSql}
+                  WHERE pii.\`${piiVariantCol}\` IN (${makeIn(missing)}) ${whereDate}
+                ) z WHERE z.rn = 1
+              `;
+              const rows = await this.itemVariantRepository.query(sql, [...missing, asOfRaw]);
+              for (const r of rows || []) {
+                const vid = Number(r.variantId);
+                if (!Number.isFinite(vid)) continue;
+                const avg  = r.avgCost  != null ? Number(toNum(r.avgCost).toFixed(2))  : null;
+                const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
+                const af = avg  != null ? avg  : last; 
+                const lf = last != null ? last : avg;
+                if (af != null || lf != null) costSnap.set(vid, { avg: af, last: lf });
+              }
+            } catch {
+              const sql = `
+                SELECT pii.\`${piiVariantCol}\` AS variantId, ${avgExpr} AS avgCost, ${lastExpr} AS lastCost
+                FROM \`${piiTable}\` pii ${joinSql}
+                INNER JOIN (
+                  SELECT pii2.\`${piiVariantCol}\` AS variantId,
+                         MAX(CONCAT(DATE_FORMAT(${dateExpr},'%Y%m%d%H%i%s'),'-',LPAD(pii2.\`${piiIdCol}\`,10,'0'))) AS mx
+                  FROM \`${piiTable}\` pii2
+                  ${joinSql ? joinSql.replace(/pii\./g,'pii2.').replace(/ pi /g,' pi2 ') : ''}
+                  WHERE pii2.\`${piiVariantCol}\` IN (${makeIn(missing)})
+                  ${whereDate ? whereDate.replace(/pi\./g,'pi2.').replace(/pii\./g,'pii2.') : ''}
+                  GROUP BY pii2.\`${piiVariantCol}\`
+                ) t ON t.variantId = pii.\`${piiVariantCol}\`
+                  AND t.mx = CONCAT(DATE_FORMAT(${dateExpr},'%Y%m%d%H%i%s'),'-',LPAD(pii.\`${piiIdCol}\`,10,'0'))
+              `;
+              const rows = await this.itemVariantRepository.query(sql, [...missing, asOfRaw]);
+              for (const r of rows || []) {
+                const vid = Number(r.variantId);
+                if (!Number.isFinite(vid)) continue;
+                const avg  = r.avgCost  != null ? Number(toNum(r.avgCost).toFixed(2))  : null;
+                const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
+                const af = avg  != null ? avg  : last;
+                const lf = last != null ? last : avg;
+                if (af != null || lf != null) costSnap.set(vid, { avg: af, last: lf });
               }
             }
           }
         }
       }
+    }
 
-      // B) Fallback to inventory_count type G
-      const missingAfterPurchase = variantIds.filter(id => !costSnap.has(id));
-      if (missingAfterPurchase.length) {
-        try {
-          const sql = `
-            SELECT z.variantId, z.avgCost
-            FROM (
-              SELECT
-                ic.itemVariantId AS variantId,
-                ic.finalCostOfr  AS avgCost,
-                ROW_NUMBER() OVER (
-                  PARTITION BY ic.itemVariantId
-                  ORDER BY ic.date DESC, ic.id DESC
-                ) AS rn
-              FROM inventory_count ic
-              WHERE ic.itemVariantId IN (${makeIn(missingAfterPurchase)})
-                AND ic.type = 'G'
-                AND ic.date <= ?
-            ) z
-            WHERE z.rn = 1
-          `;
-          const rows = await this.itemVariantRepository.query(sql, [...missingAfterPurchase, asOfRaw]);
-          for (const r of rows || []) {
-            const vid = Number(r.variantId);
-            if (!Number.isFinite(vid)) continue;
-            const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
-            if (avg != null) costSnap.set(vid, { avg, last: null });
-          }
-        } catch {
-          const sql = `
-            SELECT
-              ic.itemVariantId AS variantId,
-              ic.finalCostOfr  AS avgCost
+    // B) Fallback: inventory_count type G
+    const missingAfterPurchase = variantIds.filter(id => !costSnap.has(id));
+    if (missingAfterPurchase.length) {
+      try {
+        const sql = `
+          SELECT z.variantId, z.avgCost FROM (
+            SELECT ic.itemVariantId AS variantId, ic.finalCostOfr AS avgCost,
+                   ROW_NUMBER() OVER (PARTITION BY ic.itemVariantId ORDER BY ic.date DESC, ic.id DESC) AS rn
             FROM inventory_count ic
-            INNER JOIN (
-              SELECT
-                itemVariantId,
-                MAX(CONCAT(
-                  DATE_FORMAT(date, '%Y%m%d'),
-                  '-',
-                  LPAD(id, 10, '0')
-                )) AS mx
-              FROM inventory_count
-              WHERE itemVariantId IN (${makeIn(missingAfterPurchase)})
-                AND type = 'G'
-                AND date <= ?
-              GROUP BY itemVariantId
-            ) t
-              ON t.itemVariantId = ic.itemVariantId
-             AND t.mx = CONCAT(
-                  DATE_FORMAT(ic.date, '%Y%m%d'),
-                  '-',
-                  LPAD(ic.id, 10, '0')
-                )
-          `;
-          const rows = await this.itemVariantRepository.query(sql, [...missingAfterPurchase, asOfRaw]);
-          for (const r of rows || []) {
-            const vid = Number(r.variantId);
-            if (!Number.isFinite(vid)) continue;
-            const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
-            if (avg != null) costSnap.set(vid, { avg, last: null });
-          }
+            WHERE ic.itemVariantId IN (${makeIn(missingAfterPurchase)}) AND ic.type = 'G' AND ic.date <= ?
+          ) z WHERE z.rn = 1
+        `;
+        const rows = await this.itemVariantRepository.query(sql, [...missingAfterPurchase, asOfRaw]);
+        for (const r of rows || []) {
+          const vid = Number(r.variantId);
+          if (!Number.isFinite(vid)) continue;
+          const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
+          if (avg != null) costSnap.set(vid, { avg, last: null });
+        }
+      } catch {
+        const sql = `
+          SELECT ic.itemVariantId AS variantId, ic.finalCostOfr AS avgCost
+          FROM inventory_count ic
+          INNER JOIN (
+            SELECT itemVariantId,
+                   MAX(CONCAT(DATE_FORMAT(date,'%Y%m%d'),'-',LPAD(id,10,'0'))) AS mx
+            FROM inventory_count
+            WHERE itemVariantId IN (${makeIn(missingAfterPurchase)}) AND type = 'G' AND date <= ?
+            GROUP BY itemVariantId
+          ) t ON t.itemVariantId = ic.itemVariantId
+            AND t.mx = CONCAT(DATE_FORMAT(ic.date,'%Y%m%d'),'-',LPAD(ic.id,10,'0'))
+        `;
+        const rows = await this.itemVariantRepository.query(sql, [...missingAfterPurchase, asOfRaw]);
+        for (const r of rows || []) {
+          const vid = Number(r.variantId);
+          if (!Number.isFinite(vid)) continue;
+          const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
+          if (avg != null) costSnap.set(vid, { avg, last: null });
         }
       }
     }
@@ -5419,17 +5316,11 @@ async getVariantLedgerByRealDesc(params?: {
       .createQueryBuilder('v2')
       .innerJoin('v2.thickness', 't2')
       .innerJoin('t2.item', 'i2')
-      .select([
-        't2.id AS tId',
-        'v2.length AS len',
-        'v2.width AS wid',
-        'v2.origin AS org',
-        'v2.sheetsPerBox AS spb',
-      ])
+      .select(['t2.id AS tId','v2.length AS len','v2.width AS wid','v2.origin AS org','v2.sheetsPerBox AS spb'])
       .where('i2.type = :tp', { tp: 'box' })
       .andWhere('t2.id IN (:...tids)', { tids: Array.from(thicknessIds) })
       .andWhere('v2.length IN (:...lens)', { lens: Array.from(lengths) })
-      .andWhere('v2.width IN (:...wids)', { wids: Array.from(widths) })
+      .andWhere('v2.width IN (:...wids)',  { wids: Array.from(widths) })
       .andWhere('v2.origin IN (:...orgs)', { orgs: Array.from(origins) })
       .getRawMany();
   }
@@ -5445,21 +5336,23 @@ async getVariantLedgerByRealDesc(params?: {
   }
 
   const data = (variants as any[]).map((v) => {
-    const itemType = v.thickness.item.type;
-    const len      = toNum(v.length);
-    const wid      = toNum(v.width);
-    const spbSelf  = Math.max(1, toNum(v.sheetsPerBox));
-    const key      = `${v.thickness.id}|${len}|${wid}|${String(v.origin || '')}`;
-    const fromBoxSet   = spbMap.get(key);
-    const boxSpbList   = fromBoxSet ? Array.from(fromBoxSet).sort((a, b) => a - b) : [];
+    const itemType       = v.thickness.item.type;
+    const len            = toNum(v.length);
+    const wid            = toNum(v.width);
+    const spbSelf        = Math.max(1, toNum(v.sheetsPerBox));
+    const key            = `${v.thickness.id}|${len}|${wid}|${String(v.origin || '')}`;
+    const fromBoxSet     = spbMap.get(key);
+    const boxSpbList     = fromBoxSet ? Array.from(fromBoxSet).sort((a, b) => a - b) : [];
     const resolvedBoxSpb = boxSpbList.length ? boxSpbList[0] : null;
 
-    const snap = asOfRaw ? variantSnap.get(Number(v.id)) : null;
+    // ✅ snap is always populated — live (no asOf) or historical (asOf)
+    const snap = variantSnap.get(Number(v.id)) ?? null;
 
     const ofrTotalsUnits = {
       start:   Number(toNum(v.totalStart).toFixed(2)),
       in:      Number(toNum(v.totalIn).toFixed(2)),
       out:     Number(toNum(v.totalOut).toFixed(2)),
+      // ✅ SUM(quantityofr) → Balance (Qty) in frontend
       balance: Number(toNum(snap?.balU ?? v.totalBalance).toFixed(2)),
     };
 
@@ -5467,45 +5360,42 @@ async getVariantLedgerByRealDesc(params?: {
       startOFR:   Number(toNum(v.totalStartOFR).toFixed(2)),
       inOFR:      Number(toNum(v.totalInOFR).toFixed(2)),
       outOFR:     Number(toNum(v.totalOutOFR).toFixed(2)),
+      // ✅ SUM(sqmofr) → Balance (SQM) in frontend
       balanceOFR: Number(toNum(snap?.balOFR ?? v.totalBalanceOFR).toFixed(2)),
     };
 
     const batches = (v.batches ?? []).map((b: any) => {
-      const bSnap = asOfRaw ? batchSnap.get(Number(b.id)) : null;
+      const bSnap = batchSnap.get(Number(b.id)) ?? null;
 
-      const balanceOFRSqm  = toNum(bSnap?.balOFR ?? (b.balanceOFR ?? 0));
-      const convertedUnits = convertFromSqm({
-        itemType, lengthCm: len, widthCm: wid, sheetsPerBox: spbSelf, valueSqm: balanceOFRSqm,
-      });
+      // ✅ batch quantity from quantityofr, sqm from sqmofr
+      const batchQty = toNum(bSnap?.balU   ?? (b.balance    ?? 0));
+      const batchSqm = toNum(bSnap?.balOFR ?? (b.balanceOFR ?? 0));
 
       return {
-        id:           b.id,
-        condition:    b.condition    ?? null,
-        dateReceived: b.dateReceived ?? null,
-        start:  toNum(b.start  ?? 0),
-        in:     toNum(b.in     ?? 0),
-        out:    toNum(b.out    ?? 0),
-        balance: toNum(bSnap?.balU ?? (b.balance ?? 0)),
+        id:            b.id,
+        condition:     b.condition    ?? null,
+        dateReceived:  b.dateReceived ?? null,
+        start:         toNum(b.start  ?? 0),
+        in:            toNum(b.in     ?? 0),
+        out:           toNum(b.out    ?? 0),
+        balance:       Number(batchQty.toFixed(2)),  // quantityofr
         startOFR:      Number(toNum(b.startOFR ?? 0).toFixed(2)),
         inOFR:         Number(toNum(b.inOFR    ?? 0).toFixed(2)),
         outOFR:        Number(toNum(b.outOFR   ?? 0).toFixed(2)),
-        balanceOFRSqm: Number(balanceOFRSqm.toFixed(2)),
-        balanceOFR:    Number(convertedUnits.toFixed(2)),
+        balanceOFRSqm: Number(batchSqm.toFixed(2)),  // sqmofr
+        balanceOFR:    Number(batchQty.toFixed(2)),  // quantityofr (used by frontend batchQtyUnits)
       };
     });
 
     const rd: any = (v as any).realDescription ?? null;
 
-    const c = asOfRaw ? costSnap.get(Number(v.id)) : null;
-    const avgOut =
-      asOfRaw
-        ? (c?.avg  != null ? c.avg  : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null))
-        : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null);
-
-    const lastOut =
-      asOfRaw
-        ? (c?.last != null ? c.last : (v.lastCost != null ? Number(toNum(v.lastCost).toFixed(2)) : null))
-        : (v.lastCost != null ? Number(toNum(v.lastCost).toFixed(2)) : null);
+    const c      = asOfRaw ? costSnap.get(Number(v.id)) : null;
+    const avgOut  = asOfRaw
+      ? (c?.avg  != null ? c.avg  : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null))
+      : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null);
+    const lastOut = asOfRaw
+      ? (c?.last != null ? c.last : (v.lastCost    != null ? Number(toNum(v.lastCost).toFixed(2))    : null))
+      : (v.lastCost    != null ? Number(toNum(v.lastCost).toFixed(2))    : null);
 
     return {
       itemId:       v.thickness.item.id,
@@ -5519,25 +5409,22 @@ async getVariantLedgerByRealDesc(params?: {
       sheetsPerBox: spbSelf,
       origin:       v.origin,
 
-      ones: ofrTotalsUnits,
-      ofrTotalsSqm,
+      ones: ofrTotalsUnits,  // ones.balance            = SUM(quantityofr) → Balance (Qty)
+      ofrTotalsSqm,          // ofrTotalsSqm.balanceOFR = SUM(sqmofr)      → Balance (SQM)
 
-      description: rd
-        ? {
-            id:           rd.id           ?? null,
-            categoryName: rd.categoryName ?? null,
-            subCategory:  rd.subCategory  ?? null,
-            colorName:    rd.colorName    ?? null,
-            designName:   rd.designName   ?? null,
-            sortIndexRealDescription: rd.sort_index_real_description ?? null,
-            itemNumber:   rd.itemNumber   ?? null,
-          }
-        : null,
+      description: rd ? {
+        id:                       rd.id           ?? null,
+        categoryName:             rd.categoryName ?? null,
+        subCategory:              rd.subCategory  ?? null,
+        colorName:                rd.colorName    ?? null,
+        designName:               rd.designName   ?? null,
+        sortIndexRealDescription: rd.sort_index_real_description ?? null,
+        itemNumber:               rd.itemNumber   ?? null,
+      } : null,
 
       batches,
       boxSpbList,
       resolvedBoxSpb,
-
       averageCost: avgOut,
       lastCost:    lastOut,
     };
@@ -5546,13 +5433,11 @@ async getVariantLedgerByRealDesc(params?: {
   return {
     page,
     limit,
-    totalRows: totalCount,                    // ✅ real total from getManyAndCount
-    hasMore:   skip + data.length < totalCount, // ✅ accurate hasMore
+    totalRows: totalCount,
+    hasMore:   skip + limit < totalCount,
     data,
   };
 }
-
-
 
 
 
