@@ -54,9 +54,9 @@ TypeOrmModule.forRootAsync({
     port: Number(process.env.DB_PORT || 3306),
     username: process.env.DB_USER || 'root',
     password: process.env.DB_PASS || '',
-    database: process.env.DB_NAME || 'oo',
+    database: process.env.DB_NAME || 'pos_v1',
     autoLoadEntities: true,
-    synchronize: false,
+    synchronize: true,
   }),
 }),
 
