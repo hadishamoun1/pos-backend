@@ -5080,11 +5080,14 @@ async getVariantLedgerByRealDesc(params?: {
 
   if (asOfRaw && variants.length) {
     // -------------------------------
-    // 1) BALANCE snapshots from inventory_transaction (your existing logic)
+    // 1) BALANCE snapshots from inventory_transaction
+    //    ✅ depend mainly on dateForEachInvoice (fallback to transactionDate only when NULL)
+    //    ✅ OFR should use quantityofr (fallback to sqmofr only if quantityofr missing)
+    //    ✅ inclusive till end-of-day (use < next day)
     // -------------------------------
     const cols = await getInvTxnColumns();
 
-    const hasDateForEach = !!pickCol(cols, ['dateForEachInvoice']);
+    const dateForEachCol = pickCol(cols, ['dateForEachInvoice']);
     const txnDateCol = pickCol(cols, ['transactionDate']) || 'transactionDate';
 
     const qtyCol     = pickCol(cols, ['quantity']);
@@ -5092,8 +5095,14 @@ async getVariantLedgerByRealDesc(params?: {
     const sqmCol     = pickCol(cols, ['sqm']);
     const sqmOfrCol  = pickCol(cols, ['sqmofr', 'sqmOFR', 'sqm_ofr']);
 
-    const unitExpr = qtyCol ? `SUM(COALESCE(\`${qtyCol}\`,0))` : (sqmCol ? `SUM(COALESCE(\`${sqmCol}\`,0))` : null);
-    const ofrExpr  = sqmOfrCol ? `SUM(COALESCE(\`${sqmOfrCol}\`,0))` : (qtyOfrCol ? `SUM(COALESCE(\`${qtyOfrCol}\`,0))` : null);
+    const unitExpr =
+      qtyCol ? `SUM(COALESCE(\`${qtyCol}\`,0))`
+      : (sqmCol ? `SUM(COALESCE(\`${sqmCol}\`,0))` : null);
+
+    // ✅ prefer quantityofr for OFR
+    const ofrExpr =
+      qtyOfrCol ? `SUM(COALESCE(\`${qtyOfrCol}\`,0))`
+      : (sqmOfrCol ? `SUM(COALESCE(\`${sqmOfrCol}\`,0))` : null);
 
     if (!unitExpr && !ofrExpr) {
       throw new Error(
@@ -5101,9 +5110,13 @@ async getVariantLedgerByRealDesc(params?: {
       );
     }
 
-    const dateFilterExpr = hasDateForEach
-      ? `COALESCE(dateForEachInvoice, DATE(\`${txnDateCol}\`))`
+    // ✅ depend mainly on dateForEachInvoice; fallback only if NULL
+    const dateFilterExpr = dateForEachCol
+      ? `COALESCE(DATE(\`${dateForEachCol}\`), DATE(\`${txnDateCol}\`))`
       : `DATE(\`${txnDateCol}\`)`;
+
+    // ✅ inclusive end-of-day
+    const asOfWhere = `${dateFilterExpr} < DATE_ADD(?, INTERVAL 1 DAY)`;
 
     const batchIds: number[] = [];
     for (const v of variants as any[]) {
@@ -5122,7 +5135,7 @@ async getVariantLedgerByRealDesc(params?: {
           ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
         FROM inventory_transaction
         WHERE itemVariantId IN (${makeIn(variantIds)})
-          AND ${dateFilterExpr} <= ?
+          AND ${asOfWhere}
         GROUP BY itemVariantId
       `;
       const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfRaw]);
@@ -5142,7 +5155,7 @@ async getVariantLedgerByRealDesc(params?: {
           ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
         FROM inventory_transaction
         WHERE itemBatchId IN (${makeIn(uniq)})
-          AND ${dateFilterExpr} <= ?
+          AND ${asOfWhere}
         GROUP BY itemBatchId
       `;
       const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfRaw]);
@@ -5213,7 +5226,7 @@ async getVariantLedgerByRealDesc(params?: {
             useJoin = true;
             joinSql = `INNER JOIN \`${piTable}\` pi ON pi.\`${piIdCol}\` = pii.\`${piiInvoiceIdCol}\``;
             dateExpr = `DATE(pi.\`${piDateCol}\`)`;
-            whereDate = `AND ${dateExpr} <= ?`;
+            whereDate = `AND ${dateExpr} < DATE_ADD(?, INTERVAL 1 DAY)`;
           }
         }
 
@@ -5221,7 +5234,7 @@ async getVariantLedgerByRealDesc(params?: {
         if (!useJoin) {
           if (piiDateCol) {
             dateExpr = `DATE(pii.\`${piiDateCol}\`)`;
-            whereDate = `AND ${dateExpr} <= ?`;
+            whereDate = `AND ${dateExpr} < DATE_ADD(?, INTERVAL 1 DAY)`;
           } else {
             // no date column found => cannot do asOf correctly, skip purchase snapshot
             dateExpr = '';
@@ -5234,7 +5247,7 @@ async getVariantLedgerByRealDesc(params?: {
         if (dateExpr) {
           const missing = variantIds.filter(id => !costSnap.has(id));
           if (missing.length) {
-            const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
+            const makeIn2 = (arr: any[]) => arr.map(() => '?').join(',');
 
             const avgExpr =
               avgCol ? `pii.\`${avgCol}\`` :
@@ -5263,7 +5276,7 @@ async getVariantLedgerByRealDesc(params?: {
                     ) AS rn
                   FROM \`${piiTable}\` pii
                   ${joinSql}
-                  WHERE pii.\`${piiVariantCol}\` IN (${makeIn(missing)})
+                  WHERE pii.\`${piiVariantCol}\` IN (${makeIn2(missing)})
                   ${whereDate}
                 ) z
                 WHERE z.rn = 1
@@ -5274,7 +5287,6 @@ async getVariantLedgerByRealDesc(params?: {
                 if (!Number.isFinite(vid)) continue;
                 const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
                 const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
-                // normalize: if one is missing, copy from the other
                 const avgFinal = avg != null ? avg : (last != null ? last : null);
                 const lastFinal = last != null ? last : (avg != null ? avg : null);
                 if (avgFinal != null || lastFinal != null) {
@@ -5283,7 +5295,7 @@ async getVariantLedgerByRealDesc(params?: {
               }
             } catch {
               // MySQL 5.7 fallback: pick max(date,id) per variant using CONCAT trick
-              const inMissing = makeIn(missing);
+              const inMissing = makeIn2(missing);
               const sql = `
                 SELECT
                   pii.\`${piiVariantCol}\` AS variantId,
@@ -5330,10 +5342,10 @@ async getVariantLedgerByRealDesc(params?: {
       }
     }
 
-    // B) Fallback to inventory_count type G (YOUR ENTITY: inventory_count has itemVariantId/date/type/finalCostOfr)
+    // B) Fallback to inventory_count type G
     const missingAfterPurchase = variantIds.filter(id => !costSnap.has(id));
     if (missingAfterPurchase.length) {
-      const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
+      const makeIn3 = (arr: any[]) => arr.map(() => '?').join(',');
 
       // MySQL 8 window version
       try {
@@ -5348,9 +5360,9 @@ async getVariantLedgerByRealDesc(params?: {
                 ORDER BY ic.date DESC, ic.id DESC
               ) AS rn
             FROM inventory_count ic
-            WHERE ic.itemVariantId IN (${makeIn(missingAfterPurchase)})
+            WHERE ic.itemVariantId IN (${makeIn3(missingAfterPurchase)})
               AND ic.type = 'G'
-              AND ic.date <= ?
+              AND ic.date < DATE_ADD(?, INTERVAL 1 DAY)
           ) z
           WHERE z.rn = 1
         `;
@@ -5360,7 +5372,6 @@ async getVariantLedgerByRealDesc(params?: {
           if (!Number.isFinite(vid)) continue;
           const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
           if (avg != null) {
-            // averageCost comes from count G finalCostOfr
             costSnap.set(vid, { avg, last: null });
           }
         }
@@ -5380,9 +5391,9 @@ async getVariantLedgerByRealDesc(params?: {
                 LPAD(id, 10, '0')
               )) AS mx
             FROM inventory_count
-            WHERE itemVariantId IN (${makeIn(missingAfterPurchase)})
+            WHERE itemVariantId IN (${makeIn3(missingAfterPurchase)})
               AND type = 'G'
-              AND date <= ?
+              AND date < DATE_ADD(?, INTERVAL 1 DAY)
             GROUP BY itemVariantId
           ) t
             ON t.itemVariantId = ic.itemVariantId
