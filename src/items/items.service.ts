@@ -4804,7 +4804,7 @@ async getVariantLedgerByItemNameDesc(params?: {
 
 
 async getVariantLedgerByRealDesc(params?: {
-  q?: string; // "5.5ملم ابيض 225*321-025"
+  q?: string;
   itemName?: string;
   type?: 'box' | 'sheet' | 'sqm' | 'unit';
   thickness?: number;
@@ -4902,7 +4902,7 @@ async getVariantLedgerByRealDesc(params?: {
     return valueSqm;
   };
 
-  // ✅ asOf validation (we use YYYY-MM-DD string)
+  // asOf validation
   const asOfRaw = (params?.asOf ?? '').trim();
   const asOfOk = !asOfRaw || /^\d{4}-\d{2}-\d{2}$/.test(asOfRaw);
   if (!asOfOk) {
@@ -5066,31 +5066,33 @@ async getVariantLedgerByRealDesc(params?: {
     .skip(skip)
     .take(limit);
 
-  const variants = await qb.getMany();
+  // ---- use let so we can filter by asOf existence below ----
+  let variants = await qb.getMany();
 
-  // ✅ asOf snapshots (balances)
+  // asOf snapshots (balances)
   const variantSnap = new Map<number, { balU?: any; balOFR?: any }>();
   const batchSnap   = new Map<number, { balU?: any; balOFR?: any }>();
 
-  // ✅ asOf costs (purchase invoice first, then count type G)
+  // asOf costs (purchase invoice first, then count type G)
   const costSnap = new Map<number, { avg?: number | null; last?: number | null }>();
 
   // collect variantIds early (used by snapshots + costs)
-  const variantIds = (variants as any[]).map(v => Number(v.id)).filter(n => Number.isFinite(n) && n > 0);
+  let variantIds = (variants as any[]).map(v => Number(v.id)).filter(n => Number.isFinite(n) && n > 0);
 
   if (asOfRaw && variants.length) {
-    // -------------------------------
-    // 1) BALANCE snapshots from inventory_transaction (your existing logic)
-    // -------------------------------
     const cols = await getInvTxnColumns();
 
-    const hasDateForEach = !!pickCol(cols, ['dateForEachInvoice']);
-    const txnDateCol = pickCol(cols, ['transactionDate']) || 'transactionDate';
+    // Strictly require dateForEachInvoice column
+    if (!pickCol(cols, ['dateForEachInvoice'])) {
+      throw new Error(
+        `inventory_transaction is missing dateForEachInvoice column — asOf snapshots are not supported`
+      );
+    }
 
-    const qtyCol     = pickCol(cols, ['quantity']);
-    const qtyOfrCol  = pickCol(cols, ['quantityofr', 'quantityOFR', 'quantity_ofr']);
-    const sqmCol     = pickCol(cols, ['sqm']);
-    const sqmOfrCol  = pickCol(cols, ['sqmofr', 'sqmOFR', 'sqm_ofr']);
+    const qtyCol    = pickCol(cols, ['quantity']);
+    const qtyOfrCol = pickCol(cols, ['quantityofr', 'quantityOFR', 'quantity_ofr']);
+    const sqmCol    = pickCol(cols, ['sqm']);
+    const sqmOfrCol = pickCol(cols, ['sqmofr', 'sqmOFR', 'sqm_ofr']);
 
     const unitExpr = qtyCol ? `SUM(COALESCE(\`${qtyCol}\`,0))` : (sqmCol ? `SUM(COALESCE(\`${sqmCol}\`,0))` : null);
     const ofrExpr  = sqmOfrCol ? `SUM(COALESCE(\`${sqmOfrCol}\`,0))` : (qtyOfrCol ? `SUM(COALESCE(\`${qtyOfrCol}\`,0))` : null);
@@ -5101,309 +5103,313 @@ async getVariantLedgerByRealDesc(params?: {
       );
     }
 
-    const dateFilterExpr = hasDateForEach
-      ? `COALESCE(dateForEachInvoice, DATE(\`${txnDateCol}\`))`
-      : `DATE(\`${txnDateCol}\`)`;
-
-    const batchIds: number[] = [];
-    for (const v of variants as any[]) {
-      for (const b of (v.batches ?? [])) {
-        const bid = Number(b?.id);
-        if (Number.isFinite(bid) && bid > 0) batchIds.push(bid);
-      }
-    }
-
     const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
 
-    if (variantIds.length) {
+    // -------------------------------------------------------
+    // 0) FILTER OUT variants that have no transactions on or
+    //    before asOf — they didn't exist yet at that date
+    // -------------------------------------------------------
+    {
       const sql = `
-        SELECT itemVariantId AS variantId
-          ${unitExpr ? `, ${unitExpr} AS balU` : ``}
-          ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
+        SELECT DISTINCT itemVariantId
         FROM inventory_transaction
         WHERE itemVariantId IN (${makeIn(variantIds)})
-          AND ${dateFilterExpr} <= ?
-        GROUP BY itemVariantId
+          AND dateForEachInvoice <= ?
       `;
       const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfRaw]);
-      for (const r of rows || []) {
-        const vid = Number(r.variantId);
-        if (Number.isFinite(vid)) {
-          variantSnap.set(vid, { balU: r.balU, balOFR: r.balOFR });
-        }
-      }
+      const validSet = new Set<number>(
+        (rows || []).map((r: any) => Number(r.itemVariantId)).filter((n: number) => Number.isFinite(n))
+      );
+
+      // Filter both the variants array and the variantIds array
+      variants = (variants as any[]).filter(v => validSet.has(Number(v.id)));
+      variantIds = variantIds.filter(id => validSet.has(id));
     }
 
-    if (batchIds.length) {
-      const uniq = Array.from(new Set(batchIds));
-      const sql = `
-        SELECT itemBatchId AS batchId
-          ${unitExpr ? `, ${unitExpr} AS balU` : ``}
-          ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
-        FROM inventory_transaction
-        WHERE itemBatchId IN (${makeIn(uniq)})
-          AND ${dateFilterExpr} <= ?
-        GROUP BY itemBatchId
-      `;
-      const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfRaw]);
-      for (const r of rows || []) {
-        const bid = Number(r.batchId);
-        if (Number.isFinite(bid)) {
-          batchSnap.set(bid, { balU: r.balU, balOFR: r.balOFR });
+    // If nothing remains after the existence filter, skip all snapshot queries
+    if (variants.length) {
+      // -------------------------------------------------------
+      // 1) BALANCE snapshots — strictly by dateForEachInvoice
+      // -------------------------------------------------------
+      const batchIds: number[] = [];
+      for (const v of variants as any[]) {
+        for (const b of (v.batches ?? [])) {
+          const bid = Number(b?.id);
+          if (Number.isFinite(bid) && bid > 0) batchIds.push(bid);
         }
       }
-    }
 
-    // -------------------------------
-    // 2) COST snapshots for asOf:
-    //    A) last purchase invoice <= asOf
-    //    B) if none => last inventory_count type G <= asOf (finalCostOfr as averageCost)
-    // -------------------------------
+      if (variantIds.length) {
+        const sql = `
+          SELECT itemVariantId AS variantId
+            ${unitExpr ? `, ${unitExpr} AS balU` : ``}
+            ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
+          FROM inventory_transaction
+          WHERE itemVariantId IN (${makeIn(variantIds)})
+            AND dateForEachInvoice <= ?
+          GROUP BY itemVariantId
+        `;
+        const rows = await this.itemVariantRepository.query(sql, [...variantIds, asOfRaw]);
+        for (const r of rows || []) {
+          const vid = Number(r.variantId);
+          if (Number.isFinite(vid)) {
+            variantSnap.set(vid, { balU: r.balU, balOFR: r.balOFR });
+          }
+        }
+      }
 
-    // A) Purchase Invoice snapshot (best-effort, schema-detected)
-    const piiTable = await resolveTable([
-      'purchase_invoice_item',
-      'purchase_invoice_items',
-      'purchaseInvoiceItem',
-      'purchaseInvoiceItems',
-      'purchases_invoice_item',
-      'purchases_invoice_items',
-    ]);
+      if (batchIds.length) {
+        const uniq = Array.from(new Set(batchIds));
+        const sql = `
+          SELECT itemBatchId AS batchId
+            ${unitExpr ? `, ${unitExpr} AS balU` : ``}
+            ${ofrExpr  ? `, ${ofrExpr}  AS balOFR` : ``}
+          FROM inventory_transaction
+          WHERE itemBatchId IN (${makeIn(uniq)})
+            AND dateForEachInvoice <= ?
+          GROUP BY itemBatchId
+        `;
+        const rows = await this.itemVariantRepository.query(sql, [...uniq, asOfRaw]);
+        for (const r of rows || []) {
+          const bid = Number(r.batchId);
+          if (Number.isFinite(bid)) {
+            batchSnap.set(bid, { balU: r.balU, balOFR: r.balOFR });
+          }
+        }
+      }
 
-    const piTable = await resolveTable([
-      'purchase_invoice',
-      'purchase_invoices',
-      'purchaseInvoice',
-      'purchaseInvoices',
-      'purchases_invoice',
-      'purchases_invoices',
-    ]);
+      // -------------------------------------------------------
+      // 2) COST snapshots — A) purchase invoice, B) count type G
+      // -------------------------------------------------------
 
-    if (piiTable) {
-      const piiCols = await getTableColumns(piiTable);
-
-      const piiVariantCol = pickCol(piiCols, ['itemVariantId','item_variant_id','variantId','variant_id']);
-      const piiIdCol = pickCol(piiCols, ['id']) || 'id';
-
-      const piiInvoiceIdCol = pickCol(piiCols, [
-        'purchaseInvoiceId','purchase_invoice_id',
-        'invoiceId','invoice_id',
+      // A) Purchase Invoice snapshot
+      const piiTable = await resolveTable([
+        'purchase_invoice_item',
+        'purchase_invoice_items',
+        'purchaseInvoiceItem',
+        'purchaseInvoiceItems',
+        'purchases_invoice_item',
+        'purchases_invoice_items',
       ]);
 
-      // average/last/cost columns (we pick what exists)
-      const avgCol = pickCol(piiCols, ['averageCost','avgCost','average_cost']);
-      const lastCol = pickCol(piiCols, ['lastCost','last_cost']);
-      const costCol = pickCol(piiCols, ['cost','unitCost','unit_cost','price','unitPrice','unit_price','finalCost','final_cost']);
+      const piTable = await resolveTable([
+        'purchase_invoice',
+        'purchase_invoices',
+        'purchaseInvoice',
+        'purchaseInvoices',
+        'purchases_invoice',
+        'purchases_invoices',
+      ]);
 
-      // date can be on item if no header table is usable
-      const piiDateCol = pickCol(piiCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at']);
+      if (piiTable) {
+        const piiCols = await getTableColumns(piiTable);
 
-      if (piiVariantCol) {
-        // If we have header table + join col => use header date (more correct)
-        let useJoin = false;
-        let dateExpr = '';
-        let joinSql = '';
-        let whereDate = '';
-        if (piTable && piiInvoiceIdCol) {
-          const piCols = await getTableColumns(piTable);
-          const piIdCol = pickCol(piCols, ['id']) || 'id';
-          const piDateCol = pickCol(piCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at','dateForEachInvoice']);
+        const piiVariantCol  = pickCol(piiCols, ['itemVariantId','item_variant_id','variantId','variant_id']);
+        const piiIdCol       = pickCol(piiCols, ['id']) || 'id';
+        const piiInvoiceIdCol = pickCol(piiCols, [
+          'purchaseInvoiceId','purchase_invoice_id',
+          'invoiceId','invoice_id',
+        ]);
 
-          if (piDateCol) {
-            useJoin = true;
-            joinSql = `INNER JOIN \`${piTable}\` pi ON pi.\`${piIdCol}\` = pii.\`${piiInvoiceIdCol}\``;
-            dateExpr = `DATE(pi.\`${piDateCol}\`)`;
-            whereDate = `AND ${dateExpr} <= ?`;
+        const avgCol  = pickCol(piiCols, ['averageCost','avgCost','average_cost']);
+        const lastCol = pickCol(piiCols, ['lastCost','last_cost']);
+        const costCol = pickCol(piiCols, ['cost','unitCost','unit_cost','price','unitPrice','unit_price','finalCost','final_cost']);
+
+        const piiDateCol = pickCol(piiCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at']);
+
+        if (piiVariantCol) {
+          let useJoin  = false;
+          let dateExpr = '';
+          let joinSql  = '';
+          let whereDate = '';
+
+          if (piTable && piiInvoiceIdCol) {
+            const piCols   = await getTableColumns(piTable);
+            const piIdCol  = pickCol(piCols, ['id']) || 'id';
+            const piDateCol = pickCol(piCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at','dateForEachInvoice']);
+
+            if (piDateCol) {
+              useJoin   = true;
+              joinSql   = `INNER JOIN \`${piTable}\` pi ON pi.\`${piIdCol}\` = pii.\`${piiInvoiceIdCol}\``;
+              dateExpr  = `DATE(pi.\`${piDateCol}\`)`;
+              whereDate = `AND ${dateExpr} <= ?`;
+            }
           }
-        }
 
-        // fallback to item date if no join-date
-        if (!useJoin) {
-          if (piiDateCol) {
-            dateExpr = `DATE(pii.\`${piiDateCol}\`)`;
-            whereDate = `AND ${dateExpr} <= ?`;
-          } else {
-            // no date column found => cannot do asOf correctly, skip purchase snapshot
-            dateExpr = '';
-            whereDate = '';
+          if (!useJoin) {
+            if (piiDateCol) {
+              dateExpr  = `DATE(pii.\`${piiDateCol}\`)`;
+              whereDate = `AND ${dateExpr} <= ?`;
+            } else {
+              dateExpr  = '';
+              whereDate = '';
+            }
+            joinSql = '';
           }
-          joinSql = '';
-        }
 
-        // only run if we found a date expression (to respect asOf)
-        if (dateExpr) {
-          const missing = variantIds.filter(id => !costSnap.has(id));
-          if (missing.length) {
-            const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
+          if (dateExpr) {
+            const missing = variantIds.filter(id => !costSnap.has(id));
+            if (missing.length) {
+              const avgExpr =
+                avgCol  ? `pii.\`${avgCol}\`` :
+                lastCol ? `pii.\`${lastCol}\`` :
+                costCol ? `pii.\`${costCol}\`` :
+                `NULL`;
 
-            const avgExpr =
-              avgCol ? `pii.\`${avgCol}\`` :
-              lastCol ? `pii.\`${lastCol}\`` :
-              costCol ? `pii.\`${costCol}\`` :
-              `NULL`;
+              const lastExpr =
+                lastCol ? `pii.\`${lastCol}\`` :
+                costCol ? `pii.\`${costCol}\`` :
+                avgCol  ? `pii.\`${avgCol}\`` :
+                `NULL`;
 
-            const lastExpr =
-              lastCol ? `pii.\`${lastCol}\`` :
-              costCol ? `pii.\`${costCol}\`` :
-              avgCol ? `pii.\`${avgCol}\`` :
-              `NULL`;
-
-            // MySQL 8 window version
-            try {
-              const sql = `
-                SELECT z.variantId, z.avgCost, z.lastCost
-                FROM (
+              // MySQL 8 window version
+              try {
+                const sql = `
+                  SELECT z.variantId, z.avgCost, z.lastCost
+                  FROM (
+                    SELECT
+                      pii.\`${piiVariantCol}\` AS variantId,
+                      ${avgExpr}  AS avgCost,
+                      ${lastExpr} AS lastCost,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY pii.\`${piiVariantCol}\`
+                        ORDER BY ${dateExpr} DESC, pii.\`${piiIdCol}\` DESC
+                      ) AS rn
+                    FROM \`${piiTable}\` pii
+                    ${joinSql}
+                    WHERE pii.\`${piiVariantCol}\` IN (${makeIn(missing)})
+                    ${whereDate}
+                  ) z
+                  WHERE z.rn = 1
+                `;
+                const rows = await this.itemVariantRepository.query(sql, [...missing, asOfRaw]);
+                for (const r of rows || []) {
+                  const vid = Number(r.variantId);
+                  if (!Number.isFinite(vid)) continue;
+                  const avg  = r.avgCost  != null ? Number(toNum(r.avgCost).toFixed(2))  : null;
+                  const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
+                  const avgFinal  = avg  != null ? avg  : (last != null ? last : null);
+                  const lastFinal = last != null ? last : (avg  != null ? avg  : null);
+                  if (avgFinal != null || lastFinal != null) {
+                    costSnap.set(vid, { avg: avgFinal, last: lastFinal });
+                  }
+                }
+              } catch {
+                // MySQL 5.7 fallback
+                const inMissing = makeIn(missing);
+                const sql = `
                   SELECT
                     pii.\`${piiVariantCol}\` AS variantId,
                     ${avgExpr}  AS avgCost,
-                    ${lastExpr} AS lastCost,
-                    ROW_NUMBER() OVER (
-                      PARTITION BY pii.\`${piiVariantCol}\`
-                      ORDER BY ${dateExpr} DESC, pii.\`${piiIdCol}\` DESC
-                    ) AS rn
+                    ${lastExpr} AS lastCost
                   FROM \`${piiTable}\` pii
                   ${joinSql}
-                  WHERE pii.\`${piiVariantCol}\` IN (${makeIn(missing)})
-                  ${whereDate}
-                ) z
-                WHERE z.rn = 1
-              `;
-              const rows = await this.itemVariantRepository.query(sql, [...missing, asOfRaw]);
-              for (const r of rows || []) {
-                const vid = Number(r.variantId);
-                if (!Number.isFinite(vid)) continue;
-                const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
-                const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
-                // normalize: if one is missing, copy from the other
-                const avgFinal = avg != null ? avg : (last != null ? last : null);
-                const lastFinal = last != null ? last : (avg != null ? avg : null);
-                if (avgFinal != null || lastFinal != null) {
-                  costSnap.set(vid, { avg: avgFinal, last: lastFinal });
-                }
-              }
-            } catch {
-              // MySQL 5.7 fallback: pick max(date,id) per variant using CONCAT trick
-              const inMissing = makeIn(missing);
-              const sql = `
-                SELECT
-                  pii.\`${piiVariantCol}\` AS variantId,
-                  ${avgExpr}  AS avgCost,
-                  ${lastExpr} AS lastCost
-                FROM \`${piiTable}\` pii
-                ${joinSql}
-                INNER JOIN (
-                  SELECT
-                    pii2.\`${piiVariantCol}\` AS variantId,
-                    MAX(CONCAT(
-                      DATE_FORMAT(${dateExpr}, '%Y%m%d%H%i%s'),
-                      '-',
-                      LPAD(pii2.\`${piiIdCol}\`, 10, '0')
-                    )) AS mx
-                  FROM \`${piiTable}\` pii2
-                  ${joinSql ? joinSql.replace(/pii\./g, 'pii2.').replace(/ pi /g, ' pi2 ') : ''}
-                  WHERE pii2.\`${piiVariantCol}\` IN (${inMissing})
-                  ${whereDate ? whereDate.replace(/pi\./g, 'pi2.').replace(/pii\./g, 'pii2.') : ''}
-                  GROUP BY pii2.\`${piiVariantCol}\`
-                ) t
-                  ON t.variantId = pii.\`${piiVariantCol}\`
-                 AND t.mx = CONCAT(
-                      DATE_FORMAT(${dateExpr}, '%Y%m%d%H%i%s'),
-                      '-',
-                      LPAD(pii.\`${piiIdCol}\`, 10, '0')
-                    )
-              `;
-              const rows = await this.itemVariantRepository.query(sql, [...missing, asOfRaw]);
-              for (const r of rows || []) {
-                const vid = Number(r.variantId);
-                if (!Number.isFinite(vid)) continue;
-                const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
-                const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
-                const avgFinal = avg != null ? avg : (last != null ? last : null);
-                const lastFinal = last != null ? last : (avg != null ? avg : null);
-                if (avgFinal != null || lastFinal != null) {
-                  costSnap.set(vid, { avg: avgFinal, last: lastFinal });
+                  INNER JOIN (
+                    SELECT
+                      pii2.\`${piiVariantCol}\` AS variantId,
+                      MAX(CONCAT(
+                        DATE_FORMAT(${dateExpr}, '%Y%m%d%H%i%s'),
+                        '-',
+                        LPAD(pii2.\`${piiIdCol}\`, 10, '0')
+                      )) AS mx
+                    FROM \`${piiTable}\` pii2
+                    ${joinSql ? joinSql.replace(/pii\./g, 'pii2.').replace(/ pi /g, ' pi2 ') : ''}
+                    WHERE pii2.\`${piiVariantCol}\` IN (${inMissing})
+                    ${whereDate ? whereDate.replace(/pi\./g, 'pi2.').replace(/pii\./g, 'pii2.') : ''}
+                    GROUP BY pii2.\`${piiVariantCol}\`
+                  ) t
+                    ON t.variantId = pii.\`${piiVariantCol}\`
+                   AND t.mx = CONCAT(
+                        DATE_FORMAT(${dateExpr}, '%Y%m%d%H%i%s'),
+                        '-',
+                        LPAD(pii.\`${piiIdCol}\`, 10, '0')
+                      )
+                `;
+                const rows = await this.itemVariantRepository.query(sql, [...missing, asOfRaw]);
+                for (const r of rows || []) {
+                  const vid = Number(r.variantId);
+                  if (!Number.isFinite(vid)) continue;
+                  const avg  = r.avgCost  != null ? Number(toNum(r.avgCost).toFixed(2))  : null;
+                  const last = r.lastCost != null ? Number(toNum(r.lastCost).toFixed(2)) : null;
+                  const avgFinal  = avg  != null ? avg  : (last != null ? last : null);
+                  const lastFinal = last != null ? last : (avg  != null ? avg  : null);
+                  if (avgFinal != null || lastFinal != null) {
+                    costSnap.set(vid, { avg: avgFinal, last: lastFinal });
+                  }
                 }
               }
             }
           }
         }
       }
-    }
 
-    // B) Fallback to inventory_count type G (YOUR ENTITY: inventory_count has itemVariantId/date/type/finalCostOfr)
-    const missingAfterPurchase = variantIds.filter(id => !costSnap.has(id));
-    if (missingAfterPurchase.length) {
-      const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
-
-      // MySQL 8 window version
-      try {
-        const sql = `
-          SELECT z.variantId, z.avgCost
-          FROM (
+      // B) Fallback to inventory_count type G
+      const missingAfterPurchase = variantIds.filter(id => !costSnap.has(id));
+      if (missingAfterPurchase.length) {
+        try {
+          const sql = `
+            SELECT z.variantId, z.avgCost
+            FROM (
+              SELECT
+                ic.itemVariantId AS variantId,
+                ic.finalCostOfr  AS avgCost,
+                ROW_NUMBER() OVER (
+                  PARTITION BY ic.itemVariantId
+                  ORDER BY ic.date DESC, ic.id DESC
+                ) AS rn
+              FROM inventory_count ic
+              WHERE ic.itemVariantId IN (${makeIn(missingAfterPurchase)})
+                AND ic.type = 'G'
+                AND ic.date <= ?
+            ) z
+            WHERE z.rn = 1
+          `;
+          const rows = await this.itemVariantRepository.query(sql, [...missingAfterPurchase, asOfRaw]);
+          for (const r of rows || []) {
+            const vid = Number(r.variantId);
+            if (!Number.isFinite(vid)) continue;
+            const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
+            if (avg != null) costSnap.set(vid, { avg, last: null });
+          }
+        } catch {
+          // MySQL 5.7 fallback
+          const sql = `
             SELECT
               ic.itemVariantId AS variantId,
-              ic.finalCostOfr  AS avgCost,
-              ROW_NUMBER() OVER (
-                PARTITION BY ic.itemVariantId
-                ORDER BY ic.date DESC, ic.id DESC
-              ) AS rn
+              ic.finalCostOfr  AS avgCost
             FROM inventory_count ic
-            WHERE ic.itemVariantId IN (${makeIn(missingAfterPurchase)})
-              AND ic.type = 'G'
-              AND ic.date <= ?
-          ) z
-          WHERE z.rn = 1
-        `;
-        const rows = await this.itemVariantRepository.query(sql, [...missingAfterPurchase, asOfRaw]);
-        for (const r of rows || []) {
-          const vid = Number(r.variantId);
-          if (!Number.isFinite(vid)) continue;
-          const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
-          if (avg != null) {
-            // averageCost comes from count G finalCostOfr
-            costSnap.set(vid, { avg, last: null });
-          }
-        }
-      } catch {
-        // MySQL 5.7 fallback
-        const sql = `
-          SELECT
-            ic.itemVariantId AS variantId,
-            ic.finalCostOfr  AS avgCost
-          FROM inventory_count ic
-          INNER JOIN (
-            SELECT
-              itemVariantId,
-              MAX(CONCAT(
-                DATE_FORMAT(date, '%Y%m%d'),
-                '-',
-                LPAD(id, 10, '0')
-              )) AS mx
-            FROM inventory_count
-            WHERE itemVariantId IN (${makeIn(missingAfterPurchase)})
-              AND type = 'G'
-              AND date <= ?
-            GROUP BY itemVariantId
-          ) t
-            ON t.itemVariantId = ic.itemVariantId
-           AND t.mx = CONCAT(
-                DATE_FORMAT(ic.date, '%Y%m%d'),
-                '-',
-                LPAD(ic.id, 10, '0')
-              )
-        `;
-        const rows = await this.itemVariantRepository.query(sql, [...missingAfterPurchase, asOfRaw]);
-        for (const r of rows || []) {
-          const vid = Number(r.variantId);
-          if (!Number.isFinite(vid)) continue;
-          const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
-          if (avg != null) {
-            costSnap.set(vid, { avg, last: null });
+            INNER JOIN (
+              SELECT
+                itemVariantId,
+                MAX(CONCAT(
+                  DATE_FORMAT(date, '%Y%m%d'),
+                  '-',
+                  LPAD(id, 10, '0')
+                )) AS mx
+              FROM inventory_count
+              WHERE itemVariantId IN (${makeIn(missingAfterPurchase)})
+                AND type = 'G'
+                AND date <= ?
+              GROUP BY itemVariantId
+            ) t
+              ON t.itemVariantId = ic.itemVariantId
+             AND t.mx = CONCAT(
+                  DATE_FORMAT(ic.date, '%Y%m%d'),
+                  '-',
+                  LPAD(ic.id, 10, '0')
+                )
+          `;
+          const rows = await this.itemVariantRepository.query(sql, [...missingAfterPurchase, asOfRaw]);
+          for (const r of rows || []) {
+            const vid = Number(r.variantId);
+            if (!Number.isFinite(vid)) continue;
+            const avg = r.avgCost != null ? Number(toNum(r.avgCost).toFixed(2)) : null;
+            if (avg != null) costSnap.set(vid, { avg, last: null });
           }
         }
       }
-    }
-  }
+    } // end if (variants.length) after existence filter
+  } // end if (asOfRaw && variants.length)
 
   // ---- Enrichment pass (SPB list) ----
   const thicknessIds = new Set<number>();
@@ -5456,15 +5462,15 @@ async getVariantLedgerByRealDesc(params?: {
     const spbSelf = Math.max(1, toNum(v.sheetsPerBox));
     const key = `${v.thickness.id}|${len}|${wid}|${String(v.origin || '')}`;
     const fromBoxSet = spbMap.get(key);
-    const boxSpbList = fromBoxSet ? Array.from(fromBoxSet).sort((a,b)=>a-b) : [];
+    const boxSpbList = fromBoxSet ? Array.from(fromBoxSet).sort((a, b) => a - b) : [];
     const resolvedBoxSpb = boxSpbList.length ? boxSpbList[0] : null;
 
     const snap = asOfRaw ? variantSnap.get(Number(v.id)) : null;
 
     const ofrTotalsUnits = {
-      start:  Number(toNum(v.totalStart).toFixed(2)),
-      in:     Number(toNum(v.totalIn).toFixed(2)),
-      out:    Number(toNum(v.totalOut).toFixed(2)),
+      start:   Number(toNum(v.totalStart).toFixed(2)),
+      in:      Number(toNum(v.totalIn).toFixed(2)),
+      out:     Number(toNum(v.totalOut).toFixed(2)),
       balance: Number(toNum(snap?.balU ?? v.totalBalance).toFixed(2)),
     };
 
@@ -5475,7 +5481,7 @@ async getVariantLedgerByRealDesc(params?: {
       balanceOFR: Number(toNum(snap?.balOFR ?? v.totalBalanceOFR).toFixed(2)),
     };
 
-    const batches = (v.batches ?? []).map((b) => {
+    const batches = (v.batches ?? []).map((b: any) => {
       const bSnap = asOfRaw ? batchSnap.get(Number(b.id)) : null;
 
       const balanceOFRSqm = toNum(bSnap?.balOFR ?? (b.balanceOFR ?? 0));
@@ -5487,21 +5493,20 @@ async getVariantLedgerByRealDesc(params?: {
         id: b.id,
         condition: b.condition ?? null,
         dateReceived: b.dateReceived ?? null,
-        start: toNum(b.start ?? 0),
-        in: toNum(b.in ?? 0),
-        out: toNum(b.out ?? 0),
+        start:  toNum(b.start ?? 0),
+        in:     toNum(b.in ?? 0),
+        out:    toNum(b.out ?? 0),
         balance: toNum(bSnap?.balU ?? (b.balance ?? 0)),
-        startOFR: Number(toNum(b.startOFR ?? 0).toFixed(2)),
-        inOFR: Number(toNum(b.inOFR ?? 0).toFixed(2)),
-        outOFR: Number(toNum(b.outOFR ?? 0).toFixed(2)),
+        startOFR:     Number(toNum(b.startOFR ?? 0).toFixed(2)),
+        inOFR:        Number(toNum(b.inOFR ?? 0).toFixed(2)),
+        outOFR:       Number(toNum(b.outOFR ?? 0).toFixed(2)),
         balanceOFRSqm: Number(balanceOFRSqm.toFixed(2)),
-        balanceOFR: Number(convertedUnits.toFixed(2)),
+        balanceOFR:    Number(convertedUnits.toFixed(2)),
       };
     });
 
     const rd: any = (v as any).realDescription ?? null;
 
-    // ✅ cost override for asOf
     const c = asOfRaw ? costSnap.get(Number(v.id)) : null;
     const avgOut =
       asOfRaw
@@ -5514,23 +5519,23 @@ async getVariantLedgerByRealDesc(params?: {
         : (v.lastCost != null ? Number(toNum(v.lastCost).toFixed(2)) : null);
 
     return {
-      itemId: v.thickness.item.id,
-      itemName: v.thickness.item.itemName,
-      type: itemType as 'box' | 'sheet' | 'sqm' | 'unit',
+      itemId:      v.thickness.item.id,
+      itemName:    v.thickness.item.itemName,
+      type:        itemType as 'box' | 'sheet' | 'sqm' | 'unit',
       thicknessId: v.thickness.id,
-      thickness: Number(v.thickness.thickness),
-      variantId: v.id,
-      length: len,
-      width: wid,
+      thickness:   Number(v.thickness.thickness),
+      variantId:   v.id,
+      length:      len,
+      width:       wid,
       sheetsPerBox: spbSelf,
-      origin: v.origin,
+      origin:      v.origin,
 
       ones: ofrTotalsUnits,
       ofrTotalsSqm,
 
       description: rd
         ? {
-            id: rd.id ?? null,
+            id:           rd.id ?? null,
             categoryName: rd.categoryName ?? null,
             subCategory:  rd.subCategory ?? null,
             colorName:    rd.colorName ?? null,
@@ -5545,7 +5550,7 @@ async getVariantLedgerByRealDesc(params?: {
       resolvedBoxSpb,
 
       averageCost: avgOut,
-      lastCost: lastOut,
+      lastCost:    lastOut,
     };
   });
 
