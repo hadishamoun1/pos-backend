@@ -4815,7 +4815,7 @@ async getVariantLedgerByRealDesc(params?: {
   page?: number;
   limit?: number;
   variantIds?: number[];
-  asOf?: string; // 'YYYY-MM-DD' (inclusive till end of day)
+  asOf?: string;
 }) {
   const toNum = (v: any) => {
     const n = Number(v);
@@ -4940,7 +4940,6 @@ async getVariantLedgerByRealDesc(params?: {
     return null;
   };
 
-  // ---- inventory_transaction schema detection (cached) ----
   const getInvTxnColumns = async (): Promise<string[]> => {
     const cached = (this as any).__invTxnCols as string[] | undefined;
     if (cached) return cached;
@@ -5066,23 +5065,19 @@ async getVariantLedgerByRealDesc(params?: {
     .skip(skip)
     .take(limit);
 
-  // ---- use let so we can filter by asOf existence below ----
-  let variants = await qb.getMany();
+  // ✅ getManyAndCount gives us the real total across all pages
+  let [variants, totalCount] = await qb.getManyAndCount();
 
-  // asOf snapshots (balances)
+  // asOf snapshots
   const variantSnap = new Map<number, { balU?: any; balOFR?: any }>();
   const batchSnap   = new Map<number, { balU?: any; balOFR?: any }>();
+  const costSnap    = new Map<number, { avg?: number | null; last?: number | null }>();
 
-  // asOf costs (purchase invoice first, then count type G)
-  const costSnap = new Map<number, { avg?: number | null; last?: number | null }>();
-
-  // collect variantIds early (used by snapshots + costs)
   let variantIds = (variants as any[]).map(v => Number(v.id)).filter(n => Number.isFinite(n) && n > 0);
 
   if (asOfRaw && variants.length) {
     const cols = await getInvTxnColumns();
 
-    // Strictly require dateForEachInvoice column
     if (!pickCol(cols, ['dateForEachInvoice'])) {
       throw new Error(
         `inventory_transaction is missing dateForEachInvoice column — asOf snapshots are not supported`
@@ -5106,8 +5101,7 @@ async getVariantLedgerByRealDesc(params?: {
     const makeIn = (arr: any[]) => arr.map(() => '?').join(',');
 
     // -------------------------------------------------------
-    // 0) FILTER OUT variants that have no transactions on or
-    //    before asOf — they didn't exist yet at that date
+    // 0) FILTER — remove variants that didn't exist yet at asOf
     // -------------------------------------------------------
     {
       const sql = `
@@ -5121,12 +5115,13 @@ async getVariantLedgerByRealDesc(params?: {
         (rows || []).map((r: any) => Number(r.itemVariantId)).filter((n: number) => Number.isFinite(n))
       );
 
-      // Filter both the variants array and the variantIds array
-      variants = (variants as any[]).filter(v => validSet.has(Number(v.id)));
+      variants   = (variants as any[]).filter(v => validSet.has(Number(v.id)));
       variantIds = variantIds.filter(id => validSet.has(id));
+
+      // ✅ adjust totalCount to reflect the existence-filtered set
+      totalCount = variants.length + skip;
     }
 
-    // If nothing remains after the existence filter, skip all snapshot queries
     if (variants.length) {
       // -------------------------------------------------------
       // 1) BALANCE snapshots — strictly by dateForEachInvoice
@@ -5181,8 +5176,6 @@ async getVariantLedgerByRealDesc(params?: {
       // -------------------------------------------------------
       // 2) COST snapshots — A) purchase invoice, B) count type G
       // -------------------------------------------------------
-
-      // A) Purchase Invoice snapshot
       const piiTable = await resolveTable([
         'purchase_invoice_item',
         'purchase_invoice_items',
@@ -5204,8 +5197,8 @@ async getVariantLedgerByRealDesc(params?: {
       if (piiTable) {
         const piiCols = await getTableColumns(piiTable);
 
-        const piiVariantCol  = pickCol(piiCols, ['itemVariantId','item_variant_id','variantId','variant_id']);
-        const piiIdCol       = pickCol(piiCols, ['id']) || 'id';
+        const piiVariantCol   = pickCol(piiCols, ['itemVariantId','item_variant_id','variantId','variant_id']);
+        const piiIdCol        = pickCol(piiCols, ['id']) || 'id';
         const piiInvoiceIdCol = pickCol(piiCols, [
           'purchaseInvoiceId','purchase_invoice_id',
           'invoiceId','invoice_id',
@@ -5214,18 +5207,17 @@ async getVariantLedgerByRealDesc(params?: {
         const avgCol  = pickCol(piiCols, ['averageCost','avgCost','average_cost']);
         const lastCol = pickCol(piiCols, ['lastCost','last_cost']);
         const costCol = pickCol(piiCols, ['cost','unitCost','unit_cost','price','unitPrice','unit_price','finalCost','final_cost']);
-
         const piiDateCol = pickCol(piiCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at']);
 
         if (piiVariantCol) {
-          let useJoin  = false;
-          let dateExpr = '';
-          let joinSql  = '';
+          let useJoin   = false;
+          let dateExpr  = '';
+          let joinSql   = '';
           let whereDate = '';
 
           if (piTable && piiInvoiceIdCol) {
-            const piCols   = await getTableColumns(piTable);
-            const piIdCol  = pickCol(piCols, ['id']) || 'id';
+            const piCols    = await getTableColumns(piTable);
+            const piIdCol   = pickCol(piCols, ['id']) || 'id';
             const piDateCol = pickCol(piCols, ['date','invoiceDate','createdAt','created_at','updatedAt','updated_at','dateForEachInvoice']);
 
             if (piDateCol) {
@@ -5262,7 +5254,6 @@ async getVariantLedgerByRealDesc(params?: {
                 avgCol  ? `pii.\`${avgCol}\`` :
                 `NULL`;
 
-              // MySQL 8 window version
               try {
                 const sql = `
                   SELECT z.variantId, z.avgCost, z.lastCost
@@ -5295,7 +5286,6 @@ async getVariantLedgerByRealDesc(params?: {
                   }
                 }
               } catch {
-                // MySQL 5.7 fallback
                 const inMissing = makeIn(missing);
                 const sql = `
                   SELECT
@@ -5372,7 +5362,6 @@ async getVariantLedgerByRealDesc(params?: {
             if (avg != null) costSnap.set(vid, { avg, last: null });
           }
         } catch {
-          // MySQL 5.7 fallback
           const sql = `
             SELECT
               ic.itemVariantId AS variantId,
@@ -5408,14 +5397,14 @@ async getVariantLedgerByRealDesc(params?: {
           }
         }
       }
-    } // end if (variants.length) after existence filter
-  } // end if (asOfRaw && variants.length)
+    }
+  }
 
   // ---- Enrichment pass (SPB list) ----
   const thicknessIds = new Set<number>();
-  const lengths = new Set<number>();
-  const widths = new Set<number>();
-  const origins = new Set<string>();
+  const lengths      = new Set<number>();
+  const widths       = new Set<number>();
+  const origins      = new Set<string>();
 
   for (const v of variants as any[]) {
     thicknessIds.add(v.thickness.id);
@@ -5457,12 +5446,12 @@ async getVariantLedgerByRealDesc(params?: {
 
   const data = (variants as any[]).map((v) => {
     const itemType = v.thickness.item.type;
-    const len = toNum(v.length);
-    const wid = toNum(v.width);
-    const spbSelf = Math.max(1, toNum(v.sheetsPerBox));
-    const key = `${v.thickness.id}|${len}|${wid}|${String(v.origin || '')}`;
-    const fromBoxSet = spbMap.get(key);
-    const boxSpbList = fromBoxSet ? Array.from(fromBoxSet).sort((a, b) => a - b) : [];
+    const len      = toNum(v.length);
+    const wid      = toNum(v.width);
+    const spbSelf  = Math.max(1, toNum(v.sheetsPerBox));
+    const key      = `${v.thickness.id}|${len}|${wid}|${String(v.origin || '')}`;
+    const fromBoxSet   = spbMap.get(key);
+    const boxSpbList   = fromBoxSet ? Array.from(fromBoxSet).sort((a, b) => a - b) : [];
     const resolvedBoxSpb = boxSpbList.length ? boxSpbList[0] : null;
 
     const snap = asOfRaw ? variantSnap.get(Number(v.id)) : null;
@@ -5484,22 +5473,22 @@ async getVariantLedgerByRealDesc(params?: {
     const batches = (v.batches ?? []).map((b: any) => {
       const bSnap = asOfRaw ? batchSnap.get(Number(b.id)) : null;
 
-      const balanceOFRSqm = toNum(bSnap?.balOFR ?? (b.balanceOFR ?? 0));
+      const balanceOFRSqm  = toNum(bSnap?.balOFR ?? (b.balanceOFR ?? 0));
       const convertedUnits = convertFromSqm({
         itemType, lengthCm: len, widthCm: wid, sheetsPerBox: spbSelf, valueSqm: balanceOFRSqm,
       });
 
       return {
-        id: b.id,
-        condition: b.condition ?? null,
+        id:           b.id,
+        condition:    b.condition    ?? null,
         dateReceived: b.dateReceived ?? null,
-        start:  toNum(b.start ?? 0),
-        in:     toNum(b.in ?? 0),
-        out:    toNum(b.out ?? 0),
+        start:  toNum(b.start  ?? 0),
+        in:     toNum(b.in     ?? 0),
+        out:    toNum(b.out    ?? 0),
         balance: toNum(bSnap?.balU ?? (b.balance ?? 0)),
-        startOFR:     Number(toNum(b.startOFR ?? 0).toFixed(2)),
-        inOFR:        Number(toNum(b.inOFR ?? 0).toFixed(2)),
-        outOFR:       Number(toNum(b.outOFR ?? 0).toFixed(2)),
+        startOFR:      Number(toNum(b.startOFR ?? 0).toFixed(2)),
+        inOFR:         Number(toNum(b.inOFR    ?? 0).toFixed(2)),
+        outOFR:        Number(toNum(b.outOFR   ?? 0).toFixed(2)),
         balanceOFRSqm: Number(balanceOFRSqm.toFixed(2)),
         balanceOFR:    Number(convertedUnits.toFixed(2)),
       };
@@ -5510,7 +5499,7 @@ async getVariantLedgerByRealDesc(params?: {
     const c = asOfRaw ? costSnap.get(Number(v.id)) : null;
     const avgOut =
       asOfRaw
-        ? (c?.avg != null ? c.avg : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null))
+        ? (c?.avg  != null ? c.avg  : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null))
         : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null);
 
     const lastOut =
@@ -5519,29 +5508,29 @@ async getVariantLedgerByRealDesc(params?: {
         : (v.lastCost != null ? Number(toNum(v.lastCost).toFixed(2)) : null);
 
     return {
-      itemId:      v.thickness.item.id,
-      itemName:    v.thickness.item.itemName,
-      type:        itemType as 'box' | 'sheet' | 'sqm' | 'unit',
-      thicknessId: v.thickness.id,
-      thickness:   Number(v.thickness.thickness),
-      variantId:   v.id,
-      length:      len,
-      width:       wid,
+      itemId:       v.thickness.item.id,
+      itemName:     v.thickness.item.itemName,
+      type:         itemType as 'box' | 'sheet' | 'sqm' | 'unit',
+      thicknessId:  v.thickness.id,
+      thickness:    Number(v.thickness.thickness),
+      variantId:    v.id,
+      length:       len,
+      width:        wid,
       sheetsPerBox: spbSelf,
-      origin:      v.origin,
+      origin:       v.origin,
 
       ones: ofrTotalsUnits,
       ofrTotalsSqm,
 
       description: rd
         ? {
-            id:           rd.id ?? null,
+            id:           rd.id           ?? null,
             categoryName: rd.categoryName ?? null,
-            subCategory:  rd.subCategory ?? null,
-            colorName:    rd.colorName ?? null,
-            designName:   rd.designName ?? null,
+            subCategory:  rd.subCategory  ?? null,
+            colorName:    rd.colorName    ?? null,
+            designName:   rd.designName   ?? null,
             sortIndexRealDescription: rd.sort_index_real_description ?? null,
-            itemNumber:   rd.itemNumber ?? null,
+            itemNumber:   rd.itemNumber   ?? null,
           }
         : null,
 
@@ -5557,12 +5546,11 @@ async getVariantLedgerByRealDesc(params?: {
   return {
     page,
     limit,
-    totalRows: data.length,
-    hasMore: data.length === limit,
+    totalRows: totalCount,                    // ✅ real total from getManyAndCount
+    hasMore:   skip + data.length < totalCount, // ✅ accurate hasMore
     data,
   };
 }
-
 
 
 
