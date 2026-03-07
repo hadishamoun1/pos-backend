@@ -1165,13 +1165,12 @@ async getProfitability(params: ProfitabilityParams) {
     invoiceType = 'ALL',
   } = params;
 
-  // Build query with joins (including realDescription for sorting)
   const qb = this.dataSource
     .createQueryBuilder()
     .from('invoices', 'inv')
     .leftJoin('customers', 'cust', 'inv.customerId = cust.id')
     .innerJoin('invoice_items', 'ii', 'ii.invoiceId = inv.id')
-    .leftJoin('item_variant', 'v', 'ii.itemVariantId = v.id')   
+    .leftJoin('item_variant', 'v', 'ii.itemVariantId = v.id')
     .leftJoin('thickness', 'th', 'v.thicknessId = th.id')
     .leftJoin('item', 'item', 'th.itemId = item.id')
     .leftJoin('real_description', 'rd', 'v.realDescriptionId = rd.id')
@@ -1187,11 +1186,12 @@ async getProfitability(params: ProfitabilityParams) {
     .addSelect('ii.unitPrice', 'unitPrice')
     .addSelect('ii.totalAmount', 'totalAmount')
     .addSelect('ii.averageCost', 'averageCost')
+    .addSelect('ii.sheetsPerBox', 'sheetsPerBox')   // ✅ from invoice_item
+    .addSelect('ii.length', 'length')               // ✅ from invoice_item
+    .addSelect('ii.width', 'width')                 // ✅ from invoice_item
     .addSelect('v.id', 'itemVariantId')
     .addSelect('v.invoiceDisplayName', 'itemName')
     .addSelect('v.origin', 'origin')
-    .addSelect('v.length', 'length')
-    .addSelect('v.width', 'width')
     .addSelect('th.thickness', 'thickness')
     .addSelect('item.itemName', 'baseItemName')
     .addSelect('item.type', 'itemType')
@@ -1202,33 +1202,19 @@ async getProfitability(params: ProfitabilityParams) {
     .addSelect('rd.colorName', 'colorName')
     .addSelect('rd.designName', 'designName');
 
-  // ✅ Date filters (default: current year)
-  if (from) {
-    qb.andWhere('inv.date >= :from', { from });
-  }
-  if (to) {
-    qb.andWhere('inv.date <= :to', { to });
-  }
+  if (from) qb.andWhere('inv.date >= :from', { from });
+  if (to) qb.andWhere('inv.date <= :to', { to });
+  if (customerId) qb.andWhere('inv.customerId = :customerId', { customerId });
+  if (itemVariantId) qb.andWhere('ii.itemVariantId = :itemVariantId', { itemVariantId });
 
-  // ✅ Optional filters
-  if (customerId) {
-    qb.andWhere('inv.customerId = :customerId', { customerId });
-  }
-  if (itemVariantId) {
-    qb.andWhere('ii.itemVariantId = :itemVariantId', { itemVariantId });
-  }
-
-  // ✅ Invoice type filter (include RTN!)
   if (invoiceType !== 'ALL') {
     qb.andWhere('inv.invoiceType = :invoiceType', { invoiceType });
   } else {
-    // Include S, G, RVR, RTN
     qb.andWhere('inv.invoiceType IN (:...types)', {
       types: ['S', 'G', 'RVR', 'RTN'],
     });
   }
 
-  // ✅ Sort by realDescription sort_index (NULLS LAST), then by date DESC
   qb.orderBy('rd.sort_index_real_description IS NULL', 'ASC')
     .addOrderBy('rd.sort_index_real_description', 'ASC')
     .addOrderBy('inv.date', 'DESC')
@@ -1236,153 +1222,132 @@ async getProfitability(params: ProfitabilityParams) {
 
   const raw = await qb.getRawMany();
 
-  // ✅ Calculate profitability for each row
+  // ✅ Derive human-readable unit type from itemType + stockMode
+  const getUnitType = (itemType: string, stockMode: string): string => {
+    if (itemType === 'unit') return 'Unit';
+    switch (stockMode) {
+      case 'box':   return 'Box';
+      case 'sheet': return 'Sheet';
+      case 'sqm':
+      default:      return 'SQM';
+    }
+  };
+
   const rows = raw.map((r: any) => {
     const invoiceType = String(r.invoiceType || '');
-    const isReturn = invoiceType === 'RTN';
+    const isReturn    = invoiceType === 'RTN';
 
-    // Determine stockMode
     const stockMode = String(r.stockMode || 'sqm').toLowerCase();
-    const itemType = String(r.itemType || '').toLowerCase();
-    const mode = itemType === 'unit' ? 'qty' : stockMode;
+    const itemType  = String(r.itemType  || '').toLowerCase();
+    const mode      = itemType === 'unit' ? 'qty' : stockMode;
 
-    // Quantity used for calculation
-    const qty = mode === 'qty' ? Number(r.quantity || 0) : Number(r.sqm || 0);
-
-    // Revenue (always positive from DB, we'll flip sign later)
+    const qty     = mode === 'qty' ? Number(r.quantity || 0) : Number(r.sqm || 0);
     const revenue = Number(r.totalAmount || 0);
-
-    // Cost = averageCost × quantity
     const avgCost = Number(r.averageCost || 0);
-    const cost = avgCost * qty;
+    const cost    = avgCost * qty;
 
-    // Profit = Revenue - Cost
     let profit = revenue - cost;
     let margin = revenue !== 0 ? (profit / revenue) * 100 : 0;
 
-    // ✅ RTN: Flip sign (negative profit)
     if (isReturn) {
       profit = -profit;
       margin = -margin;
     }
 
-    // ✅ Build full description
-    const descParts = [
-      r.categoryName,
-      r.subCategory,
-      r.colorName,
-      r.designName,
-    ].filter(Boolean);
+    const descParts = [r.categoryName, r.subCategory, r.colorName, r.designName].filter(Boolean);
     const fullDescription = descParts.length ? descParts.join(' | ') : '';
 
-    // ✅ Build dimensions string
+    // ✅ All dimensional data from invoice_item
+    const length       = r.length       ? Number(r.length)       : null;
+    const width        = r.width        ? Number(r.width)        : null;
+    const sheetsPerBox = r.sheetsPerBox ? Number(r.sheetsPerBox) : null;
+
     const dims = [];
-    if (r.length) dims.push(`L:${Number(r.length).toFixed(1)}`);
-    if (r.width) dims.push(`W:${Number(r.width).toFixed(1)}`);
+    if (length) dims.push(`L:${length.toFixed(1)}`);
+    if (width)  dims.push(`W:${width.toFixed(1)}`);
     const dimensions = dims.length ? dims.join(' × ') : '';
 
+    // ✅ Unit type label
+    const unitType = getUnitType(itemType, stockMode);
+
     return {
-      invoiceId: Number(r.invoiceId),
+      invoiceId:     Number(r.invoiceId),
       invoiceNumber: String(r.invoiceNumber || ''),
-      invoiceDate: r.invoiceDate,
+      invoiceDate:   r.invoiceDate,
       invoiceType,
-      customerId: r.customerId ? Number(r.customerId) : null,
-      customerName: String(r.customerName || ''),
+      customerId:    r.customerId ? Number(r.customerId) : null,
+      customerName:  String(r.customerName || ''),
 
-      itemVariantId: r.itemVariantId ? Number(r.itemVariantId) : null,
-      itemName: String(r.itemName || r.baseItemName || ''),
+      itemVariantId:   r.itemVariantId ? Number(r.itemVariantId) : null,
+      itemName:        String(r.itemName || r.baseItemName || ''),
       fullDescription,
-      thickness: r.thickness ? Number(r.thickness) : null,
-      origin: String(r.origin || ''),
+      thickness:       r.thickness ? Number(r.thickness) : null,
+      origin:          String(r.origin || ''),
       dimensions,
-      length: r.length ? Number(r.length) : null,
-      width: r.width ? Number(r.width) : null,
+      length,
+      width,
+      sheetsPerBox,  // ✅ NEW
+      unitType,      // ✅ NEW — 'SQM' | 'Box' | 'Sheet' | 'Unit'
 
-      quantity: Number(r.quantity || 0),
-      sqm: Number(r.sqm || 0),
+      quantity:  Number(r.quantity || 0),
+      sqm:       Number(r.sqm || 0),
       unitPrice: Number(r.unitPrice || 0),
 
       revenue: Number(revenue.toFixed(2)),
-      cost: Number(cost.toFixed(2)),
-      profit: Number(profit.toFixed(2)),
-      margin: Number(margin.toFixed(2)),
+      cost:    Number(cost.toFixed(2)),
+      profit:  Number(profit.toFixed(2)),
+      margin:  Number(margin.toFixed(2)),
 
       averageCost: avgCost,
-      stockMode: mode,
-      sortIndex: r.sortIndex !== null ? Number(r.sortIndex) : null,
+      stockMode:   mode,
+      sortIndex:   r.sortIndex !== null ? Number(r.sortIndex) : null,
     };
   });
 
-  // ✅ Calculate totals
+  // ─── Totals ───────────────────────────────────────────────────────────────
   const totals = rows.reduce(
     (acc, row) => {
       acc.revenue += row.revenue;
-      acc.cost += row.cost;
-      acc.profit += row.profit;
+      acc.cost    += row.cost;
+      acc.profit  += row.profit;
       return acc;
     },
     { revenue: 0, cost: 0, profit: 0, margin: 0 },
   );
-
-  // Overall margin
-  totals.margin =
-    totals.revenue !== 0
-      ? Number(((totals.profit / totals.revenue) * 100).toFixed(2))
-      : 0;
-
-  // Round totals
+  totals.margin  = totals.revenue !== 0 ? Number(((totals.profit / totals.revenue) * 100).toFixed(2)) : 0;
   totals.revenue = Number(totals.revenue.toFixed(2));
-  totals.cost = Number(totals.cost.toFixed(2));
-  totals.profit = Number(totals.profit.toFixed(2));
+  totals.cost    = Number(totals.cost.toFixed(2));
+  totals.profit  = Number(totals.profit.toFixed(2));
 
-  // ✅ Group by customer for summary
+  // ─── Group by customer ────────────────────────────────────────────────────
   const byCustomer = new Map<number, {
     customerId: number;
     customerName: string;
-    revenue: number;
-    cost: number;
-    profit: number;
-    margin: number;
+    revenue: number; cost: number; profit: number; margin: number;
     itemCount: number;
     items: Map<number, {
-      itemVariantId: number;
-      itemName: string;
-      fullDescription: string;
-      thickness: number | null;
-      origin: string;
-      dimensions: string;
-      revenue: number;
-      cost: number;
-      profit: number;
-      margin: number;
-      quantity: number;
-      sqm: number;
-      invoices: number[];
+      itemVariantId: number; itemName: string; fullDescription: string;
+      thickness: number | null; origin: string; dimensions: string;
+      sheetsPerBox: number | null; unitType: string;
+      revenue: number; cost: number; profit: number; margin: number;
+      quantity: number; sqm: number; invoices: number[];
     }>;
   }>();
 
   for (const row of rows) {
     const custId = row.customerId || 0;
-    
     if (!byCustomer.has(custId)) {
       byCustomer.set(custId, {
-        customerId: custId,
-        customerName: row.customerName,
-        revenue: 0,
-        cost: 0,
-        profit: 0,
-        margin: 0,
-        itemCount: 0,
+        customerId: custId, customerName: row.customerName,
+        revenue: 0, cost: 0, profit: 0, margin: 0, itemCount: 0,
         items: new Map(),
       });
     }
-
     const custData = byCustomer.get(custId)!;
     custData.revenue += row.revenue;
-    custData.cost += row.cost;
-    custData.profit += row.profit;
+    custData.cost    += row.cost;
+    custData.profit  += row.profit;
 
-    // Group by itemVariantId
     const varId = row.itemVariantId || 0;
     if (!custData.items.has(varId)) {
       custData.items.set(varId, {
@@ -1392,82 +1357,56 @@ async getProfitability(params: ProfitabilityParams) {
         thickness: row.thickness,
         origin: row.origin,
         dimensions: row.dimensions,
-        revenue: 0,
-        cost: 0,
-        profit: 0,
-        margin: 0,
-        quantity: 0,
-        sqm: 0,
-        invoices: [],
+        sheetsPerBox: row.sheetsPerBox,  // ✅
+        unitType: row.unitType,          // ✅
+        revenue: 0, cost: 0, profit: 0, margin: 0,
+        quantity: 0, sqm: 0, invoices: [],
       });
       custData.itemCount++;
     }
-
     const itemData = custData.items.get(varId)!;
-    itemData.revenue += row.revenue;
-    itemData.cost += row.cost;
-    itemData.profit += row.profit;
+    itemData.revenue  += row.revenue;
+    itemData.cost     += row.cost;
+    itemData.profit   += row.profit;
     itemData.quantity += row.quantity;
-    itemData.sqm += row.sqm;
+    itemData.sqm      += row.sqm;
     itemData.invoices.push(row.invoiceId);
   }
 
-  // Calculate margins for customer summaries
   const customerSummary = Array.from(byCustomer.values()).map((c) => {
-    c.margin = c.revenue !== 0 ? Number(((c.profit / c.revenue) * 100).toFixed(2)) : 0;
+    c.margin  = c.revenue !== 0 ? Number(((c.profit / c.revenue) * 100).toFixed(2)) : 0;
     c.revenue = Number(c.revenue.toFixed(2));
-    c.cost = Number(c.cost.toFixed(2));
-    c.profit = Number(c.profit.toFixed(2));
-
-    // Convert items Map to array and calculate margins
+    c.cost    = Number(c.cost.toFixed(2));
+    c.profit  = Number(c.profit.toFixed(2));
     const itemsArray = Array.from(c.items.values()).map((item) => {
-      item.margin = item.revenue !== 0 ? Number(((item.profit / item.revenue) * 100).toFixed(2)) : 0;
-      item.revenue = Number(item.revenue.toFixed(2));
-      item.cost = Number(item.cost.toFixed(2));
-      item.profit = Number(item.profit.toFixed(2));
+      item.margin   = item.revenue !== 0 ? Number(((item.profit / item.revenue) * 100).toFixed(2)) : 0;
+      item.revenue  = Number(item.revenue.toFixed(2));
+      item.cost     = Number(item.cost.toFixed(2));
+      item.profit   = Number(item.profit.toFixed(2));
       item.quantity = Number(item.quantity.toFixed(2));
-      item.sqm = Number(item.sqm.toFixed(2));
+      item.sqm      = Number(item.sqm.toFixed(2));
       return item;
     });
-
-    return {
-      ...c,
-      items: itemsArray, // Convert to array for JSON response
-    };
+    return { ...c, items: itemsArray };
   });
 
-  // ✅ NEW: Group by item variant (across all customers)
+  // ─── Group by item variant ─────────────────────────────────────────────────
   const byItem = new Map<number, {
-    itemVariantId: number;
-    itemName: string;
-    fullDescription: string;
-    thickness: number | null;
-    origin: string;
-    dimensions: string;
-    revenue: number;
-    cost: number;
-    profit: number;
-    margin: number;
-    quantity: number;
-    sqm: number;
-    customerCount: number;
-    invoiceCount: number;
-    sortIndex: number | null;
+    itemVariantId: number; itemName: string; fullDescription: string;
+    thickness: number | null; origin: string; dimensions: string;
+    sheetsPerBox: number | null; unitType: string;
+    revenue: number; cost: number; profit: number; margin: number;
+    quantity: number; sqm: number;
+    customerCount: number; invoiceCount: number; sortIndex: number | null;
     customers: Map<number, {
-      customerId: number;
-      customerName: string;
-      revenue: number;
-      cost: number;
-      profit: number;
-      margin: number;
-      quantity: number;
-      sqm: number;
+      customerId: number; customerName: string;
+      revenue: number; cost: number; profit: number; margin: number;
+      quantity: number; sqm: number;
     }>;
   }>();
 
   for (const row of rows) {
     const varId = row.itemVariantId || 0;
-    
     if (!byItem.has(varId)) {
       byItem.set(varId, {
         itemVariantId: varId,
@@ -1476,96 +1415,155 @@ async getProfitability(params: ProfitabilityParams) {
         thickness: row.thickness,
         origin: row.origin,
         dimensions: row.dimensions,
-        revenue: 0,
-        cost: 0,
-        profit: 0,
-        margin: 0,
-        quantity: 0,
-        sqm: 0,
-        customerCount: 0,
-        invoiceCount: 0,
+        sheetsPerBox: row.sheetsPerBox,  // ✅
+        unitType: row.unitType,          // ✅
+        revenue: 0, cost: 0, profit: 0, margin: 0,
+        quantity: 0, sqm: 0,
+        customerCount: 0, invoiceCount: 0,
         sortIndex: row.sortIndex,
         customers: new Map(),
       });
     }
-
     const itemData = byItem.get(varId)!;
-    itemData.revenue += row.revenue;
-    itemData.cost += row.cost;
-    itemData.profit += row.profit;
-    itemData.quantity += row.quantity;
-    itemData.sqm += row.sqm;
+    itemData.revenue      += row.revenue;
+    itemData.cost         += row.cost;
+    itemData.profit       += row.profit;
+    itemData.quantity     += row.quantity;
+    itemData.sqm          += row.sqm;
     itemData.invoiceCount++;
 
-    // Group customers for this item
     const custId = row.customerId || 0;
     if (!itemData.customers.has(custId)) {
       itemData.customers.set(custId, {
-        customerId: custId,
-        customerName: row.customerName,
-        revenue: 0,
-        cost: 0,
-        profit: 0,
-        margin: 0,
-        quantity: 0,
-        sqm: 0,
+        customerId: custId, customerName: row.customerName,
+        revenue: 0, cost: 0, profit: 0, margin: 0, quantity: 0, sqm: 0,
       });
       itemData.customerCount++;
     }
-
     const custData = itemData.customers.get(custId)!;
-    custData.revenue += row.revenue;
-    custData.cost += row.cost;
-    custData.profit += row.profit;
+    custData.revenue  += row.revenue;
+    custData.cost     += row.cost;
+    custData.profit   += row.profit;
     custData.quantity += row.quantity;
-    custData.sqm += row.sqm;
+    custData.sqm      += row.sqm;
   }
 
-  // Calculate margins and sort by sortIndex for item summaries
   const itemSummary = Array.from(byItem.values())
     .map((item) => {
-      item.margin = item.revenue !== 0 ? Number(((item.profit / item.revenue) * 100).toFixed(2)) : 0;
-      item.revenue = Number(item.revenue.toFixed(2));
-      item.cost = Number(item.cost.toFixed(2));
-      item.profit = Number(item.profit.toFixed(2));
+      item.margin   = item.revenue !== 0 ? Number(((item.profit / item.revenue) * 100).toFixed(2)) : 0;
+      item.revenue  = Number(item.revenue.toFixed(2));
+      item.cost     = Number(item.cost.toFixed(2));
+      item.profit   = Number(item.profit.toFixed(2));
       item.quantity = Number(item.quantity.toFixed(2));
-      item.sqm = Number(item.sqm.toFixed(2));
-
-      // Convert customers Map to array and calculate margins
+      item.sqm      = Number(item.sqm.toFixed(2));
       const customersArray = Array.from(item.customers.values()).map((cust) => {
-        cust.margin = cust.revenue !== 0 ? Number(((cust.profit / cust.revenue) * 100).toFixed(2)) : 0;
-        cust.revenue = Number(cust.revenue.toFixed(2));
-        cust.cost = Number(cust.cost.toFixed(2));
-        cust.profit = Number(cust.profit.toFixed(2));
+        cust.margin   = cust.revenue !== 0 ? Number(((cust.profit / cust.revenue) * 100).toFixed(2)) : 0;
+        cust.revenue  = Number(cust.revenue.toFixed(2));
+        cust.cost     = Number(cust.cost.toFixed(2));
+        cust.profit   = Number(cust.profit.toFixed(2));
         cust.quantity = Number(cust.quantity.toFixed(2));
-        cust.sqm = Number(cust.sqm.toFixed(2));
+        cust.sqm      = Number(cust.sqm.toFixed(2));
         return cust;
       });
-
-      return {
-        ...item,
-        customers: customersArray,
-      };
+      return { ...item, customers: customersArray };
     })
     .sort((a, b) => {
-      // Sort by sortIndex (NULLS LAST), then by profit DESC
       const aIdx = a.sortIndex !== null ? a.sortIndex : Number.POSITIVE_INFINITY;
       const bIdx = b.sortIndex !== null ? b.sortIndex : Number.POSITIVE_INFINITY;
       if (aIdx !== bIdx) return aIdx - bIdx;
       return b.profit - a.profit;
     });
 
+  // ─── Group by invoice ─────────────────────────────────────────────────────
+  const byInvoice = new Map<number, {
+    invoiceId: number; invoiceNumber: string; invoiceDate: any;
+    invoiceType: string; customerId: number | null; customerName: string;
+    revenue: number; cost: number; profit: number; margin: number;
+    itemCount: number;
+    items: {
+      itemVariantId: number | null; itemName: string; fullDescription: string;
+      thickness: number | null; origin: string; dimensions: string;
+      sheetsPerBox: number | null; unitType: string;
+      quantity: number; sqm: number; unitPrice: number; averageCost: number;
+      revenue: number; cost: number; profit: number; margin: number;
+      stockMode: string;
+    }[];
+  }>();
+
+  for (const row of rows) {
+    if (!byInvoice.has(row.invoiceId)) {
+      byInvoice.set(row.invoiceId, {
+        invoiceId:     row.invoiceId,
+        invoiceNumber: row.invoiceNumber,
+        invoiceDate:   row.invoiceDate,
+        invoiceType:   row.invoiceType,
+        customerId:    row.customerId,
+        customerName:  row.customerName,
+        revenue: 0, cost: 0, profit: 0, margin: 0, itemCount: 0,
+        items: [],
+      });
+    }
+    const invData = byInvoice.get(row.invoiceId)!;
+    invData.revenue += row.revenue;
+    invData.cost    += row.cost;
+    invData.profit  += row.profit;
+    invData.itemCount++;
+
+    invData.items.push({
+      itemVariantId:   row.itemVariantId,
+      itemName:        row.itemName,
+      fullDescription: row.fullDescription,
+      thickness:       row.thickness,
+      origin:          row.origin,
+      dimensions:      row.dimensions,
+      sheetsPerBox:    row.sheetsPerBox,  // ✅
+      unitType:        row.unitType,      // ✅
+      quantity:        row.quantity,
+      sqm:             row.sqm,
+      unitPrice:       row.unitPrice,
+      averageCost:     row.averageCost,
+      revenue:         row.revenue,
+      cost:            row.cost,
+      profit:          row.profit,
+      margin:          row.margin,
+      stockMode:       row.stockMode,
+    });
+  }
+
+  const invoiceSummary = Array.from(byInvoice.values())
+    .map((inv) => ({
+      ...inv,
+      margin:  inv.revenue !== 0 ? Number(((inv.profit / inv.revenue) * 100).toFixed(2)) : 0,
+      revenue: Number(inv.revenue.toFixed(2)),
+      cost:    Number(inv.cost.toFixed(2)),
+      profit:  Number(inv.profit.toFixed(2)),
+      items:   inv.items.map((item) => ({
+        ...item,
+        revenue:  Number(item.revenue.toFixed(2)),
+        cost:     Number(item.cost.toFixed(2)),
+        profit:   Number(item.profit.toFixed(2)),
+        quantity: Number(item.quantity.toFixed(2)),
+        sqm:      Number(item.sqm.toFixed(2)),
+      })),
+    }))
+    .sort((a, b) => {
+      const dateDiff = new Date(b.invoiceDate).getTime() - new Date(a.invoiceDate).getTime();
+      if (dateDiff !== 0) return dateDiff;
+      return b.invoiceId - a.invoiceId;
+    });
+
   return {
-    from: from ?? null,
-    to: to ?? null,
-    customerId: customerId ?? null,
+    from:          from ?? null,
+    to:            to ?? null,
+    customerId:    customerId ?? null,
     itemVariantId: itemVariantId ?? null,
     invoiceType,
     rows,
     totals,
     count: rows.length,
-    customerSummary, // Grouped by customer with item variants
-    itemSummary, // ✅ NEW: Grouped by item with customers who bought it
+    customerSummary,
+    itemSummary,
+    invoiceSummary,
   };
 }
 }
