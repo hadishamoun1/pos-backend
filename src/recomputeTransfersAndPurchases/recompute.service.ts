@@ -198,9 +198,8 @@ export class RecomputeCostsService {
     }
 
     // Phase 5: snapshots
-    this.emitProgress(jobId, 'snapshots', 0, 1, 'Refreshing sales invoice cost snapshots...');
-    await this.refreshSalesInvoiceItemAvgSnapshots(from);
-    this.emitProgress(jobId, 'snapshots', 1, 1, 'Snapshots refreshed');
+    this.emitProgress(jobId, 'snapshots', 0, 0, 'Counting invoices to snapshot...');
+    await this.refreshSalesInvoiceItemAvgSnapshots(from, jobId);
 
     return {
       from,
@@ -268,7 +267,7 @@ export class RecomputeCostsService {
 
   // ─── refreshSalesInvoiceItemAvgSnapshots (unchanged) ──────────────────────
 
-  private async refreshSalesInvoiceItemAvgSnapshots(from: Date) {
+  private async refreshSalesInvoiceItemAvgSnapshots(from: Date, jobId?: string) {
     const TAG = `[RECOMP-SALES-SNAPSHOT]`;
 
     const invoiceIdsRaw = await this.salesInvoiceRepo
@@ -282,6 +281,8 @@ export class RecomputeCostsService {
 
     console.log(`${TAG} invoices to refresh:`, invoiceIds.length);
     if (!invoiceIds.length) return;
+
+    if (jobId) this.emitProgress(jobId, 'snapshots', 0, invoiceIds.length, `Refreshing snapshots for ${invoiceIds.length} invoices...`);
 
     const CHUNK = 200;
 
@@ -549,10 +550,13 @@ export class RecomputeCostsService {
         await this.salesInvoiceItemRepo.save(items as any);
       }
 
+      const doneCount = Math.min(i + CHUNK, invoiceIds.length);
       console.log(`${TAG} processed chunk`, { i, batch: batchIds.length });
+      if (jobId) this.emitProgress(jobId, 'snapshots', doneCount, invoiceIds.length, `Snapshots: ${doneCount} / ${invoiceIds.length} invoices`);
     }
 
     console.log(`${TAG} DONE`);
+    if (jobId) this.emitProgress(jobId, 'snapshots', invoiceIds.length, invoiceIds.length, `Snapshots complete — ${invoiceIds.length} invoices refreshed`);
   }
 
   // ─── buildEvents (unchanged) ───────────────────────────────────────────────
