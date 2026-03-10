@@ -100,7 +100,7 @@ export class SupplierService {
         ? parseInt(String(last[0].supplierAccountNumber).replace(accountPrefix, ''), 10) + 1
         : 1;
 
-    return `${accountPrefix}${nextNum.toString().padStart(4, '0')}`;
+    return `${accountPrefix}${nextNum.toString().padStart(3, '0')}`;
   }
 
   async getAllSuppliers(): Promise<Supplier[]> {
