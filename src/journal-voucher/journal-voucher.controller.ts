@@ -105,6 +105,32 @@ searchBySeq(@Query() query: any) {
 }
 
 
+
+  /**
+   * GET /journal-vouchers/reports/customer-activity
+   * ?from=2026-01-01&to=2026-03-11&type=S&minInvoices=0&minPaid=0
+   */
+  @Get('reports/customer-activity')
+  @RequirePerms('journal.view')
+  async getCustomerActivity(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('type') type?: 'S' | 'G' | 'ALL',
+    @Query('minInvoices') minInvoices?: string,
+    @Query('minPaid') minPaid?: string,
+  ) {
+    if (!from || !to) {
+      throw new BadRequestException('Both from and to query params are required.');
+    }
+    return this.journalVoucherService.getCustomerActivityReport({
+      from,
+      to,
+      type: (type as any) ?? 'ALL',
+      minInvoices: minInvoices ? parseFloat(minInvoices) : undefined,
+      minPaid:     minPaid     ? parseFloat(minPaid)     : undefined,
+    });
+  }
+
   // Get a single Journal Voucher by ID
   @Get(':id')
   @RequirePerms('journal.view')

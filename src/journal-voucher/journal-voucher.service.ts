@@ -1721,4 +1721,138 @@ async searchByCustomerOrJv(params?: {
 }
 
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD THIS METHOD to JournalVoucherService
+// ─────────────────────────────────────────────────────────────────────────────
+
+async getCustomerActivityReport(params: {
+  from: string;  // 'YYYY-MM-DD' inclusive
+  to: string;    // 'YYYY-MM-DD' inclusive
+  type?: 'S' | 'G' | 'ALL';
+  minInvoices?: number;
+  minPaid?: number;
+}) {
+  const { from, to, type = 'ALL', minInvoices, minPaid } = params;
+
+  if (!from || !to) {
+    throw new BadRequestException('Both from and to dates are required.');
+  }
+
+  // TypeORM date range: jv.date >= from AND jv.date <= to
+  const applyTypeFilter = (
+    qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>,
+  ) => {
+    if (type === 'G') {
+      qb.andWhere(`(UPPER(jv.jvNumber) LIKE 'JVG%' OR UPPER(TRIM(jv.jvType)) = 'G')`);
+    } else if (type === 'S') {
+      qb.andWhere(`UPPER(TRIM(jv.jvType)) IN ('S','RVR')`);
+    }
+    return qb;
+  };
+
+  // ── 1) Get all customers ──────────────────────────────────────────────────
+  const customers = await this.customerRepo.find({
+    order: { customerName: 'ASC' },
+  });
+
+  const results: {
+    customerId: number;
+    customerName: string;
+    customerAccountNumber: string | null;
+    currencyCode: string;
+    invoices: number;   // sum of drUSD in period
+    paid: number;       // sum of crUSD in period
+    balance: number;    // invoices - paid
+  }[] = [];
+
+  for (const customer of customers) {
+    const customerId = customer.id;
+
+    // Currency detection (same as existing report)
+    let currencyCode: 'USD' | 'LL' | 'EURO' | 'BASE' =
+      (customer as any)?.currencyId === 2 ? 'LL' : 'USD';
+
+    // Column map: G type uses OFR cols, S uses base cols
+    const drCol = (jvType: string) =>
+      jvType?.trim().toUpperCase() === 'G' ? 'drUSDOFR' : 'drUSD';
+    const crCol = (jvType: string) =>
+      jvType?.trim().toUpperCase() === 'G' ? 'crUSDOFR' : 'crUSD';
+
+    // ── Query period rows for this customer ───────────────────────────────
+    const qb = this.journalVoucherDetailRepository
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.journalVoucher', 'jv')
+      .where('d.customerId = :customerId', { customerId })
+      .andWhere('jv.date >= :from', { from })
+      .andWhere('jv.date <= :to', { to });
+
+    applyTypeFilter(qb);
+    qb.orderBy('jv.date', 'ASC');
+
+    const rows = await qb.getMany();
+    if (rows.length === 0) continue;
+
+    let totalDr = 0;
+    let totalCr = 0;
+
+    for (const r of rows) {
+      const jvType = r.journalVoucher?.jvType ?? '';
+      totalDr += Number((r as any)[drCol(jvType)] || 0);
+      totalCr += Number((r as any)[crCol(jvType)] || 0);
+    }
+
+    const invoices = Math.round(totalDr * 100) / 100;
+    const paid     = Math.round(totalCr * 100) / 100;
+    const balance  = Math.round((invoices - paid) * 100) / 100;
+
+    // Apply optional filters
+    if (minInvoices !== undefined && invoices < minInvoices) continue;
+    if (minPaid !== undefined && paid < minPaid) continue;
+
+    // Skip customers with zero activity in the period
+    if (invoices === 0 && paid === 0) continue;
+
+    results.push({
+      customerId,
+      customerName: (customer as any).customerName || '',
+      customerAccountNumber:
+        (customer as any).customerAccountNumber ??
+        (customer as any).accountNumber ??
+        null,
+      currencyCode,
+      invoices,
+      paid,
+      balance,
+    });
+  }
+
+  // Sort by account number
+  results.sort((a, b) => {
+    const numA = parseInt(a.customerAccountNumber || '', 10);
+    const numB = parseInt(b.customerAccountNumber || '', 10);
+    if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+    return (a.customerAccountNumber || '').localeCompare(
+      b.customerAccountNumber || '',
+      undefined,
+      { numeric: true, sensitivity: 'base' },
+    );
+  });
+
+  const summary = {
+    totalCustomers: results.length,
+    totalInvoices: Math.round(results.reduce((s, r) => s + r.invoices, 0) * 100) / 100,
+    totalPaid:     Math.round(results.reduce((s, r) => s + r.paid,     0) * 100) / 100,
+    totalBalance:  Math.round(results.reduce((s, r) => s + r.balance,  0) * 100) / 100,
+  };
+
+  return {
+    from,
+    to,
+    type,
+    summary,
+    customers: results,
+  };
+}
+
 }
