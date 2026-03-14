@@ -18,29 +18,19 @@ import { Transfer } from '../entities/inventory/transfer.entity';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionsGuard } from '../auth/permissions.guard';
 import { RequirePerms } from '../auth/permissions.decorator';
-import { RecomputeCostsService } from 'src/recomputeTransfersAndPurchases/recompute.service';
 
 
 @Controller('transfers')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class TransfersController {
-  constructor(private readonly svc: TransfersService,
-        private readonly recompute: RecomputeCostsService,
-
-  ) {}
+  constructor(private readonly svc: TransfersService) {}
 
   @Post()
   @RequirePerms('transfers.create')
   async create(@Body() body: any): Promise<Transfer[]> {
-    const res = await this.svc.create(body);
-
-    // ✅ recompute from transfer date (fallback: today)
-    const fromDate = body?.date || new Date().toISOString().slice(0, 10);
-    await this.recompute.recomputeFromDate(fromDate);
-
-    return res;
+    return this.svc.create(body);
   }
-  
+
   @Get('v1/details')
   @RequirePerms('transfers.view')
   async findDetails() {
@@ -115,13 +105,7 @@ export class TransfersController {
   @Patch(':id')
   @RequirePerms('transfers.update')
   async update(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
-    const updated = await this.svc.updateTransfer(id, body);
-
-    // ✅ recompute from updated transfer date (fallback: body.date)
-    const fromDate = updated?.date || body?.date || new Date().toISOString().slice(0, 10);
-    await this.recompute.recomputeFromDate(fromDate);
-
-    return updated;
+    return this.svc.updateTransfer(id, body);
   }
 
   @Delete(':id')
