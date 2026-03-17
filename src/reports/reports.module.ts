@@ -1,4 +1,3 @@
-// src/reports/reports.module.ts
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ReportsController } from './reports.controller';
@@ -11,14 +10,14 @@ import { AccountRoleMap } from "../entities/accountRoleMap.entity";
 import { Customer } from '../entities/customer.entity';
 import { Supplier } from '../entities/supplier.entity';
 
-
-// import the module, NOT the controller/service
 import { AccountsModule } from '../accounts/accounts.module';
+import { CompanyModule } from '../company/company.module'; // ← ADD THIS
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Account, JournalVoucher, JournalVoucherDetail, AccountRoleMap,Supplier,Customer]),
-    AccountsModule, // <-- gives access to AccountsService via module export
+    TypeOrmModule.forFeature([Account, JournalVoucher, JournalVoucherDetail, AccountRoleMap, Supplier, Customer]),
+    AccountsModule,
+    CompanyModule, // ← ADD THIS
   ],
   controllers: [ReportsController],
   providers: [ReportsService],

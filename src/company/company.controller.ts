@@ -34,6 +34,14 @@ export class CompanyController {
     return this.companyService.setActive(id);
   }
 
+  @Patch(':id/vat-inclusive')
+setVatInclusive(
+  @Param('id', ParseIntPipe) id: number,
+  @Body('vatInclusive') vatInclusive: boolean,
+) {
+  return this.companyService.setVatInclusive(id, vatInclusive);
+}
+
   @Delete(":id")
   remove(@Param("id", ParseIntPipe) id: number) {
     return this.companyService.remove(id);

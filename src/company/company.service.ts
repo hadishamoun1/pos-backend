@@ -32,6 +32,12 @@ export class CompanyService {
     return this.findOne(id);
   }
 
+  async setVatInclusive(id: number, vatInclusive: boolean): Promise<Company> {
+  await this.findOne(id); // throws if not found
+  await this.companyRepository.update(id, { vatInclusive });
+  return this.findOne(id);
+}
+
   async setActive(id: number): Promise<Company> {
     await this.findOne(id); // throws if not found
     // deactivate all
@@ -45,4 +51,9 @@ export class CompanyService {
     await this.findOne(id);
     await this.companyRepository.delete(id);
   }
+  async getActiveCompany(): Promise<Company> {
+  const company = await this.companyRepository.findOne({ where: { isActive: true } });
+  if (!company) throw new NotFoundException('No active company found');
+  return company;
+}
 }

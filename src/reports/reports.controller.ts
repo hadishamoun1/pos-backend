@@ -85,4 +85,20 @@ async getProfitability(@Query() q: any) {
       mainPrefixes: q.mainPrefixes ?? '',
     });
   }
+
+  @Get('profitability/monthly')
+@RequirePerms('reports.view')
+async getProfitabilityByMonth(@Query() q: any) {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const yearStart = `${currentYear}-01-01`;
+  const today = now.toISOString().slice(0, 10);
+
+  return this.reportsService.getProfitabilityByMonth({
+    from: q.from ?? yearStart,
+    to:   q.to   ?? today,
+    customerId:  q.customerId  ? Number(q.customerId)  : undefined,
+    invoiceType: q.invoiceType ?? 'ALL',
+  });
+}
 }

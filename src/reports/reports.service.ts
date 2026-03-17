@@ -8,6 +8,7 @@ import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails
 import { AccountRoleMap } from "../entities/accountRoleMap.entity";
 import { Customer } from '../entities/customer.entity';
 import { Supplier } from '../entities/supplier.entity';
+import { CompanyService } from '../company/company.service';
 
 import { Invoice } from '../entities/invoice.entity';
 import { InvoiceItem } from '../entities/invoiceItem.entity';
@@ -40,6 +41,35 @@ interface TBNodeSum {
   periodDebit: number;
   periodCredit: number;
   closingBalance: number;
+}
+export interface InvoiceRow {
+  invoiceId: number;
+  invoiceNumber: string;
+  invoiceDate: string;
+  invoiceType: string;
+  customerId: number | null;
+  customerName: string;
+  itemCount: number;
+  revenue: number;
+  cost: number;
+  profit: number;
+  margin: number;
+  vatPercentage: number;
+  vatStripped: boolean;
+}
+
+export interface MonthGroup {
+  year: number;
+  month: number;
+  monthLabel: string;
+  invoices: InvoiceRow[];
+  totals: {
+    revenue: number;
+    cost: number;
+    profit: number;
+    margin: number;
+    invoiceCount: number;
+  };
 }
 
 interface TBNode {
@@ -78,6 +108,7 @@ export class ReportsService {
 
   @InjectRepository(Customer) private readonly customerRepo: Repository<Customer>,
   @InjectRepository(Supplier) private readonly supplierRepo: Repository<Supplier>,
+   private readonly companyService: CompanyService,
   
   ) {}
 
@@ -1165,6 +1196,10 @@ async getProfitability(params: ProfitabilityParams) {
     invoiceType = 'ALL',
   } = params;
 
+  // ─── Auto-detect vatInclusive from active company ─────────────────────────
+  const activeCompany = await this.companyService.getActiveCompany();
+  const vatInclusive = activeCompany.vatInclusive;
+
   const qb = this.dataSource
     .createQueryBuilder()
     .from('invoices', 'inv')
@@ -1178,6 +1213,7 @@ async getProfitability(params: ProfitabilityParams) {
     .addSelect('inv.invoiceNumber', 'invoiceNumber')
     .addSelect('inv.date', 'invoiceDate')
     .addSelect('inv.invoiceType', 'invoiceType')
+    .addSelect('inv.vatPercentage', 'vatPercentage')        // ← NEW
     .addSelect('cust.id', 'customerId')
     .addSelect('cust.customerName', 'customerName')
     .addSelect('ii.id', 'invoiceItemId')
@@ -1186,9 +1222,9 @@ async getProfitability(params: ProfitabilityParams) {
     .addSelect('ii.unitPrice', 'unitPrice')
     .addSelect('ii.totalAmount', 'totalAmount')
     .addSelect('ii.averageCost', 'averageCost')
-    .addSelect('ii.sheetsPerBox', 'sheetsPerBox')   // ✅ from invoice_item
-    .addSelect('ii.length', 'length')               // ✅ from invoice_item
-    .addSelect('ii.width', 'width')                 // ✅ from invoice_item
+    .addSelect('ii.sheetsPerBox', 'sheetsPerBox')
+    .addSelect('ii.length', 'length')
+    .addSelect('ii.width', 'width')
     .addSelect('v.id', 'itemVariantId')
     .addSelect('v.invoiceDisplayName', 'itemName')
     .addSelect('v.origin', 'origin')
@@ -1222,7 +1258,7 @@ async getProfitability(params: ProfitabilityParams) {
 
   const raw = await qb.getRawMany();
 
-  // ✅ Derive human-readable unit type from itemType + stockMode
+  // ─── Unit type helper ─────────────────────────────────────────────────────
   const getUnitType = (itemType: string, stockMode: string): string => {
     if (itemType === 'unit') return 'Unit';
     switch (stockMode) {
@@ -1233,18 +1269,37 @@ async getProfitability(params: ProfitabilityParams) {
     }
   };
 
+  // ─── VAT stripping helper ─────────────────────────────────────────────────
+  /**
+   * vatInclusive = false (e.g. Revo):
+   *   → never strip, totalAmount is always net
+   *
+   * vatInclusive = true (e.g. Shamoun):
+   *   → vatPercentage > 0: totalAmount is already ex-VAT (VAT added on top) → use as-is
+   *   → vatPercentage = 0: totalAmount has 11% baked in → divide by 1.11 to get net
+   */
+  const computeNetRevenue = (totalAmount: number, vatPercentage: number): number => {
+    if (!vatInclusive) return totalAmount;
+    if (vatPercentage === 0) return totalAmount / 1.11;
+    return totalAmount;
+  };
+
+  // ─── Map raw rows ─────────────────────────────────────────────────────────
   const rows = raw.map((r: any) => {
-    const invoiceType = String(r.invoiceType || '');
-    const isReturn    = invoiceType === 'RTN';
+    const invType       = String(r.invoiceType || '');
+    const isReturn      = invType === 'RTN';
+    const vatPercentage = Number(r.vatPercentage || 0);
+    const vatStripped   = vatInclusive && vatPercentage === 0;
 
     const stockMode = String(r.stockMode || 'sqm').toLowerCase();
     const itemType  = String(r.itemType  || '').toLowerCase();
     const mode      = itemType === 'unit' ? 'qty' : stockMode;
 
-    const qty     = mode === 'qty' ? Number(r.quantity || 0) : Number(r.sqm || 0);
-    const revenue = Number(r.totalAmount || 0);
-    const avgCost = Number(r.averageCost || 0);
-    const cost    = avgCost * qty;
+    const qty       = mode === 'qty' ? Number(r.quantity || 0) : Number(r.sqm || 0);
+    const rawAmount = Number(r.totalAmount || 0);
+    const revenue   = computeNetRevenue(rawAmount, vatPercentage);
+    const avgCost   = Number(r.averageCost || 0);
+    const cost      = avgCost * qty;
 
     let profit = revenue - cost;
     let margin = revenue !== 0 ? (profit / revenue) * 100 : 0;
@@ -1257,7 +1312,6 @@ async getProfitability(params: ProfitabilityParams) {
     const descParts = [r.categoryName, r.subCategory, r.colorName, r.designName].filter(Boolean);
     const fullDescription = descParts.length ? descParts.join(' | ') : '';
 
-    // ✅ All dimensional data from invoice_item
     const length       = r.length       ? Number(r.length)       : null;
     const width        = r.width        ? Number(r.width)        : null;
     const sheetsPerBox = r.sheetsPerBox ? Number(r.sheetsPerBox) : null;
@@ -1267,14 +1321,13 @@ async getProfitability(params: ProfitabilityParams) {
     if (width)  dims.push(`W:${width.toFixed(1)}`);
     const dimensions = dims.length ? dims.join(' × ') : '';
 
-    // ✅ Unit type label
     const unitType = getUnitType(itemType, stockMode);
 
     return {
       invoiceId:     Number(r.invoiceId),
       invoiceNumber: String(r.invoiceNumber || ''),
       invoiceDate:   r.invoiceDate,
-      invoiceType,
+      invoiceType:   invType,
       customerId:    r.customerId ? Number(r.customerId) : null,
       customerName:  String(r.customerName || ''),
 
@@ -1286,21 +1339,24 @@ async getProfitability(params: ProfitabilityParams) {
       dimensions,
       length,
       width,
-      sheetsPerBox,  // ✅ NEW
-      unitType,      // ✅ NEW — 'SQM' | 'Box' | 'Sheet' | 'Unit'
+      sheetsPerBox,
+      unitType,
 
       quantity:  Number(r.quantity || 0),
       sqm:       Number(r.sqm || 0),
       unitPrice: Number(r.unitPrice || 0),
 
-      revenue: Number(revenue.toFixed(2)),
-      cost:    Number(cost.toFixed(2)),
-      profit:  Number(profit.toFixed(2)),
-      margin:  Number(margin.toFixed(2)),
+      revenue:  Number(revenue.toFixed(2)),
+      cost:     Number(cost.toFixed(2)),
+      profit:   Number(profit.toFixed(2)),
+      margin:   Number(margin.toFixed(2)),
 
-      averageCost: avgCost,
-      stockMode:   mode,
-      sortIndex:   r.sortIndex !== null ? Number(r.sortIndex) : null,
+      averageCost:  avgCost,
+      stockMode:    mode,
+      sortIndex:    r.sortIndex !== null ? Number(r.sortIndex) : null,
+
+      vatPercentage,   // ← NEW
+      vatStripped,     // ← NEW
     };
   });
 
@@ -1351,14 +1407,14 @@ async getProfitability(params: ProfitabilityParams) {
     const varId = row.itemVariantId || 0;
     if (!custData.items.has(varId)) {
       custData.items.set(varId, {
-        itemVariantId: varId,
-        itemName: row.itemName,
+        itemVariantId:   varId,
+        itemName:        row.itemName,
         fullDescription: row.fullDescription,
-        thickness: row.thickness,
-        origin: row.origin,
-        dimensions: row.dimensions,
-        sheetsPerBox: row.sheetsPerBox,  // ✅
-        unitType: row.unitType,          // ✅
+        thickness:       row.thickness,
+        origin:          row.origin,
+        dimensions:      row.dimensions,
+        sheetsPerBox:    row.sheetsPerBox,
+        unitType:        row.unitType,
         revenue: 0, cost: 0, profit: 0, margin: 0,
         quantity: 0, sqm: 0, invoices: [],
       });
@@ -1390,7 +1446,7 @@ async getProfitability(params: ProfitabilityParams) {
     return { ...c, items: itemsArray };
   });
 
-  // ─── Group by item variant ─────────────────────────────────────────────────
+  // ─── Group by item variant ────────────────────────────────────────────────
   const byItem = new Map<number, {
     itemVariantId: number; itemName: string; fullDescription: string;
     thickness: number | null; origin: string; dimensions: string;
@@ -1409,14 +1465,14 @@ async getProfitability(params: ProfitabilityParams) {
     const varId = row.itemVariantId || 0;
     if (!byItem.has(varId)) {
       byItem.set(varId, {
-        itemVariantId: varId,
-        itemName: row.itemName,
+        itemVariantId:   varId,
+        itemName:        row.itemName,
         fullDescription: row.fullDescription,
-        thickness: row.thickness,
-        origin: row.origin,
-        dimensions: row.dimensions,
-        sheetsPerBox: row.sheetsPerBox,  // ✅
-        unitType: row.unitType,          // ✅
+        thickness:       row.thickness,
+        origin:          row.origin,
+        dimensions:      row.dimensions,
+        sheetsPerBox:    row.sheetsPerBox,
+        unitType:        row.unitType,
         revenue: 0, cost: 0, profit: 0, margin: 0,
         quantity: 0, sqm: 0,
         customerCount: 0, invoiceCount: 0,
@@ -1487,6 +1543,7 @@ async getProfitability(params: ProfitabilityParams) {
       quantity: number; sqm: number; unitPrice: number; averageCost: number;
       revenue: number; cost: number; profit: number; margin: number;
       stockMode: string;
+      vatPercentage: number; vatStripped: boolean;  // ← NEW
     }[];
   }>();
 
@@ -1516,8 +1573,8 @@ async getProfitability(params: ProfitabilityParams) {
       thickness:       row.thickness,
       origin:          row.origin,
       dimensions:      row.dimensions,
-      sheetsPerBox:    row.sheetsPerBox,  // ✅
-      unitType:        row.unitType,      // ✅
+      sheetsPerBox:    row.sheetsPerBox,
+      unitType:        row.unitType,
       quantity:        row.quantity,
       sqm:             row.sqm,
       unitPrice:       row.unitPrice,
@@ -1527,6 +1584,8 @@ async getProfitability(params: ProfitabilityParams) {
       profit:          row.profit,
       margin:          row.margin,
       stockMode:       row.stockMode,
+      vatPercentage:   row.vatPercentage,  // ← NEW
+      vatStripped:     row.vatStripped,    // ← NEW
     });
   }
 
@@ -1558,12 +1617,213 @@ async getProfitability(params: ProfitabilityParams) {
     customerId:    customerId ?? null,
     itemVariantId: itemVariantId ?? null,
     invoiceType,
+    vatInclusive,   // ← echoed back so frontend knows which mode was applied
     rows,
     totals,
     count: rows.length,
     customerSummary,
     itemSummary,
     invoiceSummary,
+  };
+}
+
+async getProfitabilityByMonth(params: ProfitabilityParams) {
+  const {
+    from,
+    to,
+    customerId,
+    invoiceType = 'ALL',
+  } = params;
+
+  // ─── Auto-detect vatInclusive from active company ─────────────────────────
+  const activeCompany = await this.companyService.getActiveCompany();
+  const vatInclusive = activeCompany.vatInclusive;
+
+  // ─── VAT stripping helper ─────────────────────────────────────────────────
+  const computeNetRevenue = (totalAmount: number, vatPercentage: number): number => {
+    if (!vatInclusive) return totalAmount;
+    if (vatPercentage === 0) return totalAmount / 1.11;
+    return totalAmount;
+  };
+
+  // ─── Query: aggregate per invoice (SUM items) ─────────────────────────────
+  const qb = this.dataSource
+    .createQueryBuilder()
+    .from('invoices', 'inv')
+    .leftJoin('customers', 'cust', 'inv.customerId = cust.id')
+    .innerJoin('invoice_items', 'ii', 'ii.invoiceId = inv.id')
+    .leftJoin('item_variant', 'v', 'ii.itemVariantId = v.id')
+    .leftJoin('thickness', 'th', 'v.thicknessId = th.id')
+    .leftJoin('item', 'item', 'th.itemId = item.id')
+    .select('inv.id', 'invoiceId')
+    .addSelect('inv.invoiceNumber', 'invoiceNumber')
+    .addSelect('inv.date', 'invoiceDate')
+    .addSelect('inv.invoiceType', 'invoiceType')
+    .addSelect('inv.vatPercentage', 'vatPercentage')
+    .addSelect('cust.id', 'customerId')
+    .addSelect('cust.customerName', 'customerName')
+    .addSelect('SUM(ii.totalAmount)', 'totalAmount')
+    .addSelect(
+      `SUM(
+        CASE
+          WHEN item.type = 'unit' THEN ii.averageCost * ii.quantity
+          WHEN item.stockMode = 'box'   THEN ii.averageCost * ii.sqm
+          WHEN item.stockMode = 'sheet' THEN ii.averageCost * ii.sqm
+          ELSE ii.averageCost * ii.sqm
+        END
+      )`,
+      'totalCost',
+    )
+    .addSelect('COUNT(ii.id)', 'itemCount')
+    .groupBy('inv.id')
+    .addGroupBy('inv.invoiceNumber')
+    .addGroupBy('inv.date')
+    .addGroupBy('inv.invoiceType')
+    .addGroupBy('inv.vatPercentage')
+    .addGroupBy('cust.id')
+    .addGroupBy('cust.customerName');
+
+  if (from) qb.andWhere('inv.date >= :from', { from });
+  if (to)   qb.andWhere('inv.date <= :to',   { to });
+  if (customerId) qb.andWhere('inv.customerId = :customerId', { customerId });
+
+  if (invoiceType !== 'ALL') {
+    qb.andWhere('inv.invoiceType = :invoiceType', { invoiceType });
+  } else {
+    qb.andWhere('inv.invoiceType IN (:...types)', {
+      types: ['S', 'G', 'RVR', 'RTN'],
+    });
+  }
+
+  qb.orderBy('inv.date', 'ASC').addOrderBy('inv.id', 'ASC');
+
+  const raw = await qb.getRawMany();
+
+  // ─── Map raw rows into invoice-level records ──────────────────────────────
+  const invoiceRows: InvoiceRow[] = raw.map((r: any) => {
+    const invType       = String(r.invoiceType || '');
+    const isReturn      = invType === 'RTN';
+    const vatPercentage = Number(r.vatPercentage || 0);
+    const vatStripped   = vatInclusive && vatPercentage === 0;
+
+    const rawAmount = Number(r.totalAmount || 0);
+    const revenue   = computeNetRevenue(rawAmount, vatPercentage);
+    const cost      = Number(r.totalCost || 0);
+
+    let profit = revenue - cost;
+    let margin = revenue !== 0 ? (profit / revenue) * 100 : 0;
+
+    if (isReturn) {
+      profit = -profit;
+      margin = -margin;
+    }
+
+    // ─── Normalize invoiceDate to YYYY-MM-DD string ───────────────────────
+    let invoiceDate = '';
+    if (r.invoiceDate instanceof Date) {
+      invoiceDate = r.invoiceDate.toISOString().slice(0, 10);
+    } else if (r.invoiceDate) {
+      invoiceDate = String(r.invoiceDate).slice(0, 10);
+    }
+
+    return {
+      invoiceId:     Number(r.invoiceId),
+      invoiceNumber: String(r.invoiceNumber || ''),
+      invoiceDate,
+      invoiceType:   invType,
+      customerId:    r.customerId ? Number(r.customerId) : null,
+      customerName:  String(r.customerName || ''),
+      itemCount:     Number(r.itemCount || 0),
+      revenue:       Number(revenue.toFixed(2)),
+      cost:          Number(cost.toFixed(2)),
+      profit:        Number(profit.toFixed(2)),
+      margin:        Number(margin.toFixed(2)),
+      vatPercentage,
+      vatStripped,
+    };
+  });
+
+  // ─── Group by month ───────────────────────────────────────────────────────
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+
+  const monthMap = new Map<string, MonthGroup>();
+
+  for (const row of invoiceRows) {
+    // Use Date object to safely parse any format
+    const dateObj = new Date(row.invoiceDate);
+    const year    = dateObj.getFullYear();
+    const month   = dateObj.getMonth() + 1; // getMonth() is 0-based → 1-12
+    const key     = `${year}-${String(month).padStart(2, '0')}`;
+
+    // Guard against invalid dates
+    if (isNaN(year) || isNaN(month)) continue;
+
+    if (!monthMap.has(key)) {
+      monthMap.set(key, {
+        year,
+        month,
+        monthLabel: `${monthNames[month - 1]} ${year}`,
+        invoices: [],
+        totals: { revenue: 0, cost: 0, profit: 0, margin: 0, invoiceCount: 0 },
+      });
+    }
+
+    const group = monthMap.get(key)!;
+    group.invoices.push(row);
+    group.totals.revenue      += row.revenue;
+    group.totals.cost         += row.cost;
+    group.totals.profit       += row.profit;
+    group.totals.invoiceCount++;
+  }
+
+  // ─── Finalize month totals (round + margin) ───────────────────────────────
+  const months = Array.from(monthMap.values())
+    .sort((a, b) => {
+      if (a.year !== b.year) return a.year - b.year;
+      return a.month - b.month;
+    })
+    .map((g) => ({
+      ...g,
+      totals: {
+        ...g.totals,
+        revenue: Number(g.totals.revenue.toFixed(2)),
+        cost:    Number(g.totals.cost.toFixed(2)),
+        profit:  Number(g.totals.profit.toFixed(2)),
+        margin:  g.totals.revenue !== 0
+          ? Number(((g.totals.profit / g.totals.revenue) * 100).toFixed(2))
+          : 0,
+      },
+    }));
+
+  // ─── Grand total ──────────────────────────────────────────────────────────
+  const grandTotal = invoiceRows.reduce(
+    (acc, row) => {
+      acc.revenue      += row.revenue;
+      acc.cost         += row.cost;
+      acc.profit       += row.profit;
+      acc.invoiceCount++;
+      return acc;
+    },
+    { revenue: 0, cost: 0, profit: 0, margin: 0, invoiceCount: 0 },
+  );
+  grandTotal.margin  = grandTotal.revenue !== 0
+    ? Number(((grandTotal.profit / grandTotal.revenue) * 100).toFixed(2))
+    : 0;
+  grandTotal.revenue = Number(grandTotal.revenue.toFixed(2));
+  grandTotal.cost    = Number(grandTotal.cost.toFixed(2));
+  grandTotal.profit  = Number(grandTotal.profit.toFixed(2));
+
+  return {
+    from:        from ?? null,
+    to:          to   ?? null,
+    customerId:  customerId ?? null,
+    invoiceType,
+    vatInclusive,
+    months,
+    grandTotal,
   };
 }
 }

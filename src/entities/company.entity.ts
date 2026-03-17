@@ -1,4 +1,3 @@
-// src/entities/company.entity.ts
 import { Entity, PrimaryGeneratedColumn, Column } from "typeorm";
 
 @Entity("Company")
@@ -11,4 +10,7 @@ export class Company {
 
   @Column({ type: "boolean", default: false })
   isActive: boolean;
+
+  @Column({ type: "boolean", default: false })  // ← ADD THIS
+  vatInclusive: boolean;
 }
