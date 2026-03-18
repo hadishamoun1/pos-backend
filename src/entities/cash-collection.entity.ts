@@ -9,9 +9,9 @@ import {
   Index,
   JoinColumn,
 } from "typeorm";
-import { User } from "./user.entity";       // adjust path
-import { Customer } from "./customer.entity"; // adjust path
-import { Currency } from "./currency.entity"; // adjust path (optional)
+import { User } from "./user.entity";       
+import { Customer } from "./customer.entity"; 
+import { Currency } from "./currency.entity"; 
 
 export type CashCollectionMethod = "CASH" | "WHISH" | "CHEQUE" | "OTHER";
 

@@ -44,6 +44,7 @@ import { AccountingModule } from './accountRoleMap/accounting.module';
 import { CashCollectionsModule } from './cash-collections/cash-collections.module';
 import { EmployeesModule } from './Employee/Employee.module';
 import { CompanyModule } from './company/company.module';
+import { SecurityAlertModule } from './securityAlert/security-alert.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -101,7 +102,8 @@ TypeOrmModule.forRootAsync({
     AccountingModule,
     CashCollectionsModule,
     EmployeesModule,
-    CompanyModule
+    CompanyModule,
+    SecurityAlertModule,
   ],
 })
 export class AppModule {}
