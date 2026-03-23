@@ -8,61 +8,47 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { Customer } from '../customer.entity';
-import { CurrencyRate } from '../currencyRate.entity';
-import { PaymentVoucherDetail } from './paymentVoucherDetails.entity';
 import { Supplier } from '../supplier.entity';
+import { PaymentVoucherDetail } from './paymentVoucherDetails.entity';
+
+export type PaymentType = 'Cash USD' | 'Cash LL' | 'Check USD' | 'Check LL';
+export type VoucherType = 'S' | 'G';
 
 @Entity('payment_vouchers')
 export class PaymentVoucher {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'date' })
-  date: Date;
+  @Column({ type: 'varchar', length: 50, unique: true })
+  paymentNumber: string;
 
-  @ManyToOne(() => Supplier, { nullable: false })
-  @JoinColumn({ name: 'supplierId' }) // Link supplierId to Supplier
+  @Column({ nullable: true })
+  supplierId: number;
+
+  @ManyToOne(() => Supplier, (supplier) => supplier.paymentVouchers, { nullable: true })
+  @JoinColumn({ name: 'supplierId' })
   supplier: Supplier;
 
-  @Column({ type: 'varchar', length: 50, unique: true })
-  pmNumber: string;
+  @Column({ type: 'varchar', length: 50 })
+  paymentType: PaymentType;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
-  totalDr: number;
+  @Column({ type: 'varchar', length: 1 })
+  type: VoucherType;
 
-  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
-  totalDrUSD: number;
-
-  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
-  totalDrLL: number;
-
-  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
-  totalCr: number;
-
-  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
-  totalCrUSD: number;
-
-  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true })
-  totalCrLL: number;
+  @Column({ type: 'date', nullable: true })
+  date: string;
 
   @Column({ type: 'varchar', nullable: true })
-  paymentType: string;
-
-  @Column({ type: 'varchar', nullable: true })
-  type: string;
-
-  @CreateDateColumn({ type: 'timestamp' })
-  dateCreated: Date;
-
-  @UpdateDateColumn({ type: 'timestamp' })
-  dateModified: Date;
+  invoiceId: string;
 
   @Column({ type: 'varchar', nullable: true })
   doneBy: string;
 
-  @Column({ type: 'varchar', length: 50 })
-  invoiceId: string;
+  @CreateDateColumn()
+  dateCreated: string;
+
+  @UpdateDateColumn()
+  dateModified: string;
 
   @OneToMany(() => PaymentVoucherDetail, (detail) => detail.paymentVoucher, {
     cascade: true,

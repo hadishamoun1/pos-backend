@@ -1,527 +1,229 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { SettingsService } from '../settings/settings.service';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like } from 'typeorm';
-import { PaymentVoucher } from '../entities/Vouchers/paymentVoucher.entity';
+import { Repository } from 'typeorm';
+import { PaymentVoucher, PaymentType, VoucherType } from '../entities/Vouchers/paymentVoucher.entity';
 import { PaymentVoucherDetail } from '../entities/Vouchers/paymentVoucherDetails.entity';
 import { Supplier } from '../entities/supplier.entity';
-import { Account } from '../entities/account.entity';
 
 @Injectable()
 export class PaymentVoucherService {
   constructor(
     @InjectRepository(PaymentVoucher)
     private readonly paymentVoucherRepository: Repository<PaymentVoucher>,
+
     @InjectRepository(PaymentVoucherDetail)
     private readonly paymentVoucherDetailRepository: Repository<PaymentVoucherDetail>,
+
     @InjectRepository(Supplier)
     private readonly supplierRepository: Repository<Supplier>,
-    @InjectRepository(Account)
-    private readonly accountRepository: Repository<Account>,
+
+    private readonly settingsService: SettingsService,
   ) {}
 
-  async createMultiplePaymentVouchers(
-    transactions: {
-      supplierId: number;
-      date: Date;
-      invoiceId: string;
-      paymentType: string;
-      type: string; // "S" or "G"
-      doneBy: string;
-      details: {
-        amount: number;
-        currency: string;
-        exchangeRate?: string;
-        checkNumber?: string;
-        checkDate?: Date;
-        checkDueDate?: Date;
-        bankName?: string;
-        description?: string;
-      }[];
-    }[],
-  ): Promise<PaymentVoucher[]> {
-    const paymentVouchers: PaymentVoucher[] = [];
+  private dateOrNull(value: any): string | null {
+    if (!value || value === '') return null;
+    return value;
+  }
 
-    // Fetch the latest voucher numbers for each type
-    const latestSVoucher = await this.paymentVoucherRepository.find({
-      where: { pmNumber: Like('PM - %'), type: 'S' },
-      order: { pmNumber: 'DESC' },
-      take: 1,
+  private buildDetail(d: any): PaymentVoucherDetail {
+    const exchangeRate = parseFloat(d.exchangeRate) || 1;
+    const amount = parseFloat(d.amount) || 0;
+    const amountExchanged =
+      d.currency === 'USD' ? amount * exchangeRate : amount / exchangeRate;
+
+    return this.paymentVoucherDetailRepository.create({
+      amount,
+      currency: d.currency,
+      exchangeRate,
+      amountExchanged,
+      checkNumber: d.checkNumber || null,
+      checkDate: this.dateOrNull(d.checkDate),
+      checkDueDate: this.dateOrNull(d.checkDueDate),
+      bankName: d.bankName || null,
+      description: d.description || null,
     });
+  }
 
-    const latestGVoucher = await this.paymentVoucherRepository.find({
-      where: { pmNumber: Like('PMG - %'), type: 'G' },
-      order: { pmNumber: 'DESC' },
-      take: 1,
-    });
+  private async getNextPaymentNumber(type: VoucherType): Promise<string> {
+    const activeYear = await this.settingsService.getActiveYear();
+    const year = activeYear.slice(-2);
+    const prefix = type === 'S' ? `PM${year}-` : `PMG${year}-`;
 
-    let nextSNumber =
-      latestSVoucher.length > 0
-        ? parseInt(latestSVoucher[0].pmNumber.split(' - ')[1], 10) + 1
+    const latest = await this.paymentVoucherRepository
+      .createQueryBuilder('pv')
+      .where('pv.type = :type', { type })
+      .andWhere('pv.paymentNumber LIKE :prefix', { prefix: `${prefix}%` })
+      .orderBy('pv.paymentNumber', 'DESC')
+      .take(1)
+      .getOne();
+
+    const next =
+      latest?.paymentNumber
+        ? parseInt(latest.paymentNumber.split('-')[1], 10) + 1
         : 1;
 
-    let nextGNumber =
-      latestGVoucher.length > 0
-        ? parseInt(latestGVoucher[0].pmNumber.split(' - ')[1], 10) + 1
-        : 1;
-
-    for (const transaction of transactions) {
-      const {
-        supplierId,
-        date,
-        invoiceId,
-        paymentType,
-        type,
-        doneBy,
-        details,
-      } = transaction;
-
-      const supplier = await this.supplierRepository.findOne({
-        where: { id: supplierId },
-      });
-      if (!supplier) {
-        throw new NotFoundException(
-          `Supplier with ID ${supplierId} not found.`,
-        );
-      }
-
-      const usdAccount = await this.accountRepository.findOne({
-        where: { accountNumber: '5301' },
-      });
-      if (!usdAccount) {
-        throw new NotFoundException(`Account with number 5301 not found.`);
-      }
-
-      const llAccount = await this.accountRepository.findOne({
-        where: { accountNumber: '5302' },
-      });
-      if (!llAccount) {
-        throw new NotFoundException(`Account with number 5302 not found.`);
-      }
-
-      // Determine the payment number based on the type
-      const pmNumber =
-        type === 'S'
-          ? `PM - ${String(nextSNumber++).padStart(4, '0')}`
-          : `PMG - ${String(nextGNumber++).padStart(4, '0')}`;
-
-      let totalDr = 0,
-        totalCr = 0,
-        totalDrUSD = 0,
-        totalDrLL = 0,
-        totalCrUSD = 0,
-        totalCrLL = 0;
-
-      const voucherDetails = details.flatMap((detail) => {
-        const isUSD = detail.currency === 'USD';
-        const amount = detail.amount;
-        const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
-        const amountExchanged = isUSD ? amount : amount / exchangeRate;
-
-        const dr = amountExchanged;
-        const drUSD = isUSD ? amount : amount / exchangeRate;
-        const drLL = isUSD ? 0 : amount;
-
-        const cr = dr;
-        const crUSD = drUSD;
-        const crLL = drLL;
-
-        totalDr += dr;
-        totalDrUSD += drUSD;
-        totalDrLL += drLL;
-        totalCr += cr;
-        totalCrUSD += crUSD;
-        totalCrLL += crLL;
-
-        const debitDetail = this.paymentVoucherDetailRepository.create({
-          dr,
-          drUSD,
-          drLL,
-          cr: 0,
-          crUSD: 0,
-          crLL: 0,
-          exchangeRate,
-          checkNumber: detail.checkNumber || null,
-          checkDate: detail.checkDate || null,
-          checkDueDate: detail.checkDueDate || null,
-          bankName: detail.bankName || null,
-          description: detail.description || null,
-          account: null,
-        });
-
-        const creditDetail = this.paymentVoucherDetailRepository.create({
-          dr: 0,
-          drUSD: 0,
-          drLL: 0,
-          cr,
-          crUSD,
-          crLL,
-          exchangeRate,
-          account: isUSD ? usdAccount : llAccount,
-          checkNumber: detail.checkNumber || null, // Copy from user input
-          checkDueDate: detail.checkDueDate || null,
-          bankName: detail.bankName || null, // Copy from user input
-          checkDate: detail.checkDate || null, // Copy from user input
-          description: detail.description || null, // Copy from user input
-        });
-
-        return [debitDetail, creditDetail];
-      });
-
-      const paymentVoucher = this.paymentVoucherRepository.create({
-        supplier,
-        date,
-        pmNumber,
-        invoiceId,
-        paymentType,
-        type,
-        doneBy,
-        details: voucherDetails,
-        totalDr,
-        totalDrUSD,
-        totalDrLL,
-        totalCr,
-        totalCrUSD,
-        totalCrLL,
-      });
-
-      paymentVouchers.push(
-        await this.paymentVoucherRepository.save(paymentVoucher),
-      );
-    }
-
-    return paymentVouchers;
+    return `${prefix}${String(next).padStart(4, '0')}`;
   }
 
-  async editPaymentVoucher(
-    id: number,
-    updateData: {
-      supplierId?: number;
-      date?: Date;
-      invoiceId?: string;
-      paymentType?: string;
-      type?: string;
-      doneBy?: string;
-      details?: {
-        amount: number;
-        exchangeRate?: string;
-        checkNumber?: string;
-        checkDate?: Date;
-        checkDueDate?: Date;
-        bankName?: string;
-        description?: string;
-      }[];
-    },
-  ): Promise<PaymentVoucher> {
-    // Find the existing payment voucher
-    const paymentVoucher = await this.paymentVoucherRepository.findOne({
-      where: { id },
-      relations: ['details', 'supplier'],
-    });
-
-    if (!paymentVoucher) {
-      throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
-    }
-
-    // Update supplier if provided
-    if (updateData.supplierId) {
-      const supplier = await this.supplierRepository.findOne({
-        where: { id: updateData.supplierId },
-      });
-
-      if (!supplier) {
-        throw new NotFoundException(
-          `Supplier with ID ${updateData.supplierId} not found.`,
-        );
-      }
-
-      paymentVoucher.supplier = supplier;
-    }
-
-    // Update other basic fields
-    if (updateData.date) paymentVoucher.date = updateData.date;
-    if (updateData.invoiceId) paymentVoucher.invoiceId = updateData.invoiceId;
-    if (updateData.paymentType)
-      paymentVoucher.paymentType = updateData.paymentType;
-    if (updateData.type) paymentVoucher.type = updateData.type;
-    if (updateData.doneBy) paymentVoucher.doneBy = updateData.doneBy;
-
-    // Determine the currency based on paymentType
-    const paymentType = updateData.paymentType || paymentVoucher.paymentType;
-    const isUSD = paymentType.includes('USD');
-    const currency = isUSD ? 'USD' : 'LL';
-
-    // Update details if provided
-    if (updateData.details) {
-      const usdAccount = await this.accountRepository.findOne({
-        where: { accountNumber: '5301' },
-      });
-      const llAccount = await this.accountRepository.findOne({
-        where: { accountNumber: '5302' },
-      });
-
-      if (!usdAccount || !llAccount) {
-        throw new NotFoundException('USD or LL account not found.');
-      }
-
-      const updatedDetails = updateData.details.flatMap((detail) => {
-        const amount = detail.amount;
-        const exchangeRate = isUSD ? 1 : parseFloat(detail.exchangeRate || '1');
-        const amountExchanged = isUSD ? amount : amount / exchangeRate;
-
-        const debitDetail = this.paymentVoucherDetailRepository.create({
-          dr: amountExchanged,
-          drUSD: isUSD ? amount : amount / exchangeRate,
-          drLL: isUSD ? 0 : amount,
-          cr: 0,
-          crUSD: 0,
-          crLL: 0,
-          exchangeRate,
-          checkNumber: detail.checkNumber || null,
-          checkDate: detail.checkDate || null,
-          checkDueDate: detail.checkDueDate || null,
-          bankName: detail.bankName || null,
-          description: detail.description || null,
-          account: null,
-        });
-
-        const creditDetail = this.paymentVoucherDetailRepository.create({
-          dr: 0,
-          drUSD: 0,
-          drLL: 0,
-          cr: amountExchanged,
-          crUSD: isUSD ? amount : amount / exchangeRate,
-          crLL: isUSD ? 0 : amount,
-          exchangeRate,
-          account: isUSD ? usdAccount : llAccount,
-          checkNumber: detail.checkNumber || null,
-          checkDueDate: detail.checkDueDate || null,
-          bankName: detail.bankName || null,
-          checkDate: detail.checkDate || null,
-          description: detail.description || null,
-        });
-
-        return [debitDetail, creditDetail];
-      });
-
-      // Replace old details
-      await this.paymentVoucherDetailRepository.remove(paymentVoucher.details);
-      paymentVoucher.details = updatedDetails;
-
-      // Recalculate totals
-      paymentVoucher.totalDr = updatedDetails.reduce(
-        (sum, detail) => sum + detail.dr,
-        0,
-      );
-      paymentVoucher.totalDrUSD = updatedDetails.reduce(
-        (sum, detail) => sum + detail.drUSD,
-        0,
-      );
-      paymentVoucher.totalDrLL = updatedDetails.reduce(
-        (sum, detail) => sum + detail.drLL,
-        0,
-      );
-      paymentVoucher.totalCr = updatedDetails.reduce(
-        (sum, detail) => sum + detail.cr,
-        0,
-      );
-      paymentVoucher.totalCrUSD = updatedDetails.reduce(
-        (sum, detail) => sum + detail.crUSD,
-        0,
-      );
-      paymentVoucher.totalCrLL = updatedDetails.reduce(
-        (sum, detail) => sum + detail.crLL,
-        0,
-      );
-    }
-
-    return this.paymentVoucherRepository.save(paymentVoucher);
+  private formatVoucher(voucher: PaymentVoucher): any {
+    return {
+      id: voucher.id,
+      supplierId: voucher.supplierId,
+      supplierName: voucher.supplier?.supplierName ?? null,
+      date: voucher.date,
+      invoiceId: voucher.invoiceId,
+      paymentType: voucher.paymentType,
+      type: voucher.type,
+      doneBy: voucher.doneBy,
+      paymentNumber: voucher.paymentNumber,
+      dateCreated: voucher.dateCreated,
+      dateModified: voucher.dateModified,
+      details: (voucher.details ?? []).map((d) => ({
+        amount: d.amount,
+        currency: d.currency,
+        exchangeRate: d.exchangeRate,
+        amountExchanged: d.amountExchanged,
+        checkNumber: d.checkNumber ?? null,
+        checkDate: d.checkDate ?? null,
+        checkDueDate: d.checkDueDate ?? null,
+        bankName: d.bankName ?? null,
+        description: d.description ?? null,
+      })),
+    };
   }
 
-  async getFilteredPaymentVouchers(): Promise<any[]> {
-    const paymentVouchers = await this.paymentVoucherRepository.find({
-      relations: ['details', 'supplier'], // Fetch supplier relationship
+  async getFormatted(): Promise<any[]> {
+    const vouchers = await this.paymentVoucherRepository.find({
+      relations: ['supplier', 'details'],
     });
-
-    return paymentVouchers.map((voucher) => {
-      // Determine currency based on paymentType
-      const isUSD = voucher.paymentType.includes('USD');
-      const currency = isUSD ? 'USD' : 'LL';
-
-      // Filter out autogenerated transactions where dr is 0
-      const filteredDetails = voucher.details.filter(
-        (detail) => Number(detail.dr) !== 0,
-      );
-
-      const formattedDetails = filteredDetails.map((detail) => {
-        const drUSD = Number(detail.drUSD || 0);
-        const drLL = Number(detail.drLL || 0);
-        const exchangeRate = Number(detail.exchangeRate || 1);
-        const amountExchanged = isUSD ? drUSD : drLL / exchangeRate;
-
-        return {
-          amount: isUSD ? drUSD.toFixed(2) : drLL.toFixed(2),
-          currency, // Use the derived currency from paymentType
-          exchangeRate: exchangeRate.toFixed(2),
-          checkDueDate: detail.checkDueDate || null,
-          checkNumber: detail.checkNumber || null,
-          checkDate: detail.checkDate || null,
-          bankName: detail.bankName || null,
-          description: detail.description || null,
-          amountExchanged: amountExchanged.toFixed(2),
-        };
-      });
-
-      return {
-        id: voucher.id,
-        supplierId: voucher.supplier.id,
-        supplierName: voucher.supplier.supplierName, // Include supplier's name directly
-        date: voucher.date,
-        invoiceId: voucher.invoiceId,
-        paymentType: voucher.paymentType,
-        type: voucher.type,
-        doneBy: voucher.doneBy,
-        paymentNumber: voucher.pmNumber,
-        details: formattedDetails,
-      };
-    });
-  }
-  async deletePaymentVoucher(id: number): Promise<void> {
-    // Find the payment voucher with its details
-    const paymentVoucher = await this.paymentVoucherRepository.findOne({
-      where: { id },
-      relations: ['details'],
-    });
-
-    if (!paymentVoucher) {
-      throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
-    }
-
-    try {
-      // Delete the associated details
-      if (paymentVoucher.details && paymentVoucher.details.length > 0) {
-        await this.paymentVoucherDetailRepository.remove(
-          paymentVoucher.details,
-        );
-      }
-
-      // Delete the payment voucher
-      await this.paymentVoucherRepository.delete(id);
-    } catch (error) {
-      console.error('Error deleting payment voucher:', error);
-      throw new error('Failed to delete payment voucher.');
-    }
+    return vouchers.map((v) => this.formatVoucher(v));
   }
 
-  async filterPaymentVouchers(
+  async getFiltered(
     filters: {
       supplierId?: number;
       date?: string;
       paymentType?: string;
-      pmNumber?: string;
-      exchangeRate?: number;
+      paymentNumber?: string;
       amount?: number;
       type?: string;
     },
     page: number = 1,
     limit: number = 10,
   ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
-    const queryBuilder = this.paymentVoucherRepository
+    const qb = this.paymentVoucherRepository
       .createQueryBuilder('voucher')
-      .leftJoinAndSelect('voucher.details', 'detail')
-      .leftJoinAndSelect('voucher.supplier', 'supplier');
+      .leftJoinAndSelect('voucher.supplier', 'supplier')
+      .leftJoinAndSelect('voucher.details', 'detail');
 
-    // Apply filters
-    if (filters.supplierId) {
-      queryBuilder.andWhere('voucher.supplierId = :supplierId', {
-        supplierId: filters.supplierId,
-      });
-    }
+    if (filters.supplierId)
+      qb.andWhere('voucher.supplierId = :supplierId', { supplierId: filters.supplierId });
+    if (filters.date)
+      qb.andWhere('DATE(voucher.date) = :date', { date: filters.date });
+    if (filters.paymentType)
+      qb.andWhere('voucher.paymentType = :paymentType', { paymentType: filters.paymentType });
+    if (filters.paymentNumber)
+      qb.andWhere('voucher.paymentNumber LIKE :paymentNumber', { paymentNumber: `%${filters.paymentNumber}%` });
+    if (filters.amount)
+      qb.andWhere('detail.amount = :amount', { amount: filters.amount });
+    if (filters.type)
+      qb.andWhere('voucher.type = :type', { type: filters.type });
 
-    if (filters.date) {
-      queryBuilder.andWhere('DATE(voucher.date) = :date', {
-        date: filters.date,
-      });
-    }
+    const total = await qb.getCount();
+    const data = await qb.skip((page - 1) * limit).take(limit).getMany();
 
-    if (filters.paymentType) {
-      queryBuilder.andWhere('voucher.paymentType = :paymentType', {
-        paymentType: filters.paymentType,
-      });
-    }
+    return { data: data.map((v) => this.formatVoucher(v)), total, page, limit };
+  }
 
-    if (filters.pmNumber) {
-      queryBuilder.andWhere('voucher.pmNumber LIKE :pmNumber', {
-        pmNumber: `%${filters.pmNumber}%`,
-      });
-    }
+  async createBulk(
+    transactions: {
+      supplierId: number;
+      date: string;
+      invoiceId: string;
+      paymentType: PaymentType;
+      type: VoucherType;
+      doneBy: string;
+      details: any[];
+    }[],
+  ): Promise<PaymentVoucher[]> {
+    const results: PaymentVoucher[] = [];
 
-    if (filters.exchangeRate) {
-      queryBuilder.andWhere('detail.exchangeRate = :exchangeRate', {
-        exchangeRate: filters.exchangeRate,
-      });
-    }
+    for (const tx of transactions) {
+      const supplier = await this.supplierRepository.findOne({ where: { id: tx.supplierId } });
+      if (!supplier)
+        throw new NotFoundException(`Supplier with ID ${tx.supplierId} not found.`);
 
-    if (filters.amount) {
-      queryBuilder.andWhere(
-        `
-        CASE
-          WHEN voucher.paymentType LIKE '%USD%' THEN detail.drUSD
-          WHEN voucher.paymentType LIKE '%LL%' THEN detail.drLL
-          ELSE 0
-        END = :amount
-      `,
-        { amount: filters.amount },
-      );
-    }
+      const paymentNumber = await this.getNextPaymentNumber(tx.type);
 
-    if (filters.type) {
-      queryBuilder.andWhere('voucher.type = :type', { type: filters.type });
-    }
-
-    // Pagination logic
-    const total = await queryBuilder.getCount();
-    const data = await queryBuilder
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getMany();
-
-    // Format the response
-    const formattedData = data.map((voucher) => {
-      const isUSD = voucher.paymentType.includes('USD');
-      const formattedDetails = voucher.details.map((detail) => {
-        const amount = isUSD ? detail.drUSD : detail.drLL;
-        const exchangeRate = Number(detail.exchangeRate || 1);
-        const amountExchanged = isUSD
-          ? Number(detail.drUSD || 0)
-          : Number(detail.drLL || 0) / exchangeRate;
-
-        return {
-          amount: amount,
-          currency: isUSD ? 'USD' : 'LL',
-          exchangeRate: exchangeRate.toFixed(2),
-          checkDueDate: detail.checkDueDate || null,
-          checkNumber: detail.checkNumber || null,
-          checkDate: detail.checkDate || null,
-          bankName: detail.bankName || null,
-          description: detail.description || null,
-          amountExchanged: amountExchanged.toFixed(2),
-        };
+      const voucher = this.paymentVoucherRepository.create({
+        supplier,
+        supplierId: supplier.id,
+        date: tx.date,
+        paymentNumber,
+        invoiceId: tx.invoiceId,
+        paymentType: tx.paymentType,
+        type: tx.type,
+        doneBy: tx.doneBy,
+        details: tx.details.map((d) => this.buildDetail(d)),
       });
 
-      return {
-        id: voucher.id,
-        supplierId: voucher.supplier.id,
-        supplierName: voucher.supplier.supplierName,
-        date: voucher.date,
-        invoiceId: voucher.invoiceId,
-        paymentType: voucher.paymentType,
-        type: voucher.type,
-        doneBy: voucher.doneBy,
-        paymentNumber: voucher.pmNumber,
-        details: formattedDetails,
-      };
+      results.push(await this.paymentVoucherRepository.save(voucher));
+    }
+
+    return results;
+  }
+
+  async update(
+    id: number,
+    updateData: {
+      supplierId?: number;
+      date?: string;
+      invoiceId?: string;
+      paymentType?: PaymentType;
+      type?: VoucherType;
+      doneBy?: string;
+      details?: any[];
+    },
+  ): Promise<PaymentVoucher> {
+    const voucher = await this.paymentVoucherRepository.findOne({
+      where: { id },
+      relations: ['supplier', 'details'],
     });
+    if (!voucher)
+      throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
 
-    return { data: formattedData, total, page, limit };
+    if (updateData.supplierId) {
+      const supplier = await this.supplierRepository.findOne({ where: { id: updateData.supplierId } });
+      if (!supplier)
+        throw new NotFoundException(`Supplier with ID ${updateData.supplierId} not found.`);
+      voucher.supplier = supplier;
+      voucher.supplierId = supplier.id;
+    }
+
+    if (updateData.date) voucher.date = updateData.date;
+    if (updateData.invoiceId) voucher.invoiceId = updateData.invoiceId;
+    if (updateData.paymentType) voucher.paymentType = updateData.paymentType;
+    if (updateData.type) voucher.type = updateData.type;
+    if (updateData.doneBy) voucher.doneBy = updateData.doneBy;
+
+    if (updateData.details) {
+      await this.paymentVoucherDetailRepository.remove(voucher.details);
+      voucher.details = updateData.details.map((d) => this.buildDetail(d));
+    }
+
+    return this.paymentVoucherRepository.save(voucher);
+  }
+
+  async remove(id: number): Promise<void> {
+    const voucher = await this.paymentVoucherRepository.findOne({
+      where: { id },
+      relations: ['details'],
+    });
+    if (!voucher)
+      throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
+
+    await this.paymentVoucherDetailRepository.remove(voucher.details);
+    await this.paymentVoucherRepository.delete(id);
   }
 }

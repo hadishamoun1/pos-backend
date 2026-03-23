@@ -5,99 +5,46 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
-import { Account } from '../account.entity';
 import { PaymentVoucher } from './paymentVoucher.entity';
+
+export type Currency = 'USD' | 'LL';
 
 @Entity('payment_voucher_details')
 export class PaymentVoucherDetail {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @ManyToOne(() => PaymentVoucher, (paymentVoucher) => paymentVoucher.details, {
-    onDelete: 'CASCADE',
-  })
-  @JoinColumn({ name: 'paymentVoucherId' }) // Link details to payment voucher
-  paymentVoucher: PaymentVoucher;
+  @Column({ type: 'decimal', precision: 20, scale: 2 })
+  amount: number;
 
-  @ManyToOne(() => Account, { nullable: true })
-  @JoinColumn({ name: 'accountId' }) // Link to specific account
-  account: Account;
+  @Column({ type: 'varchar', length: 10 })
+  currency: Currency;
 
-  @Column({ type: 'date', nullable: true })
-  checkDate: Date;
+  @Column({ type: 'decimal', precision: 20, scale: 2, default: 1 })
+  exchangeRate: number;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
+  amountExchanged: number;
+
+  @Column({ type: 'varchar', nullable: true })
+  checkNumber: string;
 
   @Column({ type: 'varchar', nullable: true })
   bankName: string;
 
-  @Column({ type: 'varchar', nullable: true })
-  checkNumber: string;
-  
   @Column({ type: 'date', nullable: true })
-  checkDueDate: Date;
+  checkDate: string;
 
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: 'date', nullable: true })
+  checkDueDate: string;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
   description: string;
 
-  @Column({
-    type: 'decimal',
-    precision: 20,
-    scale: 2,
-    default: 0,
-    nullable: true,
-  })
-  dr: number;
+  @Column({ nullable: true })
+  paymentVoucherId: number;
 
-  @Column({
-    type: 'decimal',
-    precision: 20,
-    scale: 2,
-    default: 0,
-    nullable: true,
-  })
-  drUSD: number;
-
-  @Column({
-    type: 'decimal',
-    precision: 20,
-    scale: 2,
-    default: 0,
-    nullable: true,
-  })
-  drLL: number;
-
-  @Column({
-    type: 'decimal',
-    precision: 20,
-    scale: 2,
-    default: 0,
-    nullable: true,
-  })
-  cr: number;
-
-  @Column({
-    type: 'decimal',
-    precision: 20,
-    scale: 2,
-    default: 0,
-    nullable: true,
-  })
-  crUSD: number;
-
-  @Column({
-    type: 'decimal',
-    precision: 20,
-    scale: 2,
-    default: 0,
-    nullable: true,
-  })
-  crLL: number;
-
-  @Column({
-    type: 'decimal',
-    precision: 20,
-    scale: 2,
-    default: 0,
-    nullable: true,
-  })
-  exchangeRate: number;
+  @ManyToOne(() => PaymentVoucher, (voucher) => voucher.details, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'paymentVoucherId' })
+  paymentVoucher: PaymentVoucher;
 }
