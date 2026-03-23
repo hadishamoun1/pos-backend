@@ -4,12 +4,14 @@ import {
   Column,
   ManyToOne,
   OneToMany,
+  OneToOne,
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import { Supplier } from '../supplier.entity';
 import { PaymentVoucherDetail } from './paymentVoucherDetails.entity';
+import { JournalVoucher } from './journalVoucher.entity';
 
 export type PaymentType = 'Cash USD' | 'Cash LL' | 'Check USD' | 'Check LL';
 export type VoucherType = 'S' | 'G';
@@ -54,4 +56,12 @@ export class PaymentVoucher {
     cascade: true,
   })
   details: PaymentVoucherDetail[];
+
+  // FK column stored on payment_vouchers table
+  @Column({ nullable: true })
+  journalVoucherId: number;
+
+  @OneToOne(() => JournalVoucher, (jv) => jv.paymentVoucher, { nullable: true })
+  @JoinColumn({ name: 'journalVoucherId' })
+  journalVoucher: JournalVoucher;
 }

@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   OneToMany,
+  OneToOne,
   JoinColumn,
 } from 'typeorm';
 import { Account } from '../account.entity';
@@ -11,52 +12,53 @@ import { CurrencyRate } from '../currencyRate.entity';
 import { JournalVoucherDetail } from './journalVoucherDetails.entity';
 import { PurchaseInvoice } from '../Purchase-Invoice/purchase-invoice.entity';
 import { ReceiptEntry } from '../recievables.entities';
+import { PaymentVoucher } from './paymentVoucher.entity';
 
 @Entity('journal_vouchers')
 export class JournalVoucher {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'date',nullable:true })
+  @Column({ type: 'date', nullable: true })
   date: Date;
 
   @Column({ type: 'varchar', length: 50, unique: true })
   jvNumber: string;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2,default:0 })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalDr: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2,default:0  })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalDrUSD: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2,default:0  })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalDrLL: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2,default:0  })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalDrOFR: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2,default:0  })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalDrUSDOFR: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2,default:0  })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalDrLLOFR: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2 ,default:0 })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalCr: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2,default:0  })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalCrUSD: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2 ,default:0 })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalCrLL: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2 ,default:0 })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalCrOFR: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2 ,default:0 })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalCrUSDOFR: number;
 
-  @Column({ type: 'decimal', precision: 50, scale: 2 ,default:0 })
+  @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   totalCrLLOFR: number;
 
   @Column({ type: 'varchar', length: 3 })
@@ -82,10 +84,17 @@ export class JournalVoucher {
   @Column({ nullable: true })
   purchaseInvoiceId: number;
 
-  // Inverse of ReceiptEntry.journalVoucher
   @OneToMany(() => ReceiptEntry, (entry) => entry.journalVoucher)
   receiptEntries: ReceiptEntry[];
 
   @Column({ nullable: true })
   receiptEntryId: number;
+
+  // Back-reference from PaymentVoucher
+  @Column({ nullable: true })
+  paymentVoucherId: number;
+
+  @OneToOne(() => PaymentVoucher, (pv) => pv.journalVoucher, { nullable: true })
+  @JoinColumn({ name: 'paymentVoucherId' })
+  paymentVoucher: PaymentVoucher;
 }

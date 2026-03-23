@@ -251,10 +251,11 @@ async createJournalVoucher(data: {
     const journalVoucher = await this.journalVoucherRepository.findOne({
       where: { id },
       relations: [
-        'details', // Include details
-        'details.account', // Include the related account for each detail
+        'details',
+        'details.account',
         'details.customer',
         'details.supplier',
+        'paymentVoucher', // linked payment voucher
       ],
     });
 
@@ -262,7 +263,6 @@ async createJournalVoucher(data: {
       throw new NotFoundException(`Journal Voucher with ID ${id} not found.`);
     }
 
-    // Map through the details to add accountNumber and accountName
     journalVoucher.details = journalVoucher.details.map((detail) => ({
       ...detail,
       accountNumber: detail.account?.accountNumber || null,
@@ -273,10 +273,12 @@ async createJournalVoucher(data: {
         null,
     }));
 
+    // Attach paymentVoucherId at the top level for easy access
+    (journalVoucher as any).paymentVoucherId =
+      journalVoucher.paymentVoucher?.id ?? null;
+
     return journalVoucher;
   }
-
- 
 
   async deleteJournalVoucher(id: number): Promise<void> {
     const journalVoucher = await this.getJournalVoucherById(id);
