@@ -546,8 +546,8 @@ async getVoucherSummary(params?: {
 async getCustomerStatementOFR(params: {
   customerId: number;
   type?: "S" | "G" | "ALL";
-  from?: string; // 'YYYY-MM-DD'
-  to?: string; // 'YYYY-MM-DD'
+  from?: string;
+  to?: string;
 }) {
   const { customerId, type = "ALL", from, to } = params;
 
@@ -561,8 +561,8 @@ async getCustomerStatementOFR(params: {
     return `${y}-${m}-${day}`;
   };
 
-  const fromStart = from ? ymdToStart(from) : null; // inclusive
-  const toNext = to ? ymdToStart(nextYMD(to)) : null; // exclusive
+  const fromStart = from ? ymdToStart(from) : null;
+  const toNext = to ? ymdToStart(nextYMD(to)) : null;
 
   const customer = await this.customerRepo.findOne({
     where: { id: customerId },
@@ -580,21 +580,11 @@ async getCustomerStatementOFR(params: {
 
   const statementCurrency = "USD" as const;
 
-  const isOfrRow = (jv: any, docNbr?: string | null) => {
-    const jvType = String(jv?.jvType ?? "").trim().toUpperCase();
+  const isOfrRow = (jv: any) => {
     const jvNumber = String(jv?.jvNumber ?? "").trim().toUpperCase();
-    const doc = String(docNbr ?? "").trim().toUpperCase();
-
-    if (jvType === "G") return true;
-    if (jvNumber.startsWith("JVG") || jvNumber.includes("JVG")) return true;
-
-    if (doc.startsWith("RG")) return true;
-    if (doc.startsWith("RVG")) return true;
-
-    return false;
+    return jvNumber.includes("G");
   };
 
-  // USD-only columns
   const getColsForRow = (useOfr: boolean) => {
     return useOfr
       ? ({
@@ -607,24 +597,15 @@ async getCustomerStatementOFR(params: {
         });
   };
 
-  // Type filter: if S => include S + RVR
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
     if (type === "G") {
-      qb.andWhere(
-        `(
-          UPPER(jv.jvNumber) LIKE 'JVG%'
-          OR UPPER(TRIM(jv.jvType)) = 'G'
-          OR (d.docNbr IS NOT NULL AND (
-            UPPER(TRIM(d.docNbr)) LIKE 'RG%'
-            OR UPPER(TRIM(d.docNbr)) LIKE 'RVG%'
-          ))
-        )`
-      );
+      qb.andWhere(`UPPER(jv.jvNumber) LIKE '%G%'`);
     } else if (type === "S") {
-      qb.andWhere(`UPPER(TRIM(jv.jvType)) IN ('S','RVR')`);
+      qb.andWhere(`UPPER(jv.jvNumber) NOT LIKE '%G%'`);
     }
+    // ALL: no filter
     return qb;
   };
 
@@ -660,7 +641,7 @@ async getCustomerStatementOFR(params: {
     let openingCr = 0;
 
     for (const r of beforeRows) {
-      const useOfr = isOfrRow(r.journalVoucher, r.docNbr);
+      const useOfr = isOfrRow(r.journalVoucher);
       const { drCol, crCol } = getColsForRow(useOfr);
       openingDr += Number((r as any)[drCol] || 0);
       openingCr += Number((r as any)[crCol] || 0);
@@ -676,19 +657,17 @@ async getCustomerStatementOFR(params: {
     Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
 
   const items = rows.map((r) => {
-    const useOfr = isOfrRow(r.journalVoucher, r.docNbr);
+    const useOfr = isOfrRow(r.journalVoucher);
     const { drCol, crCol } = getColsForRow(useOfr);
 
     const debit = Number((r as any)[drCol] || 0);
     const credit = Number((r as any)[crCol] || 0);
 
-    // ✅ Build description with LL amount for "دفعة نقدا LL"
     let description = (r.description ?? null) as string | null;
     if (description && description.includes("دفعة نقدا LL")) {
       const llDrCol = useOfr ? "drLLOFR" : "drLL";
       const llCrCol = useOfr ? "crLLOFR" : "crLL";
 
-      // pick LL amount based on which side this row is (dr or cr)
       const llAmount =
         debit > 0
           ? Number((r as any)[llDrCol] || 0)
