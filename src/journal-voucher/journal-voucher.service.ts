@@ -724,13 +724,12 @@ async getCustomerStatementOFR(params: {
 
 
 async getCustomerBalancesReport(params: {
-  to?: string; // 'YYYY-MM-DD'
+  to?: string;
   type?: 'S' | 'G' | 'ALL';
-  minBalance?: number; // NEW: minimum balance filter
+  minBalance?: number;
 }) {
   const { to, type = 'ALL', minBalance } = params;
 
-  // Helper: expand YMD to full-day datetime
   const ymdToStart = (ymd: string) => `${ymd} 00:00:00`;
   const nextYMD = (ymd: string) => {
     const d = new Date(`${ymd}T00:00:00`);
@@ -741,28 +740,27 @@ async getCustomerBalancesReport(params: {
     return `${y}-${m}-${day}`;
   };
 
-  // Default to today if not provided
   const today = new Date();
   const todayYMD = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const toDate = to || todayYMD;
-  const toNext = ymdToStart(nextYMD(toDate)); // exclusive end
+  const toNext = ymdToStart(nextYMD(toDate));
 
-  // Type filter: S includes everything except G; G is only G; ALL is everything
   const applyTypeFilter = (
     qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
   ) => {
-    if (type === 'S') {
-      // S = Sales-related: Include S, RVR, RTN, SR, etc. - everything EXCEPT G
-      qb.andWhere('jv.jvType != :gType', { gType: 'G' });
-    } else if (type === 'G') {
-      // G = Offers only
-      qb.andWhere('jv.jvType = :gType', { gType: 'G' });
+    if (type === 'G') {
+      qb.andWhere(`UPPER(jv.jvNumber) LIKE '%G%'`);
+    } else if (type === 'S') {
+      qb.andWhere(`UPPER(jv.jvNumber) NOT LIKE '%G%'`);
     }
-    // type === 'ALL' = no filter, include everything
+    // ALL: no filter
     return qb;
   };
 
-  // Get all customers
+  const isOfrRow = (jvNumber?: string | null): boolean => {
+    return String(jvNumber ?? '').trim().toUpperCase().includes('G');
+  };
+
   const customers = await this.customerRepo.find({
     relations: ['currency'],
     order: { customerName: 'ASC' },
@@ -773,7 +771,6 @@ async getCustomerBalancesReport(params: {
   for (const customer of customers) {
     const customerId = customer.id;
 
-    // Determine currency
     let currencyCode =
       (customer as any)?.currency?.code as 'USD' | 'LL' | 'EURO' | 'BASE' | undefined;
     if (!currencyCode) {
@@ -783,7 +780,6 @@ async getCustomerBalancesReport(params: {
     const customerAccountNumber: string | null =
       (customer as any)?.customerAccountNumber ?? (customer as any)?.accountNumber ?? null;
 
-    // Column maps for OFR (used by G type)
     const ofrColMap = {
       USD: { dr: 'drUSDOFR', cr: 'crUSDOFR' },
       LL: { dr: 'drLLOFR', cr: 'crLLOFR' },
@@ -791,7 +787,6 @@ async getCustomerBalancesReport(params: {
       BASE: { dr: 'drOFR', cr: 'crOFR' },
     } as const;
 
-    // Column maps for base amounts (used by S, RVR, RTN, SR)
     const baseColMap = {
       USD: { dr: 'drUSD', cr: 'crUSD' },
       LL: { dr: 'drLL', cr: 'crLL' },
@@ -799,10 +794,8 @@ async getCustomerBalancesReport(params: {
       BASE: { dr: 'dr', cr: 'cr' },
     } as const;
 
-    type RowKind = 'S' | 'G';
-
-    const getColsFor = (rowKind: RowKind) => {
-      if (rowKind === 'G') {
+    const getColsFor = (useOfr: boolean) => {
+      if (useOfr) {
         const p = ofrColMap[currencyCode] ?? ofrColMap.USD;
         return {
           drCol: p.dr as keyof JournalVoucherDetail,
@@ -816,43 +809,32 @@ async getCustomerBalancesReport(params: {
       };
     };
 
-    // Determine which columns to use based on jvType
-    const getRowKindFromJV = (jvType?: string | null): RowKind => {
-      const t = String(jvType ?? '').trim().toUpperCase();
-      if (t === 'G') return 'G'; // Offers use OFR columns
-      return 'S'; // S, RVR, RTN, SR use base columns
-    };
-
-    // Query all transactions up to toDate
     const qb = this.journalVoucherDetailRepository
       .createQueryBuilder('d')
       .leftJoinAndSelect('d.journalVoucher', 'jv')
       .where('d.customerId = :customerId', { customerId })
-      .andWhere('jv.date < :toNext', { toNext }); // exclusive end
+      .andWhere('jv.date < :toNext', { toNext });
 
     applyTypeFilter(qb);
 
     const rows = await qb.getMany();
 
-    // Calculate balance
     let totalDr = 0;
     let totalCr = 0;
 
     for (const r of rows) {
-      const rowKind = getRowKindFromJV(r.journalVoucher?.jvType ?? null);
-      const { drCol, crCol } = getColsFor(rowKind);
+      const useOfr = isOfrRow(r.journalVoucher?.jvNumber);
+      const { drCol, crCol } = getColsFor(useOfr);
 
       totalDr += Number((r as any)[drCol] || 0);
       totalCr += Number((r as any)[crCol] || 0);
     }
 
     const balance = totalDr - totalCr;
-    const roundedBalance = Math.round(balance * 100) / 100; // round to 2 decimals
+    const roundedBalance = Math.round(balance * 100) / 100;
 
-    // Apply minBalance filter if provided
     const meetsBalanceFilter = minBalance === undefined || roundedBalance >= minBalance;
 
-    // Only include customers with non-zero balance or transactions AND meets balance filter
     if ((rows.length > 0 || balance !== 0) && meetsBalanceFilter) {
       results.push({
         customerId,
@@ -865,28 +847,24 @@ async getCustomerBalancesReport(params: {
     }
   }
 
-  // ✅ Sort by account number (smallest to greatest)
   results.sort((a, b) => {
     const accA = a.customerAccountNumber || '';
     const accB = b.customerAccountNumber || '';
-    
-    // Try to parse as numbers for proper numeric sorting
+
     const numA = parseInt(accA, 10);
     const numB = parseInt(accB, 10);
-    
-    // If both are valid numbers, compare numerically
+
     if (!isNaN(numA) && !isNaN(numB)) {
       return numA - numB;
     }
-    
-    // Otherwise, fall back to string comparison
+
     return accA.localeCompare(accB, undefined, { numeric: true, sensitivity: 'base' });
   });
 
   return {
     reportDate: toDate,
     type,
-    minBalance, // Include in response so frontend knows what filter was applied
+    minBalance,
     customers: results,
     summary: {
       totalCustomers: results.length,
@@ -907,7 +885,6 @@ async getAccountStatementOFR(params: {
 }) {
   const { accountId, customerId, supplierId, type = 'ALL', from, to } = params;
 
-  // ✅ pick exactly one target
   const targets = [
     accountId != null ? 'account' : null,
     customerId != null ? 'customer' : null,
@@ -918,7 +895,6 @@ async getAccountStatementOFR(params: {
     throw new BadRequestException('Provide exactly one of: accountId, customerId, supplierId');
   }
 
-  // 1) Load metadata based on target
   let meta: any = {};
   if (accountId != null) {
     const account = await this.accountRepository.findOne({
@@ -934,7 +910,7 @@ async getAccountStatementOFR(params: {
       accountName: (account as any).accountName ?? (account as any).arabicAccountName,
     };
   } else if (customerId != null) {
-const customer = await this.customerRepo.findOne({ where: { id: customerId } });
+    const customer = await this.customerRepo.findOne({ where: { id: customerId } });
     if (!customer) throw new NotFoundException(`Customer ${customerId} not found`);
 
     meta = {
@@ -944,7 +920,7 @@ const customer = await this.customerRepo.findOne({ where: { id: customerId } });
       accountName: customer.customerName,
     };
   } else if (supplierId != null) {
-const supplier = await this.supplierRepo.findOne({ where: { id: supplierId } });
+    const supplier = await this.supplierRepo.findOne({ where: { id: supplierId } });
     if (!supplier) throw new NotFoundException(`Supplier ${supplierId} not found`);
 
     meta = {
@@ -955,26 +931,23 @@ const supplier = await this.supplierRepo.findOne({ where: { id: supplierId } });
     };
   }
 
-  // Helper: normalize jvType -> 'S' | 'G'
-  const rowKind = (r: JournalVoucherDetail): 'S' | 'G' => {
-    const t = (r.journalVoucher?.jvType ?? '').trim().toUpperCase();
-    return t === 'G' ? 'G' : 'S';
+  // Determine if row is OFR (G) based on jvNumber containing 'G'
+  const isOfrRow = (r: JournalVoucherDetail): boolean => {
+    return String(r.journalVoucher?.jvNumber ?? '').trim().toUpperCase().includes('G');
   };
 
-  // Pick numbers based on jvType
+  const rowKind = (r: JournalVoucherDetail): 'S' | 'G' => {
+    return isOfrRow(r) ? 'G' : 'S';
+  };
+
   const amounts = (r: JournalVoucherDetail) => {
     const kind = rowKind(r);
     if (kind === 'G') {
-      const debit  = Number(r.drUSDOFR || 0);
-      const credit = Number(r.crUSDOFR || 0);
-      return { kind, debit, credit };
+      return { kind, debit: Number(r.drUSDOFR || 0), credit: Number(r.crUSDOFR || 0) };
     }
-    const debit  = Number(r.drUSD || 0);
-    const credit = Number(r.crUSD || 0);
-    return { kind, debit, credit };
+    return { kind, debit: Number(r.drUSD || 0), credit: Number(r.crUSD || 0) };
   };
 
-  // ✅ build base WHERE depending on target kind
   const applyTargetWhere = (qb: any) => {
     if (accountId != null) qb.where('d.accountId = :id', { id: accountId });
     if (customerId != null) qb.where('d.customerId = :id', { id: customerId });
@@ -982,7 +955,14 @@ const supplier = await this.supplierRepo.findOne({ where: { id: supplierId } });
     return qb;
   };
 
-  // 2) Period query
+  const applyTypeFilter = (qb: any) => {
+    if (type === 'G') qb.andWhere(`UPPER(jv.jvNumber) LIKE '%G%'`);
+    if (type === 'S') qb.andWhere(`UPPER(jv.jvNumber) NOT LIKE '%G%'`);
+    // ALL: no filter
+    return qb;
+  };
+
+  // Period query
   const qb = applyTargetWhere(
     this.journalVoucherDetailRepository
       .createQueryBuilder('d')
@@ -992,13 +972,12 @@ const supplier = await this.supplierRepo.findOne({ where: { id: supplierId } });
   if (from) qb.andWhere('jv.date >= :from', { from });
   if (to)   qb.andWhere('jv.date <= :to',   { to });
 
-  if (type === 'S') qb.andWhere('jv.jvType = :tt', { tt: 'S' });
-  if (type === 'G') qb.andWhere('jv.jvType = :tt', { tt: 'G' });
-
+  applyTypeFilter(qb);
   qb.orderBy('jv.date', 'ASC').addOrderBy('d.id', 'ASC');
+
   const periodRows = await qb.getMany();
 
-  // 3) Opening balance (before "from")
+  // Opening balance (before "from")
   let openingBalance = 0;
   if (from) {
     const beforeQb = applyTargetWhere(
@@ -1007,33 +986,24 @@ const supplier = await this.supplierRepo.findOne({ where: { id: supplierId } });
         .leftJoin('d.journalVoucher', 'jv'),
     ).andWhere('jv.date < :from', { from });
 
-    if (type === 'S') beforeQb.andWhere('jv.jvType = :tt', { tt: 'S' });
-    if (type === 'G') beforeQb.andWhere('jv.jvType = :tt', { tt: 'G' });
+    applyTypeFilter(beforeQb);
 
     const beforeRows = await beforeQb.getMany();
 
     let dr = 0, cr = 0;
     for (const r of beforeRows) {
-      const { kind, debit, credit } = amounts(r);
-      if (type === 'ALL' || type === kind) {
-        dr += debit;
-        cr += credit;
-      }
+      const { debit, credit } = amounts(r);
+      dr += debit;
+      cr += credit;
     }
     openingBalance = dr - cr;
   }
 
-  // 4) Items + running
+  // Items + running balance
   let running = openingBalance;
 
-  const allItems = periodRows.map((r) => {
+  const items = periodRows.map((r) => {
     const { kind, debit, credit } = amounts(r);
-    return { r, kind, debit, credit };
-  });
-
-  const filtered = (type === 'ALL') ? allItems : allItems.filter(x => x.kind === type);
-
-  const items = filtered.map(({ r, kind, debit, credit }) => {
     running += debit - credit;
     return {
       journalVoucherId: r.journalVoucherId,
