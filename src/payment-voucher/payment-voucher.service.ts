@@ -454,21 +454,57 @@ export class PaymentVoucherService {
 
   // ── DELETE /:id ───────────────────────────────────────────────────────────────
 
-  async remove(id: number): Promise<void> {
-    const voucher = await this.paymentVoucherRepository.findOne({
+async remove(id: number): Promise<void> {
+  await this.paymentVoucherRepository.manager.transaction(async (manager) => {
+    const voucher = await manager.findOne(PaymentVoucher, {
       where: { id },
       relations: ['details', 'journalVoucher', 'journalVoucher.details'],
     });
-    if (!voucher)
-      throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
 
-    const jv = voucher.journalVoucher;
-    await this.paymentVoucherDetailRepository.remove(voucher.details);
-    await this.paymentVoucherRepository.delete(id);
+    if (!voucher) {
+      throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
+    }
+
+    const jv =
+      voucher.journalVoucher ||
+      (await manager.findOne(JournalVoucher, {
+        where: { paymentVoucherId: id },
+        relations: ['details'],
+      }));
 
     if (jv) {
-      await this.journalVoucherDetailRepository.remove(jv.details);
-      await this.journalVoucherRepository.delete(jv.id);
+      // 1) Break payment_vouchers.journalVoucherId -> journal_vouchers.id
+      await manager
+        .createQueryBuilder()
+        .update(PaymentVoucher)
+        .set({ journalVoucher: null as any })
+        .where('id = :id', { id: voucher.id })
+        .execute();
+
+      // 2) Break journal_vouchers.paymentVoucherId -> payment_vouchers.id
+      await manager
+        .createQueryBuilder()
+        .update(JournalVoucher)
+        .set({ paymentVoucherId: null })
+        .where('id = :id', { id: jv.id })
+        .execute();
+
+      // 3) Delete JV details
+      if (jv.details?.length) {
+        await manager.remove(JournalVoucherDetail, jv.details);
+      }
+
+      // 4) Delete JV
+      await manager.delete(JournalVoucher, jv.id);
     }
-  }
+
+    // 5) Delete payment voucher details
+    if (voucher.details?.length) {
+      await manager.remove(PaymentVoucherDetail, voucher.details);
+    }
+
+    // 6) Delete payment voucher
+    await manager.delete(PaymentVoucher, voucher.id);
+  });
+}
 }
