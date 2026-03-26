@@ -401,7 +401,7 @@ async getFilteredActivity(query: any): Promise<{
   }
 
   /* ───────────────── FILTERS ───────────────── */
-
+addStringFilter("itemNumber", "itemDesc.itemNumber");
   addStringFilter("category", "itemDesc.categoryName");
   addStringFilter("subCategory", "itemDesc.subCategory");
   addStringFilter("color", "itemDesc.colorName");
@@ -643,7 +643,7 @@ async getFilteredActivity(query: any): Promise<{
       // ✅ ONLY dateForEachInvoice
       invoiceDate: dateRaw ? new Date(dateRaw).toISOString().slice(0, 10) : "—",
       invoiceNumber,
-
+      ItemNumber: desc?.itemNumber ?? "—",
       category: desc?.categoryName ?? null,
       subCategory: desc?.subCategory ?? null,
       color: desc?.colorName ?? null,
