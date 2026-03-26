@@ -161,6 +161,7 @@ async getActivity(
     averageCostC: number | null;
     averageCostCVM: number | null;
     averageCostVM: number | null;
+    
   }>;
   totals: {
     totalQuantity: number;
@@ -261,6 +262,7 @@ async getActivity(
             subCategory: desc.subCategory,
             colorName: desc.colorName,
             designName: desc.designName,
+            itemNumber: desc.itemNumber,
           }
         : null,
 
