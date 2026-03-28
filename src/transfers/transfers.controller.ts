@@ -1,5 +1,6 @@
 // src/transfers/transfers.controller.ts
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -101,6 +102,37 @@ export class TransfersController {
   findOne(@Param('id', ParseIntPipe) id: number): Promise<Transfer> {
     return this.svc.findOne(id);
   }
+
+  // GET /transfers/v1/invoice-cuts
+// Returns invoice items where a cut was made (box/sheet only)
+// Query params: page, limit, q, status (all|pending|resolved)
+@Get('v1/invoice-cuts')
+@RequirePerms('transfers.view')
+async getInvoiceCuts(@Query() query: any) {
+  return this.svc.getInvoiceCuts({
+    page:   query.page,
+    limit:  query.limit,
+    q:      query.q,
+    status: query.status,
+  });
+}
+@Post('v1/cuts/trash')
+@RequirePerms('cuts.view')
+async trashCutRemainder(
+  @Body() body: { invoiceItemId: number },
+) {
+  const { invoiceItemId } = body ?? {};
+ 
+  if (!invoiceItemId || !Number.isFinite(Number(invoiceItemId))) {
+    throw new BadRequestException(
+      'invoiceItemId is required and must be a valid number',
+    );
+  }
+ 
+  return this.svc.trashCutRemainder(Number(invoiceItemId));
+}
+
+
 
   @Patch(':id')
   @RequirePerms('transfers.update')

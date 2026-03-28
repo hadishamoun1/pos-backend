@@ -2044,4 +2044,369 @@ if ((transfer as any).location === 'FJ') {
       }
     }
   }
+
+
+
+
+async getInvoiceCuts(opts?: {
+  page?: number;
+  limit?: number;
+  q?: string;
+  status?: 'all' | 'pending' | 'resolved';
+}) {
+  const page   = Math.max(1, Number(opts?.page ?? 1));
+  const limit  = Math.min(200, Math.max(1, Number(opts?.limit ?? 50)));
+  const start  = (page - 1) * limit;
+  const q      = String(opts?.q ?? '').trim();
+  const status = String(opts?.status ?? 'all').toLowerCase();
+
+  const tolLenWid = 0.001;
+  const tolSpb    = 0.1;
+
+  // ── Base query ──────────────────────────────────────────────────────
+  const qb = this.invoiceItemRepo
+    .createQueryBuilder('ii')
+    .innerJoin('ii.invoice', 'inv')
+    .innerJoin('inv.customer', 'cust')
+    .innerJoin('ii.itemVariant', 'v')
+    .innerJoin('v.thickness', 'th')
+    .innerJoin('th.item', 'item')
+    // ✅ Only box and sheet — sqm not needed
+    .where('item.type IN (:...types)', { types: ['box', 'sheet'] })
+    // ✅ Must have a variant linked
+    .andWhere('ii.itemVariantId IS NOT NULL')
+    // ✅ At least one dimension differs from the original variant
+    .andWhere(
+      `(
+        (ii.length IS NOT NULL AND ABS(ii.length - v.length) > :tolLenWid)
+        OR
+        (ii.width IS NOT NULL AND ABS(ii.width - v.width) > :tolLenWid)
+        OR
+        (item.type = 'box' AND ii.sheetsPerBox IS NOT NULL
+          AND ABS(ii.sheetsPerBox - v.sheetsPerBox) > :tolSpb)
+      )`,
+      { tolLenWid, tolSpb },
+    );
+
+  // ── Status filter ────────────────────────────────────────────────────
+  if (status === 'pending') {
+    qb.andWhere(
+      '(ii.sqmCutResolved IS NULL OR ii.sqmCutResolved = :f)',
+      { f: false },
+    );
+  } else if (status === 'resolved') {
+    qb.andWhere('ii.sqmCutResolved = :t', { t: true });
+  }
+
+  // ── Search ───────────────────────────────────────────────────────────
+  if (q) {
+    qb.andWhere(
+      `(
+        inv.invoiceNumber       LIKE :q
+        OR CAST(inv.id AS CHAR) LIKE :q
+        OR cust.customerName    LIKE :q
+        OR item.itemName        LIKE :q
+        OR v.origin             LIKE :q
+        OR CAST(ii.id AS CHAR)  LIKE :q
+      )`,
+      { q: `%${q}%` },
+    );
+  }
+
+  // ── Count ─────────────────────────────────────────────────────────────
+  const totalRow = await qb
+    .clone()
+    .select('COUNT(ii.id)', 'cnt')
+    .getRawOne<{ cnt: string }>();
+  const total = Number(totalRow?.cnt ?? 0);
+
+  // ── Fetch rows ────────────────────────────────────────────────────────
+  const rows = await qb
+    .clone()
+    .select([
+      'ii.id              AS invoiceItemId',
+      'ii.invoiceId       AS invoiceId',
+      'inv.invoiceNumber  AS invoiceNumber',
+      'inv.date           AS invoiceDate',
+      'cust.customerName  AS customerName',
+      'item.itemName      AS itemName',
+      'item.type          AS itemType',
+      'v.id               AS itemVariantId',
+      'v.origin           AS origin',
+      'th.thickness       AS thickness',
+      // snapshot (what was sold — cut dimensions)
+      'ii.length          AS snapLength',
+      'ii.width           AS snapWidth',
+      'ii.sheetsPerBox    AS snapSpb',
+      // original variant dims
+      'v.length           AS origLength',
+      'v.width            AS origWidth',
+      'v.sheetsPerBox     AS origSpb',
+      // sold totals
+      'ii.sqm             AS soldSqm',
+      'ii.quantity        AS soldQty',
+      'ii.itemBatchId     AS itemBatchId',
+      // ✅ resolved flag
+      'ii.sqmCutResolved  AS sqmCutResolved',
+    ])
+    .orderBy('inv.date', 'DESC')
+    .addOrderBy('inv.id',  'DESC')
+    .addOrderBy('ii.id',   'DESC')
+    .offset(start)
+    .limit(limit)
+    .getRawMany<any>();
+
+  // ── Map rows ──────────────────────────────────────────────────────────
+  const num = (v: any): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const data = rows.map((r) => {
+    const snapLength = num(r.snapLength);
+    const snapWidth  = num(r.snapWidth);
+    const snapSpb    = r.snapSpb != null ? num(r.snapSpb) : null;
+
+    const origLength = num(r.origLength);
+    const origWidth  = num(r.origWidth);
+    const origSpb    = num(r.origSpb);
+
+    const itemType = String(r.itemType ?? '').toLowerCase();
+
+    // ── What changed ──────────────────────────────────────────────────
+    const changed = {
+      length:       Math.abs(snapLength - origLength) > tolLenWid,
+      width:        Math.abs(snapWidth  - origWidth)  > tolLenWid,
+      sheetsPerBox: itemType === 'box' && snapSpb != null
+                      ? Math.abs(snapSpb - origSpb) > tolSpb
+                      : false,
+    };
+
+    // ── Remaining SQM ─────────────────────────────────────────────────
+    const origSqmPerSheet  = (origLength * origWidth) / 10000;
+    const origSqmPerUnit   = itemType === 'box'
+      ? origSqmPerSheet * origSpb
+      : origSqmPerSheet;
+
+    const soldQty      = num(r.soldQty);
+    const soldSqm      = num(r.soldSqm);
+    const origTotalSqm = origSqmPerUnit * soldQty;
+    const remainingSqm = Number(Math.max(0, origTotalSqm - soldSqm).toFixed(4));
+
+    // ✅ sqmCutResolved — MySQL returns 0/1, normalize to boolean
+    const sqmCutResolved =
+      r.sqmCutResolved === 1    ||
+      r.sqmCutResolved === '1'  ||
+      r.sqmCutResolved === true;
+
+    return {
+      invoiceItemId:  Number(r.invoiceItemId),
+      invoiceId:      Number(r.invoiceId),
+      invoiceNumber:  r.invoiceNumber  ?? null,
+      invoiceDate:    r.invoiceDate    ?? null,
+      customerName:   r.customerName   ?? null,
+      itemName:       r.itemName       ?? null,
+      itemType,
+      itemVariantId:  Number(r.itemVariantId),
+      itemBatchId:    r.itemBatchId ? Number(r.itemBatchId) : null,
+      origin:         r.origin         ?? null,
+      thickness:      num(r.thickness),
+
+      sold: {
+        sqm:      soldSqm,
+        quantity: soldQty,
+      },
+
+      snapshotDims: {
+        length:       snapLength,
+        width:        snapWidth,
+        sheetsPerBox: snapSpb,
+      },
+
+      originalDims: {
+        length:       origLength,
+        width:        origWidth,
+        sheetsPerBox: origSpb,
+      },
+
+      changed,
+      remainingSqm,
+      sqmCutResolved,  // ✅ now included
+    };
+  });
+
+  return {
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
+    hasMore:    page * limit < total,
+    data,
+  };
+}
+
+
+async trashCutRemainder(invoiceItemId: number): Promise<{
+  ok: boolean;
+  transferId: number;
+  transferNumber: string;
+  remainingSqm: number;
+}> {
+  const result = await this.transfersRepo.manager.transaction(async (manager) => {
+ 
+    // ── 1) Load InvoiceItem with all relations we need ──────────────────
+    const ii = await manager.getRepository(InvoiceItem).findOne({
+      where: { id: invoiceItemId } as any,
+      relations: {
+        invoice: true,
+        itemVariant: { thickness: { item: true } },
+        itemBatch: true,
+      } as any,
+    });
+ 
+    if (!ii) throw new NotFoundException(`InvoiceItem ${invoiceItemId} not found`);
+ 
+    // ── 2) Guard: already resolved ────────────────────────────────────
+    if ((ii as any).sqmCutResolved) {
+      throw new BadRequestException(
+        `InvoiceItem ${invoiceItemId} has already been resolved (sqmCutResolved = true)`,
+      );
+    }
+ 
+    const variant: any = (ii as any).itemVariant;
+    const thickness: any = variant?.thickness;
+    const item: any = thickness?.item;
+    const batch: any = (ii as any).itemBatch;
+ 
+    if (!variant || !item || !batch) {
+      throw new NotFoundException(
+        `InvoiceItem ${invoiceItemId} is missing variant/item/batch relations`,
+      );
+    }
+ 
+    // ── 3) Only box and sheet types ───────────────────────────────────
+    const itemType = String(item.type ?? '').toLowerCase();
+    if (itemType !== 'box' && itemType !== 'sheet') {
+      throw new BadRequestException(
+        `Only box and sheet items can have cut remainders. Got type: ${item.type}`,
+      );
+    }
+ 
+    // ── 4) Calculate remaining sqm ────────────────────────────────────
+    //   origSqmPerSheet = (origLength × origWidth) / 10000  (cm² → m²)
+    //   origSqmPerUnit  = origSqmPerSheet × sheetsPerBox  (box)
+    //                   = origSqmPerSheet               (sheet)
+    //   remainingSqm    = (origSqmPerUnit × soldQty) - soldSqm
+    const origLength: number = this.num(variant.length);
+    const origWidth: number  = this.num(variant.width);
+    const origSpb: number    = this.num(variant.sheetsPerBox);
+    const soldQty: number    = this.num((ii as any).quantity);
+    const soldSqm: number    = this.num((ii as any).sqm);
+ 
+    const origSqmPerSheet = (origLength * origWidth) / 10000;
+    const origSqmPerUnit  = itemType === 'box'
+      ? origSqmPerSheet * origSpb
+      : origSqmPerSheet;
+ 
+    const remainingSqm = Number(
+      Math.max(0, (origSqmPerUnit * soldQty) - soldSqm).toFixed(4),
+    );
+ 
+    if (remainingSqm <= 0) {
+      throw new BadRequestException(
+        `No remaining sqm to trash for InvoiceItem ${invoiceItemId} ` +
+        `(calculated remainingSqm = ${remainingSqm})`,
+      );
+    }
+ 
+    // ── 5) Generate transfer number with prefix CT ────────────────────
+    const year2          = await this.getActiveYearSuffix(manager);
+    const prefix         = 'CT';
+    const transferNumber = await this.nextTransferNumber(manager, prefix, year2);
+ 
+    // ── 6) Get cost history for the variant ──────────────────────────
+    const invoiceDate = (ii as any).invoice?.date ?? new Date();
+    const cut         = this.startOfDay(new Date(invoiceDate));
+    const { prev: prevCosts } = await this.getPrevQtyAndCosts(manager, variant.id, cut);
+ 
+    // ── 7) Create Transfer header (location = 'CT') ──────────────────
+    const transferRepo = manager.getRepository(Transfer);
+    const newTransfer: any = transferRepo.create({
+      transferNumber,
+      date: invoiceDate,
+      type: 'G',
+      location: 'CT',
+    } as any);
+    const savedTransfer = await transferRepo.save(newTransfer);
+ 
+    // ── 8) Create TransferItem line ───────────────────────────────────
+    const tiRepo    = manager.getRepository(TransferItem);
+    const newTI: any = tiRepo.create({
+      transferId:      savedTransfer.id,
+      itemBatchId:     batch.id,
+      quantity:        0,
+      sqm:             remainingSqm,
+      price:           prevCosts.ofr,
+      averageCost:     prevCosts.ofr,
+      averageCostVM:   prevCosts.vm,
+      averageCostC:    prevCosts.c,
+      averageCostCVM:  prevCosts.cvm,
+      invoiceItemId:   invoiceItemId,
+    } as any);
+    await tiRepo.save(newTI);
+ 
+    // ── 9) Create InventoryTransaction ────────────────────────────────
+    //   transactionType = 'Cuts Loss'
+    //   sqmofr          = -remainingSqm  (going OUT of stock)
+    //   quantityofr     = -remainingSqm  (sqm item so qty = sqm)
+    const txOut: any = manager.getRepository(InventoryTransaction).create({
+      itemVariantId:    variant.id,
+      itemBatchId:      batch.id,
+      transactionType:  'Cuts Loss',
+      quantity:         0,
+      quantityofr:      0,
+      sqm:              0,
+      sqmofr:           -remainingSqm,
+      transferId:       savedTransfer.id,
+      invoiceItemId:    invoiceItemId,
+      dateForEachInvoice: new Date(invoiceDate),
+      finalcostofr:     prevCosts.ofr,
+      finalcost:        prevCosts.vm,
+    } as any);
+    this.logIfNaN(txOut, 'CT.txOut');
+    await manager.getRepository(InventoryTransaction).save(txOut);
+ 
+    // ── 10) Update batch OUT totals ───────────────────────────────────
+    batch.outOFR    = this.num(batch.outOFR) + remainingSqm;
+    batch.balanceOFR =
+      this.num(batch.startOFR) + this.num(batch.inOFR) - this.num(batch.outOFR);
+    await manager.getRepository(ItemBatch).save(batch);
+ 
+    // ── 11) Update variant OUT totals ─────────────────────────────────
+    variant.totalOutOFR    = this.num(variant.totalOutOFR) + remainingSqm;
+    variant.totalBalanceOFR =
+      this.num(variant.totalStartOFR) +
+      this.num(variant.totalInOFR) -
+      this.num(variant.totalOutOFR);
+    await manager.getRepository(ItemVariant).save(variant);
+ 
+    // ── 12) Mark InvoiceItem as resolved ──────────────────────────────
+    await manager.getRepository(InvoiceItem).update(
+      { id: invoiceItemId } as any,
+      { sqmCutResolved: true } as any,
+    );
+ 
+    return {
+      ok:            true,
+      transferId:    savedTransfer.id,
+      transferNumber,
+      remainingSqm,
+    };
+  });
+ 
+  await this.emitActivityNowAndSoon();
+  return result;
+}
+ 
+ 
 }

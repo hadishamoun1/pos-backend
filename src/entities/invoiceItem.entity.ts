@@ -105,4 +105,7 @@ export class InvoiceItem {
   /** Most recent unit cost CVM */
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   lastCostCVM: number;
+
+  @Column({ type: 'boolean', default: false })
+sqmCutResolved: boolean;
 }
