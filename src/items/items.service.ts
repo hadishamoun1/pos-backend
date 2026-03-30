@@ -1441,7 +1441,8 @@ private safeJson(obj: any, max = 4000) {
   }
 }
 
-// using item name description
+
+
 async editFullItem(editDto: {
   itemId?: number;
   itemName?: string;
@@ -1473,17 +1474,16 @@ async editFullItem(editDto: {
     (t === 'box' || t === 'sheet' || t === 'sqm' || t === 'unit') ? t : 'box';
 
   const tag = (s: string) => `[editFullItem] ${s}`;
-  const j = (o: any) => JSON.stringify(o);
+  const j   = (o: any)    => JSON.stringify(o);
 
   console.log(tag('Incoming DTO:'), j(editDto));
 
   const { itemId, itemName, type } = editDto;
   const tType = normType(type);
 
-  // 1) Load item with relations
+  // ── 1) Load item ─────────────────────────────────────────────────────────────
   let item: Item | null = null;
   if (itemId) {
-    console.log(tag(`Loading item by id=${itemId} with relations...`));
     item = await this.itemRepository.findOne({
       where: { id: itemId },
       relations: [
@@ -1494,7 +1494,6 @@ async editFullItem(editDto: {
       ],
     });
   } else if (itemName && tType) {
-    console.log(tag(`Loading item by (itemName,type)=(${itemName},${tType}) with relations...`));
     item = await this.itemRepository.findOne({
       where: { itemName, type: tType },
       relations: [
@@ -1507,45 +1506,19 @@ async editFullItem(editDto: {
   }
 
   if (!item) {
-    console.log(tag('ERROR: Item not found for editing'));
     throw new Error('Item to edit not found (provide itemId or (itemName,type)).');
   }
 
-  console.log(
-    tag('Loaded item:'),
-    j({
-      itemId: item.id,
-      itemName: item.itemName,
-      type: item.type,
-      stockMode: (item as any).stockMode ?? null,
-      thicknessCount: item.thicknesses?.length ?? 0,
-      thicknessIds: (item.thicknesses ?? []).map(t => t.id),
-    }),
-  );
+  console.log(tag('Loaded item:'), j({
+    itemId:         item.id,
+    itemName:       item.itemName,
+    type:           item.type,
+    stockMode:      (item as any).stockMode ?? null,
+    thicknessCount: item.thicknesses?.length ?? 0,
+  }));
 
-  // ✅ NEW: Allow updating item name
-  if (editDto.itemName && editDto.itemName !== item.itemName) {
-    item.itemName = editDto.itemName;
-  }
-
-  // Update stockMode
-  if (editDto.stockMode && (editDto.stockMode === 'SQM' || editDto.stockMode === 'QTY' || editDto.stockMode === 'NONE')) {
-    (item as any).stockMode = editDto.stockMode;
-  }
-
-  // Update type
-  if (editDto.type && editDto.type !== item.type) {
-    item.type = editDto.type as any;
-  }
-
-  // Persist item-level changes
-  await this.itemRepository.save(item);
-
-  const isSQM = item.type === 'sqm';
-  const isUNIT = item.type === 'unit';
-
-  // 2) Build thickness lookups
-  const thicknessById = new Map<number, Thickness>();
+  // ── 2) Build thickness lookups ────────────────────────────────────────────────
+  const thicknessById  = new Map<number, Thickness>();
   const thicknessByVal = new Map<number, Thickness>();
   for (const th of item.thicknesses ?? []) {
     thicknessById.set(th.id, th);
@@ -1553,92 +1526,231 @@ async editFullItem(editDto: {
     th.variants = th.variants ?? [];
   }
 
-  const findThicknessStrict = (incoming: { thicknessId?: number; thickness?: any }) => {
-    const fromId = incoming?.thicknessId;
-    const fromValNum = toNum(incoming?.thickness);
-    console.log(tag('Resolving thickness from incoming:'), j({ fromId, fromVal: fromValNum }));
+  // ── 3) Handle itemName change ─────────────────────────────────────────────────
+  // Move ONLY the specified variants (via their thickness) to a new/existing item.
+  // Other variants under the same thickness stay on the original item.
+  const incomingName = (editDto.itemName ?? '').trim();
+  const nameChanged  = incomingName !== '' && incomingName !== item.itemName;
 
-    if (fromId && thicknessById.has(fromId)) {
-      console.log(tag(`Resolved thickness by id=${fromId}`));
-      return thicknessById.get(fromId)!;
-    }
-    if (Number.isFinite(fromValNum) && thicknessByVal.has(fromValNum)) {
-      console.log(tag(`Resolved thickness by value=${fromValNum}`));
-      return thicknessByVal.get(fromValNum);
-    }
-    console.log(tag('ERROR: Thickness not found on this item'));
-    throw new Error(
-      `Thickness not found on this item. Provide a valid thicknessId or an existing numeric thickness.`,
-    );
-  };
+  if (nameChanged) {
+    console.log(tag(`Name change: "${item.itemName}" → "${incomingName}"`));
 
-  const descCache = new Map<number, any>();
+    let targetItem: Item | null = await this.itemRepository.findOne({
+      where: { itemName: incomingName, type: item.type as any },
+      relations: [
+        'thicknesses',
+        'thicknesses.variants',
+        'thicknesses.variants.itemNameDescription',
+        'thicknesses.variants.realDescription',
+      ],
+    });
+
+    if (!targetItem) {
+      console.log(tag(`Creating new item for name "${incomingName}"`));
+      const savedNew = await this.itemRepository.save(
+        this.itemRepository.create({
+          itemName:  incomingName,
+          type:      item.type,
+          stockMode: (item as any).stockMode,
+          sortIndex: (item as any).sortIndex ?? null,
+        } as any),
+      ) as unknown as Item;
+
+      targetItem = await this.itemRepository.findOne({
+        where: { id: savedNew.id },
+        relations: [
+          'thicknesses',
+          'thicknesses.variants',
+          'thicknesses.variants.itemNameDescription',
+          'thicknesses.variants.realDescription',
+        ],
+      });
+    } else {
+      console.log(tag(`Re-using existing item id=${targetItem.id} for name "${incomingName}"`));
+    }
+
+    if (!targetItem) {
+      throw new Error(`Failed to find or create target item for name "${incomingName}"`);
+    }
+
+    for (const thDto of editDto.thicknesses ?? []) {
+      const thEnt =
+        (thDto.thicknessId ? thicknessById.get(thDto.thicknessId) : null) ??
+        thicknessByVal.get(toNum(thDto.thickness)) ??
+        null;
+
+      if (!thEnt) {
+        console.log(tag(`Thickness not found for dto: ${j(thDto)}, skipping move`));
+        continue;
+      }
+
+      const dtoVariantIds = new Set(
+        (thDto.variants ?? []).map(v => Number(v.id)).filter(n => Number.isFinite(n))
+      );
+
+      // Always create a new thickness row on the target item for the selected variants.
+      // This guarantees we never affect variants NOT in the DTO.
+      console.log(tag(`Creating thickness on target item id=${targetItem.id} for ${dtoVariantIds.size} variant(s)`));
+      const newTh = await this.thicknessRepository.save(
+        this.thicknessRepository.create({
+          thickness: (thEnt as any).thickness,
+          item: targetItem,
+        } as any),
+      ) as unknown as Thickness;
+      (newTh as any).variants = [];
+
+      for (const vId of dtoVariantIds) {
+        const v = await this.itemVariantRepository.findOne({ where: { id: vId } });
+        if (v) {
+          (v as any).thickness = newTh;
+          await this.itemVariantRepository.save(v);
+          console.log(tag(`Moved variant id=${vId} → thickness id=${newTh.id} on item "${incomingName}"`));
+        }
+      }
+
+      // Update local lookup so variant edits below use the new thickness
+      thicknessById.set(newTh.id, newTh);
+      thicknessByVal.set(Number((thEnt as any).thickness), newTh);
+    }
+
+    // Switch context to the target item
+    const reloaded = await this.itemRepository.findOne({
+      where: { id: targetItem.id },
+      relations: [
+        'thicknesses',
+        'thicknesses.variants',
+        'thicknesses.variants.itemNameDescription',
+        'thicknesses.variants.realDescription',
+      ],
+    });
+
+    if (!reloaded) {
+      throw new Error(`Failed to reload target item id=${targetItem.id}`);
+    }
+
+    item = reloaded;
+
+    thicknessById.clear();
+    thicknessByVal.clear();
+    for (const th of item.thicknesses ?? []) {
+      thicknessById.set(th.id, th);
+      thicknessByVal.set(Number((th as any).thickness), th);
+      th.variants = th.variants ?? [];
+    }
+
+    console.log(tag(`Context switched to item id=${item.id} "${item.itemName}"`));
+  }
+
+  // ── 4) Update stockMode / type ────────────────────────────────────────────────
+  let itemDirty = false;
+
+  if (
+    editDto.stockMode &&
+    ['SQM', 'QTY', 'NONE'].includes(editDto.stockMode) &&
+    (item as any).stockMode !== editDto.stockMode
+  ) {
+    (item as any).stockMode = editDto.stockMode;
+    itemDirty = true;
+  }
+
+  if (editDto.type && editDto.type !== item.type) {
+    item.type = editDto.type as any;
+    itemDirty = true;
+  }
+
+  if (itemDirty) {
+    await this.itemRepository.save(item);
+  }
+
+  const isSQM  = item.type === 'sqm';
+  const isUNIT = item.type === 'unit';
+
+  // ── 5) Description caches ─────────────────────────────────────────────────────
+  const descCache     = new Map<number, any>();
+  const realDescCache = new Map<number, any>();
+
   const getDescById = async (id?: number | null) => {
     if (!id) return null;
     if (descCache.has(id)) return descCache.get(id);
     const ent = await this.itemNameDescriptionRepository.findOne({ where: { id } });
-    if (!ent) {
-      console.log(tag(`ERROR: Description id ${id} not found.`));
-      throw new Error(`Description id ${id} not found.`);
-    }
+    if (!ent) throw new Error(`Description id ${id} not found.`);
     descCache.set(id, ent);
     return ent;
   };
 
-  const realDescCache = new Map<number, any>();
   const getRealDescById = async (id?: number | null) => {
     if (!id) return null;
     if (realDescCache.has(id)) return realDescCache.get(id);
     const ent = await this.realDescriptionRepository.findOne({ where: { id } });
-    if (!ent) {
-      console.log(tag(`ERROR: RealDescription id ${id} not found.`));
-      throw new Error(`RealDescription id ${id} not found.`);
-    }
+    if (!ent) throw new Error(`RealDescription id ${id} not found.`);
     realDescCache.set(id, ent);
     return ent;
   };
 
-  // 3) Process thickness edits
+  // ── 6) Process thickness + variant edits ─────────────────────────────────────
   for (const thDto of editDto.thicknesses ?? []) {
-    console.log(tag('Incoming thickness DTO:'), j(thDto));
-    
-    let thEnt: Thickness | null | undefined = null;
-    
-    // Try to find existing thickness
-    if (thDto.thicknessId) {
-      thEnt = findThicknessStrict(thDto);
+    console.log(tag('Thickness DTO:'), j(thDto));
+
+    let thEnt: Thickness | null | undefined =
+      (thDto.thicknessId ? thicknessById.get(thDto.thicknessId) : null) ??
+      thicknessByVal.get(toNum(thDto.thickness)) ??
+      null;
+
+    if (!thEnt) {
+      console.log(tag('ERROR: Thickness not found'));
+      throw new Error(
+        `Thickness not found on item id=${item.id}. Provide a valid thicknessId or existing numeric thickness.`,
+      );
     }
-    
-    // ✅ NEW: Allow updating thickness value
-    if (thEnt && thDto.thickness !== undefined) {
-      const newThicknessValue = toNum(thDto.thickness);
-      if (Number.isFinite(newThicknessValue) && newThicknessValue !== Number((thEnt as any).thickness)) {
-        console.log(tag(`Updating thickness value from ${(thEnt as any).thickness} to ${newThicknessValue}`));
-        (thEnt as any).thickness = newThicknessValue;
-        await this.thicknessRepository.save(thEnt);
-        
-        // Update the lookup map with new value
-        thicknessByVal.delete(Number((thEnt as any).thickness));
-        thicknessByVal.set(newThicknessValue, thEnt);
+
+    // ── Thickness value change ────────────────────────────────────────────────
+    // ALWAYS create a new thickness row and move only the DTO variants to it.
+    // Variants NOT in the DTO stay on the original thickness row untouched.
+    if (thDto.thickness !== undefined) {
+      const newVal = toNum(thDto.thickness);
+      const oldVal = Number((thEnt as any).thickness);
+
+      if (Number.isFinite(newVal) && newVal !== oldVal) {
+        const dtoVariantIds = new Set(
+          (thDto.variants ?? []).map(v => Number(v.id)).filter(n => Number.isFinite(n))
+        );
+
+        console.log(tag(`Thickness split: ${oldVal} → ${newVal} for ${dtoVariantIds.size} variant(s). Others stay at ${oldVal}.`));
+
+        // Create new thickness row with the new value on the same item
+        const newThEnt = await this.thicknessRepository.save(
+          this.thicknessRepository.create({ thickness: newVal, item } as any),
+        ) as unknown as Thickness;
+        (newThEnt as any).variants = [];
+
+        // Move only the DTO variants to the new thickness
+        for (const vId of dtoVariantIds) {
+          const v = await this.itemVariantRepository.findOne({ where: { id: vId } });
+          if (v) {
+            (v as any).thickness = newThEnt;
+            await this.itemVariantRepository.save(v);
+            console.log(tag(`Moved variant id=${vId} → new thickness id=${newThEnt.id} (${newVal})`));
+          }
+        }
+
+        // Switch thEnt to the new row so the variant edits below use the right thickness
+        thicknessById.set(newThEnt.id, newThEnt);
+        thicknessByVal.set(newVal, newThEnt);
+        thEnt = newThEnt;
       }
     }
 
-    if (!thEnt) {
-      throw new Error('Thickness entity not found for editing');
-    }
+    console.log(tag('Editing thickness:'), j({
+      thEntId: thEnt.id,
+      thValue: String((thEnt as any).thickness),
+    }));
 
-    console.log(
-      tag('Editing within thickness:'),
-      j({ thEntId: thEnt.id, thValue: String((thEnt as any).thickness) }),
-    );
-
-    // Process variants
+    // ── Process variants ──────────────────────────────────────────────────────
     for (const vDto of thDto.variants ?? []) {
-      console.log(tag('Incoming variant DTO:'), j(vDto));
+      console.log(tag('Variant DTO:'), j(vDto));
 
       const variantId = Number(vDto.id);
       if (!Number.isFinite(variantId)) {
-        console.log(tag('ERROR: invalid variant id'), vDto.id);
         throw new Error(`Each edited variant must include a valid 'id'.`);
       }
 
@@ -1652,86 +1764,94 @@ async editFullItem(editDto: {
         ],
       });
 
-      console.log(
-        tag('Variant lookup (DB) result:'),
-        j({
-          requestedVariantId: variantId,
-          found: !!targetVariant,
-          foundThicknessId: (targetVariant as any)?.thickness?.id ?? null,
-          foundItemId: (targetVariant as any)?.thickness?.item?.id ?? null,
-          editingItemId: item.id,
-        }),
-      );
+      console.log(tag('Variant lookup:'), j({
+        requestedVariantId: variantId,
+        found:              !!targetVariant,
+        foundThicknessId:   (targetVariant as any)?.thickness?.id       ?? null,
+        foundItemId:        (targetVariant as any)?.thickness?.item?.id ?? null,
+        editingItemId:      item.id,
+      }));
 
       if (!targetVariant) {
         throw new Error(`Variant id ${variantId} not found.`);
       }
 
       if ((targetVariant as any).thickness?.item?.id !== item.id) {
-        console.log(
-          tag('ERROR: Variant does not belong to this item'),
-          j({
-            variantId: (targetVariant as any).id,
-            variantItemId: (targetVariant as any).thickness?.item?.id,
-            expectedItemId: item.id,
-            incomingThicknessId: thEnt.id,
-            itemThicknessIds: (item.thicknesses ?? []).map(t => (t as any).id),
-          }),
-        );
-        throw new Error(`Variant id ${variantId} does not belong to the specified item.`);
+        console.log(tag('ERROR: Variant does not belong to this item'));
+        throw new Error(`Variant id ${variantId} does not belong to item id=${item.id}.`);
       }
 
+      // Point variant to the (possibly new) thickness
       if ((targetVariant as any).thickness?.id !== thEnt.id) {
-        console.log(
-          tag('Moving variant to target thickness'),
-          j({
-            variantId: (targetVariant as any).id,
-            fromThicknessId: (targetVariant as any).thickness?.id,
-            toThicknessId: thEnt.id,
-          }),
-        );
+        console.log(tag(`Reassigning variant ${variantId} → thickness id=${thEnt.id}`));
         (targetVariant as any).thickness = thEnt;
       }
 
       const next = {
-        length: (isSQM || isUNIT) ? 0 : toNum(vDto.length, Number((targetVariant as any).length)),
-        width:  (isSQM || isUNIT) ? 0 : toNum(vDto.width, Number((targetVariant as any).width)),
-        sheetsPerBox: (isSQM ? 0 : (isUNIT ? 1 : toNum(vDto.sheetsPerBox, Number((targetVariant as any).sheetsPerBox)))),
-        origin: (isSQM ? '' : (isUNIT ? ((vDto.origin ?? (targetVariant as any).origin ?? '-') || '-') : (vDto.origin ?? (targetVariant as any).origin ?? ''))),
-        fixBox: vDto.fixBox ?? !!(targetVariant as any).fixBox,
+        length: (isSQM || isUNIT)
+          ? 0
+          : toNum(vDto.length, Number((targetVariant as any).length)),
+
+        width: (isSQM || isUNIT)
+          ? 0
+          : toNum(vDto.width, Number((targetVariant as any).width)),
+
+        sheetsPerBox: isSQM
+          ? 0
+          : isUNIT
+            ? 1
+            : toNum(vDto.sheetsPerBox, Number((targetVariant as any).sheetsPerBox)),
+
+        origin: isSQM
+          ? ''
+          : isUNIT
+            ? ((vDto.origin ?? (targetVariant as any).origin ?? '-') || '-')
+            : (vDto.origin ?? (targetVariant as any).origin ?? ''),
+
+        fixBox:    vDto.fixBox    ?? !!(targetVariant as any).fixBox,
         fixLength: vDto.fixLength ?? !!(targetVariant as any).fixLength,
-        fixWidth: vDto.fixWidth ?? !!(targetVariant as any).fixWidth,
+        fixWidth:  vDto.fixWidth  ?? !!(targetVariant as any).fixWidth,
       };
 
-      console.log(tag('Computed next fields:'), j(next));
+      console.log(tag('Next fields:'), j(next));
 
+      // Resolve itemNameDescription
       let nextDesc = (targetVariant as any).itemNameDescription ?? null;
-      if (vDto.description && typeof vDto.description === 'object' && 'id' in (vDto.description as any)) {
+      if (
+        vDto.description &&
+        typeof vDto.description === 'object' &&
+        'id' in (vDto.description as any)
+      ) {
         const newDescId = Number((vDto.description as any).id);
         if (Number.isFinite(newDescId)) {
           nextDesc = await getDescById(newDescId);
-          console.log(tag('Re-linked description to id=' + newDescId));
+          console.log(tag('Re-linked description id=' + newDescId));
         }
       }
 
+      // Resolve realDescription
       let nextRealDesc = (targetVariant as any).realDescription ?? null;
-      if (vDto.realDescription && typeof vDto.realDescription === 'object' && 'id' in (vDto.realDescription as any)) {
+      if (
+        vDto.realDescription &&
+        typeof vDto.realDescription === 'object' &&
+        'id' in (vDto.realDescription as any)
+      ) {
         const newRealDescId = Number((vDto.realDescription as any).id);
         if (Number.isFinite(newRealDescId)) {
           nextRealDesc = await getRealDescById(newRealDescId);
-          console.log(tag('Re-linked realDescription to id=' + newRealDescId));
+          console.log(tag('Re-linked realDescription id=' + newRealDescId));
         }
       }
 
-      (targetVariant as any).length = next.length;
-      (targetVariant as any).width = next.width;
-      (targetVariant as any).sheetsPerBox = next.sheetsPerBox;
-      (targetVariant as any).origin = next.origin;
-      (targetVariant as any).fixBox = next.fixBox;
-      (targetVariant as any).fixLength = next.fixLength;
-      (targetVariant as any).fixWidth = next.fixWidth;
+      (targetVariant as any).length              = next.length;
+      (targetVariant as any).width               = next.width;
+      (targetVariant as any).sheetsPerBox        = next.sheetsPerBox;
+      (targetVariant as any).origin              = next.origin;
+      (targetVariant as any).fixBox              = next.fixBox;
+      (targetVariant as any).fixLength           = next.fixLength;
+      (targetVariant as any).fixWidth            = next.fixWidth;
       (targetVariant as any).itemNameDescription = nextDesc;
-      (targetVariant as any).realDescription = nextRealDesc;
+      (targetVariant as any).realDescription     = nextRealDesc;
 
       await this.itemVariantRepository.save(targetVariant);
       console.log(tag('Saved variant id=' + (targetVariant as any).id));
@@ -1744,6 +1864,7 @@ async editFullItem(editDto: {
 
   await this.thicknessRepository.save(item.thicknesses);
 
+  // ── 7) Reload and return ──────────────────────────────────────────────────────
   const updated = await this.itemRepository.findOne({
     where: { id: item.id },
     relations: [
@@ -1754,7 +1875,7 @@ async editFullItem(editDto: {
     ],
   });
 
-  console.log(tag('Done. Returning updated item id=' + item.id));
+  console.log(tag('Done. Returning item id=' + item.id));
   return updated!;
 }
 
