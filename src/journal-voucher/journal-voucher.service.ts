@@ -5,7 +5,7 @@ import {
   Logger
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like, Brackets, SelectQueryBuilder } from 'typeorm';
+import { Repository, Brackets, SelectQueryBuilder } from 'typeorm';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
@@ -116,12 +116,15 @@ async createJournalVoucher(data: {
   const basePrefix = jvType === 'G' ? 'JVG' : 'JV';
   const seriesPrefix = `${basePrefix}${yy}-`; // e.g. "JV25-" or "JVG25-"
 
-  // Look up the last voucher within the same series (year + type prefix)
-  const lastInSeries = await this.journalVoucherRepository.find({
-    where: { jvNumber: Like(`${seriesPrefix}%`) },
-    order: { jvNumber: 'DESC' }, // safe because the numeric part is zero-padded
-    take: 1,
-  });
+  // Look up the last voucher within the same series (year + type prefix).
+  // Must sort by the numeric suffix as an integer — lexicographic DESC would
+  // wrongly rank "JVG26-999" above "JVG26-1000" once we cross 4 digits.
+  const lastInSeries = await this.journalVoucherRepository
+    .createQueryBuilder('jv')
+    .where('jv.jvNumber LIKE :prefix', { prefix: `${seriesPrefix}%` })
+    .orderBy(`CAST(REGEXP_SUBSTR(jv.jvNumber, '[0-9]+$') AS UNSIGNED)`, 'DESC')
+    .take(1)
+    .getMany();
 
   const nextSeq =
     lastInSeries.length > 0
