@@ -1225,14 +1225,13 @@ async updateTransfer(transferId: number, data: any): Promise<Transfer> {
           );
         }
 
-        const sheetVariant = await manager.getRepository(ItemVariant).findOne({
-          where: {
-            thickness: { id: (sheetThickness as any).id } as any,
-            origin: fromVariant.origin,
-            length: fromVariant.length,
-            width: fromVariant.width,
-          } as any,
-        });
+        const sheetVariant = await manager.getRepository(ItemVariant)
+          .createQueryBuilder('v')
+          .where('v.thicknessId = :thicknessId', { thicknessId: (sheetThickness as any).id })
+          .andWhere('TRIM(v.origin) = TRIM(:origin)', { origin: fromVariant.origin })
+          .andWhere('CAST(v.length AS DECIMAL(20,2)) = CAST(:length AS DECIMAL(20,2))', { length: num(fromVariant.length) })
+          .andWhere('CAST(v.width  AS DECIMAL(20,2)) = CAST(:width  AS DECIMAL(20,2))', { width:  num(fromVariant.width)  })
+          .getOne();
 
         if (!sheetVariant) {
           throw new NotFoundException(
