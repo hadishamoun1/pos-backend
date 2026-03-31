@@ -45,6 +45,12 @@ export class AccountsController {
     return this.accountsService.getFlatSimplifiedAccounts();
   }
 
+  @Get("v1/payee-list")
+  @RequirePerms("accounts.view")
+  async getPayeeList(): Promise<{ id: number; accountNumber: string; accountName: string }[]> {
+    return this.accountsService.getAccountsForPayee();
+  }
+
   // Search used for JV selection (still "view")
   @Get("v1/jv/search")
   @RequirePerms("accounts.view")

@@ -10,6 +10,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Supplier } from '../supplier.entity';
+import { Account } from '../account.entity';
 import { PaymentVoucherDetail } from './paymentVoucherDetails.entity';
 import { JournalVoucher } from './journalVoucher.entity';
 
@@ -30,6 +31,14 @@ export class PaymentVoucher {
   @ManyToOne(() => Supplier, (supplier) => supplier.paymentVouchers, { nullable: true })
   @JoinColumn({ name: 'supplierId' })
   supplier: Supplier;
+
+  @Column({ nullable: true })
+  accountId: number;
+
+  @ManyToOne(() => Account, { nullable: true })
+
+  @JoinColumn({ name: 'accountId' })
+  account: Account;
 
   @Column({ type: 'varchar', length: 50 })
   paymentType: PaymentType;

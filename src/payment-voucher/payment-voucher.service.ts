@@ -40,6 +40,9 @@ export class PaymentVoucherService {
     @InjectRepository(Supplier)
     private readonly supplierRepository: Repository<Supplier>,
 
+    @InjectRepository(Account)
+    private readonly accountRepository: Repository<Account>,
+
     private readonly accountingResolver: AccountingResolverService,
     private readonly settingsService: SettingsService,
   ) {}
@@ -109,7 +112,7 @@ export class PaymentVoucherService {
    */
   private buildJvLines(
     d: any,
-    supplier: Supplier,
+    payee: { supplier?: Supplier; account?: Account },
     cashAccount: Account,
     type: VoucherType,
     paymentNumber: string,
@@ -130,8 +133,9 @@ export class PaymentVoucherService {
     // Type S → fill both regular and OFR fields
     // Type G → fill ONLY OFR fields, regular fields stay 0
     const drLine = this.journalVoucherDetailRepository.create({
-      supplier,
-      supplierId: supplier.id,
+      ...(payee.supplier
+        ? { supplier: payee.supplier, supplierId: payee.supplier.id }
+        : { account: payee.account, accountId: payee.account.id }),
       // Regular fields
       dr:    isS ? dr    : 0,
       drUSD: isS ? drUSD : 0,
@@ -208,6 +212,8 @@ export class PaymentVoucherService {
       id: voucher.id,
       supplierId: voucher.supplierId,
       supplierName: voucher.supplier?.supplierName ?? null,
+      accountId: voucher.accountId,
+      accountName: voucher.account?.arabicAccountName ?? voucher.account?.accountName ?? null,
       date: voucher.date,
       invoiceId: voucher.invoiceId,
       paymentType: voucher.paymentType,
@@ -234,7 +240,7 @@ export class PaymentVoucherService {
 
   async getFormatted(): Promise<any[]> {
     const vouchers = await this.paymentVoucherRepository.find({
-      relations: ['supplier', 'details'],
+      relations: ['supplier', 'account', 'details'],
     });
     return vouchers.map((v) => this.formatVoucher(v));
   }
@@ -256,6 +262,7 @@ export class PaymentVoucherService {
     const qb = this.paymentVoucherRepository
       .createQueryBuilder('voucher')
       .leftJoinAndSelect('voucher.supplier', 'supplier')
+      .leftJoinAndSelect('voucher.account', 'account')
       .leftJoinAndSelect('voucher.details', 'detail');
 
     if (filters.supplierId)
@@ -281,7 +288,8 @@ export class PaymentVoucherService {
 
   async createBulk(
     transactions: {
-      supplierId: number;
+      supplierId?: number;
+      accountId?: number;
       date: string;
       invoiceId: string;
       paymentType: PaymentType;
@@ -293,9 +301,22 @@ export class PaymentVoucherService {
     const results: PaymentVoucher[] = [];
 
     for (const tx of transactions) {
-      const supplier = await this.supplierRepository.findOne({ where: { id: tx.supplierId } });
-      if (!supplier)
-        throw new NotFoundException(`Supplier with ID ${tx.supplierId} not found.`);
+      let supplier: Supplier | null = null;
+      let payeeAccount: Account | null = null;
+
+      if (tx.supplierId) {
+        supplier = await this.supplierRepository.findOne({ where: { id: tx.supplierId } });
+        if (!supplier)
+          throw new NotFoundException(`Supplier with ID ${tx.supplierId} not found.`);
+      } else if (tx.accountId) {
+        payeeAccount = await this.accountRepository.findOne({ where: { id: tx.accountId } });
+        if (!payeeAccount)
+          throw new NotFoundException(`Account with ID ${tx.accountId} not found.`);
+      } else {
+        throw new NotFoundException('Either supplierId or accountId must be provided.');
+      }
+
+      const payee = supplier ? { supplier } : { account: payeeAccount };
 
       const cashAccount = await this.getCashAccount(tx.paymentType);
       const paymentNumber = await this.getNextPaymentNumber(tx.type);
@@ -308,7 +329,7 @@ export class PaymentVoucherService {
       const jvDetails: JournalVoucherDetail[] = [];
 
       for (const d of tx.details) {
-        const { drLine, crLine } = this.buildJvLines(d, supplier, cashAccount, tx.type, paymentNumber);
+        const { drLine, crLine } = this.buildJvLines(d, payee, cashAccount, tx.type, paymentNumber);
         totalDr       += Number(drLine.dr);
         totalDrUSD    += Number(drLine.drUSD);
         totalDrLL     += Number(drLine.drLL);
@@ -346,8 +367,9 @@ export class PaymentVoucherService {
       );
 
       const voucher = this.paymentVoucherRepository.create({
-        supplier,
-        supplierId: supplier.id,
+        ...(supplier
+          ? { supplier, supplierId: supplier.id }
+          : { account: payeeAccount, accountId: payeeAccount.id }),
         date: tx.date,
         paymentNumber,
         invoiceId: tx.invoiceId,
@@ -377,6 +399,7 @@ export class PaymentVoucherService {
     id: number,
     updateData: {
       supplierId?: number;
+      accountId?: number;
       date?: string;
       invoiceId?: string;
       paymentType?: PaymentType;
@@ -387,7 +410,7 @@ export class PaymentVoucherService {
   ): Promise<PaymentVoucher> {
     const voucher = await this.paymentVoucherRepository.findOne({
       where: { id },
-      relations: ['supplier', 'details', 'journalVoucher', 'journalVoucher.details'],
+      relations: ['supplier', 'account', 'details', 'journalVoucher', 'journalVoucher.details'],
     });
     if (!voucher)
       throw new NotFoundException(`Payment voucher with ID ${id} not found.`);
@@ -398,6 +421,16 @@ export class PaymentVoucherService {
         throw new NotFoundException(`Supplier with ID ${updateData.supplierId} not found.`);
       voucher.supplier = supplier;
       voucher.supplierId = supplier.id;
+      voucher.account = null;
+      voucher.accountId = null;
+    } else if (updateData.accountId) {
+      const account = await this.accountRepository.findOne({ where: { id: updateData.accountId } });
+      if (!account)
+        throw new NotFoundException(`Account with ID ${updateData.accountId} not found.`);
+      voucher.account = account;
+      voucher.accountId = account.id;
+      voucher.supplier = null;
+      voucher.supplierId = null;
     }
 
     if (updateData.date) voucher.date = updateData.date;
@@ -409,7 +442,9 @@ export class PaymentVoucherService {
     if (updateData.details) {
       const paymentType = updateData.paymentType || voucher.paymentType;
       const cashAccount = await this.getCashAccount(paymentType);
-      const supplier = voucher.supplier;
+      const payee = voucher.supplier
+        ? { supplier: voucher.supplier }
+        : { account: voucher.account };
 
       await this.paymentVoucherDetailRepository.remove(voucher.details);
       voucher.details = updateData.details.map((d) => this.buildPmDetail(d));
@@ -421,7 +456,7 @@ export class PaymentVoucherService {
       const jvDetails: JournalVoucherDetail[] = [];
 
       for (const d of updateData.details) {
-        const { drLine, crLine } = this.buildJvLines(d, supplier, cashAccount, (updateData.type || voucher.type) as VoucherType, voucher.paymentNumber);
+        const { drLine, crLine } = this.buildJvLines(d, payee, cashAccount, (updateData.type || voucher.type) as VoucherType, voucher.paymentNumber);
         totalDr       += Number(drLine.dr);
         totalDrUSD    += Number(drLine.drUSD);
         totalDrLL     += Number(drLine.drLL);

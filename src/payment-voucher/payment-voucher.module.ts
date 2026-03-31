@@ -5,6 +5,7 @@ import { PaymentVoucherDetail } from '../entities/Vouchers/paymentVoucherDetails
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Supplier } from '../entities/supplier.entity';
+import { Account } from '../entities/account.entity';
 import { Settings } from '../entities/settings.entity';
 import { PaymentVoucherService } from './payment-voucher.service';
 import { PaymentVoucherController } from './payment-voucher.controller';
@@ -19,6 +20,7 @@ import { AccountingModule } from '../accountRoleMap/accounting.module';
       JournalVoucher,
       JournalVoucherDetail,
       Supplier,
+      Account,
       Settings,
     ]),
     AccountingModule, // provides AccountingResolverService

@@ -290,6 +290,18 @@ export class AccountsService {
     return transformAccounts(accounts);
   }
 
+  async getAccountsForPayee(): Promise<{ id: number; accountNumber: string; accountName: string }[]> {
+    const accounts = await this.accountRepository.find({
+      select: ['id', 'accountNumber', 'arabicAccountName'],
+      order: { accountNumber: 'ASC' },
+    });
+    return accounts.map((a) => ({
+      id: a.id,
+      accountNumber: a.accountNumber,
+      accountName: a.arabicAccountName || '',
+    }));
+  }
+
   async getFlatSimplifiedAccounts(): Promise<any[]> {
     const { customerParent, supplierParent } = await this.getIndexParents();
 
