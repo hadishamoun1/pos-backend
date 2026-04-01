@@ -1593,6 +1593,12 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   // Controller-required methods (your TS errors)
   // ────────────────────────────────────────────────────────────
 async getCostAnalysisHistory(q?: any): Promise<any[]> {
+  // q can be a plain search string from the controller
+  const searchText = typeof q === 'string' ? q.trim() : null;
+  const tokens = searchText
+    ? searchText.split(/\s+/).filter(Boolean)
+    : [];
+
   const variantIdFilter =
     q?.itemVariantId != null
       ? Number(q.itemVariantId)
@@ -1715,6 +1721,15 @@ async getCostAnalysisHistory(q?: any): Promise<any[]> {
   if (variantIdFilter) {
     qb.andWhere('tx.itemVariantId = :id', { id: variantIdFilter });
   }
+
+  // Text search: each token must appear in the item name (Arabic-normalized)
+  tokens.forEach((tok, idx) => {
+    const like = `%${tok}%`;
+    qb.andWhere(
+      `(REPLACE(REPLACE(REPLACE(it.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx} OR it.itemName LIKE :tokR${idx})`,
+      { [`tokN${idx}`]: like, [`tokR${idx}`]: like },
+    );
+  });
 
   return qb
     .orderBy('it.sortIndex', 'ASC')

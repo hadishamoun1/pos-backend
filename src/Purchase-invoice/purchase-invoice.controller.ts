@@ -46,8 +46,8 @@ export class PurchaseInvoiceController {
 
   @Get('cost-analysis/history')
   @RequirePerms('purchases.view')
-  getCostAnalysisHistory() {
-    return this.service.getCostAnalysisHistory();
+  getCostAnalysisHistory(@Query('q') q?: string) {
+    return this.service.getCostAnalysisHistory(q);
   }
 
   @Get('cost-analysis/real-description-history')
