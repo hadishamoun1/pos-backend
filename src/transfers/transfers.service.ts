@@ -1225,6 +1225,13 @@ async updateTransfer(transferId: number, data: any): Promise<Transfer> {
           );
         }
 
+        console.log(`🔍 Looking for sheet variant: thicknessId=${(sheetThickness as any).id}, origin="${fromVariant.origin}", length=${num(fromVariant.length)}, width=${num(fromVariant.width)}`);
+        const allVariantsForThickness = await manager.getRepository(ItemVariant)
+          .createQueryBuilder('v')
+          .where('v.thicknessId = :thicknessId', { thicknessId: (sheetThickness as any).id })
+          .getMany();
+        console.log(`🔍 All variants for thicknessId=${(sheetThickness as any).id}:`, allVariantsForThickness.map(v => ({ id: v.id, origin: `"${v.origin}"`, length: v.length, width: v.width })));
+
         const sheetVariant = await manager.getRepository(ItemVariant)
           .createQueryBuilder('v')
           .where('v.thicknessId = :thicknessId', { thicknessId: (sheetThickness as any).id })
@@ -2353,7 +2360,7 @@ async trashCutRemainder(invoiceItemId: number): Promise<{
       invoiceItemId:   invoiceItemId,
     } as any);
     await tiRepo.save(newTI);
- 
+
     // ── 9) Create InventoryTransaction ────────────────────────────────
     //   transactionType = 'Cuts Loss'
     //   sqmofr          = -remainingSqm  (going OUT of stock)

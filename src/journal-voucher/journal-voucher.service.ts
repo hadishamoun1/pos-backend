@@ -285,6 +285,7 @@ async createJournalVoucher(data: {
 
   async deleteJournalVoucher(id: number): Promise<void> {
     const journalVoucher = await this.getJournalVoucherById(id);
+    await this.journalVoucherDetailRepository.delete({ journalVoucherId: id });
     await this.journalVoucherRepository.remove(journalVoucher);
   }
 
