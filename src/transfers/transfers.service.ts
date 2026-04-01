@@ -326,13 +326,18 @@ export class TransfersService {
 
     const prevQty = Number(rawQty?.sum ?? 0) || 0;
 
-    // 2) last COST EVENT before cut (transfer OR purchase OR count)
+    // 2) last COST EVENT before cut (purchase, count, or MovedTo transfer only)
+    // MovedFrom is excluded: stock going out never changes the unit average cost of what remains.
     const lastTx = await txRepo
       .createQueryBuilder('tx')
       .where('tx.itemVariantId = :vid', { vid: variantId })
       .andWhere('tx.dateForEachInvoice < :cut', { cut })
       .andWhere(
-        '(tx.transferId IS NOT NULL OR tx.purchaseInvoiceItemId IS NOT NULL OR tx.inventoryCountId IS NOT NULL)',
+        `(
+          tx.purchaseInvoiceItemId IS NOT NULL
+          OR tx.inventoryCountId IS NOT NULL
+          OR (tx.transferId IS NOT NULL AND tx.transactionType != 'MovedFrom')
+        )`,
       )
       .orderBy('tx.dateForEachInvoice', 'DESC')
       .addOrderBy('tx.id', 'DESC')
