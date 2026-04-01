@@ -1209,40 +1209,37 @@ async updateTransfer(transferId: number, data: any): Promise<Transfer> {
           );
         }
 
-        const sheetThickness = await manager
-          .getRepository(Thickness)
-          .createQueryBuilder('th')
-          .innerJoin('th.item', 'it', 'it.itemName = :name AND it.type = :type', {
-            name: parentItem.itemName,
-            type: 'sheet',
-          })
-          .where('th.thickness = :thick', { thick: fromVariant.thickness.thickness })
-          .getOne();
-
-        if (!sheetThickness) {
-          throw new NotFoundException(
-            `No sheet-type thickness ${fromVariant.thickness.thickness} for ${parentItem.itemName}`,
-          );
-        }
-
-        console.log(`🔍 Looking for sheet variant: thicknessId=${(sheetThickness as any).id}, origin="${fromVariant.origin}", length=${num(fromVariant.length)}, width=${num(fromVariant.width)}`);
-        const allVariantsForThickness = await manager.getRepository(ItemVariant)
-          .createQueryBuilder('v')
-          .where('v.thicknessId = :thicknessId', { thicknessId: (sheetThickness as any).id })
-          .getMany();
-        console.log(`🔍 All variants for thicknessId=${(sheetThickness as any).id}:`, allVariantsForThickness.map(v => ({ id: v.id, origin: `"${v.origin}"`, length: v.length, width: v.width })));
-
+        // Single joined query — avoids two-step thicknessId lookup which can mismatch
         const sheetVariant = await manager.getRepository(ItemVariant)
           .createQueryBuilder('v')
-          .where('v.thicknessId = :thicknessId', { thicknessId: (sheetThickness as any).id })
+          .innerJoin('v.thickness', 'th')
+          .innerJoin('th.item', 'it')
+          .where('it.itemName = :name', { name: parentItem.itemName })
+          .andWhere('it.type = :type', { type: 'sheet' })
+          .andWhere('CAST(th.thickness AS DECIMAL(20,4)) = CAST(:thick AS DECIMAL(20,4))', { thick: fromVariant.thickness.thickness })
           .andWhere('TRIM(v.origin) = TRIM(:origin)', { origin: fromVariant.origin })
           .andWhere('CAST(v.length AS DECIMAL(20,2)) = CAST(:length AS DECIMAL(20,2))', { length: num(fromVariant.length) })
           .andWhere('CAST(v.width  AS DECIMAL(20,2)) = CAST(:width  AS DECIMAL(20,2))', { width:  num(fromVariant.width)  })
           .getOne();
 
         if (!sheetVariant) {
+          // Fetch candidates to include in error for diagnosis
+          const candidates = await manager.getRepository(ItemVariant)
+            .createQueryBuilder('v')
+            .innerJoin('v.thickness', 'th')
+            .innerJoin('th.item', 'it')
+            .where('it.itemName = :name', { name: parentItem.itemName })
+            .andWhere('it.type = :type', { type: 'sheet' })
+            .select(['v.id', 'v.origin', 'v.length', 'v.width', 'th.thickness'])
+            .getMany();
+
+          const candidateStr = candidates
+            .map((c: any) => `id=${c.id} origin="${c.origin}" ${c.length}×${c.width} thick=${c.thickness?.thickness}`)
+            .join(' | ');
+
           throw new NotFoundException(
-            `No sheet variant for ${parentItem.itemName} @ ${fromVariant.length}×${fromVariant.width} origin=${fromVariant.origin}`,
+            `No sheet variant for ${parentItem.itemName} @ ${fromVariant.length}×${fromVariant.width} origin="${fromVariant.origin}" thick=${fromVariant.thickness.thickness}. ` +
+            `Candidates: [${candidateStr || 'none'}]`,
           );
         }
 
