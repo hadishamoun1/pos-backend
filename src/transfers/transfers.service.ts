@@ -1109,11 +1109,6 @@ async updateTransfer(transferId: number, data: any): Promise<Transfer> {
     .where('ti.transferId = :tid', { tid: (transfer as any).id })
     .getMany();
 
-  console.log('🔍 Loaded transfer items:', persisted.map((ti: any) => ({
-    id: ti.id,
-    itemBatchId: ti.itemBatchId,
-    toItemVariantId: ti.toItemVariantId,
-  })));
 
 
     // InventoryTransaction: only these 2 exist in your schem
@@ -1209,37 +1204,44 @@ async updateTransfer(transferId: number, data: any): Promise<Transfer> {
           );
         }
 
-        // Single joined query — avoids two-step thicknessId lookup which can mismatch
-        const sheetVariant = await manager.getRepository(ItemVariant)
-          .createQueryBuilder('v')
-          .innerJoin('v.thickness', 'th')
-          .innerJoin('th.item', 'it')
-          .where('it.itemName = :name', { name: parentItem.itemName })
-          .andWhere('it.type = :type', { type: 'sheet' })
-          .andWhere('CAST(th.thickness AS DECIMAL(20,4)) = CAST(:thick AS DECIMAL(20,4))', { thick: fromVariant.thickness.thickness })
-          .andWhere('TRIM(v.origin) = TRIM(:origin)', { origin: fromVariant.origin })
-          .andWhere('CAST(v.length AS DECIMAL(20,2)) = CAST(:length AS DECIMAL(20,2))', { length: num(fromVariant.length) })
-          .andWhere('CAST(v.width  AS DECIMAL(20,2)) = CAST(:width  AS DECIMAL(20,2))', { width:  num(fromVariant.width)  })
-          .getOne();
+        // Find the sheet variant.
+        // Primary: match by shared ItemNameDescriptionId — survives item renames.
+        // Fallback: match by item name — for variants without a descriptionId.
+        const descId = (fromVariant as any).itemNameDescriptionId ?? null;
+
+        let sheetVariant: ItemVariant | null = null;
+
+        if (descId) {
+          sheetVariant = await manager.getRepository(ItemVariant)
+            .createQueryBuilder('v')
+            .innerJoin('v.thickness', 'th')
+            .innerJoin('th.item', 'it')
+            .where('v.itemNameDescriptionId = :descId', { descId })
+            .andWhere('it.type = :type', { type: 'sheet' })
+            .andWhere('CAST(th.thickness AS DECIMAL(20,4)) = CAST(:thick AS DECIMAL(20,4))', { thick: fromVariant.thickness.thickness })
+            .andWhere('TRIM(v.origin) = TRIM(:origin)', { origin: fromVariant.origin })
+            .andWhere('CAST(v.length AS DECIMAL(20,2)) = CAST(:length AS DECIMAL(20,2))', { length: num(fromVariant.length) })
+            .andWhere('CAST(v.width  AS DECIMAL(20,2)) = CAST(:width  AS DECIMAL(20,2))', { width:  num(fromVariant.width)  })
+            .getOne();
+        }
 
         if (!sheetVariant) {
-          // Fetch candidates to include in error for diagnosis
-          const candidates = await manager.getRepository(ItemVariant)
+          sheetVariant = await manager.getRepository(ItemVariant)
             .createQueryBuilder('v')
             .innerJoin('v.thickness', 'th')
             .innerJoin('th.item', 'it')
             .where('it.itemName = :name', { name: parentItem.itemName })
             .andWhere('it.type = :type', { type: 'sheet' })
-            .select(['v.id', 'v.origin', 'v.length', 'v.width', 'th.thickness'])
-            .getMany();
+            .andWhere('CAST(th.thickness AS DECIMAL(20,4)) = CAST(:thick AS DECIMAL(20,4))', { thick: fromVariant.thickness.thickness })
+            .andWhere('TRIM(v.origin) = TRIM(:origin)', { origin: fromVariant.origin })
+            .andWhere('CAST(v.length AS DECIMAL(20,2)) = CAST(:length AS DECIMAL(20,2))', { length: num(fromVariant.length) })
+            .andWhere('CAST(v.width  AS DECIMAL(20,2)) = CAST(:width  AS DECIMAL(20,2))', { width:  num(fromVariant.width)  })
+            .getOne();
+        }
 
-          const candidateStr = candidates
-            .map((c: any) => `id=${c.id} origin="${c.origin}" ${c.length}×${c.width} thick=${c.thickness?.thickness}`)
-            .join(' | ');
-
+        if (!sheetVariant) {
           throw new NotFoundException(
-            `No sheet variant for ${parentItem.itemName} @ ${fromVariant.length}×${fromVariant.width} origin="${fromVariant.origin}" thick=${fromVariant.thickness.thickness}. ` +
-            `Candidates: [${candidateStr || 'none'}]`,
+            `No sheet variant for ${parentItem.itemName} @ ${fromVariant.length}×${fromVariant.width} origin="${fromVariant.origin}" thick=${fromVariant.thickness.thickness} descId=${descId ?? 'null'}`,
           );
         }
 
