@@ -1254,8 +1254,41 @@ async updateTransfer(transferId: number, data: any): Promise<Transfer> {
         const sheetArea = lengthM * widthM;
         const totalSqm = sheetCount * sheetArea;
 
-        const { prev: prevCosts } = await this.getPrevQtyAndCosts(manager, fromVariant.id, cut);
-        const transferCosts: CostBundle = { ...prevCosts };
+        // For boxes, average cost only changes on purchase or count — never on a JF MovedFrom.
+        // So we skip transfer events and look back only at purchases and counts.
+        const txRepo = manager.getRepository(InventoryTransaction);
+        const lastPurchaseOrCountTx = await txRepo
+          .createQueryBuilder('tx')
+          .where('tx.itemVariantId = :vid', { vid: fromVariant.id })
+          .andWhere('tx.dateForEachInvoice < :cut', { cut })
+          .andWhere('(tx.purchaseInvoiceItemId IS NOT NULL OR tx.inventoryCountId IS NOT NULL)')
+          .orderBy('tx.dateForEachInvoice', 'DESC')
+          .addOrderBy('tx.id', 'DESC')
+          .getOne();
+
+        const boxDesc = await this.getDescCostsByVariant(manager, fromVariant.id);
+        let transferCosts: CostBundle;
+
+        if (lastPurchaseOrCountTx && (lastPurchaseOrCountTx as any).purchaseInvoiceItemId) {
+          const pi = await manager.getRepository(PurchaseInvoiceItem).findOne({
+            where: { id: (lastPurchaseOrCountTx as any).purchaseInvoiceItemId } as any,
+          });
+          transferCosts = {
+            ofr: this.pickPurchaseOfr(pi) ?? 0,
+            vm:  this.pickPurchaseVm(pi) ?? 0,
+            c:   this.pickPurchaseC(pi) ?? boxDesc.c,
+            cvm: this.pickPurchaseCvm(pi) ?? boxDesc.cvm,
+          };
+        } else if (lastPurchaseOrCountTx && (lastPurchaseOrCountTx as any).inventoryCountId) {
+          const cnt = await manager.getRepository(InventoryCount).findOne({
+            where: { id: (lastPurchaseOrCountTx as any).inventoryCountId } as any,
+          });
+          transferCosts = { ...this.bundleFromCount(cnt), c: boxDesc.c, cvm: boxDesc.cvm };
+        } else {
+          // No purchase or count found — fall back to full lookup
+          const { prev } = await this.getPrevQtyAndCosts(manager, fromVariant.id, cut);
+          transferCosts = prev;
+        }
 
         const toBatch = await this.ensureBatch(
           manager,
