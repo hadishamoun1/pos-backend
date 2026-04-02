@@ -45,4 +45,13 @@ itemBatchId?: number | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   total: number; // Total price (sqm * price)
+
+  @Column({ type: 'int', nullable: true, default: null })
+  sqmPieceId?: number | null;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true, default: null })
+  length?: number | null;
+
+  @Column({ type: 'decimal', precision: 20, scale: 2, nullable: true, default: null })
+  width?: number | null;
 }

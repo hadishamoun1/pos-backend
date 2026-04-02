@@ -57,7 +57,7 @@ async createRequest(data: any): Promise<Request> {
   // ✅ Validate and Link Item Variants (+ ItemBatch)
   const requestDetails = await Promise.all(
     (details || []).map(async (detail) => {
-      const { itemVariantId, itemBatchId, quantity, sqm, price, total } = detail;
+      const { itemVariantId, itemBatchId, quantity, sqm, price, total, sqmPieceId, length, width } = detail;
 
       const itemVariant = await this.itemVariantRepo.findOne({
         where: { id: itemVariantId },
@@ -87,6 +87,9 @@ async createRequest(data: any): Promise<Request> {
         sqm,
         price,
         total,
+        sqmPieceId: sqmPieceId != null ? Number(sqmPieceId) : null,
+        length: length != null ? Number(length) : null,
+        width: width != null ? Number(width) : null,
       });
     }),
   );
@@ -195,10 +198,12 @@ async getRequestById(id: number): Promise<any> {
         itemType: item?.type ?? "Unknown",
         stockMode: item?.stockMode ?? "SQM",
 
-        length: itemVariant?.length ?? 0,
-        width: itemVariant?.width ?? 0,
+        length: (detail as any).length != null ? Number((detail as any).length) : (itemVariant?.length ?? 0),
+        width: (detail as any).width != null ? Number((detail as any).width) : (itemVariant?.width ?? 0),
         origin: itemVariant?.origin ?? "Unknown",
         sheetsPerBox: itemVariant?.sheetsPerBox ?? 0,
+
+        sqmPieceId: (detail as any).sqmPieceId ?? null,
 
         quantity: detail.quantity ?? 0,
         sqm: detail.sqm ?? 0,
@@ -354,6 +359,9 @@ async getFilteredRequests(page: number = 1, limit: number = 10) {
         sqm: Number(d.sqm) || 0,
         price: Number(d.price) || 0,
         total: Number(d.total) || 0,
+        sqmPieceId: d.sqmPieceId != null ? Number(d.sqmPieceId) : null,
+        length: d.length != null ? Number(d.length) : null,
+        width: d.width != null ? Number(d.width) : null,
       };
 
       // ✅ Save batch if provided
