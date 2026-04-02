@@ -833,7 +833,7 @@ private async createOrRebuildJVForPurchaseInvoice(
   const last = await this.journalVoucherRepo
     .find({
       where: { jvNumber: Like(`${prefix} - %`) } as any,
-      order: { jvNumber: 'DESC' } as any,
+      order: { id: 'DESC' } as any,
       take: 1,
     })
     .then((arr) => arr[0]);

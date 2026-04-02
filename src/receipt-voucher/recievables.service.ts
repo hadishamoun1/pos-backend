@@ -79,10 +79,10 @@ async create(data: {
   // 2) Choose prefix: 'RVG' for G, else 'RV'
   const prefix = data.type === 'G' ? 'RVG' : 'RV';
 
-  // 3) New JV number
+  // 3) New JV number — order by id DESC to avoid alphabetic sort breaking at 1000+
   const lastJv = await this.jvRepo.find({
     where: { jvNumber: Like(`${prefix}${yy}-%`) },
-    order: { jvNumber: 'DESC' },
+    order: { id: 'DESC' },
     take: 1,
   });
   const seq = lastJv.length
@@ -321,7 +321,7 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
     const prefix = data.type === 'G' ? 'RVG' : 'RV';
     const last = await this.jvRepo.find({
       where: { jvNumber: Like(`${prefix}${yy}-%`) },
-      order: { jvNumber: 'DESC' },
+      order: { id: 'DESC' },
       take: 1,
     });
     const seq = last.length
