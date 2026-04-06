@@ -56,8 +56,8 @@ export class UnitPriceModalRow {
   @Column({ type: 'tinyint', default: 0 })
   addToItemCost: boolean;
 
-  @Column({ type: 'tinyint', default: 0,nullable:true })
-  invoiceNbTax: boolean;
+  @Column({ type: 'string', default: 0,nullable:true })
+  invoiceNbTax: string;
 
   @Column({ type: 'tinyint', default: 0 })
   shipping: boolean;
