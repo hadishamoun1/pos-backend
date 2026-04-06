@@ -56,7 +56,7 @@ export class UnitPriceModalRow {
   @Column({ type: 'tinyint', default: 0 })
   addToItemCost: boolean;
 
-  @Column({ type: 'string', default: 0,nullable:true })
+  @Column({ type: 'varchar', length: 255, default: null, nullable: true })
   invoiceNbTax: string;
 
   @Column({ type: 'tinyint', default: 0 })
