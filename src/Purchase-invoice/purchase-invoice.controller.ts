@@ -12,7 +12,7 @@ import {
 import { PurchaseInvoiceService } from './purchase-invoice.service';
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
-import { UnitPriceModalRow } from '../entities/Purchase-Invoice/unit-price-modal-row.entity.ts';
+import { UnitPriceModalRow } from '../entities/Purchase-Invoice/unit-price-modal-row.entity';
 // ✅ auth + perms
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionsGuard } from '../auth/permissions.guard';

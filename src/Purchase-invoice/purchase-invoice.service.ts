@@ -4,7 +4,6 @@ import { InjectRepository, } from '@nestjs/typeorm';
 import {
   Repository,
   In,
-  Like,
   EntityManager,
   SelectQueryBuilder,
   Brackets,
@@ -14,7 +13,7 @@ import { Transfer } from 'src/entities/inventory/transfer.entity';
 
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
-import { UnitPriceModalRow } from '../entities/Purchase-Invoice/unit-price-modal-row.entity.ts';
+import { UnitPriceModalRow } from '../entities/Purchase-Invoice/unit-price-modal-row.entity';
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
 import { PurchaseVoucherDetail } from '../entities/Vouchers/purchaseVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
@@ -824,22 +823,21 @@ private async createOrRebuildJVForPurchaseInvoice(
   }
 
   const rate = Number((invoice as any).exchangeRate ?? 1);
+  const invoiceCurrency = String((invoice as any).currency || 'USD').toUpperCase();
   const normalLL = normalTotal * rate;
   const ofrLL = ofrTotal * rate;
 
-  let prefix = 'PV';
-  if ((invoice as any).type === 'G') prefix = 'PVG';
+  const jvNumber = (invoice as any).invoiceNumber;
 
-  const last = await this.journalVoucherRepo
-    .find({
-      where: { jvNumber: Like(`${prefix} - %`) } as any,
-      order: { id: 'DESC' } as any,
-      take: 1,
-    })
-    .then((arr) => arr[0]);
-
-  const seq = last ? parseInt((last as any).jvNumber.split(' - ')[1], 10) + 1 : 1;
-  const jvNumber = `${prefix} - ${String(seq).padStart(5, '0')}`;
+  // Fetch supplier name for JV descriptions
+  const invoiceWithSupplier = await this.invoiceRepo.findOne({
+    where: { id: (invoice as any).id } as any,
+    relations: ['supplier'],
+  });
+  const supplierName = (invoiceWithSupplier as any)?.supplier?.supplierName || '';
+  const supplierInvNb = String((invoice as any).supplierInvoiceNumber || '').trim();
+  const hdrDebitDesc = `فاتورة شراء - رقم ${supplierInvNb}${supplierName ? ' - ' + supplierName : ''}`;
+  const hdrCreditDesc = `فاتورة شراء - رقم ${supplierInvNb}`;
 
   let hdrDr = 0,
     hdrDrUSD = 0,
@@ -895,8 +893,10 @@ private async createOrRebuildJVForPurchaseInvoice(
 const debitLine = this.journalVoucherDetailRepo.create(
   {
     accountId: (expenseAcct as any).id,
-    description: 'فاتورة شراء',
+    description: hdrDebitDesc,
     docNbr: jvNumber,
+    currency: invoiceCurrency,
+    exRateUSD: rate,
 
     dr: hdrDr,
     drUSD: hdrDrUSD,
@@ -920,8 +920,10 @@ const debitLine = this.journalVoucherDetailRepo.create(
 const creditLine = this.journalVoucherDetailRepo.create(
   {
     supplierId: (invoice as any).supplierId,
-    description: 'فاتورة شراء',
+    description: hdrCreditDesc,
     docNbr: jvNumber,
+    currency: invoiceCurrency,
+    exRateUSD: rate,
 
     dr: 0,
     drUSD: 0,
@@ -1005,11 +1007,23 @@ const creditLine = this.journalVoucherDetailRepo.create(
       }
 
       // debit side (your existing row.accountId stays the same)
+      const rowChargeName = String(row.chargeName || '').trim();
+      const rowNbTax = String(row.invoiceNbTax || '').trim();
+      const debitDesc = ['Expense invoice', rowChargeName, rowNbTax]
+        .filter(Boolean)
+        .join(' - ');
+      const creditDesc = ['Payable invoice', rowChargeName, rowNbTax]
+        .filter(Boolean)
+        .join(' - ');
+
+        
  const drLine = this.journalVoucherDetailRepo.create(
   {
     accountId: row.accountId ?? row.account?.id ?? null,
-    description: 'فاتورة شراء',
+    description: debitDesc,
     docNbr: jvNumber,
+    currency: invoiceCurrency,
+    exRateUSD: rate,
 
     dr,
     drUSD,
@@ -1056,8 +1070,10 @@ const creditLine = this.journalVoucherDetailRepo.create(
     accountId: creditAccountId,
     supplierId: creditSupplierId,
 
-    description: 'فاتورة شراء',
+    description: creditDesc,
     docNbr: jvNumber,
+    currency: invoiceCurrency,
+    exRateUSD: rate,
 
     dr: 0,
     drUSD: 0,
@@ -1150,6 +1166,7 @@ private async getNextPurchaseInvoiceNumber(type: 'S' | 'G' | 'SR' | 'RVR'): Prom
   // ────────────────────────────────────────────────────────────
 async create(data: Partial<PurchaseInvoice>) {
   const type = (data as any).type ?? 'S';
+  (data as any).supplierInvoiceNumber = (data as any).invoiceNumber ?? null;
   (data as any).invoiceNumber = await this.getNextPurchaseInvoiceNumber(type);
 
   // 1) save invoice + items
@@ -1380,6 +1397,7 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   const {
     items: incomingItemsPayload,
     unitPriceRows: incomingUnitPriceRowsPayload,
+    invoiceNumber: _ignoredInvoiceNumber,
     ...headerPayload
   } = (data as any) || {};
 

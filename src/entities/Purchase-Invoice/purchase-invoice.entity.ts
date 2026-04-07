@@ -10,7 +10,7 @@ import {
 } from 'typeorm';
 import { Supplier } from '../supplier.entity';
 import { PurchaseInvoiceItem } from './purchase-invoice-item.entity';
-import { UnitPriceModalRow } from './unit-price-modal-row.entity.ts';
+import { UnitPriceModalRow } from './unit-price-modal-row.entity';
 import { PurchaseVoucher } from '../Vouchers/purchaseVoucher.entity';
 import { JournalVoucher } from '../Vouchers/journalVoucher.entity';
 
@@ -21,6 +21,9 @@ export class PurchaseInvoice {
 
   @Column({ type: 'varchar', nullable: true ,unique: true})
   invoiceNumber: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  supplierInvoiceNumber: string;
 
   @Column({
     type: 'date',
