@@ -1139,9 +1139,6 @@ async getBrowsingInvoices(
     order: { date: 'DESC' },
   });
 
-  const toNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-  const nullLast = (v: any) =>
-    v == null || Number.isNaN(Number(v)) ? Number.POSITIVE_INFINITY : Number(v);
   const toTime = (d: any) => {
     const t = new Date(d as any).getTime();
     return Number.isFinite(t) ? t : -Infinity;
@@ -1209,25 +1206,9 @@ async getBrowsingInvoices(
   }
 
   const cmpWithinGroup = (a: any, b: any) => {
-    const aItemIdx = nullLast(a.itemSortIndex);
-    const bItemIdx = nullLast(b.itemSortIndex);
-    if (aItemIdx !== bItemIdx) return aItemIdx - bItemIdx;
-
-    const nameCmp = String(a.itemName || '').localeCompare(String(b.itemName || ''));
-    if (nameCmp !== 0) return nameCmp;
-
-    const aThIdx = nullLast(a.thicknessSortIndex);
-    const bThIdx = nullLast(b.thicknessSortIndex);
-    if (aThIdx !== bThIdx) return aThIdx - bThIdx;
-
-    const aTh = toNum(a.thickness);
-    const bTh = toNum(b.thickness);
-    if (aTh !== bTh) return aTh - bTh;
-
     const bt = toTime(b.invoiceDate);
     const at = toTime(a.invoiceDate);
     if (bt !== at) return bt - at;
-
     return String(a.invoiceNumber || '').localeCompare(String(b.invoiceNumber || ''));
   };
 
