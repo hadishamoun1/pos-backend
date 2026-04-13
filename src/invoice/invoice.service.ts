@@ -1439,110 +1439,6 @@ async getBrowsingInvoicesByItemBatches(
   }
 
   /** Exact same ordering you already use (copy your function here) */
-  private orderLikeItemsService(rows: any[]) {
-    const toNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-    const nullLast = (n: any) =>
-      n == null || Number.isNaN(Number(n)) ? Number.POSITIVE_INFINITY : Number(n);
-
-    // 1) group by itemName
-    const byItem = new Map<string, any[]>();
-    for (const r of rows) {
-      const key = r.itemName ?? '';
-      if (!byItem.has(key)) byItem.set(key, []);
-      byItem.get(key)!.push(r);
-    }
-
-    // items: item.sortIndex NULLS LAST, then name ASC
-    const itemKeys = Array.from(byItem.keys()).sort((a, b) => {
-      const aArr = byItem.get(a)!;
-      const bArr = byItem.get(b)!;
-      const minSortA = Math.min(...aArr.map((x) => nullLast(x.itemSortIndex)));
-      const minSortB = Math.min(...bArr.map((x) => nullLast(x.itemSortIndex)));
-      if (minSortA !== minSortB) return minSortA - minSortB;
-      return a.localeCompare(b);
-    });
-
-    const orderedAll: any[] = [];
-
-    for (const itemKey of itemKeys) {
-      const rowsOfItem = byItem.get(itemKey)!;
-
-      // 2) group by thickness value
-      const byTh = new Map<number, any[]>();
-      for (const r of rowsOfItem) {
-        const th = toNum(r.thickness);
-        if (!byTh.has(th)) byTh.set(th, []);
-        byTh.get(th)!.push(r);
-      }
-
-      // thickness: thickness.sort_index NULLS LAST, then numeric thickness ASC
-      const thKeys = Array.from(byTh.keys()).sort((ta, tb) => {
-        const aArr = byTh.get(ta)!;
-        const bArr = byTh.get(tb)!;
-        const minSortA = Math.min(...aArr.map((x) => nullLast(x.thicknessSortIndex)));
-        const minSortB = Math.min(...bArr.map((x) => nullLast(x.thicknessSortIndex)));
-        if (minSortA !== minSortB) return minSortA - minSortB;
-        return ta - tb;
-      });
-
-      for (const th of thKeys) {
-        const rowsTh = byTh.get(th)!;
-
-        // 3) dims vs non-dims
-        const hasDims = (r: any) => toNum(r.length) > 0 && toNum(r.width) > 0;
-        const dimmed = rowsTh.filter(hasDims);
-        const nonDimmed = rowsTh.filter((r) => !hasDims(r) || r.type === 'sqm');
-
-        // group dimmed by L|W
-        const byDims = new Map<string, any[]>();
-        for (const r of dimmed) {
-          const k = `${toNum(r.length)}|${toNum(r.width)}`;
-          if (!byDims.has(k)) byDims.set(k, []);
-          byDims.get(k)!.push(r);
-        }
-
-        // dims order: area DESC → L DESC → W DESC
-        const dimKeys = Array.from(byDims.keys()).sort((ka, kb) => {
-          const [aL, aW] = ka.split('|').map(Number);
-          const [bL, bW] = kb.split('|').map(Number);
-          const aArea = aL * aW, bArea = bL * bW;
-          if (aArea !== bArea) return bArea - aArea;
-          if (aL !== bL) return bL - aL;
-          return bW - aW;
-        });
-
-        // per dims group: box (SPB DESC) → sheet → sqm
-        for (const dk of dimKeys) {
-          const g = byDims.get(dk)!;
-
-          const boxes = g
-            .filter((x) => x.type === 'box')
-            .sort(
-              (a, b) =>
-                (toNum(b.sheetsPerBox) || 0) - (toNum(a.sheetsPerBox) || 0) ||
-                toNum(a.itemVariantId) - toNum(b.itemVariantId),
-            );
-          const sheets = g
-            .filter((x) => x.type === 'sheet')
-            .sort((a, b) => toNum(a.itemVariantId) - toNum(b.itemVariantId));
-          const sqms = g.filter((x) => x.type === 'sqm');
-
-          orderedAll.push(...boxes, ...sheets, ...sqms);
-        }
-
-        // then sqm without dims (variantId), then no-dims non-sqm
-        const sqmOthers = nonDimmed
-          .filter((x) => x.type === 'sqm')
-          .sort((a, b) => toNum(a.itemVariantId) - toNum(b.itemVariantId));
-        const noDimsNonSqm = nonDimmed.filter((x) => x.type !== 'sqm');
-
-        orderedAll.push(...sqmOthers, ...noDimsNonSqm);
-      }
-    }
-
-    return orderedAll;
-  }
-
   /**
    * Parse the free-text query.
    * Supports:
@@ -1641,7 +1537,12 @@ async getBrowsingInvoicesByItemBatches(
     limitPerGroup: number,
     pagePerGroup: number,
   ) {
-    const ordered = this.orderLikeItemsService(items);
+    const ordered = items.slice().sort((a, b) => {
+      const at = new Date(a.invoiceDate as any).getTime();
+      const bt = new Date(b.invoiceDate as any).getTime();
+      if (bt !== at) return bt - at; // date DESC
+      return String(a.invoiceNumber || '').localeCompare(String(b.invoiceNumber || ''));
+    });
     const start = (pagePerGroup - 1) * limitPerGroup;
     const slice = ordered.slice(start, start + limitPerGroup);
 
