@@ -14,15 +14,15 @@ import { Settings } from '../entities/settings.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
-import { Thickness } from 'src/entities/inventory/thickness.entity';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { Thickness } from '../entities/inventory/thickness.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
 import { InventoryCount } from '../entities/inventory/count.entity';
-import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
+import { SqmPiece } from '../entities/inventory/SqmPiece.entity';
 import { Request as RequestEntity } from '../entities/request.entity';
 import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails.entity';
 import { TransferItem } from '../entities/inventory/transferItem.entity';
-import { AccountingResolverService } from 'src/accountRoleMap/accounting-resolver.service';
+import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 
 
 @Injectable()

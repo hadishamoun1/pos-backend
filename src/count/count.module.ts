@@ -6,9 +6,9 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryCountService } from './count.service';
 import { InventoryCountController } from './count.controller';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
-import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
-import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
+import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
+import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
 
 @Module({
   imports: [

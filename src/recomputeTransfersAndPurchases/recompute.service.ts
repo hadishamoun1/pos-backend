@@ -6,21 +6,21 @@ import { EventEmitter } from 'events';
 
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
-import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 
 import { Transfer } from '../entities/inventory/transfer.entity';
 import { TransferItem } from '../entities/inventory/transferItem.entity';
 
-import { PurchaseInvoice } from 'src/entities/Purchase-Invoice/purchase-invoice.entity';
-import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
+import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
+import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
 
 import { TransfersService } from '../transfers/transfers.service';
-import { PurchaseInvoiceService } from 'src/Purchase-invoice/purchase-invoice.service';
+import { PurchaseInvoiceService } from '../Purchase-invoice/purchase-invoice.service';
 
-import { Invoice } from 'src/entities/invoice.entity';
-import { InvoiceItem } from 'src/entities/invoiceItem.entity';
-import { InventoryCount } from 'src/entities/inventory/count.entity';
+import { Invoice } from '../entities/invoice.entity';
+import { InvoiceItem } from '../entities/invoiceItem.entity';
+import { InventoryCount } from '../entities/inventory/count.entity';
 import { Brackets } from 'typeorm';
 
 type EventRow = {

@@ -4,10 +4,10 @@ import { In, Repository } from 'typeorm';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransactionGateway } from './inventory-transaction.gateway';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
-import { InvoiceItem } from 'src/entities/invoiceItem.entity';
-import { Thickness } from 'src/entities/inventory/thickness.entity';
-import { Item } from 'src/entities/inventory/item.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
+import { InvoiceItem } from '../entities/invoiceItem.entity';
+import { Thickness } from '../entities/inventory/thickness.entity';
+import { Item } from '../entities/inventory/item.entity';
 import { Brackets } from 'typeorm';
 
 @Injectable()

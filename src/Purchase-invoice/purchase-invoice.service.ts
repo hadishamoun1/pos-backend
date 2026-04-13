@@ -9,7 +9,7 @@ import {
   Brackets,
   DeepPartial 
 } from 'typeorm';
-import { Transfer } from 'src/entities/inventory/transfer.entity';
+import { Transfer } from '../entities/inventory/transfer.entity';
 
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
@@ -17,18 +17,18 @@ import { UnitPriceModalRow } from '../entities/Purchase-Invoice/unit-price-modal
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
 import { PurchaseVoucherDetail } from '../entities/Vouchers/purchaseVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
-import { TransferItem } from 'src/entities/inventory/transferItem.entity';
+import { TransferItem } from '../entities/inventory/transferItem.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
-import { InventoryCount } from 'src/entities/inventory/count.entity';
-import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
-import { InvoiceItem } from 'src/entities/invoiceItem.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
+import { InventoryCount } from '../entities/inventory/count.entity';
+import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
+import { InvoiceItem } from '../entities/invoiceItem.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { Item } from '../entities/inventory/item.entity';
-import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
-import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
-import { Settings } from 'src/entities/settings.entity';
+import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
+import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+import { Settings } from '../entities/settings.entity';
 import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service'; 
 
 

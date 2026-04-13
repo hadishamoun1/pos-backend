@@ -5,7 +5,7 @@ import { Account } from '../entities/account.entity';
 import { Currency } from '../entities/currency.entity';
 import { SupplierService } from './suppliers.service';
 import { SupplierController } from './suppliers.controller';
-import { AccountingModule } from 'src/accountRoleMap/accounting.module';
+import { AccountingModule } from '../accountRoleMap/accounting.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Supplier, Account, Currency]),  AccountingModule,],

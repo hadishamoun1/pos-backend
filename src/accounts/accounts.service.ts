@@ -5,8 +5,8 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Like, Repository } from 'typeorm';
 import { Account } from '../entities/account.entity';
-import { Customer } from 'src/entities/customer.entity';
-import { Supplier } from 'src/entities/supplier.entity';
+import { Customer } from '../entities/customer.entity';
+import { Supplier } from '../entities/supplier.entity';
 import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 
 type SearchKind = 'account' | 'customer' | 'supplier';

@@ -6,9 +6,9 @@ import { InventoryTransactionController } from './inventroy-transactions.control
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransactionGateway } from './inventory-transaction.gateway';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity';
-import { Item } from 'src/entities/inventory/item.entity';
-import { Thickness } from 'src/entities/inventory/thickness.entity';
-import { Transfer } from 'src/entities/inventory/transfer.entity';
+import { Item } from '../entities/inventory/item.entity';
+import { Thickness } from '../entities/inventory/thickness.entity';
+import { Transfer } from '../entities/inventory/transfer.entity';
 
 @Module({
   imports: [

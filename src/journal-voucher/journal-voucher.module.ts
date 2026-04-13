@@ -6,9 +6,9 @@ import { Account } from '../entities/account.entity';
 import { CurrencyRate } from '../entities/currencyRate.entity';
 import { JournalVoucherService } from './journal-voucher.service';
 import { JournalVoucherController } from './journal-voucher.controller';
-import { Customer } from 'src/entities/customer.entity';
-import { Settings } from 'src/entities/settings.entity'; 
-import { Supplier } from 'src/entities/supplier.entity';
+import { Customer } from '../entities/customer.entity';
+import { Settings } from '../entities/settings.entity'; 
+import { Supplier } from '../entities/supplier.entity';
 
 
 @Module({

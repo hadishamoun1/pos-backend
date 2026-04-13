@@ -8,7 +8,7 @@ import { RequestService } from './requests.service';
 import { RequestController } from './requests.controller';
 import { Settings } from '../entities/settings.entity';
 import { RequestGateway } from './requests.gateway'; //
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 
 @Module({
   imports: [

@@ -15,12 +15,12 @@ import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
-import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
-import { InventoryCount } from 'src/entities/inventory/count.entity';
-import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
+import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
+import { InventoryCount } from '../entities/inventory/count.entity';
+import { SqmPiece } from '../entities/inventory/SqmPiece.entity';
 import { Request as RequestEntity } from '../entities/request.entity';
 import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails.entity';
-import { AccountingResolverService } from 'src/accountRoleMap/accounting-resolver.service';
+import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 import { AccountingModule } from '../accountRoleMap/accounting.module';
 
 @Module({

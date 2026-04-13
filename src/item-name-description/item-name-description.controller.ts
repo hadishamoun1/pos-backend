@@ -9,7 +9,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { ItemNameDescriptionService } from "./item-name-description.service";
-import { ItemNameDescription } from "src/entities/inventory/itemNameDescription.entity";
+import { ItemNameDescription } from "../entities/inventory/itemNameDescription.entity";
 
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";

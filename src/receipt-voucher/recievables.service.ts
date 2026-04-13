@@ -10,9 +10,9 @@ import { Account } from '../entities/account.entity';
 import { Settings } from '../entities/settings.entity';
 import { RecievablesGateway } from './recievables.broadcast';
 import { Sequence } from 'mysql2/typings/mysql/lib/protocol/sequences/Sequence';
-import { Currency } from 'src/entities/currency.entity';
+import { Currency } from '../entities/currency.entity';
 import { Invoice } from '../entities/invoice.entity';
-import { AccountingResolverService } from 'src/accountRoleMap/accounting-resolver.service';
+import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 
 type ReceiptType = 'G' | 'S' | 'RVR';
 

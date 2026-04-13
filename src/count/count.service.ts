@@ -6,11 +6,11 @@ import { In, IsNull, Repository } from 'typeorm';
 import { InventoryCount } from '../entities/inventory/count.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 import { CountType } from '../entities/inventory/count.entity';
-import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
 import { DataSource } from 'typeorm';
-import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity'; // adjust path
+import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity'; // adjust path
 
 @Injectable()
 export class InventoryCountService {

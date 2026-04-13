@@ -14,11 +14,11 @@ import { Settings } from '../entities/settings.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
-import { InvoiceItem } from 'src/entities/invoiceItem.entity';
-import { InventoryCount } from 'src/entities/inventory/count.entity';
-import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
-import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
+import { InvoiceItem } from '../entities/invoiceItem.entity';
+import { InventoryCount } from '../entities/inventory/count.entity';
+import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
+import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
 
 import { InventoryTransactionGateway } from '../inventroy-transactions/inventory-transaction.gateway';
 import { InventoryTransactionService } from '../inventroy-transactions/inventroy-transactions.service';

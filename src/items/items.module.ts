@@ -5,8 +5,8 @@ import { ItemsController } from './items.controller';
 import { Item } from '../entities/inventory/item.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
-import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
+import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
 import {RealDescription} from '../entities/inventory/itemNameRealDescription.entity'
 @Module({
   imports: [

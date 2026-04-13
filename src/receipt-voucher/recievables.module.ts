@@ -10,9 +10,9 @@ import { Customer } from '../entities/customer.entity';
 import { Account } from '../entities/account.entity';
 import { Settings } from '../entities/settings.entity';
 import { RecievablesGateway } from './recievables.broadcast';
-import { Currency } from 'src/entities/currency.entity';
+import { Currency } from '../entities/currency.entity';
 import { Invoice } from '../entities/invoice.entity';
-import { AccountingModule } from 'src/accountRoleMap/accounting.module';
+import { AccountingModule } from '../accountRoleMap/accounting.module';
 
 @Module({
   imports: [

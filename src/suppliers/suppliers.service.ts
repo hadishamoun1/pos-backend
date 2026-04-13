@@ -4,7 +4,7 @@ import { Repository, Like } from 'typeorm';
 import { Supplier } from '../entities/supplier.entity';
 import { Account } from '../entities/account.entity';
 import { Currency } from '../entities/currency.entity';
-import { AccountingResolverService } from 'src/accountRoleMap/accounting-resolver.service';
+import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 
 @Injectable()
 export class SupplierService {

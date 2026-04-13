@@ -9,7 +9,7 @@ import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { SqmPiecesService } from './sqm-piece.service';
 import { SqmPiecesController } from './sqm-piece.controller';
-import { InventoryTransaction } from 'src/entities/inventory/inventoryTransactions.entity';
+import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 
 @Module({
   imports: [

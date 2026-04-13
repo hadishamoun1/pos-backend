@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { DataSource, In, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RealDescription } from '../entities/inventory/itemNameRealDescription.entity';
-import { ItemVariant } from 'src/entities/inventory/itemVariant.entity';
+import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 
 @Injectable()
 export class RealDescriptionsService {

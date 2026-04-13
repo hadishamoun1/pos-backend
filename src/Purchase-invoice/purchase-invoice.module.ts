@@ -9,16 +9,16 @@ import { InventoryTransaction } from '../entities/inventory/inventoryTransaction
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
 import { Account } from '../entities/account.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
-import { JournalVoucher } from 'src/entities/Vouchers/journalVoucher.entity';
-import { JournalVoucherDetail } from 'src/entities/Vouchers/journalVoucherDetails.entity';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
-import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
-import { InvoiceItem } from 'src/entities/invoiceItem.entity';
-import { Settings } from 'src/entities/settings.entity';
+import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
+import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
+import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
+import { InvoiceItem } from '../entities/invoiceItem.entity';
+import { Settings } from '../entities/settings.entity';
 import { AccountingModule } from '../accountRoleMap/accounting.module';
 
 
-import { RecomputeModule } from 'src/recomputeTransfersAndPurchases/recompute.module';
+import { RecomputeModule } from '../recomputeTransfersAndPurchases/recompute.module';
 
 @Module({
   imports: [

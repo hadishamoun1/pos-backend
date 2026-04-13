@@ -133,12 +133,13 @@ async trashCutRemainder(
 }
 
 
-
   @Patch(':id')
   @RequirePerms('transfers.update')
   async update(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
     return this.svc.updateTransfer(id, body);
   }
+
+
 
   @Delete(':id')
   @RequirePerms('transfers.delete')

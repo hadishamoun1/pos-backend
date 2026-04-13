@@ -10,8 +10,8 @@ import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
 import { CurrencyRate } from '../entities/currencyRate.entity';
-import { Customer } from 'src/entities/customer.entity';
-import { Settings } from 'src/entities/settings.entity'; 
+import { Customer } from '../entities/customer.entity';
+import { Settings } from '../entities/settings.entity'; 
 import { QueryFailedError } from 'typeorm';
 import { Invoice } from '../entities/invoice.entity';
 import { ReceiptEntry } from '../entities/recievables.entities'; // ✅ adjust path

@@ -10,14 +10,14 @@ import { InventoryTransaction } from '../entities/inventory/inventoryTransaction
 import { Thickness } from '../entities/inventory/thickness.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransactionModule } from '../inventroy-transactions/inventroy-transactions.module';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
-import { SqmPiece } from 'src/entities/inventory/SqmPiece.entity';
-import { InvoiceItem } from 'src/entities/invoiceItem.entity';
-import { InventoryCount } from 'src/entities/inventory/count.entity';
-import { PurchaseInvoiceItem } from 'src/entities/Purchase-Invoice/purchase-invoice-item.entity';
-import { ItemNameDescription } from 'src/entities/inventory/itemNameDescription.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
+import { SqmPiece } from '../entities/inventory/SqmPiece.entity';
+import { InvoiceItem } from '../entities/invoiceItem.entity';
+import { InventoryCount } from '../entities/inventory/count.entity';
+import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
+import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
 
-import { RecomputeModule } from 'src/recomputeTransfersAndPurchases/recompute.module';
+import { RecomputeModule } from '../recomputeTransfersAndPurchases/recompute.module';
 
 @Module({
   imports: [

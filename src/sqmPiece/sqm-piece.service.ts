@@ -12,7 +12,7 @@ import { Transfer } from '../entities/inventory/transfer.entity';
 import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
-import { InventoryTransaction } from 'src/entities/inventory/inventoryTransactions.entity';
+import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 
 function num(v: any): number {
   const n = Number(v);

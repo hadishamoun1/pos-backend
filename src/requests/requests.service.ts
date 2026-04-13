@@ -7,7 +7,7 @@ import { Customer } from '../entities/customer.entity';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { Settings } from '../entities/settings.entity';
 import { RequestGateway } from './requests.gateway';
-import { ItemBatch } from 'src/entities/inventory/itemBatch.entity';
+import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 
 @Injectable()
 export class RequestService {
