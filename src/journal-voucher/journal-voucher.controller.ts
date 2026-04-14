@@ -195,6 +195,7 @@ async getCustomerBalances(
     @Query('type') type?: 'S' | 'G' | 'ALL',
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('currency') currency?: 'USD' | 'LL',
   ) {
     const toOptInt = (v?: string) => {
       if (v == null) return undefined;
@@ -212,6 +213,7 @@ async getCustomerBalances(
       type: (type as any) ?? 'ALL',
       from,
       to,
+      currency: currency ?? 'USD',
     });
   }
 

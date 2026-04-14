@@ -886,8 +886,9 @@ async getAccountStatementOFR(params: {
   type?: 'S' | 'G' | 'ALL';
   from?: string;
   to?: string;
+  currency?: 'USD' | 'LL';
 }) {
-  const { accountId, customerId, supplierId, type = 'ALL', from, to } = params;
+  const { accountId, customerId, supplierId, type = 'ALL', from, to, currency = 'USD' } = params;
 
   const targets = [
     accountId != null ? 'account' : null,
@@ -947,9 +948,13 @@ async getAccountStatementOFR(params: {
   const amounts = (r: JournalVoucherDetail) => {
     const kind = rowKind(r);
     if (kind === 'G') {
-      return { kind, debit: Number(r.drUSDOFR || 0), credit: Number(r.crUSDOFR || 0) };
+      return currency === 'LL'
+        ? { kind, debit: Number(r.drLLOFR || 0), credit: Number(r.crLLOFR || 0) }
+        : { kind, debit: Number(r.drUSDOFR || 0), credit: Number(r.crUSDOFR || 0) };
     }
-    return { kind, debit: Number(r.drUSD || 0), credit: Number(r.crUSD || 0) };
+    return currency === 'LL'
+      ? { kind, debit: Number(r.drLL || 0), credit: Number(r.crLL || 0) }
+      : { kind, debit: Number(r.drUSD || 0), credit: Number(r.crUSD || 0) };
   };
 
   const applyTargetWhere = (qb: any) => {
