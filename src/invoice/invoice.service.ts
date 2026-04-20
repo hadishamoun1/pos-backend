@@ -1084,7 +1084,31 @@ async getInvoiceById(invoiceId: number): Promise<any> {
 
 
 
- async getFilteredInvoices(
+// Fetch multiple invoices in parallel (capped concurrency) — used by PDF batch download.
+// Returns shaped results in the same order as the input ids array.
+async getInvoicesByIds(ids: number[], concurrency = 12): Promise<any[]> {
+  if (!ids.length) return [];
+
+  const results: any[] = new Array(ids.length);
+
+  for (let i = 0; i < ids.length; i += concurrency) {
+    const chunk = ids.slice(i, i + concurrency);
+    const settled = await Promise.all(
+      chunk.map((id, j) =>
+        this.getInvoiceById(id)
+          .then((data) => ({ ok: true, data, idx: i + j }))
+          .catch(() => ({ ok: false, data: null, idx: i + j })),
+      ),
+    );
+    for (const s of settled) {
+      if (s.ok) results[s.idx] = s.data;
+    }
+  }
+
+  return results.filter(Boolean);
+}
+
+async getFilteredInvoices(
   page: number,
   limit: number,
 ): Promise<{ data: any[]; total: number; totalPages: number }> {
@@ -1116,8 +1140,77 @@ async getInvoiceById(invoiceId: number): Promise<any> {
   };
 }
 
+async getInvoiceReport(params: {
+  from?: string;
+  to?: string;
+  type?: string;
+  minTotal?: number;
+  maxCount?: number;
+  all?: boolean;
+  page?: number;
+  limit?: number;
+}): Promise<{ data: any[]; total: number; totalPages: number }> {
+  const { from, to, type, minTotal, maxCount, all = false, page = 1, limit = 100 } = params;
 
- 
+  const qb = this.invoiceRepository
+    .createQueryBuilder('inv')
+    .leftJoinAndSelect('inv.customer', 'c')
+    .orderBy('inv.date', 'DESC')
+    .addOrderBy('inv.id', 'DESC');
+
+  if (from) qb.andWhere('inv.date >= :from', { from });
+  if (to)   qb.andWhere('inv.date <= :to',   { to });
+  if (type && type !== 'ALL') qb.andWhere('inv.invoiceType = :type', { type });
+  if (minTotal !== undefined && Number.isFinite(minTotal)) {
+    qb.andWhere('inv.grandTotal >= :minTotal', { minTotal });
+  }
+
+  const mapRow = (inv: Invoice) => ({
+    id:            inv.id,
+    invoiceNumber: inv.invoiceNumber,
+    date:          inv.date,
+    invoiceType:   inv.invoiceType,
+    grandTotal:    Number(inv.grandTotal),
+    totalWithoutVAT: Number(inv.totalWithoutVAT),
+    totalVAT:      Number(inv.totalVAT),
+    currencyRate:  Number(inv.currencyRate),
+    customerId:    inv.customer?.id,
+    customerName:  inv.customer?.customerName,
+  });
+
+  if (all) {
+    const cap = maxCount && maxCount > 0 ? maxCount : undefined;
+    const invoices = await (cap ? qb.take(cap) : qb).getMany();
+    return { data: invoices.map(mapRow), total: invoices.length, totalPages: 1 };
+  }
+
+  const pageNum = page > 0 ? page : 1;
+  const take    = limit > 0 ? Math.min(limit, 500) : 100;
+  const skip    = (pageNum - 1) * take;
+
+  // When maxCount is set, trim the effective take so we never return rows beyond the cap
+  const effectiveTake = maxCount && maxCount > 0
+    ? Math.min(take, Math.max(0, maxCount - skip))
+    : take;
+
+  if (effectiveTake <= 0) {
+    // Past the cap — still need real total to compute totalPages correctly
+    const total = await qb.getCount();
+    const cappedTotal = maxCount ? Math.min(total, maxCount) : total;
+    return { data: [], total: cappedTotal, totalPages: Math.ceil(cappedTotal / take) };
+  }
+
+  const [invoices, total] = await qb.skip(skip).take(effectiveTake).getManyAndCount();
+  const cappedTotal = maxCount && maxCount > 0 ? Math.min(total, maxCount) : total;
+  return {
+    data: invoices.map(mapRow),
+    total: cappedTotal,
+    totalPages: Math.ceil(cappedTotal / take),
+  };
+}
+
+
+
 
 
 async getBrowsingInvoices(

@@ -7,7 +7,6 @@ import {
   Query,
   Put,
   ParseIntPipe,
-  DefaultValuePipe,
   BadRequestException,
   UseGuards,
 } from "@nestjs/common";
@@ -157,17 +156,68 @@ export class InvoiceController {
     );
   }
 
+  // GET /invoices/v1/batch?ids=1,2,3,4  — fetch multiple invoices at once for PDF export
+  @Get("v1/batch")
+  @RequirePerms("invoices.view")
+  async getInvoicesBatch(@Query("ids") idsParam?: string) {
+    const ids = (idsParam || "")
+      .split(",")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!ids.length) return [];
+    return this.invoiceService.getInvoicesByIds(ids);
+  }
+
+  @Get("v1/report")
+  @RequirePerms("invoices.view")
+  async getInvoiceReport(
+    @Query("from")      from?:      string,
+    @Query("to")        to?:        string,
+    @Query("type")      type?:      string,
+    @Query("minTotal")  minTotal?:  string,
+    @Query("maxCount")  maxCount?:  string,
+    @Query("all")       all?:       string,
+    @Query("page")      page?:      string,
+    @Query("limit")     limit?:     string,
+  ) {
+    const toSafeFloat = (v?: string) => {
+      if (v == null || v.trim() === '') return undefined;
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const toSafeInt = (v?: string, fallback = 1) => {
+      if (v == null || v.trim() === '') return fallback;
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
+    return this.invoiceService.getInvoiceReport({
+      from:      from?.trim()  || undefined,
+      to:        to?.trim()    || undefined,
+      type:      type?.trim()  || undefined,
+      minTotal:  toSafeFloat(minTotal),
+      maxCount:  toSafeFloat(maxCount),
+      all:       all === 'true',
+      page:      toSafeInt(page,  1),
+      limit:     toSafeInt(limit, 100),
+    });
+  }
+
   @Get("v1/:id")
   @RequirePerms("invoices.view")
-  async getInvoiceById(@Param("id") id: number): Promise<Invoice> {
-    return this.invoiceService.getInvoiceById(id);
+  async getInvoiceById(@Param("id") id: string): Promise<Invoice> {
+    const numId = parseInt(id, 10);
+    if (!Number.isFinite(numId)) {
+      throw new BadRequestException(`Invalid invoice id: ${id}`);
+    }
+    return this.invoiceService.getInvoiceById(numId);
   }
 
   @Get("filtered")
   @RequirePerms("invoices.view")
   async getFilteredInvoices(
-    @Query("page", new DefaultValuePipe(1), ParseIntPipe) page: number,
-    @Query("limit", new DefaultValuePipe(100), ParseIntPipe) limit: number
+    @Query("page", ParseIntPipe) page = 1,
+    @Query("limit", ParseIntPipe) limit = 100,
   ) {
     return this.invoiceService.getFilteredInvoices(page, limit);
   }
