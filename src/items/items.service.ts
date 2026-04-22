@@ -5474,7 +5474,8 @@ async getVariantLedgerByRealDesc(params?: {
       in:      Number(toNum(v.totalIn).toFixed(2)),
       out:     Number(toNum(v.totalOut).toFixed(2)),
       // ✅ SUM(quantityofr) → Balance (Qty) in frontend
-      balance: Number(toNum(snap?.balU ?? v.totalBalance).toFixed(2)),
+      // Do NOT fall back to v.totalBalance — that field stores sqm, not units
+      balance: Number(toNum(snap?.balU ?? 0).toFixed(2)),
     };
 
     const ofrTotalsSqm = {
