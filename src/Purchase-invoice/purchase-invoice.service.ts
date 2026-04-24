@@ -948,153 +948,112 @@ const creditLine = this.journalVoucherDetailRepo.create(
   const extraJVDetails: JournalVoucherDetail[] = [];
 
   if (unitPriceRows?.length) {
+    type CreditGroup = {
+      creditAccountId: number | null;
+      creditSupplierId: number | null;
+      cr: number; crUSD: number; crLL: number;
+      crOFR: number; crUSDOFR: number; crLLOFR: number;
+    };
+    const creditGroups = new Map<string, CreditGroup>();
+
     for (const row of unitPriceRows as any[]) {
+      // Resolve charge account and tax (supplier of tax) fields
+      const chargeAccountId: number | null = row.accountId ?? row.account?.id ?? null;
+
+      const taxAccountId: number | null =
+        row.taxAccountId != null ? Number(row.taxAccountId)
+        : row.taxAccount?.id != null ? Number(row.taxAccount.id)
+        : null;
+
+      const taxSupplierId: number | null =
+        row.taxSupplierId != null ? Number(row.taxSupplierId)
+        : row.taxSupplier?.id != null ? Number(row.taxSupplier.id)
+        : null;
+
+      const creditAccountId: number | null = taxAccountId;
+      const creditSupplierId: number | null = creditAccountId ? null : (taxSupplierId ?? null);
+
+      // Skip row if charge account or supplier of tax is missing
+      if (!chargeAccountId || (creditAccountId == null && creditSupplierId == null)) {
+        continue;
+      }
+
       const value = Number(row.value || 0);
       const valueOFR = Number(row.valueOFR || 0);
       const valueLL = value * rate;
       const valueOFRLL = valueOFR * rate;
 
-      let dr = 0,
-        drUSD = 0,
-        drLL = 0,
-        drOFR = 0,
-        drUSDOFR = 0,
-        drLLOFR = 0;
-
-      let cr = 0,
-        crUSD = 0,
-        crLL = 0,
-        crOFR = 0,
-        crUSDOFR = 0,
-        crLLOFR = 0;
+      let dr = 0, drUSD = 0, drLL = 0, drOFR = 0, drUSDOFR = 0, drLLOFR = 0;
+      let cr = 0, crUSD = 0, crLL = 0, crOFR = 0, crUSDOFR = 0, crLLOFR = 0;
 
       if ((invoice as any).type === 'G') {
-        drOFR = valueOFR;
-        drUSDOFR = valueOFR;
-        drLLOFR = valueOFRLL;
-
-        crOFR = valueOFR;
-        crUSDOFR = valueOFR;
-        crLLOFR = valueOFRLL;
+        drOFR = valueOFR; drUSDOFR = valueOFR; drLLOFR = valueOFRLL;
+        crOFR = valueOFR; crUSDOFR = valueOFR; crLLOFR = valueOFRLL;
       } else if ((invoice as any).type === 'S') {
-        dr = value;
-        drUSD = value;
-        drLL = valueLL;
-        drOFR = value;
-        drUSDOFR = value;
-        drLLOFR = valueLL;
-
-        cr = value;
-        crUSD = value;
-        crLL = valueLL;
-        crOFR = value;
-        crUSDOFR = value;
-        crLLOFR = valueLL;
+        dr = value; drUSD = value; drLL = valueLL;
+        drOFR = value; drUSDOFR = value; drLLOFR = valueLL;
+        cr = value; crUSD = value; crLL = valueLL;
+        crOFR = value; crUSDOFR = value; crLLOFR = valueLL;
       } else if ((invoice as any).type === 'SR') {
-        dr = value;
-        drUSD = value;
-        drLL = valueLL;
-        drOFR = valueOFR;
-        drUSDOFR = valueOFR;
-        drLLOFR = valueOFRLL;
-
-        cr = value;
-        crUSD = value;
-        crLL = valueLL;
-        crOFR = valueOFR;
-        crUSDOFR = valueOFR;
-        crLLOFR = valueOFRLL;
+        dr = value; drUSD = value; drLL = valueLL;
+        drOFR = valueOFR; drUSDOFR = valueOFR; drLLOFR = valueOFRLL;
+        cr = value; crUSD = value; crLL = valueLL;
+        crOFR = valueOFR; crUSDOFR = valueOFR; crLLOFR = valueOFRLL;
       }
 
-      // debit side (your existing row.accountId stays the same)
+      // One debit line per charge row
       const rowChargeName = String(row.chargeName || '').trim();
       const rowNbTax = String(row.invoiceNbTax || '').trim();
-      const debitDesc = ['Expense invoice', rowChargeName, rowNbTax]
-        .filter(Boolean)
-        .join(' - ');
-      const creditDesc = ['Payable invoice', rowChargeName, rowNbTax]
-        .filter(Boolean)
-        .join(' - ');
+      const debitDesc = ['Expense invoice', rowChargeName, rowNbTax].filter(Boolean).join(' - ');
 
-        
- const drLine = this.journalVoucherDetailRepo.create(
-  {
-    accountId: row.accountId ?? row.account?.id ?? null,
-    description: debitDesc,
-    docNbr: jvNumber,
-    currency: invoiceCurrency,
-    exRateUSD: rate,
+      const drLine = this.journalVoucherDetailRepo.create({
+        accountId: chargeAccountId,
+        description: debitDesc,
+        docNbr: jvNumber,
+        currency: invoiceCurrency,
+        exRateUSD: rate,
+        dr, drUSD, drLL, drOFR, drUSDOFR, drLLOFR,
+        cr: 0, crUSD: 0, crLL: 0, crOFR: 0, crUSDOFR: 0, crLLOFR: 0,
+        exchangeRateAcc: null,
+        exchangeRateUSD: null,
+      } as DeepPartial<JournalVoucherDetail>);
 
-    dr,
-    drUSD,
-    drLL,
-    drOFR,
-    drUSDOFR,
-    drLLOFR,
+      extraJVDetails.push(drLine);
 
-    cr: 0,
-    crUSD: 0,
-    crLL: 0,
-    crOFR: 0,
-    crUSDOFR: 0,
-    crLLOFR: 0,
+      // Group credit lines: key includes nbTax only when it is present
+      const groupKey = rowNbTax
+        ? `${rowNbTax}|${creditAccountId ?? ''}|${creditSupplierId ?? ''}`
+        : `|${creditAccountId ?? ''}|${creditSupplierId ?? ''}`;
 
-    exchangeRateAcc: null,
-    exchangeRateUSD: null,
-  } as DeepPartial<JournalVoucherDetail>,
-);
+      if (creditGroups.has(groupKey)) {
+        const g = creditGroups.get(groupKey)!;
+        g.cr += cr; g.crUSD += crUSD; g.crLL += crLL;
+        g.crOFR += crOFR; g.crUSDOFR += crUSDOFR; g.crLLOFR += crLLOFR;
+      } else {
+        creditGroups.set(groupKey, {
+          creditAccountId, creditSupplierId,
+          cr, crUSD, crLL, crOFR, crUSDOFR, crLLOFR,
+        });
+      }
+    }
 
-      // ✅ CREDIT side uses “Supplier of Tax” selection
-      const taxAccountId =
-        row.taxAccountId != null
-          ? Number(row.taxAccountId)
-          : row.taxAccount?.id != null
-          ? Number(row.taxAccount.id)
-          : null;
+    // One credit line per group (summed)
+    for (const [, g] of creditGroups) {
+      const crLine = this.journalVoucherDetailRepo.create({
+        accountId: g.creditAccountId,
+        supplierId: g.creditSupplierId,
+        description: 'Payable invoice',
+        docNbr: jvNumber,
+        currency: invoiceCurrency,
+        exRateUSD: rate,
+        dr: 0, drUSD: 0, drLL: 0, drOFR: 0, drUSDOFR: 0, drLLOFR: 0,
+        cr: g.cr, crUSD: g.crUSD, crLL: g.crLL,
+        crOFR: g.crOFR, crUSDOFR: g.crUSDOFR, crLLOFR: g.crLLOFR,
+        exchangeRateAcc: null,
+        exchangeRateUSD: null,
+      } as DeepPartial<JournalVoucherDetail>);
 
-      const taxSupplierId =
-        row.taxSupplierId != null
-          ? Number(row.taxSupplierId)
-          : row.taxSupplier?.id != null
-          ? Number(row.taxSupplier.id)
-          : null;
-
-      // rule: account wins; fallback to old supplierId if none provided
-      const creditAccountId = taxAccountId;
-      const creditSupplierId = creditAccountId
-        ? null
-        : (taxSupplierId ?? (row.supplierId ?? row.supplier?.id ?? null));
-
-  const crLine = this.journalVoucherDetailRepo.create(
-  {
-    accountId: creditAccountId,
-    supplierId: creditSupplierId,
-
-    description: creditDesc,
-    docNbr: jvNumber,
-    currency: invoiceCurrency,
-    exRateUSD: rate,
-
-    dr: 0,
-    drUSD: 0,
-    drLL: 0,
-    drOFR: 0,
-    drUSDOFR: 0,
-    drLLOFR: 0,
-
-    cr,
-    crUSD,
-    crLL,
-    crOFR,
-    crUSDOFR,
-    crLLOFR,
-
-    exchangeRateAcc: null,
-    exchangeRateUSD: null,
-  } as DeepPartial<JournalVoucherDetail>,
-);
-
-      extraJVDetails.push(drLine, crLine);
+      extraJVDetails.push(crLine);
     }
   }
 
