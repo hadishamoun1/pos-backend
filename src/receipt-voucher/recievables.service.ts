@@ -13,6 +13,7 @@ import { Sequence } from 'mysql2/typings/mysql/lib/protocol/sequences/Sequence';
 import { Currency } from '../entities/currency.entity';
 import { Invoice } from '../entities/invoice.entity';
 import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
+import { computeDiff } from '../common/compute-diff';
 
 type ReceiptType = 'G' | 'S' | 'RVR';
 
@@ -261,7 +262,7 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
   const all = await this.findSummary();
   this.gateway.broadcastAll(all);
 
-  return savedEntry;
+  return { ...savedEntry, jvNumber: jv.jvNumber } as any;
 }
 
 
@@ -310,6 +311,10 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
     relations: ['journalVoucher', 'journalVoucher.details'],
   });
   if (!entry) throw new NotFoundException('Receipt entry not found');
+
+  const RECEIVABLE_FIELDS = ['customerId', 'date', 'cashNumber', 'currency', 'exchangeRate', 'amountExchanged', 'comments', 'type', 'pmtType'];
+  const oldSnapshot = {} as Record<string, any>;
+  for (const f of RECEIVABLE_FIELDS) oldSnapshot[f] = (entry as any)[f] ?? null;
 
   const jv = entry.journalVoucher;
 
@@ -498,7 +503,8 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
   // broadcast new summary
   this.gateway.broadcastAll(await this.findSummary());
 
-  return updated;
+  const _changes = computeDiff(oldSnapshot, updated as any, Object.keys(oldSnapshot));
+  return { ...updated, jvNumber: jv.jvNumber, _changes: Object.keys(_changes).length ? _changes : undefined } as any;
 }
 
 

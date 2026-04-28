@@ -23,6 +23,7 @@ import { Request as RequestEntity } from '../entities/request.entity';
 import { RequestDetail as RequestDetailEntity } from '../entities/requestDetails.entity';
 import { TransferItem } from '../entities/inventory/transferItem.entity';
 import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
+import { computeDiff } from '../common/compute-diff';
 
 
 @Injectable()
@@ -2215,6 +2216,10 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       date: existingInvoice.date,
     });
 
+    const INV_FIELDS = ['date', 'invoiceType', 'customerId', 'grandTotal', 'discount', 'notes'];
+    const oldInvSnapshot: Record<string, any> = {};
+    for (const f of INV_FIELDS) oldInvSnapshot[f] = (existingInvoice as any)[f] ?? null;
+
     const oldInvoiceType = existingInvoice.invoiceType as "S" | "G" | "RVR";
     const docNbr = existingInvoice.invoiceNumber;
 
@@ -2883,6 +2888,112 @@ if (useVAT && vatAccount && !isG) {
     });
 
     console.log("🎉 Invoice update complete for id:", (savedInvoice as any).id);
+
+    // ── Change tracking ────────────────────────────────────────────
+    const headerChanges = computeDiff(oldInvSnapshot, savedInvoice as any, INV_FIELDS);
+
+    // Fetch display info (name + thickness) for all variant IDs involved
+    const allVIds = Array.from(new Set([
+      ...existingItems.map((it) => Number((it as any).itemVariantId)),
+      ...(data.items || []).map((it: any) => Number(it.itemVariantId)),
+    ].filter((x) => x > 0)));
+
+    const variantDisplayMap = new Map<number, { name: string | null; thickness: number | null }>();
+    if (allVIds.length) {
+      const vRows = await this.dataSource.getRepository(ItemVariant)
+        .createQueryBuilder('v')
+        .leftJoin('v.thickness', 'th')
+        .select('v.id', 'id')
+        .addSelect('v.invoiceDisplayName', 'name')
+        .addSelect('th.thickness', 'thickness')
+        .where('v.id IN (:...ids)', { ids: allVIds })
+        .getRawMany();
+      for (const r of vRows)
+        variantDisplayMap.set(Number(r.id), { name: r.name ?? null, thickness: r.thickness != null ? Number(r.thickness) : null });
+    }
+
+    const itemLabel = (variantId: number, item: any) => {
+      const info = variantDisplayMap.get(Number(variantId));
+      return info?.name ?? `Variant #${variantId}`;
+    };
+
+    const oldByBatch = new Map<number, any>();
+    for (const it of existingItems) oldByBatch.set(Number((it as any).itemBatchId), it);
+
+    const newByBatch = new Map<number, any>();
+    for (const it of (data.items || [])) newByBatch.set(Number(it.itemBatchId), it);
+
+    const ITEM_NUM_FIELDS = ['sqm', 'quantity', 'unitPrice', 'totalAmount'];
+    const ITEM_OPT_FIELDS = ['length', 'width', 'sheetsPerBox'];
+    const itemAdded: any[] = [];
+    const itemRemoved: any[] = [];
+    const itemModified: any[] = [];
+
+    for (const [batchId, ni] of newByBatch) {
+      const oi = oldByBatch.get(batchId);
+      const niInfo = variantDisplayMap.get(Number(ni.itemVariantId));
+      if (!oi) {
+        itemAdded.push({
+          batchId,
+          name: itemLabel(ni.itemVariantId, ni),
+          thickness: niInfo?.thickness ?? null,
+          length: ni.length ?? null,
+          width: ni.width ?? null,
+          sheetsPerBox: ni.sheetsPerBox ?? null,
+          sqm: ni.sqm,
+          quantity: ni.quantity,
+          unitPrice: ni.unitPrice,
+        });
+      } else {
+        const oiInfo = variantDisplayMap.get(Number((oi as any).itemVariantId));
+        const diff: Record<string, { from: any; to: any }> = {};
+        // Numeric fields
+        for (const f of ITEM_NUM_FIELDS) {
+          const ov = Number((oi as any)[f] ?? 0), nv = Number(ni[f] ?? 0);
+          if (Math.abs(ov - nv) > 0.001) diff[f] = { from: ov, to: nv };
+        }
+        // Optional dimension fields (can be null)
+        for (const f of ITEM_OPT_FIELDS) {
+          const ov = (oi as any)[f] ?? null, nv = ni[f] ?? null;
+          if (String(ov) !== String(nv)) diff[f] = { from: ov, to: nv };
+        }
+        if (Object.keys(diff).length) {
+          itemModified.push({
+            batchId,
+            name: itemLabel(ni.itemVariantId, ni),
+            thickness: niInfo?.thickness ?? null,
+            changes: diff,
+          });
+        }
+      }
+    }
+    for (const [batchId, oi] of oldByBatch) {
+      if (!newByBatch.has(batchId)) {
+        const oiInfo = variantDisplayMap.get(Number((oi as any).itemVariantId));
+        itemRemoved.push({
+          batchId,
+          name: itemLabel((oi as any).itemVariantId, oi),
+          thickness: oiInfo?.thickness ?? null,
+          length: (oi as any).length ?? null,
+          width: (oi as any).width ?? null,
+          sheetsPerBox: (oi as any).sheetsPerBox ?? null,
+          sqm: (oi as any).sqm,
+          quantity: (oi as any).quantity,
+          unitPrice: (oi as any).unitPrice,
+        });
+      }
+    }
+
+    const hasChanges = Object.keys(headerChanges).length || itemAdded.length || itemRemoved.length || itemModified.length;
+    if (hasChanges) {
+      (savedInvoice as any)._changes = {
+        ...(Object.keys(headerChanges).length ? { header: headerChanges } : {}),
+        ...(itemAdded.length || itemRemoved.length || itemModified.length
+          ? { items: { added: itemAdded, removed: itemRemoved, modified: itemModified } }
+          : {}),
+      };
+    }
+
     return savedInvoice;
   } catch (error: any) {
     console.error("❌ Invoice update failed:", error?.message, error);

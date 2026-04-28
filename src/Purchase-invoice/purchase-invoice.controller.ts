@@ -22,9 +22,7 @@ import { RequirePerms } from '../auth/permissions.decorator';
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class PurchaseInvoiceController {
 
-  constructor(
-    private readonly service: PurchaseInvoiceService,
-  ) {}
+  constructor(private readonly service: PurchaseInvoiceService) {}
 
   @Post()
   @RequirePerms('purchases.create')

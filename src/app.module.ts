@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
 
@@ -45,7 +46,12 @@ import { CashCollectionsModule } from './cash-collections/cash-collections.modul
 import { EmployeesModule } from './Employee/Employee.module';
 import { CompanyModule } from './company/company.module';
 import { SecurityAlertModule } from './securityAlert/security-alert.module';
+import { ActivityLogModule } from './activity-log/activity-log.module';
+import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
 @Module({
+  providers: [
+    { provide: APP_INTERCEPTOR, useClass: ActivityLogInterceptor },
+  ],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
 TypeOrmModule.forRootAsync({
@@ -104,6 +110,7 @@ TypeOrmModule.forRootAsync({
     EmployeesModule,
     CompanyModule,
     SecurityAlertModule,
+    ActivityLogModule,
   ],
 })
 export class AppModule {}

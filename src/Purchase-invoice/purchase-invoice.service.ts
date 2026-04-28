@@ -29,7 +29,8 @@ import { Item } from '../entities/inventory/item.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Settings } from '../entities/settings.entity';
-import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service'; 
+import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
+import { computeDiff } from '../common/compute-diff';
 
 
 export type Chain = 'OFR' | 'VM';
@@ -1334,6 +1335,10 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   });
   if (!existing) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
 
+  const PI_FIELDS = ['date', 'supplierId', 'invoiceType', 'grandTotal', 'currency', 'notes', 'discount'];
+  const oldSnapshot = {} as Record<string, any>;
+  for (const f of PI_FIELDS) oldSnapshot[f] = (existing as any)[f] ?? null;
+
   const prevItemIds = (((existing as any).items ?? []) as any[])
     .map((it: any) => Number(it.id))
     .filter((n: number) => Number.isFinite(n) && n > 0);
@@ -1511,7 +1516,10 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   // ✅ compute averages ONLY for this invoice (no chain recompute)
   await this.computeAndWriteCostsForInvoice((savedInvoice as any).id);
 
-  return savedInvoice;
+  const _changes = computeDiff(oldSnapshot, savedInvoice as any, PI_FIELDS);
+  return Object.keys(_changes).length
+    ? Object.assign(savedInvoice as any, { _changes })
+    : savedInvoice;
 }
 
 

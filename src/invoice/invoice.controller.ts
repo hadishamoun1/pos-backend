@@ -273,7 +273,7 @@ createReturnInvoice(
   @RequirePerms("invoices.update")
   async update(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: any
+    @Body() body: any,
   ): Promise<Invoice> {
     return this.invoiceService.updateInvoice(id, body);
   }

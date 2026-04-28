@@ -14,6 +14,7 @@ import { JwtAuthGuard } from "./jwt-auth.guard";
 import { PermissionsGuard } from "./permissions.guard";
 import { RequirePerms } from "./permissions.decorator";
 import { FaceAuthService } from "../face-auth/face-auth.service";
+import { ActivityLogService } from "../activity-log/activity-log.service";
 
 @Controller("auth")
 export class AuthController {
@@ -21,6 +22,7 @@ export class AuthController {
     private auth: AuthService,
     private users: UsersService,
     private faceAuth: FaceAuthService,
+    private activityLog: ActivityLogService,
   ) {}
 
   @Get("state")
@@ -35,9 +37,12 @@ export class AuthController {
   }
 
   @Post("login")
-  async login(@Body() body: { username: string; password: string }) {
+  async login(@Body() body: { username: string; password: string }, @Request() req: any) {
     const user = await this.auth.validate(body.username, body.password);
-    return await this.auth.sign(user);
+    const result = await this.auth.sign(user);
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() ?? req.ip ?? null;
+    this.activityLog.log({ userId: user.id, username: user.username, action: 'LOGIN', description: 'User logged in', ipAddress: ip }).catch(() => {});
+    return result;
   }
 
   @Post("bootstrap-admin")
