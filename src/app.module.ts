@@ -65,6 +65,7 @@ TypeOrmModule.forRootAsync({
     database: process.env.DB_NAME || 'pos_v1',
     autoLoadEntities: true,
     synchronize: true,
+    extra: { connectionLimit: 50 },
   }),
 }),
 
