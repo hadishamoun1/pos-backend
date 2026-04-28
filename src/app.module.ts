@@ -48,6 +48,7 @@ import { CompanyModule } from './company/company.module';
 import { SecurityAlertModule } from './securityAlert/security-alert.module';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
+import { RecordingModule } from './recording/recording.module';
 @Module({
   providers: [
     { provide: APP_INTERCEPTOR, useClass: ActivityLogInterceptor },
@@ -111,6 +112,7 @@ TypeOrmModule.forRootAsync({
     CompanyModule,
     SecurityAlertModule,
     ActivityLogModule,
+    RecordingModule,
   ],
 })
 export class AppModule {}
