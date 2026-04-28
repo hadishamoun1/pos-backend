@@ -1,7 +1,9 @@
 // src/users/user.controller.ts
 import {
+  BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -46,6 +48,24 @@ export class UsersController {
     @Body() body: { role: string },
   ) {
     return this.usersService.setRole(id, body.role);
+  }
+
+  @Delete(':id')
+  @RequirePerms('users.manage')
+  async deleteUser(@Param('id', ParseIntPipe) id: number) {
+    return this.usersService.deleteUser(id);
+  }
+
+  @Patch(':id/password')
+  @RequirePerms('users.manage')
+  async changePassword(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { password: string },
+  ) {
+    if (!body?.password || body.password.length < 4) {
+      throw new BadRequestException('Password must be at least 4 characters');
+    }
+    return this.usersService.changePassword(id, body.password);
   }
 
   // ✅ NEW: Update current user's language preference

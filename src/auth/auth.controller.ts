@@ -2,10 +2,13 @@ import {
   Body,
   Controller,
   ForbiddenException,
+  NotFoundException,
   Post,
+  Get,
+  Param,
+  ParseIntPipe,
   UseGuards,
   Request,
-  Get,
 } from "@nestjs/common";
 import { AuthService } from "./auth.service";
 import { UsersService } from "../user/user.service"; // <-- if your folder is ../users, change this
@@ -145,6 +148,16 @@ export class AuthController {
   @Post("face/login")
   async faceLogin(@Body() body: { embedding: number[]; password: string }) {
     return this.faceAuth.faceLoginWithPassword(body);
+  }
+
+  // Admin logs in AS another user — returns a full JWT for that user
+  @Get("impersonate/:id")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePerms("users.manage")
+  async impersonate(@Param("id", ParseIntPipe) id: number) {
+    const user = await this.users.findById(id);
+    if (!user) throw new NotFoundException("User not found");
+    return this.auth.sign(user);
   }
 
   @Post("face/enroll-me")

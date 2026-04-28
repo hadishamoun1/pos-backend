@@ -70,6 +70,21 @@ export class UsersService {
     };
   }
 
+  async deleteUser(id: number) {
+    const user = await this.repo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException("User not found");
+    await this.repo.remove(user);
+    return { success: true, id };
+  }
+
+  async changePassword(id: number, newPassword: string) {
+    const user = await this.repo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException("User not found");
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    await this.repo.save(user);
+    return { success: true, id };
+  }
+
   async updateUser(id: number, patch: Partial<User>) {
     await this.repo.update({ id }, patch);
     return this.repo.findOne({ where: { id } });

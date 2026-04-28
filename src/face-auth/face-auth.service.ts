@@ -13,8 +13,10 @@ import { AuthService } from "../auth/auth.service";
 
 @Injectable()
 export class FaceAuthService {
-  // Start strict; tune after real testing with your office camera/lighting
-  private readonly MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD || 0.88);
+  // face-api.js recommends Euclidean ≤ 0.6, which equals cosine ≥ 0.82.
+  // 0.78 gives slightly more tolerance for lighting/angle changes while still
+  // being secure (face login always requires the password too).
+  private readonly MATCH_THRESHOLD = Number(process.env.FACE_MATCH_THRESHOLD || 0.78);
 
   constructor(
     @InjectRepository(FaceProfile)
