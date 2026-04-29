@@ -33,6 +33,8 @@ async function bootstrap() {
       if (origin === 'http://localhost:3001') return callback(null, true);
 
       if (/^https:\/\/.*\.vercel\.app$/.test(origin)) return callback(null, true);
+      if (/^https?:\/\/.*\.revopos\.net$/.test(origin)) return callback(null, true);
+      if (origin === 'https://revopos.net') return callback(null, true);
 
       if (/^https?:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin)) return callback(null, true);
       if (/^https?:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin)) return callback(null, true);
