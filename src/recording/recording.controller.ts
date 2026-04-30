@@ -104,7 +104,13 @@ export class RecordingController {
     const fileSize = stat.size;
     const range = req.headers['range'];
     const ext = path.extname(filename).toLowerCase();
-    const contentType = ext === '.mp4' ? 'video/mp4' : 'video/x-msvideo';
+    const contentTypeMap: Record<string, string> = {
+      '.mp4': 'video/mp4',
+      '.avi': 'video/x-msvideo',
+      '.wav': 'audio/wav',
+      '.mp3': 'audio/mpeg',
+    };
+    const contentType = contentTypeMap[ext] ?? 'application/octet-stream';
 
     if (range) {
       const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
