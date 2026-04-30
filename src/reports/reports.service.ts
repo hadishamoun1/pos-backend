@@ -1627,6 +1627,38 @@ async getProfitability(params: ProfitabilityParams) {
   };
 }
 
+async getTopCustomers(params: { from?: string | null; to?: string | null }) {
+  const { from, to } = params;
+
+  const qb = this.dataSource
+    .createQueryBuilder()
+    .from('invoices', 'inv')
+    .leftJoin('customers', 'cust', 'inv.customerId = cust.id')
+    .select('cust.id', 'customerId')
+    .addSelect('cust.customerName', 'customerName')
+    .addSelect('cust.financialNumber', 'financialNumber')
+    .addSelect('SUM(inv.grandTotal)', 'grandTotal')
+    .addSelect('COUNT(inv.id)', 'invoiceCount')
+    .where('inv.invoiceType IN (:...types)', { types: ['S', 'RVR'] })
+    .andWhere('cust.id IS NOT NULL')
+    .groupBy('cust.id')
+    .addGroupBy('cust.customerName')
+    .addGroupBy('cust.financialNumber')
+    .orderBy('grandTotal', 'DESC');
+
+  if (from) qb.andWhere('inv.date >= :from', { from });
+  if (to) qb.andWhere('inv.date <= :to', { to });
+
+  const raw = await qb.getRawMany();
+
+  return raw.map((r: any) => ({
+    customerName:    String(r.customerName    || ''),
+    financialNumber: String(r.financialNumber || '—'),
+    grandTotal:      Number(Number(r.grandTotal   || 0).toFixed(2)),
+    invoiceCount:    Number(r.invoiceCount    || 0),
+  }));
+}
+
 async getProfitabilityByMonth(params: ProfitabilityParams) {
   const {
     from,

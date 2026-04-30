@@ -86,6 +86,15 @@ async getProfitability(@Query() q: any) {
     });
   }
 
+  @Get('top-customers')
+  @RequirePerms('reports.view')
+  async getTopCustomers(@Query() q: any) {
+    return this.reportsService.getTopCustomers({
+      from: q.from ?? null,
+      to:   q.to   ?? null,
+    });
+  }
+
   @Get('profitability/monthly')
 @RequirePerms('reports.view')
 async getProfitabilityByMonth(@Query() q: any) {
