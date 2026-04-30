@@ -1627,8 +1627,15 @@ async getProfitability(params: ProfitabilityParams) {
   };
 }
 
-async getTopCustomers(params: { from?: string | null; to?: string | null }) {
-  const { from, to } = params;
+async getTopCustomers(params: {
+  from?: string | null;
+  to?: string | null;
+  limit?: number | null;
+  invoiceType?: 'S' | 'RVR' | 'BOTH' | null;
+}) {
+  const { from, to, limit, invoiceType = 'BOTH' } = params;
+
+  const types = invoiceType === 'S' ? ['S'] : invoiceType === 'RVR' ? ['RVR'] : ['S', 'RVR'];
 
   const qb = this.dataSource
     .createQueryBuilder()
@@ -1639,7 +1646,7 @@ async getTopCustomers(params: { from?: string | null; to?: string | null }) {
     .addSelect('cust.financialNumber', 'financialNumber')
     .addSelect('SUM(inv.grandTotal)', 'grandTotal')
     .addSelect('COUNT(inv.id)', 'invoiceCount')
-    .where('inv.invoiceType IN (:...types)', { types: ['S', 'RVR'] })
+    .where('inv.invoiceType IN (:...types)', { types })
     .andWhere('cust.id IS NOT NULL')
     .groupBy('cust.id')
     .addGroupBy('cust.customerName')
@@ -1647,7 +1654,8 @@ async getTopCustomers(params: { from?: string | null; to?: string | null }) {
     .orderBy('grandTotal', 'DESC');
 
   if (from) qb.andWhere('inv.date >= :from', { from });
-  if (to) qb.andWhere('inv.date <= :to', { to });
+  if (to)   qb.andWhere('inv.date <= :to',   { to });
+  if (limit && limit > 0) qb.limit(limit);
 
   const raw = await qb.getRawMany();
 

@@ -90,8 +90,10 @@ async getProfitability(@Query() q: any) {
   @RequirePerms('reports.view')
   async getTopCustomers(@Query() q: any) {
     return this.reportsService.getTopCustomers({
-      from: q.from ?? null,
-      to:   q.to   ?? null,
+      from:        q.from        ?? null,
+      to:          q.to          ?? null,
+      limit:       q.limit       ? Number(q.limit) : null,
+      invoiceType: q.invoiceType ?? 'BOTH',
     });
   }
 
