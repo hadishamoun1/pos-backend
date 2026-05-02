@@ -2,21 +2,21 @@ import { Injectable, ForbiddenException } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 
-interface Command {
+export interface Command {
   id: string;
   type: 'browse' | 'search' | 'download';
   payload: Record<string, any>;
   issuedAt: number;
 }
 
-interface CommandResult {
+export interface CommandResult {
   commandId: string;
   type: string;
   data: Record<string, any>;
   receivedAt: number;
 }
 
-interface PendingDownload {
+export interface PendingDownload {
   commandId: string;
   filename: string;
   localPath: string;
