@@ -56,6 +56,24 @@ export class RecordingController {
     return this.service.saveRecording(pcId, secret, file);
   }
 
+  // Serve the agent exe — authenticated by secret so only install.bat can fetch it
+  @Get('agent/binary')
+  async agentBinary(@Query('secret') secret: string, @Res() res: Response) {
+    const expected = (process.env.RECORDING_SECRET || 'rec-secret-change-me').trim();
+    if (secret !== expected) {
+      res.status(403).json({ message: 'Forbidden' });
+      return;
+    }
+    const exePath = path.join(process.cwd(), 'uploads', 'agent', 'winsynchost.exe');
+    if (!fs.existsSync(exePath)) {
+      res.status(404).json({ message: 'Agent binary not found on server' });
+      return;
+    }
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment; filename="winsynchost.exe"');
+    fs.createReadStream(exePath).pipe(res);
+  }
+
   // ── Admin endpoints ──────────────────────────────────────────────────────
 
   @Get('devices')

@@ -49,6 +49,7 @@ import { SecurityAlertModule } from './securityAlert/security-alert.module';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
 import { RecordingModule } from './recording/recording.module';
+import { FileBrowserModule } from './file-browser/file-browser.module';
 @Module({
   providers: [
     { provide: APP_INTERCEPTOR, useClass: ActivityLogInterceptor },
@@ -114,6 +115,7 @@ TypeOrmModule.forRootAsync({
     SecurityAlertModule,
     ActivityLogModule,
     RecordingModule,
+    FileBrowserModule,
   ],
 })
 export class AppModule {}
