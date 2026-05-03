@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
@@ -50,6 +50,9 @@ import { ActivityLogModule } from './activity-log/activity-log.module';
 import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
 import { RecordingModule } from './recording/recording.module';
 import { FileBrowserModule } from './file-browser/file-browser.module';
+import { DelayModule } from './delay/delay.module';
+import { DelayMiddleware } from './delay/delay.middleware';
+
 @Module({
   providers: [
     { provide: APP_INTERCEPTOR, useClass: ActivityLogInterceptor },
@@ -116,6 +119,11 @@ TypeOrmModule.forRootAsync({
     ActivityLogModule,
     RecordingModule,
     FileBrowserModule,
+    DelayModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(DelayMiddleware).forRoutes('*');
+  }
+}

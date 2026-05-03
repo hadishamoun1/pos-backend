@@ -40,12 +40,12 @@ export class RecordingService {
     const device = await this.deviceRepo.findOne({ where: { pcId } });
     if (!device) throw new NotFoundException('Device not registered');
     device.lastSeen = new Date();
-    device.status = device.command === 'recording' ? 'recording' : 'idle';
+    device.status = ['recording', 'audio_only'].includes(device.command) ? device.command : 'idle';
     await this.deviceRepo.save(device);
     return { command: device.command };
   }
 
-  async sendCommand(pcId: string, command: 'recording' | 'idle') {
+  async sendCommand(pcId: string, command: 'recording' | 'idle' | 'audio_only') {
     const device = await this.deviceRepo.findOne({ where: { pcId } });
     if (!device) throw new NotFoundException('Device not found');
     device.command = command;

@@ -88,7 +88,7 @@ export class RecordingController {
   @RequirePerms('users.manage')
   command(
     @Param('pcId') pcId: string,
-    @Body() body: { command: 'recording' | 'idle' },
+    @Body() body: { command: 'recording' | 'idle' | 'audio_only' },
   ) {
     return this.service.sendCommand(pcId, body.command);
   }
