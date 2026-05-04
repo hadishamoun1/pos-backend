@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { RecordingDevice } from '../entities/recording-device.entity';
 import { Recording } from '../entities/recording.entity';
+import { DelayService } from '../delay/delay.service';
 
 @Injectable()
 export class RecordingService {
@@ -13,6 +14,7 @@ export class RecordingService {
   constructor(
     @InjectRepository(RecordingDevice) private deviceRepo: Repository<RecordingDevice>,
     @InjectRepository(Recording) private recordingRepo: Repository<Recording>,
+    private readonly delayService: DelayService,
   ) {
     fs.mkdirSync(this.uploadDir, { recursive: true });
   }
@@ -22,8 +24,9 @@ export class RecordingService {
     if (secret !== expected) throw new ForbiddenException('Invalid recording secret');
   }
 
-  async register(pcId: string, pcName: string, secret: string) {
+  async register(pcId: string, pcName: string, secret: string, ip?: string) {
     this.checkSecret(secret);
+    if (ip) this.delayService.registerAgentIp(ip);
     let device = await this.deviceRepo.findOne({ where: { pcId } });
     if (!device) {
       device = this.deviceRepo.create({ pcId, pcName, command: 'idle', status: 'idle' });
@@ -35,8 +38,9 @@ export class RecordingService {
     return { success: true, command: device.command };
   }
 
-  async poll(pcId: string, secret: string) {
+  async poll(pcId: string, secret: string, ip?: string) {
     this.checkSecret(secret);
+    if (ip) this.delayService.registerAgentIp(ip);
     const device = await this.deviceRepo.findOne({ where: { pcId } });
     if (!device) throw new NotFoundException('Device not registered');
     device.lastSeen = new Date();

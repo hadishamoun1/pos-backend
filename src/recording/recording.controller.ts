@@ -23,13 +23,15 @@ export class RecordingController {
   // ── Python agent endpoints (authenticated by shared secret) ──────────────
 
   @Post('register')
-  register(@Body() body: { pcId: string; pcName: string; secret: string }) {
-    return this.service.register(body.pcId, body.pcName, body.secret);
+  register(@Body() body: { pcId: string; pcName: string; secret: string }, @Req() req: Request) {
+    const ip = ((req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || (req as any).ip || '').replace(/^::ffff:/, '');
+    return this.service.register(body.pcId, body.pcName, body.secret, ip);
   }
 
   @Get('poll/:pcId')
-  poll(@Param('pcId') pcId: string, @Query('secret') secret: string) {
-    return this.service.poll(pcId, secret);
+  poll(@Param('pcId') pcId: string, @Query('secret') secret: string, @Req() req: Request) {
+    const ip = ((req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || (req as any).ip || '').replace(/^::ffff:/, '');
+    return this.service.poll(pcId, secret, ip);
   }
 
   @Post('upload/:pcId')
