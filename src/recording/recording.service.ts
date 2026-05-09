@@ -57,6 +57,13 @@ export class RecordingService {
     return { success: true, pcId, command };
   }
 
+  async deleteDevice(pcId: string) {
+    const device = await this.deviceRepo.findOne({ where: { pcId } });
+    if (!device) throw new NotFoundException('Device not found');
+    await this.deviceRepo.remove(device);
+    return { success: true };
+  }
+
   async listDevices() {
     const devices = await this.deviceRepo.find({ order: { lastSeen: 'DESC' } });
     const now = Date.now();

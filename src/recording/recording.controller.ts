@@ -85,6 +85,13 @@ export class RecordingController {
     return this.service.listDevices();
   }
 
+  @Delete('devices/:pcId')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePerms('users.manage')
+  deleteDevice(@Param('pcId') pcId: string) {
+    return this.service.deleteDevice(pcId);
+  }
+
   @Post('command/:pcId')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePerms('users.manage')
