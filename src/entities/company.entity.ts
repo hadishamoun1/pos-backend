@@ -13,4 +13,7 @@ export class Company {
 
   @Column({ type: "boolean", default: false })  // ← ADD THIS
   vatInclusive: boolean;
+
+  @Column({ type: "int", default: 0 })
+  apiDelayMs: number;
 }

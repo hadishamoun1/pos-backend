@@ -45,8 +45,8 @@ export class SettingsController {
 
   @Post('delay')
   @RequirePerms('settings.delay')
-  setDelay(@Body('delayMs') delayMs: number) {
-    this.delayService.setDelay(Number(delayMs));
+  async setDelay(@Body('delayMs') delayMs: number) {
+    await this.delayService.setDelay(Number(delayMs));
     return { delayMs: this.delayService.getDelay() };
   }
 }
