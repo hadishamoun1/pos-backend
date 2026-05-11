@@ -2220,7 +2220,8 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     const oldInvSnapshot: Record<string, any> = {};
     for (const f of INV_FIELDS) oldInvSnapshot[f] = (existingInvoice as any)[f] ?? null;
 
-    const oldInvoiceType = existingInvoice.invoiceType as "S" | "G" | "RVR";
+    const oldInvoiceType = existingInvoice.invoiceType as "S" | "G" | "RVR" | "RTN";
+    const oldIsRTNofG = oldInvoiceType === "RTN" && String((existingInvoice as any).invoiceNumber || "").startsWith("RG");
     const docNbr = existingInvoice.invoiceNumber;
 
     const existingItems = await invoiceItemRepo.find({
@@ -2315,6 +2316,14 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
         (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
       } else if (oldInvoiceType === "RVR") {
         (batch as any).in = addCounter((batch as any).in, -moveVal);
+      } else if (oldInvoiceType === "RTN") {
+        // RTN reduced out (returned stock) — unapply by adding back to out
+        if (oldIsRTNofG) {
+          (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
+        } else {
+          (batch as any).out = addCounter((batch as any).out, +moveVal);
+          (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
+        }
       }
 
       const start = num((batch as any).start);
@@ -2381,6 +2390,8 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
     const isReturn = (savedInvoice as any).invoiceType === "RVR";
     const isG = (savedInvoice as any).invoiceType === "G";
+    const isRTN = (savedInvoice as any).invoiceType === "RTN";
+    const isRTNofG = isRTN && String((savedInvoice as any).invoiceNumber || "").startsWith("RG");
 
     /* -----------------------------------------------------------
        3) CREATE NEW ITEMS
@@ -2516,6 +2527,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
         else if ((savedInvoice as any).invoiceType === "S") {
           quantity = -qtyLine;
           quantityofr = -qtyLine;
+        } else if (isRTN) {
+          if (isRTNofG) { quantityofr = +qtyLine; }
+          else { quantity = +qtyLine; quantityofr = +qtyLine; }
         }
       } else {
         if ((savedInvoice as any).invoiceType === "RVR") {
@@ -2529,6 +2543,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
           sqm = -sqmLine;
           quantityofr = -qtyLine;
           sqmofr = -sqmLine;
+        } else if (isRTN) {
+          if (isRTNofG) { quantityofr = +qtyLine; sqmofr = +sqmLine; }
+          else { quantity = +qtyLine; sqm = +sqmLine; quantityofr = +qtyLine; sqmofr = +sqmLine; }
         }
       }
 
@@ -2536,7 +2553,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
       return [
         invTxRepo.create({
-          transactionType: "Sales",
+          transactionType: isRTN ? "Sales Return" : "Sales",
           itemVariantId: item.itemVariantId,
           itemBatchId: item.itemBatchId,
           invoiceItemId: item.id,
@@ -2596,6 +2613,13 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
         (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
       } else if ((savedInvoice as any).invoiceType === "RVR") {
         (batch as any).in = addCounter((batch as any).in, +moveVal);
+      } else if (isRTN) {
+        if (isRTNofG) {
+          (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
+        } else {
+          (batch as any).out = addCounter((batch as any).out, -moveVal);
+          (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
+        }
       }
 
       const start = num((batch as any).start);
@@ -2682,7 +2706,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       return { usd: a, ll: a * rate };
     };
 
-    const salesRole = currencyCode === "USD" ? "Sales_USD" : "Sales_LL";
+    const salesRole = isRTN
+      ? (currencyCode === "USD" ? "SalesReturn_USD" : "SalesReturn_LL")
+      : (currencyCode === "USD" ? "Sales_USD" : "Sales_LL");
     const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
 
     const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
@@ -2691,7 +2717,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     const total = Number((savedInvoice as any).grandTotal) || 0;
     const totalWithoutVAT = Number((savedInvoice as any).totalWithoutVAT) || 0;
     const totalVAT = Number((savedInvoice as any).totalVAT) || 0;
-    const salesCrAmount = isG ? totalWithoutVAT + totalVAT : totalWithoutVAT;
+    const salesCrAmount = (isG || isRTNofG) ? totalWithoutVAT + totalVAT : totalWithoutVAT;
 
     const getJVFields = (type: "dr" | "cr", amount: number): Partial<JournalVoucherDetail> => {
       const { usd, ll } = toUsdLl(amount);
@@ -2712,7 +2738,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       };
 
       if (type === "dr") {
-        if (isG) {
+        if (isG || isRTNofG) {
           fields.drOFR = amount;
           fields.drUSDOFR = usd;
           fields.drLLOFR = ll;
@@ -2729,7 +2755,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
           fields.drLLOFR = ll;
         }
       } else {
-        if (isG) {
+        if (isG || isRTNofG) {
           fields.crOFR = amount;
           fields.crUSDOFR = usd;
           fields.crLLOFR = ll;
@@ -2752,37 +2778,37 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
 const jvDetailsForInvoice: JournalVoucherDetail[] = [];
 
-// DR: customer
+// Customer line: DR for sales, CR for returns
 const d1 = jvDetailRepo.create({
   customerId: (savedInvoice as any).customerId,
-  description: "فاتورة",
+  description: isRTN ? "فاتورة مرتجع" : "فاتورة",
   currency: currencyCode,
   docNbr,
   ...addRateFields(),
-  ...getJVFields("dr", total),
+  ...getJVFields(isRTN ? "cr" : "dr", total),
 } as DeepPartial<JournalVoucherDetail>);
 jvDetailsForInvoice.push(d1);
 
-// CR: sales
+// Sales/SalesReturn line: CR for sales, DR for returns
 const d2 = jvDetailRepo.create({
   accountId: (salesAccount as any).id,
-  description: "مبيعات خاضعة للضريبة على القيمة المضافة",
+  description: isRTN ? "مرتجع مبيعات" : "مبيعات خاضعة للضريبة على القيمة المضافة",
   currency: currencyCode,
   docNbr,
   ...addRateFields(),
-  ...getJVFields("cr", salesCrAmount),
+  ...getJVFields(isRTN ? "dr" : "cr", salesCrAmount),
 } as DeepPartial<JournalVoucherDetail>);
 jvDetailsForInvoice.push(d2);
 
-// CR: VAT
-if (useVAT && vatAccount && !isG) {
+// VAT line: CR for sales, DR for returns (excluded for G and RTN-of-G)
+if (useVAT && vatAccount && !isG && !isRTNofG) {
   const d3 = jvDetailRepo.create({
     accountId: (vatAccount as any).id,
-    description: "ضريبة القيمة المضافة - مبيع VAT",
+    description: isRTN ? "مرتجع ضريبة القيمة المضافة" : "ضريبة القيمة المضافة - مبيع VAT",
     currency: currencyCode,
     docNbr,
     ...addRateFields(),
-    ...getJVFields("cr", totalVAT),
+    ...getJVFields(isRTN ? "dr" : "cr", totalVAT),
   } as DeepPartial<JournalVoucherDetail>);
   jvDetailsForInvoice.push(d3);
 }
@@ -2832,7 +2858,7 @@ if (useVAT && vatAccount && !isG) {
       if (!setting2) throw new NotFoundException("Active year not found");
 
       const yearSuffix2 = String((setting2 as any).year).slice(-2);
-      const jvPrefix2 = isG ? "JVG" : "JV";
+      const jvPrefix2 = (isG || isRTNofG) ? "JVG" : "JV";
 
       const lastJV = await jvRepo
         .createQueryBuilder("jv")
@@ -3561,7 +3587,7 @@ createdItems.push(item);
     const rate = n(savedRTN.currencyRate);
     const useVAT = n(savedRTN.vatPercentage) > 0;
 
-    const salesRole = currencyCode === "USD" ? "Sales_USD" : "Sales_LL";
+    const salesRole = currencyCode === "USD" ? "SalesReturn_USD" : "SalesReturn_LL";
     const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
 
     const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
