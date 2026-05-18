@@ -2220,8 +2220,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     const oldInvSnapshot: Record<string, any> = {};
     for (const f of INV_FIELDS) oldInvSnapshot[f] = (existingInvoice as any)[f] ?? null;
 
-    const oldInvoiceType = existingInvoice.invoiceType as "S" | "G" | "RVR" | "RTN";
+    const oldInvoiceType = existingInvoice.invoiceType as "S" | "G" | "RVR" | "RTN" | "RRVR";
     const oldIsRTNofG = oldInvoiceType === "RTN" && String((existingInvoice as any).invoiceNumber || "").startsWith("RG");
+    const oldIsFreeRTN = oldInvoiceType === "RTN" && !(existingInvoice as any).returnOfInvoiceId;
     const docNbr = existingInvoice.invoiceNumber;
 
     const existingItems = await invoiceItemRepo.find({
@@ -2317,14 +2318,25 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       } else if (oldInvoiceType === "RVR") {
         (batch as any).in = addCounter((batch as any).in, -moveVal);
       } else if (oldInvoiceType === "RTN") {
-        // RTN reduced out (returned stock) — unapply by adding back to out
-        if (oldIsRTNofG) {
-          (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
+        if (oldIsFreeRTN) {
+          // free-form RTN incremented in — unapply by decrementing in
+          if (oldIsRTNofG) {
+            (batch as any).inOFR = addCounter((batch as any).inOFR, -moveVal);
+          } else {
+            (batch as any).in = addCounter((batch as any).in, -moveVal);
+            (batch as any).inOFR = addCounter((batch as any).inOFR, -moveVal);
+          }
         } else {
-          (batch as any).out = addCounter((batch as any).out, +moveVal);
-          (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
+          // invoice-linked RTN decremented out — unapply by adding back to out
+          if (oldIsRTNofG) {
+            (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
+          } else {
+            (batch as any).out = addCounter((batch as any).out, +moveVal);
+            (batch as any).outOFR = addCounter((batch as any).outOFR, +moveVal);
+          }
         }
       }
+      // RRVR never touched batches — no unapply needed
 
       const start = num((batch as any).start);
       const inStd = num((batch as any).in);
@@ -2391,7 +2403,9 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     const isReturn = (savedInvoice as any).invoiceType === "RVR";
     const isG = (savedInvoice as any).invoiceType === "G";
     const isRTN = (savedInvoice as any).invoiceType === "RTN";
+    const isRRVR = (savedInvoice as any).invoiceType === "RRVR";
     const isRTNofG = isRTN && String((savedInvoice as any).invoiceNumber || "").startsWith("RG");
+    const isFreeRTN = isRTN && !(savedInvoice as any).returnOfInvoiceId;
 
     /* -----------------------------------------------------------
        3) CREATE NEW ITEMS
@@ -2527,6 +2541,8 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
         else if ((savedInvoice as any).invoiceType === "S") {
           quantity = -qtyLine;
           quantityofr = -qtyLine;
+        } else if (isRRVR) {
+          quantity = +qtyLine; // qty/sqm only, no OFR
         } else if (isRTN) {
           if (isRTNofG) { quantityofr = +qtyLine; }
           else { quantity = +qtyLine; quantityofr = +qtyLine; }
@@ -2543,6 +2559,8 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
           sqm = -sqmLine;
           quantityofr = -qtyLine;
           sqmofr = -sqmLine;
+        } else if (isRRVR) {
+          quantity = +qtyLine; sqm = +sqmLine; // qty/sqm only, no OFR
         } else if (isRTN) {
           if (isRTNofG) { quantityofr = +qtyLine; sqmofr = +sqmLine; }
           else { quantity = +qtyLine; sqm = +sqmLine; quantityofr = +qtyLine; sqmofr = +sqmLine; }
@@ -2614,13 +2632,25 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       } else if ((savedInvoice as any).invoiceType === "RVR") {
         (batch as any).in = addCounter((batch as any).in, +moveVal);
       } else if (isRTN) {
-        if (isRTNofG) {
-          (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
+        if (isFreeRTN) {
+          // free-form RTN adds stock back via in
+          if (isRTNofG) {
+            (batch as any).inOFR = addCounter((batch as any).inOFR, +moveVal);
+          } else {
+            (batch as any).in = addCounter((batch as any).in, +moveVal);
+            (batch as any).inOFR = addCounter((batch as any).inOFR, +moveVal);
+          }
         } else {
-          (batch as any).out = addCounter((batch as any).out, -moveVal);
-          (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
+          // invoice-linked RTN reverses out
+          if (isRTNofG) {
+            (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
+          } else {
+            (batch as any).out = addCounter((batch as any).out, -moveVal);
+            (batch as any).outOFR = addCounter((batch as any).outOFR, -moveVal);
+          }
         }
       }
+      // RRVR never touches batches — no re-apply needed
 
       const start = num((batch as any).start);
       const inStd = num((batch as any).in);
@@ -2706,7 +2736,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       return { usd: a, ll: a * rate };
     };
 
-    const salesRole = isRTN
+    const salesRole = (isRTN || isRRVR)
       ? (currencyCode === "USD" ? "SalesReturn_USD" : "SalesReturn_LL")
       : (currencyCode === "USD" ? "Sales_USD" : "Sales_LL");
     const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
@@ -2742,7 +2772,8 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
           fields.drOFR = amount;
           fields.drUSDOFR = usd;
           fields.drLLOFR = ll;
-        } else if (isReturn) {
+        } else if (isReturn || isRRVR) {
+          // RVR and RRVR: standard fields only, no OFR
           fields.dr = amount;
           fields.drUSD = usd;
           fields.drLL = ll;
@@ -2759,7 +2790,8 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
           fields.crOFR = amount;
           fields.crUSDOFR = usd;
           fields.crLLOFR = ll;
-        } else if (isReturn) {
+        } else if (isReturn || isRRVR) {
+          // RVR and RRVR: standard fields only, no OFR
           fields.cr = amount;
           fields.crUSD = usd;
           fields.crLL = ll;
@@ -2779,24 +2811,25 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 const jvDetailsForInvoice: JournalVoucherDetail[] = [];
 
 // Customer line: DR for sales, CR for returns
+const isReturnDirection = isRTN || isRRVR;
 const d1 = jvDetailRepo.create({
   customerId: (savedInvoice as any).customerId,
-  description: isRTN ? "فاتورة مرتجع" : "فاتورة",
+  description: isReturnDirection ? "فاتورة مرتجع" : "فاتورة",
   currency: currencyCode,
   docNbr,
   ...addRateFields(),
-  ...getJVFields(isRTN ? "cr" : "dr", total),
+  ...getJVFields(isReturnDirection ? "cr" : "dr", total),
 } as DeepPartial<JournalVoucherDetail>);
 jvDetailsForInvoice.push(d1);
 
 // Sales/SalesReturn line: CR for sales, DR for returns
 const d2 = jvDetailRepo.create({
   accountId: (salesAccount as any).id,
-  description: isRTN ? "مرتجع مبيعات" : "مبيعات خاضعة للضريبة على القيمة المضافة",
+  description: isReturnDirection ? "مرتجع مبيعات" : "مبيعات خاضعة للضريبة على القيمة المضافة",
   currency: currencyCode,
   docNbr,
   ...addRateFields(),
-  ...getJVFields(isRTN ? "dr" : "cr", salesCrAmount),
+  ...getJVFields(isReturnDirection ? "dr" : "cr", salesCrAmount),
 } as DeepPartial<JournalVoucherDetail>);
 jvDetailsForInvoice.push(d2);
 
@@ -2804,11 +2837,11 @@ jvDetailsForInvoice.push(d2);
 if (useVAT && vatAccount && !isG && !isRTNofG) {
   const d3 = jvDetailRepo.create({
     accountId: (vatAccount as any).id,
-    description: isRTN ? "مرتجع ضريبة القيمة المضافة" : "ضريبة القيمة المضافة - مبيع VAT",
+    description: isReturnDirection ? "مرتجع ضريبة القيمة المضافة" : "ضريبة القيمة المضافة - مبيع VAT",
     currency: currencyCode,
     docNbr,
     ...addRateFields(),
-    ...getJVFields(isRTN ? "dr" : "cr", totalVAT),
+    ...getJVFields(isReturnDirection ? "dr" : "cr", totalVAT),
   } as DeepPartial<JournalVoucherDetail>);
   jvDetailsForInvoice.push(d3);
 }
@@ -2872,9 +2905,10 @@ if (useVAT && vatAccount && !isG && !isRTNofG) {
 
       const jvNumber = `${jvPrefix2}${yearSuffix2}-${String(jvSequence).padStart(3, "0")}`;
 
+      const resolvedJvType = isRRVR ? "RVR" : (savedInvoice as any).invoiceType;
       const journalVoucher = jvRepo.create({
         jvNumber,
-        jvType: (savedInvoice as any).invoiceType,
+        jvType: resolvedJvType,
         date: (savedInvoice as any).date,
         totalDr: sumFrom(jvDetailsForInvoice, "dr"),
         totalDrUSD: sumFrom(jvDetailsForInvoice, "drUSD"),
