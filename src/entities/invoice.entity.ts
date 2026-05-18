@@ -27,8 +27,8 @@ export class Invoice {
   @Column({ type: 'date' })
   date: Date;
 
-  @Column({ type: 'enum', enum: ['S', 'G', 'RVR', 'RTN'] })
-  invoiceType: 'S' | 'G' | 'RVR' | 'RTN';
+  @Column({ type: 'enum', enum: ['S', 'G', 'RVR', 'RTN', 'RRVR'] })
+  invoiceType: 'S' | 'G' | 'RVR' | 'RTN' | 'RRVR';
 
   @Column({ type: 'varchar', length: 50 ,unique: true})
   invoiceNumber: string;

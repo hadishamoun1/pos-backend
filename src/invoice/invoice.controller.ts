@@ -222,6 +222,20 @@ export class InvoiceController {
     return this.invoiceService.getFilteredInvoices(page, limit);
   }
 
+  // Free-form return (not linked to any single invoice, S or G base type)
+  @Post("free-return")
+  @RequirePerms("invoices.create")
+  createFreeReturnInvoice(@Body() body: any): Promise<Invoice> {
+    return this.invoiceService.createFreeReturnInvoice(body);
+  }
+
+  // RRVR invoice creation (free-form return, no batch deduction)
+  @Post("rrvr")
+  @RequirePerms("invoices.create")
+  createRRVRInvoice(@Body() body: any): Promise<Invoice> {
+    return this.invoiceService.createRRVRInvoice(body);
+  }
+
   // return invoice creation
 @Post(":id/return")
 createReturnInvoice(

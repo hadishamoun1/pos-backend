@@ -3724,6 +3724,564 @@ createdItems.push(item);
 
 
 
+  async createRRVRInvoice(data: any): Promise<Invoice> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const round2 = (v: number) => Number(v.toFixed(2));
+    const normalizeStockMode = (m: any) => {
+      const s = String(m ?? "").trim().toLowerCase();
+      if (s === "unit") return "qty";
+      if (s === "none") return "none";
+      return s || "sqm";
+    };
+
+    try {
+      const setting = await this.settingsRepo.findOneBy({ isActive: true });
+      if (!setting) throw new NotFoundException("Active year not found");
+      const yearSuffix = String(setting.year || "").slice(-2);
+
+      // 1) Numbering: RRVR26-001
+      const rrvrPrefix = `RRVR${yearSuffix}-`;
+      const lastRRVR = await queryRunner.manager
+        .getRepository(Invoice)
+        .createQueryBuilder("inv")
+        .where("inv.invoiceType = :t", { t: "RRVR" })
+        .andWhere("inv.invoiceNumber LIKE :prefix", { prefix: `${rrvrPrefix}%` })
+        .orderBy("inv.id", "DESC")
+        .getOne();
+
+      let seq = 1;
+      if (lastRRVR?.invoiceNumber) {
+        const parts = lastRRVR.invoiceNumber.split("-");
+        seq = (parseInt(parts[1], 10) || 0) + 1;
+      }
+      const rrvrNumber = `${rrvrPrefix}${String(seq).padStart(3, "0")}`;
+
+      // 2) Currency
+      let currencyId = data.currencyId || 1;
+      let currencyCode = "USD";
+      if (data.currencyCode) {
+        const currency = await queryRunner.manager.getRepository("Currency").findOne({
+          where: { currencyCode: data.currencyCode },
+        });
+        if (currency) {
+          currencyId = (currency as any).id;
+          currencyCode = String((currency as any).currencyCode || "USD").trim().toUpperCase();
+        }
+      }
+      const rate = n(data.currencyRate) || 1;
+      const vatPct = n(data.vatPercentage);
+      const vatRate = vatPct / 100;
+
+      // 3) Compute totals
+      const items: any[] = data.items || [];
+      if (!items.length) throw new BadRequestException("items[] is required for RRVR.");
+
+      let totalWithoutVAT = 0;
+      let totalVAT = 0;
+      for (const item of items) {
+        const unitPrice = n(item.unitPrice);
+        const qty = n(item.quantity);
+        const sqm = n(item.sqm);
+        const itemType = String(item.itemType ?? item.stockMode ?? "").toLowerCase();
+        const base = (itemType === "unit" || itemType === "qty") ? unitPrice * qty : unitPrice * sqm;
+        totalWithoutVAT += base;
+        totalVAT += base * vatRate;
+      }
+      totalWithoutVAT = round2(totalWithoutVAT);
+      totalVAT = round2(totalVAT);
+      const grandTotal = round2(totalWithoutVAT + totalVAT);
+
+      // 4) Invoice header
+      const invRepo = queryRunner.manager.getRepository(Invoice);
+      const rrvr = invRepo.create({
+        customerId: data.customerId,
+        date: data.date ? new Date(data.date) : new Date(),
+        invoiceType: "RRVR" as any,
+        invoiceNumber: rrvrNumber,
+        documentNumber: rrvrNumber,
+        branchId: data.branchId ?? null,
+        currencyId,
+        totalWithoutVAT,
+        totalVAT,
+        grandTotal,
+        currencyRate: rate,
+        vatPercentage: vatPct,
+      } as DeepPartial<Invoice>) as Invoice;
+      const savedRRVR = await invRepo.save(rrvr);
+
+      // 5) Invoice items
+      const invItemRepo = queryRunner.manager.getRepository(InvoiceItem);
+      const createdItems: InvoiceItem[] = [];
+      for (const item of items) {
+        const unitPrice = n(item.unitPrice);
+        const qty = n(item.quantity);
+        const sqm = n(item.sqm);
+        const itemType = String(item.itemType ?? item.stockMode ?? "").toLowerCase();
+        const base = (itemType === "unit" || itemType === "qty") ? unitPrice * qty : unitPrice * sqm;
+        createdItems.push(invItemRepo.create({
+          invoiceId: savedRRVR.id,
+          itemVariantId: item.itemVariantId,
+          itemBatchId: item.itemBatchId,
+          sqmPieceId: item.sqmPieceId ?? null,
+          length: item.length ?? null,
+          width: item.width ?? null,
+          sheetsPerBox: item.sheetsPerBox ?? null,
+          quantity: qty,
+          sqm,
+          unitPrice,
+          totalAmount: round2(base),
+          vat: round2(base * vatRate),
+        } as DeepPartial<InvoiceItem>));
+      }
+      const savedItems = await invItemRepo.save(createdItems);
+
+      // 6) Inventory transactions — qty/sqm only, no OFR, no batch updates
+      const variantIds = Array.from(
+        new Set(savedItems.map((x) => n((x as any).itemVariantId)).filter((id) => id > 0)),
+      );
+      const stockModeMap = new Map<number, string>();
+      if (variantIds.length) {
+        const rows = await queryRunner.manager
+          .getRepository(ItemVariant)
+          .createQueryBuilder("v")
+          .leftJoin("v.thickness", "th")
+          .leftJoin("th.item", "item")
+          .select("v.id", "id")
+          .addSelect("item.stockMode", "stockMode")
+          .where("v.id IN (:...ids)", { ids: variantIds })
+          .getRawMany();
+        for (const r of rows) {
+          const id = n((r as any)?.id);
+          const mode = normalizeStockMode((r as any)?.stockMode);
+          if (id > 0) stockModeMap.set(id, mode);
+        }
+      }
+
+      const invTxRepo = queryRunner.manager.getRepository(InventoryTransaction);
+      const invTxs: InventoryTransaction[] = [];
+      for (const it of savedItems) {
+        const vId = n((it as any).itemVariantId);
+        const mode = normalizeStockMode(stockModeMap.get(vId));
+        if (mode === "none") continue;
+        const qtyLine = n((it as any).quantity);
+        const sqmLine = n((it as any).sqm);
+        const quantity = qtyLine;
+        const sqm = mode === "qty" ? 0 : sqmLine;
+        if (quantity === 0 && sqm === 0) continue;
+        invTxs.push(invTxRepo.create({
+          transactionType: "Sales Return",
+          itemVariantId: (it as any).itemVariantId,
+          itemBatchId: (it as any).itemBatchId,
+          invoiceItemId: it.id,
+          quantity,
+          sqm,
+          quantityofr: 0,
+          sqmofr: 0,
+          transactionDate: new Date(),
+          dateForEachInvoice: new Date(savedRRVR.date),
+        }));
+      }
+      if (invTxs.length) await invTxRepo.save(invTxs);
+
+      // 7) Journal voucher — jvType "RVR", CR customer, DR SalesReturn (standard fields only)
+      const jvPrefix = "JV";
+      const lastJV = await queryRunner.manager
+        .getRepository(JournalVoucher)
+        .createQueryBuilder("jv")
+        .where("jv.jvNumber LIKE :prefix", { prefix: `${jvPrefix}${yearSuffix}-%` })
+        .orderBy("jv.id", "DESC")
+        .getOne();
+      const jvSeq = lastJV?.jvNumber ? parseInt(lastJV.jvNumber.split("-")[1]) + 1 : 1;
+      const jvNumber = `${jvPrefix}${yearSuffix}-${String(jvSeq).padStart(3, "0")}`;
+
+      const salesRole = currencyCode === "USD" ? "SalesReturn_USD" : "SalesReturn_LL";
+      const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
+      const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
+      const vatAccount = vatPct > 0 ? await this.accountingResolver.resolveAccount(vatRole, null) : null;
+
+      const totalLL = grandTotal * rate;
+      const totalWithoutVATLL = totalWithoutVAT * rate;
+      const totalVATLL = totalVAT * rate;
+
+      const zero = { dr: 0, drUSD: 0, drLL: 0, drOFR: 0, drUSDOFR: 0, drLLOFR: 0, cr: 0, crUSD: 0, crLL: 0, crOFR: 0, crUSDOFR: 0, crLLOFR: 0 };
+      const detailPartials: Array<Partial<JournalVoucherDetail>> = [
+        {
+          ...zero,
+          customerId: data.customerId,
+          description: "فاتورة مرتجع RRVR",
+          currency: currencyCode,
+          docNbr: rrvrNumber,
+          cr: grandTotal, crUSD: grandTotal, crLL: totalLL,
+        },
+        {
+          ...zero,
+          accountId: salesAccount.id,
+          description: "مرتجع مبيعات RRVR",
+          currency: currencyCode,
+          docNbr: rrvrNumber,
+          dr: totalWithoutVAT, drUSD: totalWithoutVAT, drLL: totalWithoutVATLL,
+        },
+      ];
+      if (vatPct > 0 && vatAccount) {
+        detailPartials.push({
+          ...zero,
+          accountId: vatAccount.id,
+          description: "مرتجع ضريبة القيمة المضافة RRVR",
+          currency: currencyCode,
+          docNbr: rrvrNumber,
+          dr: totalVAT, drUSD: totalVAT, drLL: totalVATLL,
+        });
+      }
+
+      const details = this.journalVoucherDetailRepo.create(detailPartials);
+      const sumField = (field: string) =>
+        details.reduce((acc, entry) => acc + n((entry as any)[field]), 0);
+
+      const journalVoucher = this.journalVoucherRepo.create({
+        jvNumber,
+        jvType: "RVR",
+        date: savedRRVR.date,
+        totalDr: sumField("dr"),
+        totalDrUSD: sumField("drUSD"),
+        totalDrLL: sumField("drLL"),
+        totalDrOFR: sumField("drOFR"),
+        totalDrUSDOFR: sumField("drUSDOFR"),
+        totalDrLLOFR: sumField("drLLOFR"),
+        totalCr: sumField("cr"),
+        totalCrUSD: sumField("crUSD"),
+        totalCrLL: sumField("crLL"),
+        totalCrOFR: sumField("crOFR"),
+        totalCrUSDOFR: sumField("crUSDOFR"),
+        totalCrLLOFR: sumField("crLLOFR"),
+        details,
+      });
+      await queryRunner.manager.save(JournalVoucher, journalVoucher);
+
+      await queryRunner.commitTransaction();
+      return savedRRVR;
+    } catch (e: any) {
+      await queryRunner.rollbackTransaction();
+      throw new BadRequestException(e?.message || "RRVR invoice creation failed");
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  async createFreeReturnInvoice(data: any): Promise<Invoice> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const round2 = (v: number) => Number(v.toFixed(2));
+    const normalizeStockMode = (m: any) => {
+      const s = String(m ?? "").trim().toLowerCase();
+      if (s === "unit") return "qty";
+      if (s === "none") return "none";
+      return s || "sqm";
+    };
+
+    try {
+      const setting = await this.settingsRepo.findOneBy({ isActive: true });
+      if (!setting) throw new NotFoundException("Active year not found");
+      const yearSuffix = String(setting.year || "").slice(-2);
+
+      const isG = String(data.baseType || "").toUpperCase() === "G";
+      const rtnPrefix = isG ? `RG${yearSuffix}-` : `R${yearSuffix}-`;
+
+      // 1) Numbering — shared sequence with invoice-linked RTN
+      const lastRTN = await queryRunner.manager
+        .getRepository(Invoice)
+        .createQueryBuilder("inv")
+        .where("inv.invoiceType = :t", { t: "RTN" })
+        .andWhere("inv.invoiceNumber LIKE :prefix", { prefix: `${rtnPrefix}%` })
+        .orderBy("inv.id", "DESC")
+        .getOne();
+
+      let seq = 1;
+      if (lastRTN?.invoiceNumber) {
+        const parts = lastRTN.invoiceNumber.split("-");
+        seq = (parseInt(parts[1], 10) || 0) + 1;
+      }
+      const rtnNumber = `${rtnPrefix}${String(seq).padStart(3, "0")}`;
+
+      // 2) Currency
+      let currencyId = data.currencyId || 1;
+      let currencyCode = "USD";
+      if (data.currencyCode) {
+        const currency = await queryRunner.manager.getRepository("Currency").findOne({
+          where: { currencyCode: data.currencyCode },
+        });
+        if (currency) {
+          currencyId = (currency as any).id;
+          currencyCode = String((currency as any).currencyCode || "USD").trim().toUpperCase();
+        }
+      }
+      const rate = n(data.currencyRate) || 1;
+      const vatPct = n(data.vatPercentage);
+      const vatRate = vatPct / 100;
+      const useVAT = vatPct > 0;
+
+      // 3) Totals from items
+      const items: any[] = data.items || [];
+      if (!items.length) throw new BadRequestException("items[] is required.");
+
+      let totalWithoutVAT = 0;
+      let totalVAT = 0;
+      for (const item of items) {
+        const unitPrice = n(item.unitPrice);
+        const qty = n(item.quantity);
+        const sqm = n(item.sqm);
+        const itemType = String(item.itemType ?? item.stockMode ?? "").toLowerCase();
+        const base = (itemType === "unit" || itemType === "qty") ? unitPrice * qty : unitPrice * sqm;
+        totalWithoutVAT += base;
+        totalVAT += base * vatRate;
+      }
+      totalWithoutVAT = round2(totalWithoutVAT);
+      totalVAT = round2(totalVAT);
+      const grandTotal = round2(totalWithoutVAT + totalVAT);
+
+      // 4) Invoice header — RTN with no returnOfInvoiceId
+      const invRepo = queryRunner.manager.getRepository(Invoice);
+      const rtn = invRepo.create({
+        customerId: data.customerId,
+        date: data.date ? new Date(data.date) : new Date(),
+        invoiceType: "RTN" as any,
+        invoiceNumber: rtnNumber,
+        documentNumber: rtnNumber,
+        branchId: data.branchId ?? null,
+        currencyId,
+        totalWithoutVAT,
+        totalVAT,
+        grandTotal,
+        currencyRate: rate,
+        vatPercentage: vatPct,
+        returnOfInvoiceId: null,
+      } as DeepPartial<Invoice>) as Invoice;
+      const savedRTN = await invRepo.save(rtn);
+
+      // 5) Invoice items
+      const invItemRepo = queryRunner.manager.getRepository(InvoiceItem);
+      const createdItems: InvoiceItem[] = [];
+      for (const item of items) {
+        const unitPrice = n(item.unitPrice);
+        const qty = n(item.quantity);
+        const sqm = n(item.sqm);
+        const itemType = String(item.itemType ?? item.stockMode ?? "").toLowerCase();
+        const base = (itemType === "unit" || itemType === "qty") ? unitPrice * qty : unitPrice * sqm;
+        createdItems.push(invItemRepo.create({
+          invoiceId: savedRTN.id,
+          itemVariantId: item.itemVariantId,
+          itemBatchId: item.itemBatchId,
+          sqmPieceId: item.sqmPieceId ?? null,
+          length: item.length ?? null,
+          width: item.width ?? null,
+          sheetsPerBox: item.sheetsPerBox ?? null,
+          quantity: qty,
+          sqm,
+          unitPrice,
+          totalAmount: round2(base),
+          vat: round2(base * vatRate),
+        } as DeepPartial<InvoiceItem>));
+      }
+      const savedItems = await invItemRepo.save(createdItems);
+
+      // 6) Stock mode map
+      const variantIds = Array.from(
+        new Set(savedItems.map((x) => n((x as any).itemVariantId)).filter((id) => id > 0)),
+      );
+      const stockModeMap = new Map<number, string>();
+      if (variantIds.length) {
+        const rows = await queryRunner.manager
+          .getRepository(ItemVariant)
+          .createQueryBuilder("v")
+          .leftJoin("v.thickness", "th")
+          .leftJoin("th.item", "item")
+          .select("v.id", "id")
+          .addSelect("item.stockMode", "stockMode")
+          .where("v.id IN (:...ids)", { ids: variantIds })
+          .getRawMany();
+        for (const r of rows) {
+          const id = n((r as any)?.id);
+          const mode = normalizeStockMode((r as any)?.stockMode);
+          if (id > 0) stockModeMap.set(id, mode);
+        }
+      }
+
+      // 7) Inventory transactions — S: qty/sqm/qtyofr/sqmofr; G: qtyofr/sqmofr only
+      const invTxRepo = queryRunner.manager.getRepository(InventoryTransaction);
+      const invTxs: InventoryTransaction[] = [];
+      for (const it of savedItems) {
+        const vId = n((it as any).itemVariantId);
+        const mode = normalizeStockMode(stockModeMap.get(vId));
+        if (mode === "none") continue;
+
+        const qtyLine = n((it as any).quantity);
+        const sqmLine = n((it as any).sqm);
+        let quantity = 0, sqm = 0, quantityofr = 0, sqmofr = 0;
+
+        if (mode === "qty") {
+          if (isG) {
+            quantityofr = +qtyLine;
+          } else {
+            quantity = +qtyLine;
+            quantityofr = +qtyLine;
+          }
+        } else {
+          if (isG) {
+            quantityofr = +qtyLine;
+            sqmofr = +sqmLine;
+          } else {
+            quantity = +qtyLine;
+            sqm = +sqmLine;
+            quantityofr = +qtyLine;
+            sqmofr = +sqmLine;
+          }
+        }
+
+        if (quantity === 0 && sqm === 0 && quantityofr === 0 && sqmofr === 0) continue;
+
+        invTxs.push(invTxRepo.create({
+          transactionType: "Sales Return",
+          itemVariantId: (it as any).itemVariantId,
+          itemBatchId: (it as any).itemBatchId,
+          invoiceItemId: it.id,
+          quantity,
+          sqm,
+          quantityofr,
+          sqmofr,
+          transactionDate: new Date(),
+          dateForEachInvoice: new Date(savedRTN.date),
+        }));
+      }
+      if (invTxs.length) await invTxRepo.save(invTxs);
+
+      // 8) Batch updates — free-form: increment in (not decrement out, since no original sale to undo)
+      const batchRepo = queryRunner.manager.getRepository(ItemBatch);
+      const affectedVariantIds = new Set<number>();
+
+      for (const it of savedItems) {
+        const vId = n((it as any).itemVariantId);
+        const mode = normalizeStockMode(stockModeMap.get(vId));
+        if (mode === "none") continue;
+
+        const batch = await batchRepo.findOne({
+          where: { id: (it as any).itemBatchId },
+          relations: ["itemVariant"],
+        });
+        if (!batch) throw new NotFoundException(`ItemBatch ${(it as any).itemBatchId} not found`);
+
+        const variantId = n((batch as any).itemVariant?.id ?? (it as any).itemVariantId);
+        if (variantId > 0) affectedVariantIds.add(variantId);
+
+        const qtySqm = n((it as any).sqm);
+        if (isG) {
+          batch.inOFR = n(batch.inOFR) + qtySqm;
+        } else {
+          batch.in = n(batch.in) + qtySqm;
+          batch.inOFR = n(batch.inOFR) + qtySqm;
+        }
+
+        batch.balance = round2(n(batch.start) + n(batch.in) - n(batch.out));
+        batch.balanceOFR = round2(n(batch.startOFR) + n(batch.inOFR) - n(batch.outOFR));
+        await batchRepo.save(batch);
+      }
+
+      // 9) Variant totals
+      const variantRepo = queryRunner.manager.getRepository(ItemVariant);
+      for (const variantId of affectedVariantIds) {
+        const variant = await variantRepo.findOne({ where: { id: variantId }, relations: ["batches"] });
+        if (!variant) continue;
+
+        let tStart = 0, tIn = 0, tOut = 0, tStartOFR = 0, tInOFR = 0, tOutOFR = 0;
+        for (const b of (variant as any).batches ?? []) {
+          tStart += n((b as any).start);
+          tIn += n((b as any).in);
+          tOut += n((b as any).out);
+          tStartOFR += n((b as any).startOFR);
+          tInOFR += n((b as any).inOFR);
+          tOutOFR += n((b as any).outOFR);
+        }
+        (variant as any).totalStart = round2(tStart);
+        (variant as any).totalIn = round2(tIn);
+        (variant as any).totalOut = round2(tOut);
+        (variant as any).totalBalance = round2(tStart + tIn - tOut);
+        (variant as any).totalStartOFR = round2(tStartOFR);
+        (variant as any).totalInOFR = round2(tInOFR);
+        (variant as any).totalOutOFR = round2(tOutOFR);
+        (variant as any).totalBalanceOFR = round2(tStartOFR + tInOFR - tOutOFR);
+        await variantRepo.save(variant as any);
+      }
+
+      // 10) Journal voucher — jvType "RTN", S or G field split
+      const jvPrefix = isG ? "JVG" : "JV";
+      const lastJV = await queryRunner.manager
+        .getRepository(JournalVoucher)
+        .createQueryBuilder("jv")
+        .where("jv.jvNumber LIKE :prefix", { prefix: `${jvPrefix}${yearSuffix}-%` })
+        .orderBy("jv.id", "DESC")
+        .getOne();
+      const jvSeq = lastJV?.jvNumber ? parseInt(lastJV.jvNumber.split("-")[1]) + 1 : 1;
+      const jvNumber = `${jvPrefix}${yearSuffix}-${String(jvSeq).padStart(3, "0")}`;
+
+      const salesRole = currencyCode === "USD" ? "SalesReturn_USD" : "SalesReturn_LL";
+      const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
+      const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
+      const vatAccount = useVAT ? await this.accountingResolver.resolveAccount(vatRole, null) : null;
+
+      const total = grandTotal;
+      const totalLL = total * rate;
+      const totalWithoutVATLL = totalWithoutVAT * rate;
+      const totalVATLL = totalVAT * rate;
+      const salesAmount = isG ? totalWithoutVAT + totalVAT : totalWithoutVAT;
+      const salesAmountLL = isG ? totalWithoutVATLL + totalVATLL : totalWithoutVATLL;
+
+      const getJVFields = (type: "dr" | "cr", val: number, valLL: number) => {
+        const f: any = { dr:0,drUSD:0,drLL:0,drOFR:0,drUSDOFR:0,drLLOFR:0,cr:0,crUSD:0,crLL:0,crOFR:0,crUSDOFR:0,crLLOFR:0 };
+        if (type === "dr") {
+          if (isG) { f.drOFR=val; f.drUSDOFR=val; f.drLLOFR=valLL; }
+          else { f.dr=val; f.drUSD=val; f.drLL=valLL; f.drOFR=val; f.drUSDOFR=val; f.drLLOFR=valLL; }
+        } else {
+          if (isG) { f.crOFR=val; f.crUSDOFR=val; f.crLLOFR=valLL; }
+          else { f.cr=val; f.crUSD=val; f.crLL=valLL; f.crOFR=val; f.crUSDOFR=val; f.crLLOFR=valLL; }
+        }
+        return f;
+      };
+
+      const detailPartials: Array<Partial<JournalVoucherDetail>> = [
+        { customerId: data.customerId, description: "فاتورة مرتجع", currency: currencyCode, docNbr: rtnNumber, ...getJVFields("cr", total, totalLL) },
+        { accountId: salesAccount.id, description: "مرتجع مبيعات", currency: currencyCode, docNbr: rtnNumber, ...getJVFields("dr", salesAmount, salesAmountLL) },
+      ];
+      if (useVAT && vatAccount && !isG) {
+        detailPartials.push({ accountId: vatAccount.id, description: "مرتجع ضريبة القيمة المضافة", currency: currencyCode, docNbr: rtnNumber, ...getJVFields("dr", totalVAT, totalVATLL) });
+      }
+
+      const details = this.journalVoucherDetailRepo.create(detailPartials);
+      const sumF = (field: string) => details.reduce((acc, e) => acc + n((e as any)[field]), 0);
+
+      await queryRunner.manager.save(JournalVoucher, this.journalVoucherRepo.create({
+        jvNumber, jvType: "RTN", date: savedRTN.date,
+        totalDr: sumF("dr"), totalDrUSD: sumF("drUSD"), totalDrLL: sumF("drLL"),
+        totalDrOFR: sumF("drOFR"), totalDrUSDOFR: sumF("drUSDOFR"), totalDrLLOFR: sumF("drLLOFR"),
+        totalCr: sumF("cr"), totalCrUSD: sumF("crUSD"), totalCrLL: sumF("crLL"),
+        totalCrOFR: sumF("crOFR"), totalCrUSDOFR: sumF("crUSDOFR"), totalCrLLOFR: sumF("crLLOFR"),
+        details,
+      }));
+
+      await queryRunner.commitTransaction();
+      return savedRTN;
+    } catch (e: any) {
+      await queryRunner.rollbackTransaction();
+      throw new BadRequestException(e?.message || "Free return invoice creation failed");
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
   async getAllInvoiceDetailsForView(opts?: {
     type?: 'S' | 'G' | 'RVR' | 'RTN';
     from?: string; // YYYY-MM-DD
