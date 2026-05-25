@@ -303,7 +303,7 @@ async getVoucherSummary(params?: {
     description: string;
 
     name: string;
-    kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'JV';
+    kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'PURCHASE_RETURN' | 'JV';
     customerName?: string | null;
     invoiceNumber?: string | null;
     invoiceId?: number | null;
@@ -491,7 +491,7 @@ async getVoucherSummary(params?: {
     const purchaseInvoiceId =
       r.purchaseInvoiceId != null ? Number(r.purchaseInvoiceId) : null;
 
-    let kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'JV' = 'JV';
+    let kind: 'INVOICE' | 'RECEIVABLE' | 'PURCHASE' | 'PURCHASE_RETURN' | 'JV' = 'JV';
     let name = `قيد يومية - ${r.jvNumber}`.trim();
     let customerName: string | null = null;
 
@@ -514,9 +514,14 @@ async getVoucherSummary(params?: {
       const payTag = cur === 'USD' ? 'دفعة $$' : cur === 'LL' ? 'دفعة LL' : 'دفعة';
       name = `${payTag} - ${customerName ?? ''} - ${r.jvNumber}`.trim();
     } else if (purchaseInvoiceId && r.purchaseInvoiceNumber) {
-      kind = 'PURCHASE';
       customerName = r.purchaseSupplierName ?? null;
-      name = `فاتورة شراء - ${customerName ?? ''} - ${r.purchaseInvoiceNumber}`.trim();
+      if (r.jvType === 'PR') {
+        kind = 'PURCHASE_RETURN';
+        name = `مرتجع شراء - ${customerName ?? ''} - ${r.purchaseInvoiceNumber}`.trim();
+      } else {
+        kind = 'PURCHASE';
+        name = `فاتورة شراء - ${customerName ?? ''} - ${r.purchaseInvoiceNumber}`.trim();
+      }
     } else {
       kind = 'JV';
       name = `قيد يومية - ${r.jvNumber}`.trim();
@@ -1080,7 +1085,7 @@ async searchBySeq(params?: {
     description: string;
 
     name: string;
-    kind: "INVOICE" | "RECEIVABLE" | "PURCHASE" | "JV";
+    kind: "INVOICE" | "RECEIVABLE" | "PURCHASE" | "PURCHASE_RETURN" | "JV";
     customerName?: string | null;
     invoiceNumber?: string | null;
     invoiceId?: number | null;
@@ -1108,8 +1113,10 @@ async searchBySeq(params?: {
     if (t === "RECEIVABLE") return "RECEIVABLE";
     if (t === "JV") return "JV";
     if (t === "PURCHASE") return "PURCHASE";
+    if (t === "PURCHASE_RETURN") return "PURCHASE_RETURN";
 
     // Arabic mapping
+    if (rawType.includes("مرتجع شراء")) return "PURCHASE_RETURN";
     if (rawType.includes("فات")) return "INVOICE";
     if (rawType.includes("دف")) return "RECEIVABLE";
     if (rawType.includes("قيد")) return "JV";
@@ -1213,7 +1220,12 @@ async searchBySeq(params?: {
     }
 
     if (normType === "PURCHASE") {
-      qb.andWhere("pinv.id IS NOT NULL");
+      qb.andWhere("pinv.id IS NOT NULL").andWhere("jv.jvType != 'PR'");
+      return;
+    }
+
+    if (normType === "PURCHASE_RETURN") {
+      qb.andWhere("pinv.id IS NOT NULL").andWhere("jv.jvType = 'PR'");
       return;
     }
   };
@@ -1321,16 +1333,21 @@ async searchBySeq(params?: {
     const invoiceCustomerName =
       r.receiptInvoiceCustomerName ?? r.docInvoiceCustomerName ?? null;
 
-    let kind: "INVOICE" | "RECEIVABLE" | "PURCHASE" | "JV" = "JV";
+    let kind: "INVOICE" | "RECEIVABLE" | "PURCHASE" | "PURCHASE_RETURN" | "JV" = "JV";
     let name = `قيد يومية - ${r.jvNumber}`.trim();
     let customerName: string | null = null;
 
     if (invoiceId && invoiceNumber) {
       // INVOICE or PURCHASE
       if (purchaseInvoiceId && !receiptInvoiceId && !docInvoiceId) {
-        kind = "PURCHASE";
         customerName = r.purchaseSupplierName ?? null;
-        name = `فاتورة شراء - ${customerName ?? ""} - ${invoiceNumber}`.trim();
+        if (r.jvType === "PR") {
+          kind = "PURCHASE_RETURN";
+          name = `مرتجع شراء - ${customerName ?? ""} - ${invoiceNumber}`.trim();
+        } else {
+          kind = "PURCHASE";
+          name = `فاتورة شراء - ${customerName ?? ""} - ${invoiceNumber}`.trim();
+        }
       } else {
         kind = "INVOICE";
         customerName = invoiceCustomerName ?? null;

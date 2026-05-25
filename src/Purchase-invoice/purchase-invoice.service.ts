@@ -808,9 +808,9 @@ private async createOrRebuildJVForPurchaseInvoice(
   const isPR = (invoice as any).type === 'PR';
   const effectiveType = isPR ? ((invoice as any).returnBaseType ?? 'S') : (invoice as any).type;
 
-  // ✅ Purchases expense account (role-based)
+  // Resolve the correct account based on invoice type
   const expenseAcct = await this.accountingResolver.resolveAccount(
-    'Purchases_USD',
+    isPR ? 'PurchasesReturn_USD' : 'Purchases_USD',
     null,
   );
 
