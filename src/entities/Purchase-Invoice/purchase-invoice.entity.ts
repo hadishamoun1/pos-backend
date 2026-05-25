@@ -58,10 +58,13 @@ jvDate: Date | null;
 
   @Column({
     type: 'enum',
-    enum: ['S', 'G', 'SR', 'RVR'],
+    enum: ['S', 'G', 'SR', 'RVR', 'PR'],
     default: 'S',
   })
-  type: 'S' | 'G' | 'SR' | 'RVR';
+  type: 'S' | 'G' | 'SR' | 'RVR' | 'PR';
+
+  @Column({ type: 'varchar', nullable: true })
+  returnBaseType: 'S' | 'G' | 'SR' | null;
 
   @ManyToOne(() => Supplier)
   @JoinColumn({ name: 'supplierId' })

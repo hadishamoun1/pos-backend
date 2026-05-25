@@ -644,12 +644,17 @@ private numOrZero(v: any): number {
         const sqmVM = Number((item as any).sqm ?? 0);
         const sqmOFR = Number((item as any).sqmofr ?? (item as any).sqmOfr ?? sqmVM ?? 0);
 
-        let qty = Number((item as any).quantity ?? 0);
-        let qtyOfr = qty;
-        let sqm = sqmVM;
-        let sqmofr = sqmOFR;
+        const isPR = (savedInvoice as any).type === 'PR';
+        const effectiveType = isPR ? ((savedInvoice as any).returnBaseType ?? 'S') : (savedInvoice as any).type;
+        const sign = isPR ? -1 : 1;
+        const txTransactionType = isPR ? 'purchase return' : 'purchase';
 
-        switch ((savedInvoice as any).type) {
+        let qty = sign * Number((item as any).quantity ?? 0);
+        let qtyOfr = qty;
+        let sqm = sign * sqmVM;
+        let sqmofr = sign * sqmOFR;
+
+        switch (effectiveType) {
           case 'S':
           case 'SR':
             qtyOfr = qty;
@@ -657,7 +662,7 @@ private numOrZero(v: any): number {
             break;
           case 'G':
             qtyOfr = qty;
-            sqmofr = sqmOFR;
+            sqmofr = sign * sqmOFR;
             qty = 0;
             sqm = 0;
             break;
@@ -671,7 +676,7 @@ private numOrZero(v: any): number {
           (this.inventoryTxRepo.create({
             itemVariantId: Number((item as any).itemVariantId),
             itemBatchId: Number(existingBatchId),
-            transactionType: 'purchase',
+            transactionType: txTransactionType,
             quantity: qty,
             sqm: sqm,
             quantityofr: qtyOfr,
@@ -725,7 +730,7 @@ private numOrZero(v: any): number {
         .select('COALESCE(SUM(tx.sqm), 0)', 'sumSqm')
         .addSelect('COALESCE(SUM(tx.sqmofr), 0)', 'sumSqmOfr')
         .where('tx.itemBatchId = :batchId', { batchId })
-        .andWhere('tx.transactionType = :txType', { txType: 'purchase' })
+        .andWhere('tx.transactionType IN (:...txTypes)', { txTypes: ['purchase', 'purchase return'] })
         .getRawOne<{ sumSqm: string; sumSqmOfr: string }>();
 
       const inSqm = Number(agg?.sumSqm ?? 0);
@@ -795,10 +800,13 @@ private async createOrRebuildJVForPurchaseInvoice(
 ) {
   if (
     (invoice as any).status !== 'Recieved' ||
-    !['G', 'S', 'SR'].includes((invoice as any).type as any)
+    !['G', 'S', 'SR', 'PR'].includes((invoice as any).type as any)
   ) {
     return;
   }
+
+  const isPR = (invoice as any).type === 'PR';
+  const effectiveType = isPR ? ((invoice as any).returnBaseType ?? 'S') : (invoice as any).type;
 
   // ✅ Purchases expense account (role-based)
   const expenseAcct = await this.accountingResolver.resolveAccount(
@@ -809,9 +817,9 @@ private async createOrRebuildJVForPurchaseInvoice(
   let normalTotal = 0;
   let ofrTotal = 0;
 
-  if ((invoice as any).type === 'G') {
+  if (effectiveType === 'G') {
     for (const row of items as any[]) ofrTotal += Number(row.totalOFR ?? 0);
-  } else if ((invoice as any).type === 'S') {
+  } else if (effectiveType === 'S') {
     for (const row of items as any[]) {
       normalTotal += Number(row.totalAmount ?? 0);
       ofrTotal += Number(row.totalAmount ?? 0);
@@ -853,7 +861,7 @@ private async createOrRebuildJVForPurchaseInvoice(
     hdrCrUSDOFR = 0,
     hdrCrLLOFR = 0;
 
-  if ((invoice as any).type === 'G') {
+  if (effectiveType === 'G') {
     hdrDrOFR = ofrTotal;
     hdrDrUSDOFR = ofrTotal;
     hdrDrLLOFR = ofrLL;
@@ -861,7 +869,7 @@ private async createOrRebuildJVForPurchaseInvoice(
     hdrCrOFR = ofrTotal;
     hdrCrUSDOFR = ofrTotal;
     hdrCrLLOFR = ofrLL;
-  } else if ((invoice as any).type === 'S') {
+  } else if (effectiveType === 'S') {
     hdrDr = normalTotal;
     hdrDrUSD = normalTotal;
     hdrDrLL = normalLL;
@@ -891,9 +899,16 @@ private async createOrRebuildJVForPurchaseInvoice(
     hdrCrLLOFR = ofrLL;
   }
 
+  // For PR (purchase return): DR side is supplier (reduces payable), CR side is expense account
+  const debitAccountId = isPR ? null : (expenseAcct as any).id;
+  const debitSupplierId = isPR ? (invoice as any).supplierId : null;
+  const creditAccountId = isPR ? (expenseAcct as any).id : null;
+  const creditSupplierId = isPR ? null : (invoice as any).supplierId;
+
 const debitLine = this.journalVoucherDetailRepo.create(
   {
-    accountId: (expenseAcct as any).id,
+    accountId: debitAccountId,
+    supplierId: debitSupplierId,
     description: hdrDebitDesc,
     docNbr: jvNumber,
     currency: invoiceCurrency,
@@ -920,7 +935,8 @@ const debitLine = this.journalVoucherDetailRepo.create(
 
 const creditLine = this.journalVoucherDetailRepo.create(
   {
-    supplierId: (invoice as any).supplierId,
+    accountId: creditAccountId,
+    supplierId: creditSupplierId,
     description: hdrCreditDesc,
     docNbr: jvNumber,
     currency: invoiceCurrency,
@@ -987,15 +1003,15 @@ const creditLine = this.journalVoucherDetailRepo.create(
       let dr = 0, drUSD = 0, drLL = 0, drOFR = 0, drUSDOFR = 0, drLLOFR = 0;
       let cr = 0, crUSD = 0, crLL = 0, crOFR = 0, crUSDOFR = 0, crLLOFR = 0;
 
-      if ((invoice as any).type === 'G') {
+      if (effectiveType === 'G') {
         drOFR = valueOFR; drUSDOFR = valueOFR; drLLOFR = valueOFRLL;
         crOFR = valueOFR; crUSDOFR = valueOFR; crLLOFR = valueOFRLL;
-      } else if ((invoice as any).type === 'S') {
+      } else if (effectiveType === 'S') {
         dr = value; drUSD = value; drLL = valueLL;
         drOFR = value; drUSDOFR = value; drLLOFR = valueLL;
         cr = value; crUSD = value; crLL = valueLL;
         crOFR = value; crUSDOFR = value; crLLOFR = valueLL;
-      } else if ((invoice as any).type === 'SR') {
+      } else if (effectiveType === 'SR') {
         dr = value; drUSD = value; drLL = valueLL;
         drOFR = valueOFR; drUSDOFR = valueOFR; drLLOFR = valueOFRLL;
         cr = value; crUSD = value; crLL = valueLL;
@@ -1062,7 +1078,7 @@ const creditLine = this.journalVoucherDetailRepo.create(
     jvNumber,
     purchaseInvoiceId: (invoice as any).id,
     date: (invoice as any).jvDate,
-    jvType: (invoice as any).type,
+    jvType: isPR ? 'PR' : (invoice as any).type,
 
     totalDr: hdrDr,
     totalDrUSD: hdrDrUSD,
@@ -1323,7 +1339,54 @@ invoiceNbTax: this.intOrNull(row.invoiceNbTax),
   return savedInvoice;
 }
 
+  // ────────────────────────────────────────────────────────────
+  // PURCHASE RETURN
+  // ────────────────────────────────────────────────────────────
+async createPurchaseReturn(data: any): Promise<PurchaseInvoice> {
+  const baseType: 'S' | 'G' | 'SR' = (data.baseType as any) ?? 'S';
+  const yy = await this.getActiveYearYY();
 
+  const prefix = baseType === 'G' ? `PVGR${yy}-` : `PVR${yy}-`;
+
+  const last = await this.invoiceRepo
+    .createQueryBuilder('pi')
+    .select(['pi.id', 'pi.invoiceNumber'])
+    .where('pi.invoiceNumber LIKE :p', { p: `${prefix}%` })
+    .orderBy('pi.id', 'DESC')
+    .getOne();
+
+  let lastSeq = 0;
+  if (last?.invoiceNumber?.startsWith(prefix)) {
+    const part = last.invoiceNumber.replace(prefix, '');
+    const n = parseInt(part, 10);
+    if (Number.isFinite(n)) lastSeq = n;
+  }
+  const nextSeq = lastSeq + 1;
+  const invoiceNumber = `${prefix}${String(nextSeq).padStart(3, '0')}`;
+
+  (data as any).supplierInvoiceNumber = (data as any).invoiceNumber ?? null;
+  (data as any).invoiceNumber = invoiceNumber;
+  (data as any).type = 'PR';
+  (data as any).returnBaseType = baseType;
+
+  const invoice = this.invoiceRepo.create(data as any);
+  const savedInvoice = await this.invoiceRepo.save(invoice as any);
+
+  if ((savedInvoice as any).status === 'Recieved') {
+    await this.rebuildInventoryForPurchaseInvoice(
+      { ...(savedInvoice as any), items: (savedInvoice as any).items } as any,
+      [],
+    );
+
+    await this.createOrRebuildJVForPurchaseInvoice(
+      savedInvoice as any,
+      (((savedInvoice as any).items ?? []) as any),
+      undefined,
+    );
+  }
+
+  return savedInvoice;
+}
 
   // ────────────────────────────────────────────────────────────
   // UPDATE (no recompute functions, no applyPurchaseCostsForInvoice)

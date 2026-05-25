@@ -30,6 +30,12 @@ export class PurchaseInvoiceController {
     return this.service.create(body);
   }
 
+  @Post('return')
+  @RequirePerms('purchases.create')
+  async createReturn(@Body() body: any) {
+    return this.service.createPurchaseReturn(body);
+  }
+
   @Get()
   @RequirePerms('purchases.view')
   getAll() {
