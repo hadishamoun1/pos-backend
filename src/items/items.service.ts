@@ -4711,8 +4711,15 @@ async getVariantLedgerByItemNameDesc(params?: {
       'n.averageCostCVM','n.averageCostC','n.lastCostC','n.lastCostCVM',
     ]);
 
-  // Keep: only rows that *have* Item-Name description appear
-  qb.andWhere('n.id IS NOT NULL');
+  // Keep: only rows that *have* Item-Name description appear (sqm items are exempt when explicitly selected)
+  if (params?.type !== 'sqm') {
+    qb.andWhere('n.id IS NOT NULL');
+  }
+
+  // hide sqm items from the default (no-filter) view
+  if (!params?.type) {
+    qb.andWhere("i.type != 'sqm'");
+  }
 
   if (params?.variantIds?.length) {
     qb.andWhere('v.id IN (:...vids)', { vids: params.variantIds });
@@ -5076,7 +5083,15 @@ async getVariantLedgerByRealDesc(params?: {
       'r.itemNumber','r.sort_index_real_description',
     ]);
 
-  qb.andWhere('r.id IS NOT NULL');
+  // sqm items typically have no realDescription — allow them through when type=sqm is explicit
+  if (params?.type !== 'sqm') {
+    qb.andWhere('r.id IS NOT NULL');
+  }
+
+  // hide sqm items from the default (no-filter) view; they only show when explicitly selected
+  if (!params?.type) {
+    qb.andWhere("i.type != 'sqm'");
+  }
 
   if (params?.variantIds?.length) {
     qb.andWhere('v.id IN (:...vids)', { vids: params.variantIds });
