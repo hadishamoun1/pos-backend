@@ -4943,6 +4943,7 @@ async getVariantLedgerByRealDesc(params?: {
   limit?: number;
   variantIds?: number[];
   asOf?: string;
+  includeSqm?: boolean;
 }) {
   const toNum = (v: any) => {
     const n = Number(v);
@@ -5083,13 +5084,13 @@ async getVariantLedgerByRealDesc(params?: {
       'r.itemNumber','r.sort_index_real_description',
     ]);
 
-  // sqm items typically have no realDescription — allow them through when type=sqm is explicit
-  if (params?.type !== 'sqm') {
+  // sqm items typically have no realDescription — allow them through when type=sqm is explicit or includeSqm=true
+  if (params?.type !== 'sqm' && !params?.includeSqm) {
     qb.andWhere('r.id IS NOT NULL');
   }
 
-  // hide sqm items from the default (no-filter) view; they only show when explicitly selected
-  if (!params?.type) {
+  // hide sqm items from the default (no-filter) view unless explicitly requested
+  if (!params?.type && !params?.includeSqm) {
     qb.andWhere("i.type != 'sqm'");
   }
 

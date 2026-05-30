@@ -182,6 +182,7 @@ export class ItemsController {
     @Query('limit') limit?: string,
     @Query('variantIds') variantIdsRaw?: string, // "1,2,3"
     @Query('asOf') asOf?: string, // "YYYY-MM-DD"
+    @Query('includeSqm') includeSqmRaw?: string,
   ) {
     const variantIds = (variantIdsRaw || '')
       .split(',')
@@ -201,6 +202,7 @@ export class ItemsController {
       limit: Number(limit),
       variantIds: variantIds.length ? variantIds : undefined,
       asOf: asOf?.trim() || undefined,
+      includeSqm: includeSqmRaw === 'true',
     });
   }
 
