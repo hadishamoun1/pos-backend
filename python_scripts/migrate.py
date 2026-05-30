@@ -3,7 +3,7 @@ import sys
 import mysql.connector
 
 # --- CONFIG ---
-CSV_FILE_PATH = "subaccounts.csv"
+CSV_FILE_PATH = "accountali.csv"
 FORCE_INSERT_ORPHANS = True  # see notes below
 # ---------------
 
@@ -25,10 +25,10 @@ def pick(d, *keys):
 def main():
     # DB connection
     db = mysql.connector.connect(
-        host="localhost",
-        user="root",
+        host="192.168.3.24",
+        user="hadiapp",
         password="70631859HADI",
-        database="pos_v1",
+        database="pos_v1_ali",
     )
     cur = db.cursor()
 
