@@ -223,6 +223,7 @@ async getCustomersPaginated(
       'invoiceType',
       'vat',
       'financialNumber',
+      'linkedSupplierId',
     ],
     relations: ['currency', 'account'],
     skip: (page - 1) * limit,
@@ -249,6 +250,8 @@ async getCustomersPaginated(
     vat: customer.vat,
     currencyCode: customer.currency?.currencyCode,
     financialNumber: customer.financialNumber,
+    currencyId: customer.currency?.id ?? null,
+    linkedSupplierId: (customer as any).linkedSupplierId ?? null,
   }));
 
   return { customers: filteredCustomers, total };
@@ -450,7 +453,9 @@ async updateCustomer(id: number, dto: Partial<Customer>): Promise<Customer> {
   if (dto.financialNumber != null) customer.financialNumber = dto.financialNumber as any;
   if (dto.vat != null) customer.vat = dto.vat as any;
 
-  // account remains the same (linked to 4111 on create) unless you add explicit logic
+  if ('linkedSupplierId' in dto) {
+    (customer as any).linkedSupplierId = dto.linkedSupplierId != null ? Number(dto.linkedSupplierId) : null;
+  }
 
   // 7) Save
   return this.customerRepository.save(customer);

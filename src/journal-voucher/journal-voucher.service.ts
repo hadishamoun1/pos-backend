@@ -732,6 +732,153 @@ async getCustomerStatementOFR(params: {
 
 
 
+async getNetPositionStatement(params: {
+  customerId: number;
+  from?: string;
+  to?: string;
+  type?: 'S' | 'G' | 'ALL';
+}) {
+  const { customerId, from, to, type = 'ALL' } = params;
+
+  const ymdToStart = (ymd: string) => `${ymd} 00:00:00`;
+  const nextYMD = (ymd: string) => {
+    const d = new Date(`${ymd}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+
+  const fromStart = from ? ymdToStart(from) : null;
+  const toNext   = to   ? ymdToStart(nextYMD(to)) : null;
+
+  const customer = await this.customerRepo.findOne({ where: { id: customerId } });
+  if (!customer) throw new NotFoundException(`Customer ${customerId} not found`);
+
+  const linkedSupplierId: number | null = (customer as any).linkedSupplierId ?? null;
+
+  const isOfrRow = (jv: any) => String(jv?.jvNumber ?? '').toUpperCase().includes('G');
+  const getColsForRow = (useOfr: boolean) => useOfr
+    ? { drCol: 'drUSDOFR' as const, crCol: 'crUSDOFR' as const }
+    : { drCol: 'drUSD'    as const, crCol: 'crUSD'    as const };
+
+  const applyFilters = (
+    qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>,
+    fStart: string | null,
+    tNext:  string | null,
+  ) => {
+    if (fStart) qb.andWhere('jv.date >= :fStart', { fStart });
+    if (tNext)  qb.andWhere('jv.date < :tNext',  { tNext });
+    if (type === 'G') qb.andWhere(`UPPER(jv.jvNumber) LIKE '%G%'`);
+    if (type === 'S') qb.andWhere(`UPPER(jv.jvNumber) NOT LIKE '%G%'`);
+    return qb;
+  };
+
+  // ── Customer side (AR) ──
+  const customerQb = this.journalVoucherDetailRepository
+    .createQueryBuilder('d')
+    .leftJoinAndSelect('d.journalVoucher', 'jv')
+    .where('d.customerId = :customerId', { customerId });
+  applyFilters(customerQb, fromStart, toNext);
+  customerQb.orderBy('jv.date', 'ASC').addOrderBy('d.id', 'ASC');
+  const customerRows = await customerQb.getMany();
+
+  // ── Supplier side (AP) — only if linked ──
+  let supplierRows: any[] = [];
+  let supplierName: string | null = null;
+  if (linkedSupplierId) {
+    const supplier = await this.supplierRepo.findOne({ where: { id: linkedSupplierId } });
+    supplierName = supplier?.supplierName ?? null;
+    const supplierQb = this.journalVoucherDetailRepository
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.journalVoucher', 'jv')
+      .where('d.supplierId = :supplierId', { supplierId: linkedSupplierId });
+    applyFilters(supplierQb, fromStart, toNext);
+    supplierQb.orderBy('jv.date', 'ASC').addOrderBy('d.id', 'ASC');
+    supplierRows = await supplierQb.getMany();
+  }
+
+  // ── Opening balance (before fromStart) ──
+  let openingBalance = 0;
+  if (fromStart) {
+    const calcOpening = async (whereField: string, whereVal: number, flipSign: boolean) => {
+      const qb = this.journalVoucherDetailRepository
+        .createQueryBuilder('d')
+        .leftJoinAndSelect('d.journalVoucher', 'jv')
+        .where(`d.${whereField} = :val`, { val: whereVal })
+        .andWhere('jv.date < :fromStart', { fromStart });
+      if (type === 'G') qb.andWhere(`UPPER(jv.jvNumber) LIKE '%G%'`);
+      if (type === 'S') qb.andWhere(`UPPER(jv.jvNumber) NOT LIKE '%G%'`);
+      const rows = await qb.getMany();
+      let dr = 0, cr = 0;
+      for (const r of rows) {
+        const { drCol, crCol } = getColsForRow(isOfrRow(r.journalVoucher));
+        dr += Number((r as any)[drCol] || 0);
+        cr += Number((r as any)[crCol] || 0);
+      }
+      return flipSign ? (cr - dr) : (dr - cr);
+    };
+
+    const custOpening = await calcOpening('customerId', customerId, false);
+    const suppOpening = linkedSupplierId
+      ? await calcOpening('supplierId', linkedSupplierId, true)
+      : 0;
+    openingBalance = custOpening + suppOpening;
+  }
+
+  // ── Merge & sort all rows ──
+  const allRows = [
+    ...customerRows.map(r => ({ ...r, _side: 'customer' as const })),
+    ...supplierRows.map(r => ({ ...r, _side: 'supplier' as const })),
+  ].sort((a, b) => {
+    const da = new Date(a.journalVoucher?.date ?? 0).getTime();
+    const db = new Date(b.journalVoucher?.date ?? 0).getTime();
+    if (da !== db) return da - db;
+    return (a.id ?? 0) - (b.id ?? 0);
+  });
+
+  let running = openingBalance;
+  const items = allRows.map(r => {
+    const useOfr = isOfrRow(r.journalVoucher);
+    const { drCol, crCol } = getColsForRow(useOfr);
+    let debit  = Number((r as any)[drCol] || 0);
+    let credit = Number((r as any)[crCol] || 0);
+
+    // Flip signs for supplier side — their DR is your CR and vice versa
+    if (r._side === 'supplier') [debit, credit] = [credit, debit];
+
+    running += debit - credit;
+    return {
+      journalVoucherId: r.journalVoucherId,
+      date:        r.journalVoucher?.date,
+      jvNumber:    r.journalVoucher?.jvNumber,
+      jvType:      r.journalVoucher?.jvType,
+      description: r.description ?? null,
+      docNbr:      r.docNbr ?? null,
+      side:        r._side,
+      debit,
+      credit,
+      balanceAfter: running,
+    };
+  });
+
+  const totals = items.reduce(
+    (acc, li) => { acc.totalDebit += li.debit; acc.totalCredit += li.credit; return acc; },
+    { totalDebit: 0, totalCredit: 0 },
+  );
+
+  return {
+    customerId,
+    customerName: customer.customerName,
+    linkedSupplierId,
+    supplierName,
+    from: from ?? null,
+    to:   to   ?? null,
+    openingBalance,
+    totals,
+    closingBalance: running,
+    items,
+  };
+}
+
 async getCustomerBalancesReport(params: {
   to?: string;
   type?: 'S' | 'G' | 'ALL';

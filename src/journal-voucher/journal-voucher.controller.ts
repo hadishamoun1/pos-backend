@@ -152,6 +152,22 @@ searchBySeq(@Query() query: any) {
     }
   }
 
+  @Get('statements/net/:customerId')
+  @RequirePerms('journal.view')
+  async getNetPositionStatement(
+    @Param('customerId', ParseIntPipe) customerId: number,
+    @Query('type') type?: 'S' | 'G' | 'ALL',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.journalVoucherService.getNetPositionStatement({
+      customerId,
+      type: (type as any) || 'ALL',
+      from,
+      to,
+    });
+  }
+
   // Example:
   // /journal-vouchers/statements/customers/1?currency=USD
   @Get('statements/customers/:customerId')

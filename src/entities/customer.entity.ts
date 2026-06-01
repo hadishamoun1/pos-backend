@@ -79,6 +79,9 @@ lastName?: string;
   @JoinColumn({ name: 'accountId' })
   account: Account;
 
+  @Column({ type: 'int', nullable: true })
+  linkedSupplierId?: number | null;
+
   @OneToMany(() => Invoice, (invoice) => invoice.customer)
   invoices: Invoice[];
 
