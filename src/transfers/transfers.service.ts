@@ -1976,6 +1976,8 @@ if ((transfer as any).location === 'FJ') {
       for (const ti of persisted) {
         const qty = num((ti as any).quantity);
         const sqmVal = num((ti as any).sqm);
+        // for box/unit items sqm may be 0 — fall back to quantity so cost is not skipped
+        const effectiveQty = sqmVal > 0 ? sqmVal : qty;
 
         const batch: any = (ti as any).itemBatch;
         const variant: any = batch.itemVariant;
@@ -2025,8 +2027,8 @@ if ((transfer as any).location === 'FJ') {
           copied: null,
         };
 
-        agg.totalSqm += sqmVal;
-        agg.weightedCostOfr += sqmVal * lineCosts.ofr;
+        agg.totalSqm += effectiveQty;
+        agg.weightedCostOfr += effectiveQty * lineCosts.ofr;
         agg.transferItemIds.push((ti as any).id);
         agg.txInIds.push((saved as any).id);
         rememberCopied(agg, lineCosts);
