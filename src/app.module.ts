@@ -46,6 +46,7 @@ import { CashCollectionsModule } from './cash-collections/cash-collections.modul
 import { EmployeesModule } from './Employee/Employee.module';
 import { CompanyModule } from './company/company.module';
 import { SecurityAlertModule } from './securityAlert/security-alert.module';
+import { PosControlsModule } from './pos-controls/pos-controls.module';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
 import { RecordingModule } from './recording/recording.module';
@@ -116,6 +117,7 @@ TypeOrmModule.forRootAsync({
     EmployeesModule,
     CompanyModule,
     SecurityAlertModule,
+    PosControlsModule,
     ActivityLogModule,
     RecordingModule,
     FileBrowserModule,
