@@ -47,6 +47,8 @@ import { EmployeesModule } from './Employee/Employee.module';
 import { CompanyModule } from './company/company.module';
 import { SecurityAlertModule } from './securityAlert/security-alert.module';
 import { PosControlsModule } from './pos-controls/pos-controls.module';
+import { BulkRvrScheduleModule } from './bulk-rvr-schedule/bulk-rvr-schedule.module';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
 import { RecordingModule } from './recording/recording.module';
@@ -60,6 +62,7 @@ import { DelayMiddleware } from './delay/delay.middleware';
   ],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
 TypeOrmModule.forRootAsync({
   useFactory: () => ({
     type: 'mysql',
@@ -118,6 +121,7 @@ TypeOrmModule.forRootAsync({
     CompanyModule,
     SecurityAlertModule,
     PosControlsModule,
+    BulkRvrScheduleModule,
     ActivityLogModule,
     RecordingModule,
     FileBrowserModule,
