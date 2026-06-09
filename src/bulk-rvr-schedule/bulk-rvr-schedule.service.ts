@@ -38,15 +38,15 @@ export class BulkRvrScheduleService implements OnModuleInit {
     if (!config?.enabled) return;
 
     const now = new Date();
-    if (now.getHours() !== Number(config.runHour)) return;
+    if (now.getUTCHours() !== Number(config.runHour)) return;
 
-    // Check if already ran today
+    // Check if already ran today (UTC date)
     if (config.lastRunAt) {
       const last = new Date(config.lastRunAt);
       const sameDay =
-        last.getFullYear() === now.getFullYear() &&
-        last.getMonth() === now.getMonth() &&
-        last.getDate() === now.getDate();
+        last.getUTCFullYear() === now.getUTCFullYear() &&
+        last.getUTCMonth() === now.getUTCMonth() &&
+        last.getUTCDate() === now.getUTCDate();
       if (sameDay) return;
     }
 
