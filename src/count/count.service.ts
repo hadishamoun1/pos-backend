@@ -1307,6 +1307,13 @@ async createInventoryCheck(
     (b as any).balanceOFR = round2(startO + inO - outO);
   };
 
+  const recomputeBalance = (b: ItemBatch) => {
+    const s = Number((b as any).start || 0);
+    const i = Number((b as any).in || 0);
+    const o = Number((b as any).out || 0);
+    (b as any).balance = round2(s + i - o);
+  };
+
   const type = String(itemType || '').toLowerCase();
   if (type !== 'box' && type !== 'sheet' && type !== 'sqm') {
     throw new BadRequestException("itemType must be 'box' | 'sheet' | 'sqm'");
@@ -1326,6 +1333,7 @@ async createInventoryCheck(
   // ✅ transaction + row locking to avoid race conditions
   await this.dataSource.transaction(async (manager) => {
     const batchRepo = manager.getRepository(ItemBatch);
+    const txnRepo   = manager.getRepository(InventoryTransaction);
 
     // 🔒 lock source batch
     const originalBatch = await batchRepo
@@ -1346,57 +1354,21 @@ async createInventoryCheck(
     const originalCondStored = cleanCondStored((originalBatch as any).condition) || 'Clean';
     const originalCondKey = condKey(originalCondStored);
 
-    const ensureEnough = (needSqm: number) => {
-      recomputeBalanceOFR(originalBatch);
-      const have = Number((originalBatch as any).balanceOFR || 0);
-      if (have + 1e-9 < needSqm) {
+    const ensureEnough = async (needSqm: number) => {
+      const rows: any[] = await txnRepo.query(
+        `SELECT SUM(sqmofr) AS balOFR FROM inventory_transaction WHERE itemBatchId = ?`,
+        [(originalBatch as any).id],
+      );
+      const txnSum = rows?.[0]?.balOFR;
+      // Fall back to entity balanceOFR when no transaction records exist yet
+      const have = txnSum != null
+        ? Number(txnSum)
+        : Number((originalBatch as any).balanceOFR || 0);
+      if (have + 0.5 < needSqm) {
         throw new BadRequestException(
           `Not enough stock in source batch (need ${needSqm}, have ${have})`,
         );
       }
-    };
-
-    // ✅ robust find/create target (avoids duplicates caused by case/spaces)
-    const findOrCreateTargetByCondDate = async (
-      targetCondStored: string,
-      targetDateNorm: string | null,
-    ): Promise<ItemBatch> => {
-      // lock all batches for this variant+date
-      const qb = batchRepo
-        .createQueryBuilder('b')
-        .where('b.itemVariantId = :vid', { vid: itemVariantId })
-        .setLock('pessimistic_write');
-
-      if (targetDateNorm == null) qb.andWhere('b.dateReceived IS NULL');
-      else qb.andWhere('b.dateReceived = :dr', { dr: targetDateNorm });
-
-      const candidates: ItemBatch[] = await qb.getMany();
-
-      const wantedKey = condKey(targetCondStored);
-      const found = candidates.find((b) => condKey((b as any).condition) === wantedKey);
-      if (found) return found;
-
-      // ✅ IMPORTANT FIX: do NOT call create({ ... } as any) (can pick array overload)
-      // Create empty entity then assign fields -> always single ItemBatch
-      const created = batchRepo.create();
-
-      // link by id only (no extra DB fetch)
-      (created as any).itemVariant = { id: itemVariantId };
-      (created as any).condition = targetCondStored;
-      (created as any).dateReceived = targetDateNorm;
-
-      (created as any).startOFR = 0;
-      (created as any).inOFR = 0;
-      (created as any).outOFR = 0;
-      (created as any).balanceOFR = 0;
-
-      (created as any).start = 0;
-      (created as any).in = 0;
-      (created as any).out = 0;
-      (created as any).balance = 0;
-
-      const saved = await batchRepo.save(created); // ✅ returns ItemBatch
-      return saved;
     };
 
     for (const rec of records || []) {
@@ -1405,56 +1377,33 @@ async createInventoryCheck(
 
       const totalSQM = round2(qty * sqmPerUnit);
 
-      const targetDateNorm = normalizeMonth(rec.receivedDate);
-      const targetCondStored = cleanCondStored(rec.condition) || originalCondStored || 'Clean';
-      const targetCondKey = condKey(targetCondStored);
-
-      const isSameBatch =
-        targetCondKey === originalCondKey &&
-        (targetDateNorm ?? null) === (originalDateNorm ?? null);
-
       // -------------------------
-      // adj+ : move FROM source batch TO target batch
+      // adj+ : add stock INTO the selected batch
       // -------------------------
       if (rec.status === 'adj+') {
-        if (isSameBatch) continue;
-
-        ensureEnough(totalSQM);
-
-        let targetBatch: ItemBatch | null = null;
-
-        // ✅ If caller provides targetBatchId, use it directly
-        if (rec.targetBatchId) {
-          targetBatch = await batchRepo
-            .createQueryBuilder('b')
-            .where('b.id = :id', { id: Number(rec.targetBatchId) })
-            .setLock('pessimistic_write')
-            .getOne();
-
-          if (!targetBatch) {
-            throw new BadRequestException(`Target batch not found: ${rec.targetBatchId}`);
-          }
-
-          // safety: must be same variant
-          const targetVariantId = (targetBatch as any).itemVariantId;
-          if (Number(targetVariantId) !== Number(itemVariantId)) {
-            throw new BadRequestException(`Target batch must belong to the same item variant`);
-          }
-        } else {
-          // ✅ fallback: same variant + same dateReceived + same condition (create if missing)
-          targetBatch = await findOrCreateTargetByCondDate(targetCondStored, targetDateNorm);
-        }
-
-        // movement => out from source, in to target
-        (originalBatch as any).outOFR = round2(Number((originalBatch as any).outOFR || 0) + totalSQM);
-        (targetBatch as any).inOFR = round2(Number((targetBatch as any).inOFR || 0) + totalSQM);
-
+        (originalBatch as any).inOFR = round2(Number((originalBatch as any).inOFR || 0) + totalSQM);
         recomputeBalanceOFR(originalBatch);
-        recomputeBalanceOFR(targetBatch);
 
-        // You can keep array-save; it works at runtime.
-        // If you ever get TS unions elsewhere, swap to 2 separate saves.
-        await batchRepo.save([originalBatch, targetBatch]);
+        (originalBatch as any).in = round2(Number((originalBatch as any).in || 0) + totalSQM);
+        recomputeBalance(originalBatch);
+
+        await batchRepo.save(originalBatch as ItemBatch);
+
+        const adjDate = new Date();
+        await txnRepo.save(
+          txnRepo.create({
+            itemVariantId,
+            itemBatchId:     (originalBatch as any).id,
+            transactionType: 'Adjustment+',
+            quantity:        0,
+            quantityofr:     qty,
+            sqm:             0,
+            sqmofr:          totalSQM,
+            finalcost:       0,
+            finalcostofr:    0,
+            dateForEachInvoice: adjDate,
+          }),
+        );
 
         continue;
       }
@@ -1463,12 +1412,31 @@ async createInventoryCheck(
       // breakage : out only
       // -------------------------
       if (rec.status === 'breakage') {
-        ensureEnough(totalSQM);
+        await ensureEnough(totalSQM);
 
         (originalBatch as any).outOFR = round2(Number((originalBatch as any).outOFR || 0) + totalSQM);
         recomputeBalanceOFR(originalBatch);
 
-        await batchRepo.save(originalBatch);
+        (originalBatch as any).out = round2(Number((originalBatch as any).out || 0) + totalSQM);
+        recomputeBalance(originalBatch);
+
+        await batchRepo.save(originalBatch as ItemBatch);
+
+        const brkDate = new Date();
+        await txnRepo.save(
+          txnRepo.create({
+            itemVariantId,
+            itemBatchId:     (originalBatch as any).id,
+            transactionType: 'Breakage',
+            quantity:        0,
+            quantityofr:     -qty,
+            sqm:             0,
+            sqmofr:          -totalSQM,
+            finalcost:       0,
+            finalcostofr:    0,
+            dateForEachInvoice: brkDate,
+          }),
+        );
         continue;
       }
 
@@ -1476,12 +1444,31 @@ async createInventoryCheck(
       // adj- : out only
       // -------------------------
       if (rec.status === 'adj-') {
-        ensureEnough(totalSQM);
+        await ensureEnough(totalSQM);
 
         (originalBatch as any).outOFR = round2(Number((originalBatch as any).outOFR || 0) + totalSQM);
         recomputeBalanceOFR(originalBatch);
 
-        await batchRepo.save(originalBatch);
+        (originalBatch as any).out = round2(Number((originalBatch as any).out || 0) + totalSQM);
+        recomputeBalance(originalBatch);
+
+        await batchRepo.save(originalBatch as ItemBatch);
+
+        const adjDate = new Date();
+        await txnRepo.save(
+          txnRepo.create({
+            itemVariantId,
+            itemBatchId:     (originalBatch as any).id,
+            transactionType: 'Adjustment-',
+            quantity:        0,
+            quantityofr:     -qty,
+            sqm:             0,
+            sqmofr:          -totalSQM,
+            finalcost:       0,
+            finalcostofr:    0,
+            dateForEachInvoice: adjDate,
+          }),
+        );
         continue;
       }
     }

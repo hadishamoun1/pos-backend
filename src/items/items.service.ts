@@ -2144,30 +2144,6 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     return Number.isFinite(n) ? n : 0;
   };
 
-  const convertBalanceFromSqm = (params: {
-    itemType: string | null | undefined;
-    lengthCm: number;
-    widthCm: number;
-    sheetsPerBox: number;
-    balanceSqm: number;
-  }) => {
-    const { itemType, lengthCm, widthCm, sheetsPerBox, balanceSqm } = params;
-    const perSheetSqm =
-      toNum(lengthCm) > 0 && toNum(widthCm) > 0
-        ? (toNum(lengthCm) * toNum(widthCm)) / 10000
-        : 0;
-
-    const type = String(itemType || "").toLowerCase();
-    if (type === "box") {
-      const perBoxSqm = perSheetSqm * Math.max(1, toNum(sheetsPerBox));
-      return perBoxSqm > 0 ? balanceSqm / perBoxSqm : balanceSqm;
-    }
-    if (type === "sheet") {
-      return perSheetSqm > 0 ? balanceSqm / perSheetSqm : balanceSqm;
-    }
-    return balanceSqm; // sqm/unit: already in target unit
-  };
-
   // -------------------------------------------------------------------
   // 1) Load minimal graph; custom ordering done in JS
   //    ONLY variants that have realDescriptionId
@@ -2217,6 +2193,39 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     .getMany();
 
   // -------------------------------------------------------------------
+  // 1b) Batch-level SUM(quantityofr/sqmofr) from inventory_transaction
+  // -------------------------------------------------------------------
+  const _detailsBatchIds: number[] = [];
+  for (const item of entities) {
+    for (const th of item.thicknesses || []) {
+      for (const v of th.variants || []) {
+        for (const b of v.batches || []) {
+          const bid = Number((b as any).id);
+          if (Number.isFinite(bid) && bid > 0) _detailsBatchIds.push(bid);
+        }
+      }
+    }
+  }
+  const _detailsTxnSnap = new Map<number, { balU: number; balSqm: number }>();
+  if (_detailsBatchIds.length) {
+    const _uniq = Array.from(new Set(_detailsBatchIds));
+    const _makeIn = (arr: any[]) => arr.map(() => '?').join(',');
+    const _rows = await this.itemRepository.query(
+      `SELECT itemBatchId AS batchId,
+              SUM(COALESCE(quantityofr,0)) AS balU,
+              SUM(COALESCE(sqmofr,0)) AS balSqm
+       FROM inventory_transaction
+       WHERE itemBatchId IN (${_makeIn(_uniq)})
+       GROUP BY itemBatchId`,
+      _uniq,
+    );
+    for (const r of _rows || []) {
+      const bid = Number(r.batchId);
+      if (Number.isFinite(bid)) _detailsTxnSnap.set(bid, { balU: Number(r.balU ?? 0), balSqm: Number(r.balSqm ?? 0) });
+    }
+  }
+
+  // -------------------------------------------------------------------
   // 2) Flatten (FILTER OUT ZERO/NEGATIVE STOCK for non-unit)
   // -------------------------------------------------------------------
   type Flat = {
@@ -2256,7 +2265,6 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
   const flat: Flat[] = [];
   for (const item of entities) {
     const itemTypeLower = String(item.type || "").toLowerCase();
-    const allowZeroOrNegative = itemTypeLower === "unit";
 
     // ✅ ADDED: stockMode on the item (default to 'sqm' for backward-compat)
     const stockModeLower =
@@ -2270,26 +2278,18 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
 
         const batches = (v.batches || [])
           .map((b) => {
-            const balanceSqm = toNum(b.balanceOFR);
-            const converted = convertBalanceFromSqm({
-              itemType: item.type,
-              lengthCm: lengthNum,
-              widthCm: widthNum,
-              sheetsPerBox: spbNum,
-              balanceSqm,
-            });
+            const snap = _detailsTxnSnap.get(Number((b as any).id));
             return {
               id: b.id,
               condition: b.condition ?? null,
               dateReceived: b.dateReceived ?? null,
-              balanceOFRSqm: Number(balanceSqm.toFixed(2)),
-              balanceOFR: Number(converted.toFixed(2)),
+              balanceOFRSqm: Number((snap?.balSqm ?? 0).toFixed(2)),
+              balanceOFR:    Number((snap?.balU   ?? 0).toFixed(2)),
             };
           })
-          // ✅ NEW RULE:
           // - unit: keep all rows
           // - non-unit: keep only positive balance
-          .filter((row) => allowZeroOrNegative || row.balanceOFR > 0);
+          ;
 
         // ✅ if no valid batches remain, drop the variant entirely
         if (!batches.length) continue;
@@ -2555,47 +2555,6 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     return out;
   }
 
-  /**
-   * Convert a sqm balance to "units" depending on item.type:
-   * - box   => divide by (per-sheet sqm * sheetsPerBox)
-   * - sheet => divide by per-sheet sqm
-   * - sqm   => leave as-is
-   * Returns both sqm and converted, each rounded.
-   *
-   * If you want integers for box/sheet, set roundUnitsToInt=true.
-   */
-  private convertAndRoundBalance(
-    itemType: string | null | undefined,
-    lengthCm: number,
-    widthCm: number,
-    sheetsPerBox: number,
-    balanceSqmRaw: any,
-    roundUnitsToInt = false, // flip to true if you want integer boxes/sheets
-  ) {
-    const balanceSqm = this.toNum(balanceSqmRaw);
-    const perSheetSqm =
-      this.toNum(lengthCm) > 0 && this.toNum(widthCm) > 0
-        ? (this.toNum(lengthCm) * this.toNum(widthCm)) / 10000
-        : 0;
-
-    const type = (itemType || "").toLowerCase();
-    let converted = balanceSqm;
-
-    if (type === "box") {
-      const perBoxSqm = perSheetSqm * Math.max(1, this.toNum(sheetsPerBox));
-      converted = perBoxSqm > 0 ? balanceSqm / perBoxSqm : balanceSqm;
-    } else if (type === "sheet") {
-      converted = perSheetSqm > 0 ? balanceSqm / perSheetSqm : balanceSqm;
-    } // else "sqm" (or unknown) -> leave as sqm
-
-    const balanceOFRSqm = Number(balanceSqm.toFixed(2));
-    const balanceOFR = roundUnitsToInt && (type === 'box' || type === 'sheet')
-      ? Math.round(converted)
-      : Number(converted.toFixed(2));
-
-    return { balanceOFRSqm, balanceOFR };
-  }
-
   // ========= Shared QB for modal =========
 
   /** Base QB for modal search (keeps everything we need) */
@@ -2645,7 +2604,6 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     opts?: { includeEmpty?: boolean; roundUnitsToInt?: boolean }
   ) {
     const includeEmpty = !!opts?.includeEmpty;
-    const roundUnitsToInt = !!opts?.roundUnitsToInt;
 
     const q2 = qb.clone().skip((page - 1) * limit).take(limit);
 
@@ -2653,6 +2611,36 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
 
     const results = await q2.getMany();
 
+    // Query SUM(quantityofr) / SUM(sqmofr) per batch from inventory_transaction
+    const _allBatchIds: number[] = [];
+    for (const it of results) {
+      for (const th of it.thicknesses || []) {
+        for (const v of th.variants || []) {
+          for (const b of (v.batches || []) as any[]) {
+            const bid = Number(b?.id);
+            if (Number.isFinite(bid) && bid > 0) _allBatchIds.push(bid);
+          }
+        }
+      }
+    }
+    const txnBatchSnap = new Map<number, { balU: number; balSqm: number }>();
+    if (_allBatchIds.length) {
+      const _uniq = Array.from(new Set(_allBatchIds));
+      const _makeIn = (arr: any[]) => arr.map(() => '?').join(',');
+      const _rows = await this.itemVariantRepository.query(
+        `SELECT itemBatchId AS batchId,
+                SUM(COALESCE(quantityofr,0)) AS balU,
+                SUM(COALESCE(sqmofr,0)) AS balSqm
+         FROM inventory_transaction
+         WHERE itemBatchId IN (${_makeIn(_uniq)})
+         GROUP BY itemBatchId`,
+        _uniq,
+      );
+      for (const r of _rows || []) {
+        const bid = Number(r.batchId);
+        if (Number.isFinite(bid)) txnBatchSnap.set(bid, { balU: Number(r.balU ?? 0), balSqm: Number(r.balSqm ?? 0) });
+      }
+    }
 
     let before = 0,
         after = 0,
@@ -2676,25 +2664,14 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
           batches += (th.variants || []).reduce((acc, v) => acc + (v.batches?.length || 0), 0);
         }
 
-        // ✅ convert and round each batch's balances
+        // set each batch's balance from SUM(quantityofr/sqmofr) in inventory_transaction
         for (const v of th.variants || []) {
-          const len = this.toNum(v.length);
-          const wid = this.toNum(v.width);
-          const spb = Math.max(1, this.toNum(v.sheetsPerBox));
-
           v.batches = (v.batches || []).map((b: any) => {
-            const { balanceOFRSqm, balanceOFR } = this.convertAndRoundBalance(
-              it.type,
-              len,
-              wid,
-              spb,
-              b.balanceOFR,          // raw sqm from DB
-              roundUnitsToInt        // toggle integer units for box/sheet
-            );
+            const snap = txnBatchSnap.get(Number(b?.id));
             return {
               ...b,
-              balanceOFRSqm, // number (sqm), rounded to 2
-              balanceOFR,    // number (units for box/sheet, else sqm), rounded
+              balanceOFR:    Number((snap?.balU   ?? 0).toFixed(2)),
+              balanceOFRSqm: Number((snap?.balSqm ?? 0).toFixed(2)),
             };
           });
         }
@@ -3328,9 +3305,7 @@ async searchForModalPOSInStock(params: {
           const variants = (th.variants || [])
             .map((v: any) => {
               const batchesRaw = Array.isArray(v.batches) ? v.batches : [];
-              const batches = isUnit
-                ? batchesRaw
-                : batchesRaw.filter((b: any) => Number(b.balanceOFR) > 0);
+              const batches = batchesRaw;
 
               return {
                 ...v,
@@ -5285,6 +5260,31 @@ async getVariantLedgerByRealDesc(params?: {
           const vid = Number(r.variantId);
           if (Number.isFinite(vid)) variantSnap.set(vid, { balU: r.balU, balOFR: r.balOFR });
         }
+
+        // Batch-level SUM(quantityofr) for per-batch stock display
+        const batchIds: number[] = [];
+        for (const v of variants as any[]) {
+          for (const b of (v.batches ?? [])) {
+            const bid = Number(b?.id);
+            if (Number.isFinite(bid) && bid > 0) batchIds.push(bid);
+          }
+        }
+        if (batchIds.length) {
+          const uniq = Array.from(new Set(batchIds));
+          const batchSql = `
+            SELECT itemBatchId AS batchId
+              ${qtyExpr    ? `, ${qtyExpr}    AS balU`   : ''}
+              ${sqmOfrExpr ? `, ${sqmOfrExpr} AS balOFR` : ''}
+            FROM inventory_transaction
+            WHERE itemBatchId IN (${makeIn(uniq)})
+            GROUP BY itemBatchId
+          `;
+          const batchRows = await this.itemVariantRepository.query(batchSql, uniq);
+          for (const r of batchRows || []) {
+            const bid = Number(r.batchId);
+            if (Number.isFinite(bid)) batchSnap.set(bid, { balU: r.balU, balOFR: r.balOFR });
+          }
+        }
       }
     }
   }
@@ -5505,9 +5505,9 @@ async getVariantLedgerByRealDesc(params?: {
     const batches = (v.batches ?? []).map((b: any) => {
       const bSnap = batchSnap.get(Number(b.id)) ?? null;
 
-      // ✅ batch quantity from quantityofr, sqm from sqmofr
-      const batchQty = toNum(bSnap?.balU   ?? (b.balance    ?? 0));
-      const batchSqm = toNum(bSnap?.balOFR ?? (b.balanceOFR ?? 0));
+      // batch quantity from SUM(quantityofr) in inventory_transaction only — no entity fallback
+      const batchQty = toNum(bSnap?.balU   ?? 0);
+      const batchSqm = toNum(bSnap?.balOFR ?? 0);
 
       return {
         id:            b.id,
