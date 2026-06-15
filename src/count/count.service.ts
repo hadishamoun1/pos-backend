@@ -1349,10 +1349,6 @@ async createInventoryCheck(
     const itemVariantId = variant?.id;
     if (!itemVariantId) throw new BadRequestException('Batch has no variant');
 
-    // Normalize original identity for "same batch"
-    const originalDateNorm = normalizeMonth((originalBatch as any).dateReceived);
-    const originalCondStored = cleanCondStored((originalBatch as any).condition) || 'Clean';
-    const originalCondKey = condKey(originalCondStored);
 
     const ensureEnough = async (needSqm: number) => {
       const rows: any[] = await txnRepo.query(
@@ -1441,7 +1437,7 @@ async createInventoryCheck(
       }
 
       // -------------------------
-      // adj- : out only
+      // adj- : out from source; if new condition/date provided, move stock to a new/existing batch
       // -------------------------
       if (rec.status === 'adj-') {
         await ensureEnough(totalSQM);
@@ -1469,6 +1465,63 @@ async createInventoryCheck(
             dateForEachInvoice: adjDate,
           }),
         );
+
+        // If a new condition or dateReceived is specified that differs from the source batch,
+        // find or create the target batch and move the stock into it.
+        const newCond = cleanCondStored(rec.condition || '');
+        const newDateNorm = normalizeMonth(rec.receivedDate);
+        const sourceCond = cleanCondStored((originalBatch as any).condition || '');
+        const sourceDateNorm = normalizeMonth((originalBatch as any).dateReceived);
+
+        const condChanged = newCond !== '' && condKey(newCond) !== condKey(sourceCond);
+        const dateChanged = newDateNorm !== sourceDateNorm;
+
+        if (condChanged || dateChanged) {
+          const targetCondition = newCond || sourceCond || 'Clean';
+          const targetDate = newDateNorm || null;
+
+          // Find existing batch with same variant + new condition + new date
+          let targetBatch = await batchRepo.findOne({
+            where: {
+              itemVariant: { id: itemVariantId },
+              condition: targetCondition,
+              ...(targetDate ? { dateReceived: targetDate } : { dateReceived: IsNull() }),
+            },
+          });
+
+          // Create the batch if it doesn't exist yet
+          if (!targetBatch) {
+            targetBatch = batchRepo.create({
+              itemVariant: { id: itemVariantId } as any,
+              dateReceived: targetDate,
+              condition: targetCondition,
+            });
+            await batchRepo.save(targetBatch);
+          }
+
+          // Add stock into the target batch
+          (targetBatch as any).inOFR = round2(Number((targetBatch as any).inOFR || 0) + totalSQM);
+          recomputeBalanceOFR(targetBatch as ItemBatch);
+          (targetBatch as any).in = round2(Number((targetBatch as any).in || 0) + totalSQM);
+          recomputeBalance(targetBatch as ItemBatch);
+          await batchRepo.save(targetBatch as ItemBatch);
+
+          await txnRepo.save(
+            txnRepo.create({
+              itemVariantId,
+              itemBatchId:     (targetBatch as any).id,
+              transactionType: 'Adjustment+',
+              quantity:        0,
+              quantityofr:     qty,
+              sqm:             0,
+              sqmofr:          totalSQM,
+              finalcost:       0,
+              finalcostofr:    0,
+              dateForEachInvoice: adjDate,
+            }),
+          );
+        }
+
         continue;
       }
     }
