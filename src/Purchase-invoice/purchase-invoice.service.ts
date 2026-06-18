@@ -899,6 +899,28 @@ private async createOrRebuildJVForPurchaseInvoice(
     hdrCrLLOFR = ofrLL;
   }
 
+  // Apply VAT percentage to both the purchases DR and supplier CR lines
+  const vatPct = Number((invoice as any).vatPercent ?? 0);
+  if (vatPct > 0 && !isPR) {
+    let vatNormal = 0, vatOFR = 0;
+    if (effectiveType === 'G') {
+      vatOFR = ofrTotal * (vatPct / 100);
+    } else if (effectiveType === 'S') {
+      vatNormal = normalTotal * (vatPct / 100);
+      vatOFR = normalTotal * (vatPct / 100);
+    } else {
+      vatNormal = normalTotal * (vatPct / 100);
+      vatOFR = ofrTotal * (vatPct / 100);
+    }
+    const vatNormalLL = vatNormal * rate;
+    const vatOFRLL = vatOFR * rate;
+
+    hdrDr += vatNormal;      hdrDrUSD += vatNormal;      hdrDrLL += vatNormalLL;
+    hdrDrOFR += vatOFR;     hdrDrUSDOFR += vatOFR;     hdrDrLLOFR += vatOFRLL;
+    hdrCr += vatNormal;      hdrCrUSD += vatNormal;      hdrCrLL += vatNormalLL;
+    hdrCrOFR += vatOFR;     hdrCrUSDOFR += vatOFR;     hdrCrLLOFR += vatOFRLL;
+  }
+
   // For PR (purchase return): DR side is supplier (reduces payable), CR side is expense account
   const debitAccountId = isPR ? null : (expenseAcct as any).id;
   const debitSupplierId = isPR ? (invoice as any).supplierId : null;
