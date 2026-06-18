@@ -76,6 +76,9 @@ jvDate: Date | null;
   @Column({ type: 'decimal', precision: 30, scale: 2 })
   vatAmount: number;
 
+  @Column({ type: 'decimal', precision: 10, scale: 4, default: 0 })
+  vatPercent: number;
+
   @Column({ type: 'decimal', precision: 30, scale: 2 })
   grandAmount: number;
 

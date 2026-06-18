@@ -1144,6 +1144,7 @@ async create(data: Partial<PurchaseInvoice>) {
   const type = (data as any).type ?? 'S';
   (data as any).supplierInvoiceNumber = (data as any).invoiceNumber ?? null;
   (data as any).invoiceNumber = await this.getNextPurchaseInvoiceNumber(type);
+  if ((data as any).etd === '' || (data as any).etd === undefined) (data as any).etd = null;
 
   // 1) save invoice + items
   const invoice = this.invoiceRepo.create(data as any);
@@ -1428,6 +1429,7 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
     ...headerPayload
   } = (data as any) || {};
 
+  if (headerPayload.etd === "" || headerPayload.etd === undefined) (headerPayload as any).etd = null;
   Object.assign(existing as any, headerPayload);
   (existing as any).unitPriceRows = undefined;
 
