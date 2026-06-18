@@ -819,7 +819,7 @@ async getNetPositionStatement(params: {
 
     const custOpening = await calcOpening('customerId', customerId, false);
     const suppOpening = linkedSupplierId
-      ? await calcOpening('supplierId', linkedSupplierId, true)
+      ? await calcOpening('supplierId', linkedSupplierId, false)
       : 0;
     openingBalance = custOpening + suppOpening;
   }
@@ -842,8 +842,8 @@ async getNetPositionStatement(params: {
     let debit  = Number((r as any)[drCol] || 0);
     let credit = Number((r as any)[crCol] || 0);
 
-    // Flip signs for supplier side — their DR is your CR and vice versa
-    if (r._side === 'supplier') [debit, credit] = [credit, debit];
+    // Supplier rows are stored on the credit side in the JV (purchase invoice = Cr supplier)
+    // so we use the raw dr/cr values without flipping.
 
     running += debit - credit;
     return {
