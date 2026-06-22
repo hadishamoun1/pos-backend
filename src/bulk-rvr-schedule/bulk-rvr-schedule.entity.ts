@@ -56,6 +56,9 @@ export class BulkRvrSchedule {
   @Column({ default: 0, comment: '0-23, hour of day to run (server local time)' })
   runHour: number;
 
+  @Column({ type: 'varchar', length: 50, nullable: true, comment: 'Comma-separated day numbers 0=Sun…6=Sat. NULL/empty = all days.' })
+  allowedDays: string;
+
   @Column({ type: 'timestamp', nullable: true })
   lastRunAt: Date;
 

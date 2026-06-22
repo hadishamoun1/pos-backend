@@ -40,6 +40,12 @@ export class BulkRvrScheduleService implements OnModuleInit {
     const now = new Date();
     if (now.getUTCHours() !== Number(config.runHour)) return;
 
+    // Check allowed days (0=Sun … 6=Sat). Empty/null means every day.
+    if (config.allowedDays) {
+      const allowed = config.allowedDays.split(',').map((d) => Number(d.trim())).filter((d) => !isNaN(d));
+      if (allowed.length > 0 && !allowed.includes(now.getUTCDay())) return;
+    }
+
     // Check if already ran today (UTC date)
     if (config.lastRunAt) {
       const last = new Date(config.lastRunAt);
