@@ -1144,7 +1144,7 @@ async getAccountStatementOFR(params: {
     const beforeQb = applyTargetWhere(
       this.journalVoucherDetailRepository
         .createQueryBuilder('d')
-        .leftJoin('d.journalVoucher', 'jv'),
+        .leftJoinAndSelect('d.journalVoucher', 'jv'),
     ).andWhere('jv.date < :from', { from });
 
     applyTypeFilter(beforeQb);
