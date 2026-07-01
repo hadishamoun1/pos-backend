@@ -67,13 +67,40 @@ export class CashCollectionsController {
     return this.service.list(query);
   }
 
-  // optional: only admin can delete (recommended)
-  @Delete(":id")
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePerms("cashFlow.delete") // or create new perm like "cashCollections.manage"
-  async remove(@Param("id", ParseIntPipe) id: number) {
-    return this.service.remove(id);
+  // ── Approval request routes (literal paths — must come before :id wildcard) ──
+
+  /** Any employee can submit a duplicate-override request */
+  @Post("approval-requests")
+  async createApprovalRequest(@Body() body: any, @Req() req: any) {
+    return this.service.createApprovalRequest(body, req.user.userId);
   }
+
+  /** Admin/manager lists pending (or all) approval requests */
+  @Get("approval-requests")
+  async listApprovalRequests(@Query("status") status: string, @Req() req: any) {
+    const perms: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
+    const canViewAny = req.user.role === "ADMIN" || perms.includes("cashFlow.viewAny");
+    if (!canViewAny) throw new ForbiddenException("Admin access required");
+    return this.service.listApprovalRequests(status);
+  }
+
+  @Post("approval-requests/:id/approve")
+  async approveRequest(@Param("id", ParseIntPipe) id: number, @Req() req: any) {
+    const perms: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
+    const canViewAny = req.user.role === "ADMIN" || perms.includes("cashFlow.viewAny");
+    if (!canViewAny) throw new ForbiddenException("Admin access required");
+    return this.service.approveRequest(id, req.user.userId);
+  }
+
+  @Post("approval-requests/:id/reject")
+  async rejectRequest(@Param("id", ParseIntPipe) id: number, @Req() req: any) {
+    const perms: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
+    const canViewAny = req.user.role === "ADMIN" || perms.includes("cashFlow.viewAny");
+    if (!canViewAny) throw new ForbiddenException("Admin access required");
+    return this.service.rejectRequest(id, req.user.userId);
+  }
+
+  // ── Wildcard :id routes (must come after all literal paths) ──────
 
   @Get(":id")
   async getOne(@Param("id", ParseIntPipe) id: number, @Req() req: any) {
@@ -87,5 +114,12 @@ export class CashCollectionsController {
     }
 
     return row;
+  }
+
+  @Delete(":id")
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePerms("cashFlow.delete")
+  async remove(@Param("id", ParseIntPipe) id: number) {
+    return this.service.remove(id);
   }
 }

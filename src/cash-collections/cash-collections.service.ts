@@ -1,8 +1,9 @@
 // src/cash-collections/cash-collections.service.ts
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, ForbiddenException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, Brackets, In, IsNull } from "typeorm";
 import { CashCollection } from "../entities/cash-collection.entity";
+import { CashCollectionApprovalRequest } from "../entities/cash-collection-approval.entity";
 
 function toYmd(d: Date) {
   const yyyy = d.getFullYear();
@@ -15,7 +16,9 @@ function toYmd(d: Date) {
 export class CashCollectionsService {
   constructor(
     @InjectRepository(CashCollection)
-    private readonly repo: Repository<CashCollection>
+    private readonly repo: Repository<CashCollection>,
+    @InjectRepository(CashCollectionApprovalRequest)
+    private readonly approvalRepo: Repository<CashCollectionApprovalRequest>,
   ) {}
 
   /**
@@ -52,6 +55,34 @@ export class CashCollectionsService {
     }
     if (!["CASH", "WHISH", "CHEQUE", "OTHER"].includes(method)) {
       throw new BadRequestException("invalid method");
+    }
+
+    // Duplicate check: same customer + amount + currency + date
+    const duplicateQb = this.repo
+      .createQueryBuilder("cc")
+      .leftJoinAndSelect("cc.customer", "customer")
+      .where("cc.customerId = :customerId", { customerId })
+      .andWhere("cc.amount = :amount", { amount: amountNum.toFixed(2) })
+      .andWhere("cc.date = :date", { date });
+    if (currencyId === null) {
+      duplicateQb.andWhere("cc.currencyId IS NULL");
+    } else {
+      duplicateQb.andWhere("cc.currencyId = :currencyId", { currencyId });
+    }
+    const existing = await duplicateQb.getOne();
+    if (existing) {
+      throw new ConflictException({
+        message: "duplicate_entry",
+        conflictingEntry: {
+          id: existing.id,
+          date: existing.date,
+          customerId: existing.customerId,
+          customerName: (existing as any).customer?.name ?? null,
+          amount: existing.amount,
+          currencyId: existing.currencyId,
+          method: existing.method,
+        },
+      });
     }
 
     const row = this.repo.create({
@@ -255,12 +286,113 @@ export class CashCollectionsService {
     if (!id) throw new BadRequestException("id required");
     const row = await this.repo.findOne({ where: { id } });
     if (!row) throw new BadRequestException("not found");
-    
-    // ✅ REMOVED the isPosted check
-    // Now allows deletion regardless of isPosted status
-    // The receivableEntryId link in the receivables table remains (orphaned reference)
-    
     await this.repo.delete(id);
+    return { ok: true };
+  }
+
+  // ── Approval-request methods ─────────────────────────────────────
+
+  async createApprovalRequest(body: any, employeeId: number) {
+    const date = String(body?.date || "").trim() || toYmd(new Date());
+    const customerId = Number(body?.customerId);
+    const amountNum = Number(body?.amount);
+    const currencyId =
+      body?.currencyId === null || body?.currencyId === undefined || body?.currencyId === ""
+        ? null
+        : Number(body?.currencyId);
+    const method = String(body?.method || "CASH").toUpperCase();
+    const conflictingEntryId = body?.conflictingEntryId ? Number(body.conflictingEntryId) : null;
+
+    if (!customerId) throw new BadRequestException("customerId required");
+    if (!amountNum || amountNum <= 0) throw new BadRequestException("amount must be > 0");
+
+    // Prevent duplicate pending requests for the same data
+    const alreadyPending = await this.approvalRepo.findOne({
+      where: {
+        customerId,
+        amount: amountNum.toFixed(2) as any,
+        date,
+        status: "PENDING" as any,
+      },
+    });
+    if (alreadyPending) {
+      throw new ConflictException({ message: "approval_request_already_pending" });
+    }
+
+    const req = this.approvalRepo.create({
+      date,
+      customerId,
+      amount: amountNum.toFixed(2) as any,
+      currencyId: currencyId ?? null,
+      method: method as any,
+      reference: body?.reference ? String(body.reference).trim() : null,
+      notes: body?.notes ? String(body.notes).trim() : null,
+      driverName: body?.driverName ? String(body.driverName).trim() : null,
+      requestedByEmployeeId: employeeId,
+      conflictingEntryId: conflictingEntryId ?? null,
+      status: "PENDING" as any,
+    });
+
+    return this.approvalRepo.save(req);
+  }
+
+  async listApprovalRequests(statusFilter?: string) {
+    const qb = this.approvalRepo
+      .createQueryBuilder("r")
+      .leftJoinAndSelect("r.customer", "customer")
+      .leftJoinAndSelect("r.requestedBy", "requestedBy")
+      .leftJoinAndSelect("r.conflictingEntry", "conflictingEntry")
+      .orderBy("r.createdAt", "DESC");
+
+    if (statusFilter) {
+      qb.where("r.status = :status", { status: statusFilter.toUpperCase() });
+    }
+
+    return qb.getMany();
+  }
+
+  async approveRequest(id: number, adminId: number) {
+    const req = await this.approvalRepo.findOne({ where: { id } });
+    if (!req) throw new NotFoundException("approval request not found");
+    if (req.status !== "PENDING") throw new BadRequestException("request is not pending");
+
+    // Create the actual cash collection
+    const row = this.repo.create({
+      date: req.date,
+      customerId: req.customerId,
+      employeeId: req.requestedByEmployeeId,
+      amount: req.amount,
+      currencyId: req.currencyId ?? null,
+      method: req.method as any,
+      reference: req.reference,
+      notes: req.notes,
+      driverName: req.driverName,
+      isPosted: false,
+      receivableEntryId: null,
+    });
+    const saved = await this.repo.save(row);
+
+    // Mark request approved
+    await this.approvalRepo.update(id, {
+      status: "APPROVED" as any,
+      reviewedByAdminId: adminId,
+      reviewedAt: new Date(),
+    });
+
+    return { ok: true, createdEntry: saved };
+  }
+
+  async rejectRequest(id: number, adminId: number) {
+    const req = await this.approvalRepo.findOne({ where: { id } });
+    if (!req) throw new NotFoundException("approval request not found");
+    if (req.status !== "PENDING") throw new BadRequestException("request is not pending");
+
+    await this.approvalRepo.update(id, {
+      status: "REJECTED" as any,
+      reviewedByAdminId: adminId,
+      reviewedAt: new Date(),
+    });
+
     return { ok: true };
   }
 }
