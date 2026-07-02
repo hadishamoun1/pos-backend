@@ -320,6 +320,8 @@ async getFilteredActivity(query: any): Promise<{
     .leftJoinAndSelect("invoiceItem.invoice", "salesInvoice")
     // count
     .leftJoinAndSelect("tx.inventoryCount", "inventoryCount")
+    // transfer
+    .leftJoinAndSelect("tx.transfer", "transfer")
     // batch
     .leftJoinAndSelect("tx.itemBatch", "itemBatch");
 
@@ -608,12 +610,14 @@ addStringFilter("itemNumber", "itemDesc.itemNumber");
   const data = transactions.map((tx) => {
     const dateRaw = (tx as any).dateForEachInvoice ?? null;
 
-    const invoiceNumber =
-      tx.transactionType === "purchase"
-        ? tx.purchaseInvoiceItem?.invoice?.invoiceNumber ?? "—"
-        : tx.transactionType === "sale"
-          ? tx.invoiceItem?.invoice?.invoiceNumber ?? "—"
-          : "—";
+    let invoiceNumber = "—";
+    if (tx.purchaseInvoiceItem?.invoice) {
+      invoiceNumber = tx.purchaseInvoiceItem.invoice.invoiceNumber ?? "—";
+    } else if (tx.invoiceItem?.invoice) {
+      invoiceNumber = tx.invoiceItem.invoice.invoiceNumber ?? "—";
+    } else if (tx.transfer) {
+      invoiceNumber = tx.transfer.transferNumber ?? "—";
+    }
 
     const v = tx.itemVariant;
     const t = v?.thickness;
