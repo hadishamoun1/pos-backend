@@ -143,11 +143,13 @@ private numOrZero(v: any): number {
     chain: Chain,
     cutoff: Date,
     currPiiIds: number[],
+    useQtyCol = false,
   ): Promise<{ sum: number; txCount: number }> {
     const ids = this.uniqNums(variantIds);
     if (!ids.length) return { sum: 0, txCount: 0 };
 
-    const col = chain === 'OFR' ? 'tx.sqmofr' : 'tx.sqm';
+    // unit items (stockMode=QTY) are counted by quantityofr, not sqmofr
+    const col = useQtyCol ? 'tx.quantityofr' : (chain === 'OFR' ? 'tx.sqmofr' : 'tx.sqm');
 
     const applyBase = (qb: SelectQueryBuilder<InventoryTransaction>) => {
       qb.where('tx.itemVariantId IN (:...ids)', { ids })
@@ -277,11 +279,12 @@ private numOrZero(v: any): number {
     avgField: 'averageCost' | 'averageCostVM',
     dayStart: Date,
     currPiiIds: number[],
+    useQtyCol = false,
   ) {
     const ids = [variantId];
 
     // qty
-    const { sum: txSum, txCount } = await this.sumTxQtyDetailed(ids, chain, dayStart, currPiiIds);
+    const { sum: txSum, txCount } = await this.sumTxQtyDetailed(ids, chain, dayStart, currPiiIds, useQtyCol);
     let prevQty = txSum;
 
     if (txCount === 0) {
@@ -434,6 +437,20 @@ private numOrZero(v: any): number {
       variantRows.map((v: any) => [Number(v.id), v.itemNameDescriptionId ?? null]),
     );
 
+    // Detect unit items (stockMode=QTY or type=unit) — they use quantity, not sqm, as weight
+    const unitVariantSet = new Set<number>();
+    if (itemVariantIds.length) {
+      const unitRows: { vid: number }[] = await this.variantRepo
+        .createQueryBuilder('v')
+        .innerJoin('v.thickness', 't')
+        .innerJoin('t.item', 'i')
+        .select('v.id', 'vid')
+        .where('v.id IN (:...ids)', { ids: itemVariantIds })
+        .andWhere("(i.stockMode = 'QTY' OR i.type = 'unit')")
+        .getRawMany();
+      for (const r of unitRows) unitVariantSet.add(Number(r.vid));
+    }
+
     const itemsByDesc = new Map<number, PurchaseInvoiceItem[]>();
     for (const it of items) {
       const descId = variantToDesc.get(Number((it as any).itemVariantId));
@@ -448,6 +465,8 @@ private numOrZero(v: any): number {
       const vid = Number((it as any).itemVariantId);
       if (!Number.isFinite(vid) || vid <= 0) continue;
 
+      const isUnit = unitVariantSet.has(vid);
+
       const prevOfr = await this.resolvePrevVariant(
         invManager,
         vid,
@@ -455,6 +474,7 @@ private numOrZero(v: any): number {
         'averageCost',
         dayStart,
         currPiiIds,
+        isUnit,
       );
       const prevVm = await this.resolvePrevVariant(
         invManager,
@@ -463,12 +483,19 @@ private numOrZero(v: any): number {
         'averageCostVM',
         dayStart,
         currPiiIds,
+        isUnit,
       );
 
-      const poQtyOfr = getItemQty(it, 'OFR');
-      const poCostOfr = getItemCost(it, 'OFR');
-      const poQtyVm = getItemQty(it, 'VM');
-      const poCostVm = getItemCost(it, 'VM');
+      // Unit items: weight = pieces (quantity), cost = totalOFR / quantity
+      // Tile items: weight = sqm (sqmOfr),     cost = finalOFR (per sqm)
+      const poQtyOfr  = isUnit ? num((it as any).quantity) : getItemQty(it, 'OFR');
+      const poCostOfr = isUnit
+        ? (num((it as any).quantity) > 0 ? num((it as any).totalOFR) / num((it as any).quantity) : 0)
+        : getItemCost(it, 'OFR');
+      const poQtyVm  = isUnit ? num((it as any).quantity) : getItemQty(it, 'VM');
+      const poCostVm = isUnit
+        ? (num((it as any).quantity) > 0 ? num((it as any).totalAmount) / num((it as any).quantity) : 0)
+        : getItemCost(it, 'VM');
 
       const totalOfr = prevOfr.prevQty + poQtyOfr;
       const newAvgOfr =
