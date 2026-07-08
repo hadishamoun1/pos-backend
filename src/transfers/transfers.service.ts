@@ -2078,6 +2078,19 @@ if ((transfer as any).location === 'FJ') {
         this.logIfNaN(txOut, 'ADJ-.txOut');
         await manager.getRepository(InventoryTransaction).save(txOut);
 
+        // Stamp cost onto transfer_item so sales snapshots can read it
+        // when this Adjustment - is the last event before a sale.
+        await manager.getRepository(TransferItem).update(
+          { id: (ti as any).id } as any,
+          {
+            price: prevCosts.ofr,
+            averageCost: prevCosts.ofr,
+            averageCostVM: prevCosts.vm,
+            averageCostC: prevCosts.c,
+            averageCostCVM: prevCosts.cvm,
+          } as any,
+        );
+
         batch.outOFR = num(batch.outOFR) + sqmVal;
         batch.balanceOFR = num(batch.startOFR) + num(batch.inOFR) - num(batch.outOFR);
         await manager.getRepository(ItemBatch).save(batch);
