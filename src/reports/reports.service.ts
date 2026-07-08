@@ -1866,4 +1866,149 @@ async getProfitabilityByMonth(params: ProfitabilityParams) {
     grandTotal,
   };
 }
+
+// ─── Cost Diagnostic ────────────────────────────────────────────────────────
+
+async getCostDiagnostic(params: { from: string; to: string }) {
+  const { from, to } = params;
+
+  // 1) Find all variants that have sales with averageCost = 0 or null in the date range
+  const zeroCostRows = await this.dataSource
+    .createQueryBuilder()
+    .from('invoices', 'inv')
+    .innerJoin('invoice_items', 'ii', 'ii.invoiceId = inv.id')
+    .leftJoin('item_variant', 'v', 'v.id = ii.itemVariantId')
+    .leftJoin('thickness', 'th', 'v.thicknessId = th.id')
+    .leftJoin('item', 'item', 'item.id = th.itemId')
+    .select('ii.itemVariantId', 'variantId')
+    .addSelect('v.invoiceDisplayName', 'itemName')
+    .addSelect('item.itemName', 'baseItemName')
+    .addSelect('item.type', 'itemType')
+    .addSelect('item.stockMode', 'stockMode')
+    .addSelect('COUNT(*)', 'zeroCostSales')
+    .addSelect(
+      `SUM(CASE WHEN item.type = 'unit' OR item.stockMode = 'QTY' THEN ii.quantity ELSE ii.sqm END)`,
+      'totalQtySold',
+    )
+    .addSelect('MIN(inv.date)', 'firstZeroSaleDate')
+    .addSelect('MAX(inv.date)', 'lastZeroSaleDate')
+    .where('inv.date >= :from', { from })
+    .andWhere('inv.date <= :to', { to })
+    .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G', 'RVR'] })
+    .andWhere('(ii.averageCost IS NULL OR ii.averageCost = 0)')
+    .groupBy('ii.itemVariantId')
+    .addGroupBy('v.invoiceDisplayName')
+    .addGroupBy('item.itemName')
+    .addGroupBy('item.type')
+    .addGroupBy('item.stockMode')
+    .orderBy('COUNT(*)', 'DESC')
+    .getRawMany();
+
+  const items: any[] = [];
+
+  for (const row of zeroCostRows) {
+    const variantId = Number(row.variantId);
+
+    // 2) Fetch purchase invoice history for this variant
+    const purchases = await this.dataSource
+      .createQueryBuilder()
+      .from('purchase_invoice_items', 'pii')
+      .innerJoin('purchase_invoices', 'pi', 'pi.id = pii.invoiceId')
+      .select('pi.id', 'invoiceId')
+      .addSelect('pi.date', 'date')
+      .addSelect('pi.status', 'status')
+      .addSelect('pii.sqmOfr', 'sqmOfr')
+      .addSelect('pii.sqm', 'sqm')
+      .addSelect('pii.quantity', 'quantity')
+      .addSelect('pii.finalOFR', 'finalOFR')
+      .addSelect('pii.totalOFR', 'totalOFR')
+      .addSelect('pii.totalAmount', 'totalAmount')
+      .addSelect('pii.averageCost', 'averageCost')
+      .where('pii.itemVariantId = :vid', { vid: variantId })
+      .orderBy('pi.date', 'ASC')
+      .addOrderBy('pi.id', 'ASC')
+      .getRawMany();
+
+    const receivedPurchases = purchases.filter((p: any) => p.status === 'Recieved');
+    const firstZeroSaleDate = row.firstZeroSaleDate ? new Date(row.firstZeroSaleDate) : null;
+    const firstPurchaseDate =
+      receivedPurchases.length > 0 ? new Date(receivedPurchases[0].date) : null;
+
+    // 3) Classify root cause
+    let cause: string;
+    let causeLabel: string;
+
+    if (purchases.length === 0) {
+      cause = 'no_purchases';
+      causeLabel = 'No purchase invoices found in the system';
+    } else if (receivedPurchases.length === 0) {
+      cause = 'no_received_purchases';
+      causeLabel = 'Purchase invoices exist but none have "Received" status';
+    } else if (firstZeroSaleDate && firstPurchaseDate && firstZeroSaleDate < firstPurchaseDate) {
+      cause = 'sold_before_purchased';
+      causeLabel = 'Item was sold before the first received purchase invoice';
+    } else {
+      const allSqmZero = receivedPurchases.every((p: any) => Number(p.sqmOfr ?? 0) === 0);
+      const hasQuantity = receivedPurchases.some((p: any) => Number(p.quantity ?? 0) > 0);
+      const isUnitItem = allSqmZero && hasQuantity;
+
+      const allOFRMissing = receivedPurchases.every(
+        (p: any) => !p.finalOFR || Number(p.finalOFR) === 0,
+      );
+      const someOFRMissing = receivedPurchases.some(
+        (p: any) => !p.finalOFR || Number(p.finalOFR) === 0,
+      );
+
+      if (isUnitItem && allOFRMissing) {
+        cause = 'unit_item_cost_zero';
+        causeLabel = 'Unit item: all purchases have OFR cost = 0 (recompute needed)';
+      } else if (allOFRMissing) {
+        cause = 'all_ofr_missing';
+        causeLabel = 'All purchase invoices have finalOFR = 0 (OFR price never entered)';
+      } else if (someOFRMissing) {
+        cause = 'partial_ofr_missing';
+        causeLabel = 'Some purchases missing OFR price — zero-cost purchases dilute the running average';
+      } else {
+        cause = 'unknown';
+        causeLabel = 'Purchases have valid OFR prices but cost still shows 0 — needs investigation';
+      }
+    }
+
+    items.push({
+      variantId,
+      itemName: row.itemName || row.baseItemName || `Variant #${variantId}`,
+      itemType: row.itemType ?? null,
+      stockMode: row.stockMode ?? null,
+      zeroCostSales: Number(row.zeroCostSales),
+      totalQtySold: Number(row.totalQtySold ?? 0),
+      firstZeroSaleDate: row.firstZeroSaleDate ?? null,
+      lastZeroSaleDate: row.lastZeroSaleDate ?? null,
+      firstPurchaseDate: firstPurchaseDate
+        ? firstPurchaseDate.toISOString().slice(0, 10)
+        : null,
+      cause,
+      causeLabel,
+      purchases: purchases.map((p: any) => ({
+        invoiceId: Number(p.invoiceId),
+        date: p.date,
+        status: p.status,
+        sqmOfr: Number(p.sqmOfr ?? 0),
+        sqm: Number(p.sqm ?? 0),
+        quantity: Number(p.quantity ?? 0),
+        finalOFR: Number(p.finalOFR ?? 0),
+        totalOFR: Number(p.totalOFR ?? 0),
+        totalAmount: Number(p.totalAmount ?? 0),
+        averageCost: p.averageCost != null ? Number(p.averageCost) : null,
+      })),
+    });
+  }
+
+  return {
+    from,
+    to,
+    totalZeroCostItems: items.length,
+    items,
+  };
+}
+
 }

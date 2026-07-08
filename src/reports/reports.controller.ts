@@ -112,4 +112,16 @@ async getProfitabilityByMonth(@Query() q: any) {
     invoiceType: q.invoiceType ?? 'ALL',
   });
 }
+
+  @Get('cost-diagnostic')
+  @RequirePerms('reports.view')
+  async getCostDiagnostic(@Query() q: any) {
+    const now = new Date();
+    const yearStart = `${now.getFullYear()}-01-01`;
+    const today = now.toISOString().slice(0, 10);
+    return this.reportsService.getCostDiagnostic({
+      from: q.from ?? yearStart,
+      to:   q.to   ?? today,
+    });
+  }
 }
