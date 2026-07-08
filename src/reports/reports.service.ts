@@ -1936,7 +1936,7 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     const lastTxRaw = firstZeroSaleDate
       ? await this.dataSource
           .createQueryBuilder()
-          .from('inventory_transactions', 'tx')
+          .from('inventory_transaction', 'tx')
           .select('tx.id', 'id')
           .addSelect('tx.transactionType', 'transactionType')
           .addSelect('tx.dateForEachInvoice', 'txDate')
@@ -1959,7 +1959,7 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     // 4) All transfer events for this variant
     const transferRows = await this.dataSource
       .createQueryBuilder()
-      .from('inventory_transactions', 'tx')
+      .from('inventory_transaction', 'tx')
       .innerJoin('transfers', 'tr', 'tr.id = tx.transferId')
       .leftJoin(
         'transfer_items',
