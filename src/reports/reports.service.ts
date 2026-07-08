@@ -1904,13 +1904,21 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     .orderBy('COUNT(*)', 'DESC')
     .getRawMany();
 
+  // Safe date → 'YYYY-MM-DD' helper (handles both Date objects and strings)
+  const toYMD = (v: any): string | null => {
+    if (!v) return null;
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    const s = String(v);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
+
   const items: any[] = [];
 
   for (const row of zeroCostRows) {
     const variantId = Number(row.variantId);
-    const firstZeroSaleDate = row.firstZeroSaleDate
-      ? String(row.firstZeroSaleDate).slice(0, 10)
-      : null;
+    const firstZeroSaleDate = toYMD(row.firstZeroSaleDate);
 
     // 2) Purchase invoice history
     const purchases = await this.dataSource
@@ -1982,9 +1990,7 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     // 5) Classify root cause
     const receivedPurchases = purchases.filter((p: any) => p.status === 'Recieved');
     const firstPurchaseDate =
-      receivedPurchases.length > 0
-        ? String(receivedPurchases[0].date).slice(0, 10)
-        : null;
+      receivedPurchases.length > 0 ? toYMD(receivedPurchases[0].date) : null;
 
     const lastEventType = lastTxRaw
       ? lastTxRaw.transferId
@@ -2073,7 +2079,7 @@ async getCostDiagnostic(params: { from: string; to: string }) {
       lastEvent: lastTxRaw
         ? {
             type: lastEventType,
-            date: lastTxRaw.txDate ? String(lastTxRaw.txDate).slice(0, 10) : null,
+            date: toYMD(lastTxRaw.txDate),
             transferId: lastTxRaw.transferId ?? null,
             purchaseInvoiceItemId: lastTxRaw.purchaseInvoiceItemId ?? null,
           }
