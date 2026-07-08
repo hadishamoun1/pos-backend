@@ -1885,6 +1885,11 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     .addSelect('item.itemName', 'baseItemName')
     .addSelect('item.type', 'itemType')
     .addSelect('item.stockMode', 'stockMode')
+    .addSelect('th.thickness', 'thickness')
+    .addSelect('v.length', 'length')
+    .addSelect('v.width', 'width')
+    .addSelect('v.sheetsPerBox', 'sheetsPerBox')
+    .addSelect('v.origin', 'origin')
     .addSelect('COUNT(*)', 'zeroCostSales')
     .addSelect(
       `SUM(CASE WHEN item.type = 'unit' OR item.stockMode = 'QTY' THEN ii.quantity ELSE ii.sqm END)`,
@@ -1895,12 +1900,18 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     .where('inv.date >= :from', { from })
     .andWhere('inv.date <= :to', { to })
     .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G', 'RVR'] })
+    .andWhere('ii.itemVariantId IS NOT NULL')
     .andWhere('(ii.averageCost IS NULL OR ii.averageCost = 0)')
     .groupBy('ii.itemVariantId')
     .addGroupBy('v.invoiceDisplayName')
     .addGroupBy('item.itemName')
     .addGroupBy('item.type')
     .addGroupBy('item.stockMode')
+    .addGroupBy('th.thickness')
+    .addGroupBy('v.length')
+    .addGroupBy('v.width')
+    .addGroupBy('v.sheetsPerBox')
+    .addGroupBy('v.origin')
     .orderBy('COUNT(*)', 'DESC')
     .getRawMany();
 
@@ -2105,6 +2116,11 @@ async getCostDiagnostic(params: { from: string; to: string }) {
       itemName: row.itemName || row.baseItemName || `Variant #${variantId}`,
       itemType: row.itemType ?? null,
       stockMode: row.stockMode ?? null,
+      thickness: row.thickness != null ? Number(row.thickness) : null,
+      length: row.length != null ? Number(row.length) : null,
+      width: row.width != null ? Number(row.width) : null,
+      sheetsPerBox: row.sheetsPerBox != null ? Number(row.sheetsPerBox) : null,
+      origin: row.origin ?? null,
       zeroCostSales: Number(row.zeroCostSales),
       totalQtySold: Number(row.totalQtySold ?? 0),
       firstZeroSaleDate: row.firstZeroSaleDate ?? null,
