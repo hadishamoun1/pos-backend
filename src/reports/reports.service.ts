@@ -1964,7 +1964,24 @@ async getCostDiagnostic(params: { from: string; to: string }) {
           .getRawOne()
       : null;
 
-    // 4) All transfer events for this variant
+    // 4) Inventory count history for this variant
+    const countRows = await this.dataSource
+      .createQueryBuilder()
+      .from('inventory_count', 'ic')
+      .select('ic.id', 'countId')
+      .addSelect('ic.date', 'date')
+      .addSelect('ic.type', 'type')
+      .addSelect('ic.count', 'count')
+      .addSelect('ic.sqm', 'sqm')
+      .addSelect('ic.sqmOfr', 'sqmOfr')
+      .addSelect('ic.finalCost', 'finalCost')
+      .addSelect('ic.finalCostOfr', 'finalCostOfr')
+      .where('ic.itemVariantId = :vid', { vid: variantId })
+      .orderBy('ic.date', 'ASC')
+      .addOrderBy('ic.id', 'ASC')
+      .getRawMany();
+
+    // 5) All transfer events for this variant
     const transferRows = await this.dataSource
       .createQueryBuilder()
       .from('inventory_transaction', 'tx')
@@ -1987,7 +2004,7 @@ async getCostDiagnostic(params: { from: string; to: string }) {
       .addOrderBy('tx.id', 'ASC')
       .getRawMany();
 
-    // 5) Classify root cause
+    // 6) Classify root cause
     const receivedPurchases = purchases.filter((p: any) => p.status === 'Recieved');
     const firstPurchaseDate =
       receivedPurchases.length > 0 ? toYMD(receivedPurchases[0].date) : null;
@@ -2003,9 +2020,16 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     let cause: string;
     let causeLabel: string;
 
-    if (purchases.length === 0 && transferRows.length === 0) {
+    if (purchases.length === 0 && transferRows.length === 0 && countRows.length === 0) {
       cause = 'no_stock_events';
-      causeLabel = 'No purchase invoices and no transfers found — no cost data exists';
+      causeLabel = 'No purchase invoices, no transfers, and no inventory counts found';
+    } else if (purchases.length === 0 && transferRows.length === 0) {
+      // Stock came in via count only
+      const hasCountCost = countRows.some((c: any) => Number(c.finalCostOfr ?? 0) > 0);
+      cause = 'count_cost_zero';
+      causeLabel = hasCountCost
+        ? 'Stock came in via inventory count — but the count with cost may not be the one used as last event'
+        : 'Stock came in via inventory count only — count has no cost set (finalCostOfr = 0)';
     } else if (purchases.length === 0) {
       cause = 'no_purchases';
       causeLabel = 'No purchase invoices — stock came in via transfer or count only';
@@ -2019,6 +2043,16 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     ) {
       cause = 'sold_before_purchased';
       causeLabel = 'Item was sold before the first received purchase invoice';
+    } else if (lastEventType === 'count') {
+      const lastCount = countRows.find(
+        (c: any) => String(c.countId) === String(lastTxRaw?.inventoryCountId),
+      );
+      const countCost = lastCount?.finalCostOfr != null ? Number(lastCount.finalCostOfr) : null;
+      cause = 'count_cost_zero';
+      causeLabel =
+        countCost != null && countCost > 0
+          ? `Last event before sale was an inventory count (ID ${lastTxRaw?.inventoryCountId}) with cost = ${countCost} — snapshot should have used this value`
+          : `Last event before sale was an inventory count (ID ${lastTxRaw?.inventoryCountId}) with no cost set (finalCostOfr = 0)`;
     } else if (lastEventType === 'transfer') {
       // Last event before the sale was a transfer — check if its cost is 0
       const lastTransferCost = transferRows.find(
@@ -2082,6 +2116,7 @@ async getCostDiagnostic(params: { from: string; to: string }) {
             date: toYMD(lastTxRaw.txDate),
             transferId: lastTxRaw.transferId ?? null,
             purchaseInvoiceItemId: lastTxRaw.purchaseInvoiceItemId ?? null,
+            inventoryCountId: lastTxRaw.inventoryCountId ?? null,
           }
         : null,
       cause,
@@ -2105,6 +2140,16 @@ async getCostDiagnostic(params: { from: string; to: string }) {
         txType: t.txType,
         averageCost: t.averageCost != null ? Number(t.averageCost) : null,
         averageCostVM: t.averageCostVM != null ? Number(t.averageCostVM) : null,
+      })),
+      counts: countRows.map((c: any) => ({
+        countId: Number(c.countId),
+        date: c.date,
+        type: c.type ?? null,
+        count: Number(c.count ?? 0),
+        sqm: Number(c.sqm ?? 0),
+        sqmOfr: Number(c.sqmOfr ?? 0),
+        finalCost: Number(c.finalCost ?? 0),
+        finalCostOfr: Number(c.finalCostOfr ?? 0),
       })),
     });
   }
