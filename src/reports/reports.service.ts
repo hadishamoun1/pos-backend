@@ -1908,8 +1908,11 @@ async getCostDiagnostic(params: { from: string; to: string }) {
 
   for (const row of zeroCostRows) {
     const variantId = Number(row.variantId);
+    const firstZeroSaleDate = row.firstZeroSaleDate
+      ? String(row.firstZeroSaleDate).slice(0, 10)
+      : null;
 
-    // 2) Fetch purchase invoice history for this variant
+    // 2) Purchase invoice history
     const purchases = await this.dataSource
       .createQueryBuilder()
       .from('purchase_invoice_items', 'pii')
@@ -1929,24 +1932,101 @@ async getCostDiagnostic(params: { from: string; to: string }) {
       .addOrderBy('pi.id', 'ASC')
       .getRawMany();
 
-    const receivedPurchases = purchases.filter((p: any) => p.status === 'Recieved');
-    const firstZeroSaleDate = row.firstZeroSaleDate ? new Date(row.firstZeroSaleDate) : null;
-    const firstPurchaseDate =
-      receivedPurchases.length > 0 ? new Date(receivedPurchases[0].date) : null;
+    // 3) Last cost event before first zero-cost sale
+    const lastTxRaw = firstZeroSaleDate
+      ? await this.dataSource
+          .createQueryBuilder()
+          .from('inventory_transactions', 'tx')
+          .select('tx.id', 'id')
+          .addSelect('tx.transactionType', 'transactionType')
+          .addSelect('tx.dateForEachInvoice', 'txDate')
+          .addSelect('tx.purchaseInvoiceItemId', 'purchaseInvoiceItemId')
+          .addSelect('tx.transferId', 'transferId')
+          .addSelect('tx.inventoryCountId', 'inventoryCountId')
+          .addSelect('tx.itemBatchId', 'itemBatchId')
+          .where('tx.itemVariantId = :vid', { vid: variantId })
+          .andWhere('tx.dateForEachInvoice IS NOT NULL')
+          .andWhere('tx.dateForEachInvoice <= :cut', { cut: firstZeroSaleDate })
+          .andWhere(
+            '(tx.purchaseInvoiceItemId IS NOT NULL OR tx.transferId IS NOT NULL OR tx.inventoryCountId IS NOT NULL)',
+          )
+          .orderBy('tx.dateForEachInvoice', 'DESC')
+          .addOrderBy('tx.id', 'DESC')
+          .limit(1)
+          .getRawOne()
+      : null;
 
-    // 3) Classify root cause
+    // 4) All transfer events for this variant
+    const transferRows = await this.dataSource
+      .createQueryBuilder()
+      .from('inventory_transactions', 'tx')
+      .innerJoin('transfers', 'tr', 'tr.id = tx.transferId')
+      .leftJoin(
+        'transfer_items',
+        'ti',
+        'ti.transferId = tx.transferId AND ti.itemBatchId = tx.itemBatchId',
+      )
+      .select('tr.id', 'transferId')
+      .addSelect('tr.date', 'date')
+      .addSelect('tr.location', 'location')
+      .addSelect('tx.transactionType', 'txType')
+      .addSelect('tx.dateForEachInvoice', 'txDate')
+      .addSelect('ti.averageCost', 'averageCost')
+      .addSelect('ti.averageCostVM', 'averageCostVM')
+      .where('tx.itemVariantId = :vid', { vid: variantId })
+      .andWhere('tx.transferId IS NOT NULL')
+      .orderBy('tr.date', 'ASC')
+      .addOrderBy('tx.id', 'ASC')
+      .getRawMany();
+
+    // 5) Classify root cause
+    const receivedPurchases = purchases.filter((p: any) => p.status === 'Recieved');
+    const firstPurchaseDate =
+      receivedPurchases.length > 0
+        ? String(receivedPurchases[0].date).slice(0, 10)
+        : null;
+
+    const lastEventType = lastTxRaw
+      ? lastTxRaw.transferId
+        ? 'transfer'
+        : lastTxRaw.purchaseInvoiceItemId
+          ? 'purchase'
+          : 'count'
+      : null;
+
     let cause: string;
     let causeLabel: string;
 
-    if (purchases.length === 0) {
+    if (purchases.length === 0 && transferRows.length === 0) {
+      cause = 'no_stock_events';
+      causeLabel = 'No purchase invoices and no transfers found — no cost data exists';
+    } else if (purchases.length === 0) {
       cause = 'no_purchases';
-      causeLabel = 'No purchase invoices found in the system';
+      causeLabel = 'No purchase invoices — stock came in via transfer or count only';
     } else if (receivedPurchases.length === 0) {
       cause = 'no_received_purchases';
       causeLabel = 'Purchase invoices exist but none have "Received" status';
-    } else if (firstZeroSaleDate && firstPurchaseDate && firstZeroSaleDate < firstPurchaseDate) {
+    } else if (
+      firstZeroSaleDate &&
+      firstPurchaseDate &&
+      firstZeroSaleDate < firstPurchaseDate
+    ) {
       cause = 'sold_before_purchased';
       causeLabel = 'Item was sold before the first received purchase invoice';
+    } else if (lastEventType === 'transfer') {
+      // Last event before the sale was a transfer — check if its cost is 0
+      const lastTransferCost = transferRows.find(
+        (t: any) => String(t.transferId) === String(lastTxRaw?.transferId),
+      );
+      const transferAvg = lastTransferCost?.averageCost != null
+        ? Number(lastTransferCost.averageCost)
+        : null;
+
+      cause = 'transfer_cost_zero';
+      causeLabel =
+        transferAvg != null && transferAvg > 0
+          ? `Last event before sale was a transfer (ID ${lastTxRaw?.transferId}) with averageCost = ${transferAvg} — snapshot should have used this value`
+          : `Last event before sale was a transfer (ID ${lastTxRaw?.transferId}) with averageCost = 0 or null — transfer cost was never set`;
     } else {
       const allSqmZero = receivedPurchases.every((p: any) => Number(p.sqmOfr ?? 0) === 0);
       const hasQuantity = receivedPurchases.some((p: any) => Number(p.quantity ?? 0) > 0);
@@ -1967,10 +2047,16 @@ async getCostDiagnostic(params: { from: string; to: string }) {
         causeLabel = 'All purchase invoices have finalOFR = 0 (OFR price never entered)';
       } else if (someOFRMissing) {
         cause = 'partial_ofr_missing';
-        causeLabel = 'Some purchases missing OFR price — zero-cost purchases dilute the running average';
+        causeLabel =
+          'Some purchases have finalOFR = 0 — diluting the running average toward 0';
+      } else if (!lastTxRaw) {
+        cause = 'no_transactions';
+        causeLabel =
+          'Purchases exist but no inventory transactions were found — recompute may not have run for this item';
       } else {
         cause = 'unknown';
-        causeLabel = 'Purchases have valid OFR prices but cost still shows 0 — needs investigation';
+        causeLabel =
+          'Purchases have valid OFR prices and last event is a purchase — needs deeper investigation';
       }
     }
 
@@ -1983,8 +2069,14 @@ async getCostDiagnostic(params: { from: string; to: string }) {
       totalQtySold: Number(row.totalQtySold ?? 0),
       firstZeroSaleDate: row.firstZeroSaleDate ?? null,
       lastZeroSaleDate: row.lastZeroSaleDate ?? null,
-      firstPurchaseDate: firstPurchaseDate
-        ? firstPurchaseDate.toISOString().slice(0, 10)
+      firstPurchaseDate,
+      lastEvent: lastTxRaw
+        ? {
+            type: lastEventType,
+            date: lastTxRaw.txDate ? String(lastTxRaw.txDate).slice(0, 10) : null,
+            transferId: lastTxRaw.transferId ?? null,
+            purchaseInvoiceItemId: lastTxRaw.purchaseInvoiceItemId ?? null,
+          }
         : null,
       cause,
       causeLabel,
@@ -1999,6 +2091,14 @@ async getCostDiagnostic(params: { from: string; to: string }) {
         totalOFR: Number(p.totalOFR ?? 0),
         totalAmount: Number(p.totalAmount ?? 0),
         averageCost: p.averageCost != null ? Number(p.averageCost) : null,
+      })),
+      transfers: transferRows.map((t: any) => ({
+        transferId: Number(t.transferId),
+        date: t.date,
+        location: t.location ?? null,
+        txType: t.txType,
+        averageCost: t.averageCost != null ? Number(t.averageCost) : null,
+        averageCostVM: t.averageCostVM != null ? Number(t.averageCostVM) : null,
       })),
     });
   }
