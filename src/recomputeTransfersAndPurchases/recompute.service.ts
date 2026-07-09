@@ -296,6 +296,18 @@ export class RecomputeCostsService {
       return sumVal / sumQty;
     };
 
+    // Converts a MySQL DATE (may come back as a JS Date object) to 'YYYY-MM-DD'
+    const toYMD = (d: any): string => {
+      if (!d) return '';
+      if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0, 10);
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return String(d).slice(0, 10);
+      const y = dt.getUTCFullYear();
+      const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(dt.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
     const getLastCostEventTx = async (variantId: number, cutStr: string) => {
       let last = await this.txRepo
         .createQueryBuilder('tx')
@@ -325,7 +337,7 @@ export class RecomputeCostsService {
 
         if (isSpecial && txType === 'MovedFrom') {
           const lastId = Number((last as any).id);
-          const lastDate = String((last as any).dateForEachInvoice);
+          const lastDate = toYMD((last as any).dateForEachInvoice);
 
           last = await this.txRepo
             .createQueryBuilder('tx')
@@ -363,7 +375,7 @@ export class RecomputeCostsService {
     const getTransferCostBundle = async (variantId: number, lastTx: any) => {
       const transferId = Number(lastTx.transferId);
       const txType = String(lastTx.transactionType || '');
-      const cutDate = String(lastTx.dateForEachInvoice);
+      const cutDate = toYMD(lastTx.dateForEachInvoice);
 
       const transfer = await this.transferRepo.findOne({
         where: { id: transferId } as any,

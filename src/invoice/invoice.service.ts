@@ -769,15 +769,72 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
         };
       }
     } else if (lastTx?.transferId) {
-      // ✅ last event = Transfer → take avg costs from TransferItem
-      const where: any = {
-        transferId: Number(lastTx.transferId),
-        itemVariantId: Number(variantId),
-      };
-      // if your tx stores itemBatchId, this makes it even more accurate
-      if ((lastTx as any).itemBatchId) where.itemBatchId = Number((lastTx as any).itemBatchId);
+      // last event = Transfer → take avg costs from TransferItem
+      const transferId = Number(lastTx.transferId);
+      const txType = String((lastTx as any).transactionType || '');
 
-      const ti = await tiRepo.findOne({ where });
+      // JF/FJ/BOSTS: the cost row in transfer_items belongs to the *source* batch,
+      // not the destination variant. Find it via the paired MovedFrom tx.
+      const transferRow = await queryRunner.manager.query(
+        'SELECT `location` FROM `transfers` WHERE id = ? LIMIT 1',
+        [transferId],
+      );
+      const loc = String(transferRow?.[0]?.location || '').toUpperCase();
+      const isSpecial = loc === 'JF' || loc === 'FJ' || loc === 'BOSTS';
+
+      let costBatchId: number | null =
+        (lastTx as any).itemBatchId != null ? Number((lastTx as any).itemBatchId) : null;
+
+      if (isSpecial && txType === 'MovedTo') {
+        // Walk back to the source's MovedFrom tx to get the source batchId
+        const sqmofr = Number((lastTx as any).sqmofr ?? 0);
+        const sqm = Number((lastTx as any).sqm ?? 0);
+        const qofr = Number((lastTx as any).quantityofr ?? 0);
+        const q = Number((lastTx as any).quantity ?? 0);
+        const cutDate = String((lastTx as any).dateForEachInvoice);
+
+        const pairedOut = await txRepo
+          .createQueryBuilder('tx')
+          .where('tx.transferId = :tid', { tid: transferId })
+          .andWhere('tx.transactionType = :t', { t: 'MovedFrom' })
+          .andWhere('tx.dateForEachInvoice = :d', { d: cutDate })
+          .andWhere(
+            new Brackets((b) => {
+              b.where('ABS(COALESCE(tx.sqmofr,0)) = ABS(:sqmofr)', { sqmofr })
+                .orWhere('ABS(COALESCE(tx.sqm,0)) = ABS(:sqm)', { sqm })
+                .orWhere('ABS(COALESCE(tx.quantityofr,0)) = ABS(:qofr)', { qofr })
+                .orWhere('ABS(COALESCE(tx.quantity,0)) = ABS(:q)', { q });
+            }),
+          )
+          .orderBy('tx.id', 'DESC')
+          .getOne();
+
+        if ((pairedOut as any)?.itemBatchId != null) {
+          costBatchId = Number((pairedOut as any).itemBatchId);
+        } else {
+          // Fallback: any MovedFrom for this transfer
+          const anyOut = await txRepo.findOne({
+            where: { transferId, transactionType: 'MovedFrom' as any } as any,
+            order: { id: 'DESC' } as any,
+          });
+          if ((anyOut as any)?.itemBatchId != null) {
+            costBatchId = Number((anyOut as any).itemBatchId);
+          }
+        }
+      }
+
+      let ti: TransferItem | null = null;
+      if (costBatchId) {
+        ti = await tiRepo.findOne({
+          where: { transferId, itemBatchId: costBatchId } as any,
+        });
+      }
+      // Fallback: regular transfers (Adjustment +/-) are keyed by itemVariantId
+      if (!ti) {
+        ti = await tiRepo.findOne({
+          where: { transferId, itemVariantId: Number(variantId) } as any,
+        });
+      }
 
       if (ti) {
         bundle = {
