@@ -1869,11 +1869,11 @@ async getProfitabilityByMonth(params: ProfitabilityParams) {
 
 // ─── Cost Diagnostic ────────────────────────────────────────────────────────
 
-async getCostDiagnostic(params: { from: string; to: string }) {
-  const { from, to } = params;
+async getCostDiagnostic(params: { from: string; to: string; variantId?: number }) {
+  const { from, to, variantId } = params;
 
   // 1) Find all variants that have sales with averageCost = 0 or null in the date range
-  const zeroCostRows = await this.dataSource
+  const zeroCostQb = this.dataSource
     .createQueryBuilder()
     .from('invoices', 'inv')
     .innerJoin('invoice_items', 'ii', 'ii.invoiceId = inv.id')
@@ -1912,8 +1912,11 @@ async getCostDiagnostic(params: { from: string; to: string }) {
     .addGroupBy('v.width')
     .addGroupBy('v.sheetsPerBox')
     .addGroupBy('v.origin')
-    .orderBy('COUNT(*)', 'DESC')
-    .getRawMany();
+    .orderBy('COUNT(*)', 'DESC');
+
+  if (variantId) zeroCostQb.andWhere('ii.itemVariantId = :variantId', { variantId });
+
+  const zeroCostRows = await zeroCostQb.getRawMany();
 
   // Safe date → 'YYYY-MM-DD' helper (handles both Date objects and strings)
   const toYMD = (v: any): string | null => {

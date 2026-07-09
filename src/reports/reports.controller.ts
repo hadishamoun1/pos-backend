@@ -120,8 +120,9 @@ async getProfitabilityByMonth(@Query() q: any) {
     const yearStart = `${now.getFullYear()}-01-01`;
     const today = now.toISOString().slice(0, 10);
     return this.reportsService.getCostDiagnostic({
-      from: q.from ?? yearStart,
-      to:   q.to   ?? today,
+      from:      q.from      ?? yearStart,
+      to:        q.to        ?? today,
+      variantId: q.variantId ? Number(q.variantId) : undefined,
     });
   }
 }
