@@ -928,7 +928,7 @@ private async createOrRebuildJVForPurchaseInvoice(
 
   // Apply VAT percentage to both the purchases DR and supplier CR lines
   const vatPct = Number((invoice as any).vatPercent ?? 0);
-  if (vatPct > 0 && !isPR) {
+  if (vatPct > 0) {
     let vatNormal = 0, vatOFR = 0;
     if (effectiveType === 'G') {
       vatOFR = ofrTotal * (vatPct / 100);
