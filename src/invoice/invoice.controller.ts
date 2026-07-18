@@ -6,6 +6,7 @@ import {
   Param,
   Query,
   Put,
+  Patch,
   ParseIntPipe,
   BadRequestException,
   UseGuards,
@@ -280,6 +281,16 @@ createReturnInvoice(
     }
   ) {
     return this.invoiceService.updateInvoiceDisplayNames(body);
+  }
+
+  // CONVERT invoice type S ↔ RVR
+  @Patch(":id/convert-type")
+  @RequirePerms("invoices.update")
+  async convertType(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { newType: "S" | "RVR" },
+  ) {
+    return this.invoiceService.convertInvoiceType(id, body.newType);
   }
 
   // UPDATE invoice

@@ -2923,7 +2923,8 @@ if (useVAT && vatAccount && !isG && !isRTNofG) {
       const jvHeader = await jvRepo.findOne({ where: { id: jvId } } as any);
 
       if (jvHeader) {
-        (jvHeader as any).date = (savedInvoice as any).date as any;
+        (jvHeader as any).date    = (savedInvoice as any).date as any;
+        (jvHeader as any).jvType  = isRRVR ? "RVR" : (savedInvoice as any).invoiceType;
 
         (jvHeader as any).totalDr = sumFrom(allDetails as any, "dr");
         (jvHeader as any).totalDrUSD = sumFrom(allDetails as any, "drUSD");
@@ -4497,8 +4498,50 @@ createdItems.push(item);
     }));
   }
 
+  async convertInvoiceType(invoiceId: number, newType: 'S' | 'RVR'): Promise<Invoice> {
+    const inv = await this.invoiceRepository.findOne({
+      where: { id: invoiceId },
+      relations: ['currency'],
+    });
+    if (!inv) throw new NotFoundException(`Invoice ${invoiceId} not found`);
 
+    const currentType = inv.invoiceType as string;
+    if (!['S', 'RVR'].includes(currentType))
+      throw new BadRequestException(`Only S and RVR invoices can be converted (got ${currentType})`);
+    if (currentType === newType)
+      throw new BadRequestException(`Invoice is already type ${newType}`);
 
+    const items = await this.invoiceItemRepo.findBy({ invoiceId });
+
+    const payload = {
+      customerId:      inv.customerId,
+      date:            inv.date,
+      invoiceType:     newType,
+      documentNumber:  inv.documentNumber,
+      currencyCode:    (inv.currency as any)?.currencyCode ?? 'USD',
+      totalWithoutVAT: Number(inv.totalWithoutVAT),
+      totalVAT:        Number(inv.totalVAT),
+      grandTotal:      Number(inv.grandTotal),
+      currencyRate:    Number(inv.currencyRate),
+      vatPercentage:   Number(inv.vatPercentage),
+      items: items.map(ii => ({
+        itemVariantId: ii.itemVariantId,
+        itemBatchId:   ii.itemBatchId,
+        itemType:      null,
+        stockMode:     null,
+        quantity:      Number(ii.quantity),
+        sqm:           Number(ii.sqm),
+        unitPrice:     Number(ii.unitPrice),
+        totalAmount:   Number(ii.totalAmount),
+        vat:           Number(ii.vat),
+        length:        ii.length,
+        width:         ii.width,
+        sheetsPerBox:  ii.sheetsPerBox,
+      })),
+    };
+
+    return this.updateInvoice(invoiceId, payload);
+  }
 
 
 
