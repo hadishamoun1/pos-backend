@@ -26,4 +26,16 @@ export class BulkRvrScheduleController {
   runNow() {
     return this.service.runNow();
   }
+
+  @Get('item-pool')
+  @RequirePerms('rvrRandomizer.view')
+  getItemPool() {
+    return this.service.getItemPool();
+  }
+
+  @Patch('item-pool')
+  @RequirePerms('rvrRandomizer.view')
+  saveItemPool(@Body() body: { pool: any[] }) {
+    return this.service.saveItemPool(body.pool ?? []);
+  }
 }

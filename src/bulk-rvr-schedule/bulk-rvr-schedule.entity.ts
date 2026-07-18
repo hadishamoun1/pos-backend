@@ -65,6 +65,10 @@ export class BulkRvrSchedule {
   @Column({ type: 'text', nullable: true })
   lastRunResult: string;
 
+  // RVR Randomizer item pool — stored as JSON array of variant objects
+  @Column({ type: 'text', nullable: true })
+  rvrItemPool: string;
+
   @UpdateDateColumn()
   updatedAt: Date;
 }

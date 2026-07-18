@@ -31,6 +31,16 @@ export class BulkRvrScheduleService implements OnModuleInit {
     return this.getConfig();
   }
 
+  async getItemPool(): Promise<any[]> {
+    const config = await this.repo.findOne({ where: { id: 1 } });
+    if (!config?.rvrItemPool) return [];
+    try { return JSON.parse(config.rvrItemPool); } catch { return []; }
+  }
+
+  async saveItemPool(pool: any[]): Promise<void> {
+    await this.repo.update(1, { rvrItemPool: JSON.stringify(pool) });
+  }
+
   // Runs at the top of every hour — checks if this is the configured hour and hasn't run today
   @Cron('0 * * * *')
   async scheduledRun() {
