@@ -4413,7 +4413,7 @@ createdItems.push(item);
       invoiceNumber: inv.invoiceNumber,
 
       customer: inv.customer
-        ? { id: inv.customer.id, name: inv.customer.name ?? null }
+        ? { id: inv.customer.id, name: inv.customer.customerName ?? null }
         : null,
 
       branch: inv.branch
