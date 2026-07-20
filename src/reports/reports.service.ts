@@ -1243,11 +1243,12 @@ async getProfitability(params: ProfitabilityParams) {
   if (customerId) qb.andWhere('inv.customerId = :customerId', { customerId });
   if (itemVariantId) qb.andWhere('ii.itemVariantId = :itemVariantId', { itemVariantId });
 
-  if (invoiceType !== 'ALL') {
+  // RVR invoices are always excluded from profitability
+  if (invoiceType !== 'ALL' && invoiceType !== 'RVR') {
     qb.andWhere('inv.invoiceType = :invoiceType', { invoiceType });
   } else {
     qb.andWhere('inv.invoiceType IN (:...types)', {
-      types: ['S', 'G', 'RVR', 'RTN'],
+      types: ['S', 'G', 'RTN'],
     });
   }
 
@@ -1727,11 +1728,12 @@ async getProfitabilityByMonth(params: ProfitabilityParams) {
   if (to)   qb.andWhere('inv.date <= :to',   { to });
   if (customerId) qb.andWhere('inv.customerId = :customerId', { customerId });
 
-  if (invoiceType !== 'ALL') {
+  // RVR invoices are always excluded from profitability
+  if (invoiceType !== 'ALL' && invoiceType !== 'RVR') {
     qb.andWhere('inv.invoiceType = :invoiceType', { invoiceType });
   } else {
     qb.andWhere('inv.invoiceType IN (:...types)', {
-      types: ['S', 'G', 'RVR', 'RTN'],
+      types: ['S', 'G', 'RTN'],
     });
   }
 
