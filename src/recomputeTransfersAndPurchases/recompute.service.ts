@@ -462,6 +462,36 @@ export class RecomputeCostsService {
         const items: InvoiceItem[] = (inv.items ?? []).filter((x: any) => x?.itemVariantId);
         if (!items.length) continue;
 
+        // Batch-load costs for SQM piece items (chain: sqm_pieces → transfer_items)
+        const sqmPieceIds = items
+          .filter((it: any) => it.sqmPieceId)
+          .map((it: any) => Number(it.sqmPieceId));
+
+        const sqmPieceCostMap = new Map<number, {
+          averageCost: number | null;
+          averageCostVM: number | null;
+          averageCostC: number | null;
+          averageCostCVM: number | null;
+        }>();
+
+        if (sqmPieceIds.length) {
+          const sqmRows = await this.dataSource.query(
+            `SELECT sp.id AS sqmPieceId, ti.averageCost, ti.averageCostVM, ti.averageCostC, ti.averageCostCVM
+             FROM sqm_pieces sp
+             INNER JOIN transfer_items ti ON ti.id = sp.transferItemId
+             WHERE sp.id IN (${sqmPieceIds.map(() => '?').join(',')})`,
+            sqmPieceIds,
+          );
+          for (const row of sqmRows) {
+            sqmPieceCostMap.set(Number(row.sqmPieceId), {
+              averageCost: toNumOrNull(row.averageCost),
+              averageCostVM: toNumOrNull(row.averageCostVM),
+              averageCostC: toNumOrNull(row.averageCostC),
+              averageCostCVM: toNumOrNull(row.averageCostCVM),
+            });
+          }
+        }
+
         const uniqVariantIds = Array.from(
           new Set(items.map((it: any) => Number(it.itemVariantId)).filter(Boolean)),
         );
@@ -546,6 +576,22 @@ export class RecomputeCostsService {
         }
 
         for (const it of items as any[]) {
+          // SQM piece items: cost comes from the source transfer item, not the variant tx chain
+          if (it.sqmPieceId) {
+            const sqmCost = sqmPieceCostMap.get(Number(it.sqmPieceId));
+            if (sqmCost) {
+              it.averageCost = sqmCost.averageCost;
+              it.averageCostVM = sqmCost.averageCostVM;
+              it.averageCostC = sqmCost.averageCostC;
+              it.averageCostCVM = sqmCost.averageCostCVM;
+              it.lastCost = null;
+              it.lastCostVM = null;
+              it.lastCostC = null;
+              it.lastCostCVM = null;
+              continue;
+            }
+          }
+
           const b = cache.get(Number(it.itemVariantId));
           if (!b) continue;
 
