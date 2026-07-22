@@ -31,17 +31,6 @@ export class SqmPiecesService {
     @InjectRepository(Transfer)
     private readonly transferRepo: Repository<Transfer>,
 
-    @InjectRepository(ItemBatch)
-    private readonly batchRepo: Repository<ItemBatch>,
-
-    @InjectRepository(ItemVariant)
-    private readonly variantRepo: Repository<ItemVariant>,
-
-    @InjectRepository(Thickness)
-    private readonly thicknessRepo: Repository<Thickness>,
-
-    @InjectRepository(InventoryTransaction)
-    private readonly InventoryTransactionRepo: Repository<InventoryTransaction>,
   ) {}
 
   /**
@@ -356,28 +345,50 @@ export class SqmPiecesService {
       const parentItem = fromVariant.thickness.item;
 
       const totalSqmLine = num(ti.sqm);
+      const alreadyTrashUnallocated = num((ti as any).sqmTrashUnallocated);
 
-      // 1) compute total sqm requested by user for this line
+      // Load existing pieces — separate committed (sold or trashed) from clean
+      const existingPieces = await manager.getRepository(SqmPiece).find({
+        where: { transferItemId },
+      });
+
+      const committedPieces = existingPieces.filter(
+        (p) => num(p.sqmSold) > 0 || num(p.sqmTrash) > 0,
+      );
+      const committedKeys = new Set(
+        committedPieces.map((p) => `${num(p.length)}|${num(p.width)}`),
+      );
+      const committedSqmTotal = committedPieces.reduce(
+        (sum, p) => sum + num(p.sqmTotal),
+        0,
+      );
+
+      // Delete only clean pieces (no sales, no trash)
+      const cleanIds = existingPieces
+        .filter((p) => num(p.sqmSold) === 0 && num(p.sqmTrash) === 0)
+        .map((p) => p.id);
+      if (cleanIds.length) {
+        await manager.getRepository(SqmPiece).delete(cleanIds);
+      }
+
+      // From input, exclude pieces matching a committed piece (they stay in DB)
+      const newPiecesInput = piecesInput.filter((row) => {
+        const key = `${num(row.length)}|${num(row.width)}`;
+        return !committedKeys.has(key);
+      });
+
+      // Validate total sqm: committed + new pieces + unallocated trash <= line sqm
       let sumPiecesSqm = 0;
-      for (const row of piecesInput) {
+      for (const row of newPiecesInput) {
         const L = num(row.length);
         const W = num(row.width);
         const count = Math.max(0, Math.floor(num(row.count)));
-        const sqmPerPiece = (L * W) / 10000;
-        const sqmTotal = count * sqmPerPiece;
-        // NOTE: your original code had this loop structure; sum logic can be added here if needed
-        // sumPiecesSqm += sqmTotal;
+        sumPiecesSqm += count * ((L * W) / 10000);
       }
 
-      const alreadyTrashUnallocated = num((ti as any).sqmTrashUnallocated);
-
-      if (sumPiecesSqm + alreadyTrashUnallocated - totalSqmLine > 0.0001) {
+      if (committedSqmTotal + sumPiecesSqm + alreadyTrashUnallocated - totalSqmLine > 0.0001) {
         throw new BadRequestException(
-          `Allocated sqm (${sumPiecesSqm.toFixed(
-            4,
-          )}) + already trashed unallocated (${alreadyTrashUnallocated.toFixed(
-            4,
-          )}) exceeds line sqm (${totalSqmLine.toFixed(4)}).`,
+          `Allocated sqm (${(committedSqmTotal + sumPiecesSqm).toFixed(4)}) + trashed unallocated (${alreadyTrashUnallocated.toFixed(4)}) exceeds line sqm (${totalSqmLine.toFixed(4)}).`,
         );
       }
 

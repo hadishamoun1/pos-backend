@@ -59,9 +59,6 @@ export class RecomputeCostsService {
     @InjectRepository(ItemVariant)
     private readonly variantRepo: Repository<ItemVariant>,
 
-    @InjectRepository(ItemNameDescription)
-    private readonly descRepo: Repository<ItemNameDescription>,
-
     @InjectRepository(ItemBatch)
     private readonly batchRepo: Repository<ItemBatch>,
 
@@ -372,7 +369,7 @@ export class RecomputeCostsService {
       return last;
     };
 
-    const getTransferCostBundle = async (variantId: number, lastTx: any) => {
+    const getTransferCostBundle = async (_variantId: number, lastTx: any) => {
       const transferId = Number(lastTx.transferId);
       const txType = String(lastTx.transactionType || '');
       const cutDate = toYMD(lastTx.dateForEachInvoice);
