@@ -455,7 +455,7 @@ export class SqmPiecesService {
       // 4) insert new pieces (clean pieces already deleted above)
       const toInsert: SqmPiece[] = [];
 
-      for (const row of piecesInput) {
+      for (const row of newPiecesInput) {
         const L = num(row.length);
         const W = num(row.width);
         let count = Math.max(0, Math.floor(num(row.count)));
