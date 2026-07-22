@@ -452,10 +452,7 @@ export class SqmPiecesService {
         await manager.getRepository(ItemBatch).save(sqmBatch);
       }
 
-      // 4) delete old pieces for this line
-      await manager.getRepository(SqmPiece).delete({ transferItemId });
-
-      // 5) insert new pieces
+      // 4) insert new pieces (clean pieces already deleted above)
       const toInsert: SqmPiece[] = [];
 
       for (const row of piecesInput) {
