@@ -778,9 +778,10 @@ export class RecomputeCostsService {
 
       const condition = item.condition || 'Clean';
       const dateReceived = null;
+      const warehouse = (invoice as any).warehouse ?? 'Shamoun';
 
       let itemBatch: ItemBatch | null = await this.batchRepo.findOne({
-        where: { itemVariant: { id: item.itemVariantId }, condition, dateReceived } as any,
+        where: { itemVariant: { id: item.itemVariantId }, condition, dateReceived, warehouse } as any,
         relations: ['itemVariant'] as any,
       });
 
@@ -790,6 +791,7 @@ export class RecomputeCostsService {
           itemVariant: { id: item.itemVariantId } as any,
           condition,
           dateReceived: null,
+          warehouse,
           start: 0, in: 0, out: 0, balance: 0,
           startOFR: 0, inOFR: 0, outOFR: 0, balanceOFR: 0,
         });

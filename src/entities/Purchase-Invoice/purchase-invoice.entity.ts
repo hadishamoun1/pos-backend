@@ -113,6 +113,9 @@ jvDate: Date | null;
   @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
   finalCost: number;
 
+  @Column({ type: 'varchar', length: 50, nullable: true, default: 'Shamoun' })
+  warehouse: string;
+
   @OneToMany(() => PurchaseInvoiceItem, (item) => item.invoice, {
     cascade: true,
   })

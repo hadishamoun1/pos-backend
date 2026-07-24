@@ -129,7 +129,11 @@ export class TransfersService {
         return 'BR';
       case 'Defects':
         return 'DEF';
+      case 'ToTripoli':
+      case 'ToShamoun':
+        return 'WH';
       default:
+        if (location?.startsWith('To:')) return 'WH';
         return 'TR';
     }
   }
@@ -336,7 +340,7 @@ export class TransfersService {
         `(
           tx.purchaseInvoiceItemId IS NOT NULL
           OR tx.inventoryCountId IS NOT NULL
-          OR (tx.transferId IS NOT NULL AND tx.transactionType != 'MovedFrom')
+          OR (tx.transferId IS NOT NULL AND tx.transactionType NOT IN ('MovedFrom', 'WhMovedFrom', 'WhMovedTo'))
         )`,
       )
       .orderBy('tx.dateForEachInvoice', 'DESC')
@@ -435,6 +439,7 @@ export class TransfersService {
     variantId: number,
     condition: any,
     dateReceived: any,
+    warehouse: string = 'Shamoun',
   ): Promise<ItemBatch> {
     const batchRepo = manager.getRepository(ItemBatch);
 
@@ -443,6 +448,7 @@ export class TransfersService {
         itemVariant: { id: variantId } as any,
         condition,
         dateReceived,
+        warehouse,
       } as any,
     });
 
@@ -451,6 +457,7 @@ export class TransfersService {
         itemVariant: { id: variantId } as any,
         condition,
         dateReceived,
+        warehouse,
         start: 0,
         in: 0,
         out: 0,
@@ -552,18 +559,33 @@ private async rollbackTransfer(
     if (!batch || !variant) continue;
 
     const sqm = Math.abs(num((tx as any).sqmofr));
+    const ttype = (tx as any).transactionType;
+
+    // Warehouse-to-warehouse moves: only batch balance, no variant total change
+    if (ttype === 'WhMovedFrom') {
+      batch.outOFR = num(batch.outOFR) - sqm;
+      batch.balanceOFR = num(batch.startOFR) + num(batch.inOFR) - num(batch.outOFR);
+      await manager.getRepository(ItemBatch).save(batch);
+      continue;
+    }
+    if (ttype === 'WhMovedTo') {
+      batch.inOFR = num(batch.inOFR) - sqm;
+      batch.balanceOFR = num(batch.startOFR) + num(batch.inOFR) - num(batch.outOFR);
+      await manager.getRepository(ItemBatch).save(batch);
+      continue;
+    }
 
     if (
-      (tx as any).transactionType === 'MovedFrom' ||
-      (tx as any).transactionType === 'Breakage' ||
-      (tx as any).transactionType === 'Defects' ||
-      (tx as any).transactionType === 'Adjustment -'
+      ttype === 'MovedFrom' ||
+      ttype === 'Breakage' ||
+      ttype === 'Defects' ||
+      ttype === 'Adjustment -'
     ) {
       batch.outOFR = num(batch.outOFR) - sqm;
       variant.totalOutOFR = num(variant.totalOutOFR) - sqm;
     } else if (
-      (tx as any).transactionType === 'MovedTo' ||
-      (tx as any).transactionType === 'Adjustment +'
+      ttype === 'MovedTo' ||
+      ttype === 'Adjustment +'
     ) {
       batch.inOFR = num(batch.inOFR) - sqm;
       variant.totalInOFR = num(variant.totalInOFR) - sqm;
@@ -1918,6 +1940,92 @@ if ((transfer as any).location === 'FJ') {
 
         const copied = agg.copied ?? { vm: prevCostsDest.vm, c: prevCostsDest.c, cvm: prevCostsDest.cvm };
         await updateLinesAndTx(destVariantId, agg.transferItemIds, agg.txInIds, newAvgOfr, copied);
+      }
+    }
+
+    // -----------------------------
+    // Warehouse-to-warehouse transfer (ToTripoli / ToShamoun)
+    // Moves stock between warehouse batches of the same variant.
+    // Cost does not change — no variant total update (changes cancel out).
+    // -----------------------------
+    const transferLoc: string = (transfer as any).location ?? '';
+    const isWhTransfer =
+      transferLoc === 'ToTripoli' ||
+      transferLoc === 'ToShamoun' ||
+      transferLoc.startsWith('To:');
+    if (isWhTransfer) {
+      const destWarehouse =
+        transferLoc === 'ToTripoli' ? 'Tripoli' :
+        transferLoc === 'ToShamoun' ? 'Shamoun' :
+        transferLoc.slice(3); // "To:WarehouseName" → "WarehouseName"
+
+      for (const ti of persisted) {
+        const qty = num((ti as any).quantity);
+        const sqmVal = num((ti as any).sqm);
+        if (qty === 0 && sqmVal === 0) continue;
+
+        const fromBatch: any = (ti as any).itemBatch;
+        const variant: any = fromBatch.itemVariant;
+
+        const { prev: prevCosts } = await this.getPrevQtyAndCosts(
+          manager,
+          variant.id,
+          this.startOfDay(new Date((transfer as any).date)),
+        );
+
+        const toBatch = await this.ensureBatch(
+          manager,
+          variant.id,
+          fromBatch.condition,
+          fromBatch.dateReceived,
+          destWarehouse,
+        );
+
+        const txOut: any = manager.getRepository(InventoryTransaction).create({
+          itemVariantId: variant.id,
+          itemBatchId: fromBatch.id,
+          transactionType: 'WhMovedFrom',
+          quantity: -qty,
+          quantityofr: -qty,
+          sqm: -sqmVal,
+          sqmofr: -sqmVal,
+          transferId: (transfer as any).id,
+          dateForEachInvoice: new Date((transfer as any).date),
+        } as any);
+        setTxCosts(txOut, prevCosts);
+        await manager.getRepository(InventoryTransaction).save(txOut);
+
+        const txIn: any = manager.getRepository(InventoryTransaction).create({
+          itemVariantId: variant.id,
+          itemBatchId: (toBatch as any).id,
+          transactionType: 'WhMovedTo',
+          quantity: qty,
+          quantityofr: qty,
+          sqm: sqmVal,
+          sqmofr: sqmVal,
+          transferId: (transfer as any).id,
+          dateForEachInvoice: new Date((transfer as any).date),
+        } as any);
+        setTxCosts(txIn, prevCosts);
+        await manager.getRepository(InventoryTransaction).save(txIn);
+
+        // Source batch: stock out
+        fromBatch.outOFR = num(fromBatch.outOFR) + sqmVal;
+        fromBatch.balanceOFR = num(fromBatch.startOFR) + num(fromBatch.inOFR) - num(fromBatch.outOFR);
+        await manager.getRepository(ItemBatch).save(fromBatch);
+
+        // Destination batch: stock in
+        (toBatch as any).inOFR = num((toBatch as any).inOFR) + sqmVal;
+        (toBatch as any).balanceOFR =
+          num((toBatch as any).startOFR) + num((toBatch as any).inOFR) - num((toBatch as any).outOFR);
+        await manager.getRepository(ItemBatch).save(toBatch);
+
+        // Variant totals: out + in cancel each other → no net change, but update for tx consistency
+        variant.totalOutOFR = num(variant.totalOutOFR) + sqmVal;
+        variant.totalInOFR = num(variant.totalInOFR) + sqmVal;
+        variant.totalBalanceOFR =
+          num(variant.totalStartOFR) + num(variant.totalInOFR) - num(variant.totalOutOFR);
+        await manager.getRepository(ItemVariant).save(variant);
       }
     }
 

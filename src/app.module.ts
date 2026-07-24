@@ -55,6 +55,7 @@ import { RecordingModule } from './recording/recording.module';
 import { FileBrowserModule } from './file-browser/file-browser.module';
 import { DelayModule } from './delay/delay.module';
 import { DelayMiddleware } from './delay/delay.middleware';
+import { WarehouseModule } from './warehouse/warehouse.module';
 
 @Module({
   providers: [
@@ -126,6 +127,7 @@ TypeOrmModule.forRootAsync({
     RecordingModule,
     FileBrowserModule,
     DelayModule,
+    WarehouseModule,
   ],
 })
 export class AppModule implements NestModule {

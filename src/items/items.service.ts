@@ -2133,7 +2133,7 @@ async editFullItemByRealDescription(editDto: {
 }
 
 
-async getitemDetails(opts?: { page?: number; limit?: number }) {
+async getitemDetails(opts?: { page?: number; limit?: number; warehouse?: string }) {
   // ---- paging is by *rows* (table lines), not by item-name groups ----
   const page = Math.max(1, Number(opts?.page ?? 1));
   const limit = Math.min(500, Math.max(1, Number(opts?.limit ?? 100)));
@@ -2184,6 +2184,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       "batch.condition",
       "batch.dateReceived",
       "batch.balanceOFR",
+      "batch.warehouse",
     ])
     .where("variant.realDescriptionId IS NOT NULL") // ✅ filter ONLY those that have real desc
     .orderBy("item.id", "ASC")
@@ -2257,6 +2258,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
       id: number;
       condition: string | null;
       dateReceived: string | Date | null;
+      warehouse: string | null;
       balanceOFRSqm: number;
       balanceOFR: number;
     }>;
@@ -2276,13 +2278,16 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         const widthNum = toNum(v.width);
         const spbNum = Math.max(1, toNum(v.sheetsPerBox));
 
+        const warehouseFilter = opts?.warehouse?.trim() || null;
         const batches = (v.batches || [])
+          .filter((b) => !warehouseFilter || ((b as any).warehouse ?? null) === warehouseFilter)
           .map((b) => {
             const snap = _detailsTxnSnap.get(Number((b as any).id));
             return {
               id: b.id,
               condition: b.condition ?? null,
               dateReceived: b.dateReceived ?? null,
+              warehouse: (b as any).warehouse ?? null,
               balanceOFRSqm: Number((snap?.balSqm ?? 0).toFixed(2)),
               balanceOFR:    Number((snap?.balU   ?? 0).toFixed(2)),
             };
@@ -2443,6 +2448,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
     batchId?: number | null;
     condition?: string | null;
     dateReceived?: string | Date | null;
+    warehouse?: string | null;
     balanceOFR?: number | null;
   };
 
@@ -2466,6 +2472,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         batchId: b.id,
         condition: b.condition,
         dateReceived: b.dateReceived,
+        warehouse: b.warehouse,
         balanceOFR: b.balanceOFR,
       });
     }
@@ -2590,6 +2597,7 @@ async getitemDetails(opts?: { page?: number; limit?: number }) {
         'batch.condition',
         'batch.dateReceived',
         'batch.balanceOFR', // stored sqm
+        'batch.warehouse',
       ]);
   }
 
@@ -2915,6 +2923,7 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
       "batch.condition",
       "batch.dateReceived",
       "batch.balanceOFR",
+      "batch.warehouse",
     ])
     .orderBy("item.id", "ASC")
     .addOrderBy("thickness.id", "ASC")
@@ -2950,6 +2959,7 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
       id: number;
       condition: string | null;
       dateReceived: string | Date | null;
+      warehouse: string | null;
       balanceOFRSqm: number; // original sqm
       balanceOFR: number; // converted count (may be 0 or negative)
     }>;
@@ -2978,6 +2988,7 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
             id: b.id,
             condition: b.condition ?? null,
             dateReceived: b.dateReceived ?? null,
+            warehouse: (b as any).warehouse ?? null,
             balanceOFRSqm: Number(balanceSqm.toFixed(2)),
             balanceOFR: Number(converted.toFixed(2)),
           };
@@ -3145,6 +3156,7 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
     batchId: number | null;
     condition: string | null;
     dateReceived: string | Date | null;
+    warehouse: string | null;
     balanceOFR: number | null; // may be 0 or negative
   };
 
@@ -3171,6 +3183,7 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
         batchId: b.id,
         condition: b.condition,
         dateReceived: b.dateReceived,
+        warehouse: b.warehouse,
         balanceOFR: b.balanceOFR,
       });
     }
@@ -3203,6 +3216,7 @@ async searchForModalPOSInStock(params: {
   page: number;
   limit: number;
   roundUnitsToInt?: boolean;
+  warehouse?: string;
 }) {
   const { q } = params;
 
@@ -3305,7 +3319,10 @@ async searchForModalPOSInStock(params: {
           const variants = (th.variants || [])
             .map((v: any) => {
               const batchesRaw = Array.isArray(v.batches) ? v.batches : [];
-              const batches = batchesRaw;
+              const whFilter = params.warehouse?.trim() || null;
+              const batches = whFilter
+                ? batchesRaw.filter((b: any) => (b?.warehouse ?? null) === whFilter)
+                : batchesRaw;
 
               return {
                 ...v,
@@ -4919,6 +4936,7 @@ async getVariantLedgerByRealDesc(params?: {
   variantIds?: number[];
   asOf?: string;
   includeSqm?: boolean;
+  warehouse?: string;
 }) {
   const toNum = (v: any) => {
     const n = Number(v);
@@ -5040,11 +5058,18 @@ async getVariantLedgerByRealDesc(params?: {
   const limit = Math.min(500, Math.max(1, Number(params?.limit ?? 50)));
   const skip  = (page - 1) * limit;
 
+  const warehouseFilter = params?.warehouse ? params.warehouse.trim() : null;
+
   const qb = this.itemVariantRepository
     .createQueryBuilder('v')
     .innerJoinAndSelect('v.thickness', 't')
     .innerJoinAndSelect('t.item', 'i')
-    .leftJoinAndSelect('v.batches', 'b')
+    .leftJoinAndSelect(
+      'v.batches',
+      'b',
+      warehouseFilter ? 'b.warehouse = :bwh' : '1=1',
+      warehouseFilter ? { bwh: warehouseFilter } : {},
+    )
     .leftJoinAndSelect('v.realDescription', 'r')
     .select([
       'v.id','v.length','v.width','v.sheetsPerBox','v.origin',
@@ -5053,7 +5078,7 @@ async getVariantLedgerByRealDesc(params?: {
       'v.averageCost','v.lastCost',
       't.id','t.thickness','t.sort_index',
       'i.id','i.itemName','i.type','i.stockMode',
-      'b.id','b.condition','b.dateReceived','b.start','b.in','b.out','b.balance',
+      'b.id','b.condition','b.dateReceived','b.warehouse','b.start','b.in','b.out','b.balance',
       'b.startOFR','b.inOFR','b.outOFR','b.balanceOFR',
       'r.id','r.categoryName','r.subCategory','r.colorName','r.designName',
       'r.itemNumber','r.sort_index_real_description',
@@ -5513,6 +5538,7 @@ async getVariantLedgerByRealDesc(params?: {
         id:            b.id,
         condition:     b.condition    ?? null,
         dateReceived:  b.dateReceived ?? null,
+        warehouse:     (b as any).warehouse ?? null,
         start:         toNum(b.start  ?? 0),
         in:            toNum(b.in     ?? 0),
         out:           toNum(b.out    ?? 0),

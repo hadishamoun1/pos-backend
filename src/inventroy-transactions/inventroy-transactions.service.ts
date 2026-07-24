@@ -140,7 +140,7 @@ async getActivity(
     itemType: string;
     invoiceDate: string;
     invoiceNumber: string;
-    itemBatch: { id: number; condition: string; dateReceived: string } | null;
+    itemBatch: { id: number; condition: string; dateReceived: string; warehouse: string | null } | null;
     transfer: { id: number; transferNumber: string; date: string } | null;
     description: {
       categoryName: string;
@@ -227,9 +227,9 @@ async getActivity(
     return {
       id: tx.id,
       transactionType: tx.transactionType,
-      sqm: Number(tx.sqm),
+      sqm: (tx.transactionType === 'WhMovedFrom' || tx.transactionType === 'WhMovedTo') ? 0 : Number(tx.sqm),
       sqmofr: Number(tx.sqmofr),
-      quantity: tx.quantity != null ? Number(tx.quantity) : 0,
+      quantity: (tx.transactionType === 'WhMovedFrom' || tx.transactionType === 'WhMovedTo') ? 0 : (tx.quantity != null ? Number(tx.quantity) : 0),
       quantityofr: tx.quantityofr != null ? Number(tx.quantityofr) : 0,
       finalcost: tx.finalcost != null ? Number(tx.finalcost) : null,
       finalcostofr: tx.finalcostofr != null ? Number(tx.finalcostofr) : null,
@@ -247,6 +247,7 @@ async getActivity(
             id: tx.itemBatch.id,
             condition: tx.itemBatch.condition,
             dateReceived: tx.itemBatch.dateReceived,
+            warehouse: tx.itemBatch.warehouse ?? null,
           }
         : null,
       transfer: tx.transfer
@@ -419,6 +420,11 @@ addStringFilter("itemNumber", "itemDesc.itemNumber");
   if (hasVal(query.batchDate)) {
     qb.andWhere("itemBatch.dateReceived = :batchDate", {
       batchDate: query.batchDate,
+    });
+  }
+  if (hasVal(query.warehouse)) {
+    qb.andWhere("itemBatch.warehouse = :warehouse", {
+      warehouse: String(query.warehouse).trim(),
     });
   }
 
@@ -658,6 +664,7 @@ addStringFilter("itemNumber", "itemDesc.itemNumber");
             id: tx.itemBatch.id,
             condition: tx.itemBatch.condition,
             dateReceived: tx.itemBatch.dateReceived,
+            warehouse: tx.itemBatch.warehouse ?? null,
           }
         : null,
 

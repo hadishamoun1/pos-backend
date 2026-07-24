@@ -27,6 +27,9 @@ export class Transfer {
   @Column({ length: 100 })
   location: string;
 
+  @Column({ type: 'varchar', length: 50, nullable: true, default: null })
+  toWarehouse: string | null;
+
   // optional automatic timestamp of when the record was created
   @CreateDateColumn({ type: 'timestamp' })
   createdAt: Date;

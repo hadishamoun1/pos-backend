@@ -26,6 +26,9 @@ export class ItemBatch {
 @Column({ type: 'varchar', length: 7, nullable: true, default: null })
 dateReceived: string | null;
 
+@Column({ type: 'varchar', length: 50, nullable: true, default: 'Shamoun' })
+warehouse: string;
+
   // 🔽 Inventory Tracking (TOTALS)
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   start: number; // Initial balance

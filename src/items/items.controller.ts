@@ -183,6 +183,7 @@ export class ItemsController {
     @Query('variantIds') variantIdsRaw?: string, // "1,2,3"
     @Query('asOf') asOf?: string, // "YYYY-MM-DD"
     @Query('includeSqm') includeSqmRaw?: string,
+    @Query('warehouse') warehouse?: string,
   ) {
     const variantIds = (variantIdsRaw || '')
       .split(',')
@@ -203,6 +204,7 @@ export class ItemsController {
       variantIds: variantIds.length ? variantIds : undefined,
       asOf: asOf?.trim() || undefined,
       includeSqm: includeSqmRaw === 'true',
+      warehouse: warehouse?.trim() || undefined,
     });
   }
 
@@ -211,10 +213,11 @@ export class ItemsController {
   async getItemColumns(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(100), ParseIntPipe) limit: number,
+    @Query('warehouse') warehouse?: string,
   ) {
     const pageNum = Math.max(1, page || 1);
     const limitNum = Math.min(500, Math.max(1, limit || 200));
-    return this.itemsService.getitemDetails({ page: pageNum, limit: limitNum });
+    return this.itemsService.getitemDetails({ page: pageNum, limit: limitNum, warehouse: warehouse?.trim() || undefined });
   }
 
   // using real description
@@ -298,6 +301,7 @@ export class ItemsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('roundUnitsToInt') roundUnitsToInt?: string,
+    @Query('warehouse') warehouse?: string,
   ) {
     const p = Number.isFinite(Number(page)) ? Math.max(1, Number(page)) : 1;
     const l = Number.isFinite(Number(limit)) ? Math.min(500, Math.max(1, Number(limit))) : 50;
@@ -312,6 +316,7 @@ export class ItemsController {
       page: p,
       limit: l,
       roundUnitsToInt: ['1', 'true', 'yes'].includes(String(roundUnitsToInt || '').toLowerCase()),
+      warehouse: warehouse?.trim() || undefined,
     });
   }
 

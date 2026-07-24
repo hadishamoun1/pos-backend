@@ -656,11 +656,13 @@ private numOrZero(v: any): number {
 
         if (!existingBatchId) {
           const condition = (item as any).condition || 'Clean';
+          const invoiceWarehouse = (savedInvoice as any).warehouse ?? 'Shamoun';
           const fallbackBatch = await this.itemBatchRepo.findOne({
             where: {
               itemVariant: { id: Number((item as any).itemVariantId) },
               condition,
               dateReceived: null,
+              warehouse: invoiceWarehouse,
             } as any,
           });
 
@@ -1234,12 +1236,14 @@ async create(data: Partial<PurchaseInvoice>) {
 
       const condition = item.condition || 'Clean';
       const dateReceived = null;
+      const warehouse = (savedInvoice as any).warehouse ?? 'Shamoun';
 
       let itemBatch: ItemBatch | null = await this.itemBatchRepo.findOne({
         where: {
           itemVariant: { id: item.itemVariantId },
           condition,
           dateReceived,
+          warehouse,
         } as any,
         relations: ['itemVariant'],
       });
@@ -1251,6 +1255,7 @@ async create(data: Partial<PurchaseInvoice>) {
           itemVariant: { id: item.itemVariantId } as any,
           condition,
           dateReceived: null,
+          warehouse,
 
           start: 0,
           in: 0,

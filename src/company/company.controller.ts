@@ -16,6 +16,11 @@ export class CompanyController {
     return this.companyService.findAll();
   }
 
+  @Get("active")
+  getActive() {
+    return this.companyService.getActiveCompany();
+  }
+
   @Get(":id")
   findOne(@Param("id", ParseIntPipe) id: number) {
     return this.companyService.findOne(id);
