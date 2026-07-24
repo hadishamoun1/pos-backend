@@ -666,8 +666,22 @@ private numOrZero(v: any): number {
             } as any,
           });
 
-          if (fallbackBatch) existingBatchId = fallbackBatch.id;
-          else continue;
+          if (fallbackBatch) {
+            existingBatchId = fallbackBatch.id;
+          } else {
+            // No batch exists for this warehouse yet — create one (e.g. warehouse changed on edit)
+            const newBatch = this.itemBatchRepo.create();
+            Object.assign(newBatch, {
+              itemVariant: { id: Number((item as any).itemVariantId) } as any,
+              condition,
+              dateReceived: null,
+              warehouse: invoiceWarehouse,
+              start: 0, in: 0, out: 0, balance: 0,
+              startOFR: 0, inOFR: 0, outOFR: 0, balanceOFR: 0,
+            });
+            const savedBatch = await this.itemBatchRepo.save(newBatch);
+            existingBatchId = (savedBatch as any).id;
+          }
         }
 
         const sqmVM = Number((item as any).sqm ?? 0);
