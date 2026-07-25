@@ -2721,6 +2721,7 @@ async getitemDetails(opts?: { page?: number; limit?: number; warehouse?: string 
   limit: number;
   includeEmpty?: boolean;
   roundUnitsToInt?: boolean;
+  warehouse?: string;
 }) {
   const { q, dims, includeEmpty, roundUnitsToInt } = params;
 
@@ -2827,15 +2828,33 @@ async getitemDetails(opts?: { page?: number; limit?: number; warehouse?: string 
     ]);
   }
 
-  // ✅ Inject itemType + stockMode into the returned nested items
-  // (so frontend can read item.itemType and item.stockMode like StockTab does)
+  const warehouseFilter = params.warehouse;
+
   const out = (results || []).map((item: any) => {
     const typeLower = String(item?.type ?? "").toLowerCase();
-    return {
+    const mapped = {
       ...item,
-      itemType: item?.itemType ?? typeLower,            // ✅
-      stockMode: item?.stockMode ?? item?.item?.stockMode ?? null, // ✅
+      itemType: item?.itemType ?? typeLower,
+      stockMode: item?.stockMode ?? item?.item?.stockMode ?? null,
     };
+
+    if (warehouseFilter) {
+      for (const th of mapped.thicknesses || []) {
+        for (const v of th.variants || []) {
+          v.batches = (v.batches || []).filter(
+            (b: any) => (b.warehouse ?? null) === warehouseFilter
+          );
+        }
+        th.variants = (th.variants || []).filter(
+          (v: any) => (v.batches || []).length > 0
+        );
+      }
+      mapped.thicknesses = (mapped.thicknesses || []).filter(
+        (th: any) => (th.variants || []).length > 0
+      );
+    }
+
+    return mapped;
   });
 
   return out;
@@ -2845,7 +2864,7 @@ async getitemDetails(opts?: { page?: number; limit?: number; warehouse?: string 
 
 
   // items.service.ts
-async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
+async getitemDetailsAllBatches(opts?: { page?: number; limit?: number; warehouse?: string }) {
   // ---- paginate by *rows* (table lines) ----
   const page = Math.max(1, Number(opts?.page ?? 1));
   const limit = Math.min(500, Math.max(1, Number(opts?.limit ?? 100)));
@@ -3189,9 +3208,14 @@ async getitemDetailsAllBatches(opts?: { page?: number; limit?: number }) {
     }
   }
 
-  const totalRows = allRows.length;
+  const warehouseFilter = opts?.warehouse;
+  const filteredRows = warehouseFilter
+    ? allRows.filter((r) => r.warehouse === warehouseFilter)
+    : allRows;
+
+  const totalRows = filteredRows.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / limit));
-  const pageRows = allRows.slice(start, start + limit);
+  const pageRows = filteredRows.slice(start, start + limit);
 
   return {
     page,

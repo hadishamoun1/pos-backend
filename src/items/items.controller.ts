@@ -254,11 +254,15 @@ export class ItemsController {
 
   @Get('v2/filtered-items-all-batches')
   @RequirePerms('items.view')
-  async getFilteredItemsAllBatches(@Query('page') page?: string, @Query('limit') limit?: string) {
+  async getFilteredItemsAllBatches(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('warehouse') warehouse?: string,
+  ) {
     const p = Number.isFinite(Number(page)) && Number(page) ? Number(page) : 1;
     const l = Number.isFinite(Number(limit)) && Number(limit) ? Number(limit) : 100;
 
-    return this.itemsService.getitemDetailsAllBatches({ page: p, limit: l });
+    return this.itemsService.getitemDetailsAllBatches({ page: p, limit: l, warehouse: warehouse?.trim() || undefined });
   }
 
   @Get('pos/search-modal')
@@ -272,6 +276,7 @@ export class ItemsController {
     @Query('type') type?: 'box' | 'sheet' | 'sqm' | 'unit',
     @Query('page') page = '1',
     @Query('limit') limit = '100',
+    @Query('warehouse') warehouse?: string,
   ) {
     const lengthNum = length ? Number(length) : undefined;
     const widthNum = width ? Number(width) : undefined;
@@ -286,6 +291,7 @@ export class ItemsController {
       type,
       page: Math.max(1, Number(page) || 1),
       limit: Math.min(500, Math.max(1, Number(limit) || 100)),
+      warehouse: warehouse?.trim() || undefined,
     });
   }
 
