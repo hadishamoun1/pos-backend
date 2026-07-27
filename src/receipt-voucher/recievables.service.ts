@@ -266,14 +266,8 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
 }
 
 
-  async findSummary() {
-    const entries = await this.entryRepo.find({
-      relations: ['customer', 'journalVoucher'],
-      order: {
-        id: 'DESC',
-      },
-    });
-    return entries.map((e) => ({
+  private mapEntry(e: ReceiptEntry) {
+    return {
       id: e.id,
       customerid: e.customerId,
       customerName: e.customer.customerName,
@@ -287,7 +281,25 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
       pmtType: e.pmtType,
       invoiceId: e.invoiceId,
       type: e.type,
-    }));
+    };
+  }
+
+  async findSummary() {
+    const entries = await this.entryRepo.find({
+      relations: ['customer', 'journalVoucher'],
+      order: { id: 'DESC' },
+    });
+    return entries.map((e) => this.mapEntry(e));
+  }
+
+  async findSummaryPaginated(limit: number, offset: number) {
+    const [entries, total] = await this.entryRepo.findAndCount({
+      relations: ['customer', 'journalVoucher'],
+      order: { id: 'DESC' },
+      take: limit,
+      skip: offset,
+    });
+    return { data: entries.map((e) => this.mapEntry(e)), total };
   }
   /*update an existing reciept + its jv */
   async update(

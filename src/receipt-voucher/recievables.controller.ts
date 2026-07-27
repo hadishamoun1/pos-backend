@@ -64,7 +64,13 @@ export class RecievablesController {
   }
 
   @Get('v1/summary')
-  getSummary() {
+  getSummary(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    if (limit) {
+      return this.service.findSummaryPaginated(Number(limit), Number(offset ?? '0'));
+    }
     return this.service.findSummary();
   }
 
