@@ -940,23 +940,100 @@ async getDailyReceivables(params: {
   async convertReceivableType(id: number, newType: 'S' | 'RVR'): Promise<ReceiptEntry> {
     const entry = await this.entryRepo.findOne({
       where: { id },
-      relations: ['journalVoucher'],
+      relations: ['journalVoucher', 'journalVoucher.details'],
     });
     if (!entry) throw new NotFoundException(`Receipt entry ${id} not found`);
     if (entry.type === newType) return entry;
 
-    return this.update(id, {
-      customerId: entry.customerId,
-      date: entry.date,
-      invoiceId: entry.invoiceId ?? null,
-      cashNumber: Number(entry.cashNumber),
-      currency: entry.currency as 'USD' | 'LL',
-      exchangeRate: entry.exchangeRate != null ? Number(entry.exchangeRate) : undefined,
-      amountExchanged: Number(entry.amountExchanged),
-      comments: entry.comments ?? undefined,
-      type: newType,
-      pmtType: entry.pmtType as 'Cash' | 'Check',
+    const jv = entry.journalVoucher;
+
+    // S and RVR share the same 'RV' prefix — keep jvNumber unchanged.
+    // Only recompute the header totals and detail lines.
+    const usdPart = entry.currency === 'LL'
+      ? Number(entry.amountExchanged)
+      : Number(entry.cashNumber);
+    const llPart = entry.currency === 'LL'
+      ? Number(entry.cashNumber)
+      : Number(entry.amountExchanged);
+
+    let hdrDr = 0, hdrDrUSD = 0, hdrDrLL = 0;
+    let hdrDrOFR = 0, hdrDrUSDOFR = 0, hdrDrLLOFR = 0;
+    let hdrCr = 0, hdrCrUSD = 0, hdrCrLL = 0;
+    let hdrCrOFR = 0, hdrCrUSDOFR = 0, hdrCrLLOFR = 0;
+
+    if (newType === 'S') {
+      hdrDr = usdPart; hdrDrUSD = usdPart; hdrDrLL = llPart;
+      hdrDrOFR = usdPart; hdrDrUSDOFR = usdPart; hdrDrLLOFR = llPart;
+      hdrCr = usdPart; hdrCrUSD = usdPart; hdrCrLL = llPart;
+      hdrCrOFR = usdPart; hdrCrUSDOFR = usdPart; hdrCrLLOFR = llPart;
+    } else {
+      // RVR: official only, no OFR
+      hdrDr = usdPart; hdrDrUSD = usdPart; hdrDrLL = llPart;
+      hdrCr = usdPart; hdrCrUSD = usdPart; hdrCrLL = llPart;
+    }
+
+    Object.assign(jv, {
+      jvType: newType,
+      totalDr: hdrDr, totalDrUSD: hdrDrUSD, totalDrLL: hdrDrLL,
+      totalDrOFR: hdrDrOFR, totalDrUSDOFR: hdrDrUSDOFR, totalDrLLOFR: hdrDrLLOFR,
+      totalCr: hdrCr, totalCrUSD: hdrCrUSD, totalCrLL: hdrCrLL,
+      totalCrOFR: hdrCrOFR, totalCrUSDOFR: hdrCrUSDOFR, totalCrLLOFR: hdrCrLLOFR,
     });
+    await this.jvRepo.save(jv);
+
+    // Rebuild detail lines
+    await this.jvDetailRepo.delete({ journalVoucherId: jv.id });
+
+    const cashRole = entry.currency === 'USD' ? 'Cash_USD' : 'Cash_LL';
+    const cashAcct = await this.accountingResolver.resolveAccount(cashRole, null);
+    if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped`);
+
+    const normalizedCode = this.normalizeCurrencyCode(entry.currency);
+    const exRateUSD = Number(entry.exchangeRate ?? 0);
+    const exRateEUROToUSD = normalizedCode === 'EURO' ? exRateUSD : 0;
+
+    let descriptionText: string | null = null;
+    if (entry.pmtType === 'Cash') {
+      const staticDesc = entry.currency === 'USD' ? 'دفعة نقدا $$' : 'دفعة نقدا LL';
+      descriptionText = entry.comments?.trim()
+        ? `${staticDesc} (${entry.comments.trim()})`
+        : staticDesc;
+    } else {
+      descriptionText = entry.comments?.trim() || null;
+    }
+
+    const drLine = this.jvDetailRepo.create({
+      journalVoucherId: jv.id,
+      accountId: cashAcct.id,
+      currency: normalizedCode,
+      dr: hdrDr, drUSD: hdrDrUSD, drLL: hdrDrLL,
+      drOFR: hdrDrOFR, drUSDOFR: hdrDrUSDOFR, drLLOFR: hdrDrLLOFR,
+      cr: 0, crUSD: 0, crLL: 0, crOFR: 0, crUSDOFR: 0, crLLOFR: 0,
+      exRateUSD, exRateEUROToUSD,
+      description: descriptionText,
+      docNbr: jv.jvNumber,
+    });
+
+    const crLine = this.jvDetailRepo.create({
+      journalVoucherId: jv.id,
+      customerId: entry.customerId,
+      currency: normalizedCode,
+      dr: 0, drUSD: 0, drLL: 0, drOFR: 0, drUSDOFR: 0, drLLOFR: 0,
+      cr: hdrCr, crUSD: hdrCrUSD, crLL: hdrCrLL,
+      crOFR: hdrCrOFR, crUSDOFR: hdrCrUSDOFR, crLLOFR: hdrCrLLOFR,
+      exRateUSD, exRateEUROToUSD,
+      description: descriptionText,
+      docNbr: jv.jvNumber,
+    });
+
+    await this.jvDetailRepo.save([drLine, crLine]);
+
+    entry.type = newType;
+    const saved = await this.entryRepo.save(entry);
+
+    this.gateway.broadcastAll(await this.findSummary());
+
+    return { ...saved, jvNumber: jv.jvNumber } as any;
   }
 
 }
