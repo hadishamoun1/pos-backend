@@ -882,5 +882,81 @@ async getDailyReceivables(params: {
   };
 }
 
-  
+
+  async findFiltered(params: {
+    type: 'S' | 'RVR';
+    from?: string;
+    to?: string;
+    limit?: number;
+  }) {
+    const { type, from, to, limit = 500 } = params;
+
+    const qb = this.entryRepo
+      .createQueryBuilder('entry')
+      .leftJoin('entry.customer', 'customer')
+      .leftJoin('entry.journalVoucher', 'jv')
+      .select([
+        'entry.id',
+        'entry.type',
+        'entry.date',
+        'entry.cashNumber',
+        'entry.currency',
+        'entry.amountExchanged',
+        'entry.exchangeRate',
+        'entry.comments',
+        'entry.pmtType',
+        'entry.invoiceId',
+        'entry.customerId',
+        'customer.customerName',
+        'jv.jvNumber',
+      ])
+      .where('entry.type = :type', { type })
+      .orderBy('entry.date', 'DESC')
+      .addOrderBy('entry.id', 'DESC')
+      .take(Math.min(500, Math.max(1, Number(limit) || 500)));
+
+    if (from) qb.andWhere('entry.date >= :from', { from });
+    if (to) qb.andWhere('entry.date <= :to', { to });
+
+    const entries = await qb.getMany();
+
+    return entries.map((e) => ({
+      id: e.id,
+      type: e.type,
+      date: e.date,
+      cashNumber: Number(e.cashNumber),
+      currency: e.currency,
+      amountExchanged: Number(e.amountExchanged ?? 0),
+      exchangeRate: e.exchangeRate ?? null,
+      comments: e.comments ?? null,
+      pmtType: e.pmtType,
+      invoiceId: e.invoiceId ?? null,
+      customerId: e.customerId,
+      customerName: (e as any).customer?.customerName ?? null,
+      jvNumber: (e as any).journalVoucher?.jvNumber ?? null,
+    }));
+  }
+
+  async convertReceivableType(id: number, newType: 'S' | 'RVR'): Promise<ReceiptEntry> {
+    const entry = await this.entryRepo.findOne({
+      where: { id },
+      relations: ['journalVoucher'],
+    });
+    if (!entry) throw new NotFoundException(`Receipt entry ${id} not found`);
+    if (entry.type === newType) return entry;
+
+    return this.update(id, {
+      customerId: entry.customerId,
+      date: entry.date,
+      invoiceId: entry.invoiceId ?? null,
+      cashNumber: Number(entry.cashNumber),
+      currency: entry.currency as 'USD' | 'LL',
+      exchangeRate: entry.exchangeRate != null ? Number(entry.exchangeRate) : undefined,
+      amountExchanged: Number(entry.amountExchanged),
+      comments: entry.comments ?? undefined,
+      type: newType,
+      pmtType: entry.pmtType as 'Cash' | 'Check',
+    });
+  }
+
 }

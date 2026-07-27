@@ -3,6 +3,7 @@ import {
   Controller,
   Post,
   Put,
+  Patch,
   Get,
   Body,
   Param,
@@ -106,6 +107,29 @@ async getDailyReceivables(
     pmtType: pmtType || 'ALL',
   });
 }
+
+  @Get('filtered')
+  getFiltered(
+    @Query('type') type: 'S' | 'RVR',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.findFiltered({
+      type,
+      from,
+      to,
+      limit: limit ? Number(limit) : 500,
+    });
+  }
+
+  @Patch(':id/convert-type')
+  convertType(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { newType: 'S' | 'RVR' },
+  ) {
+    return this.service.convertReceivableType(id, body.newType);
+  }
 
    @Delete(':id')
   delete(@Param('id', ParseIntPipe) id: number) {
