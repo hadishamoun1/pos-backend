@@ -292,13 +292,42 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
     return entries.map((e) => this.mapEntry(e));
   }
 
-  async findSummaryPaginated(limit: number, offset: number) {
-    const [entries, total] = await this.entryRepo.findAndCount({
-      relations: ['customer', 'journalVoucher'],
-      order: { id: 'DESC' },
-      take: limit,
-      skip: offset,
-    });
+  async findSummaryPaginated(
+    limit: number,
+    offset: number,
+    filters?: {
+      customer?: string;
+      cashNumber?: string;
+      dateFrom?: string;
+      dateTo?: string;
+    },
+  ) {
+    const qb = this.entryRepo
+      .createQueryBuilder('entry')
+      .leftJoinAndSelect('entry.customer', 'customer')
+      .leftJoinAndSelect('entry.journalVoucher', 'jv')
+      .orderBy('entry.id', 'DESC')
+      .take(limit)
+      .skip(offset);
+
+    if (filters?.customer) {
+      qb.andWhere('customer.customerName LIKE :customer', {
+        customer: `%${filters.customer}%`,
+      });
+    }
+    if (filters?.cashNumber) {
+      qb.andWhere('CAST(entry.cashNumber AS CHAR) LIKE :cashNumber', {
+        cashNumber: `%${filters.cashNumber}%`,
+      });
+    }
+    if (filters?.dateFrom) {
+      qb.andWhere('entry.date >= :dateFrom', { dateFrom: filters.dateFrom });
+    }
+    if (filters?.dateTo) {
+      qb.andWhere('entry.date <= :dateTo', { dateTo: filters.dateTo });
+    }
+
+    const [entries, total] = await qb.getManyAndCount();
     return { data: entries.map((e) => this.mapEntry(e)), total };
   }
   /*update an existing reciept + its jv */

@@ -67,9 +67,22 @@ export class RecievablesController {
   getSummary(
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('customer') customer?: string,
+    @Query('cashNumber') cashNumber?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
   ) {
     if (limit) {
-      return this.service.findSummaryPaginated(Number(limit), Number(offset ?? '0'));
+      return this.service.findSummaryPaginated(
+        Number(limit),
+        Number(offset ?? '0'),
+        {
+          customer: customer?.trim() || undefined,
+          cashNumber: cashNumber?.trim() || undefined,
+          dateFrom: dateFrom?.trim() || undefined,
+          dateTo: dateTo?.trim() || undefined,
+        },
+      );
     }
     return this.service.findSummary();
   }
