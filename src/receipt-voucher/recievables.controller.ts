@@ -108,6 +108,20 @@ async getDailyReceivables(
   });
 }
 
+  @Get('sequence-audit')
+  sequenceAudit(@Query('year') year?: string) {
+    const yy = year ? String(year).slice(-2) : String(new Date().getFullYear()).slice(-2);
+    return this.service.sequenceAudit(yy);
+  }
+
+  @Patch(':id/fix-jv-number')
+  fixJvNumber(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { jvNumber: string },
+  ) {
+    return this.service.fixJvNumber(id, body.jvNumber.trim());
+  }
+
   @Get('filtered')
   getFiltered(
     @Query('type') type: 'S' | 'RVR',

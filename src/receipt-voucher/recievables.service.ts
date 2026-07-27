@@ -1036,4 +1036,103 @@ async getDailyReceivables(params: {
     return { ...saved, jvNumber: jv.jvNumber } as any;
   }
 
+  async sequenceAudit(yy: string) {
+    // Fetch all RV entries for the year, ordered by numeric part of jvNumber
+    const rows = await this.jvRepo
+      .createQueryBuilder('jv')
+      .leftJoin('jv.receiptEntries', 'entry')
+      .leftJoin('entry.customer', 'customer')
+      .select([
+        'jv.id',
+        'jv.jvNumber',
+        'jv.jvType',
+        'jv.date',
+        'entry.id',
+        'entry.cashNumber',
+        'entry.currency',
+        'entry.type',
+        'customer.customerName',
+      ])
+      .where('jv.jvNumber LIKE :pat', { pat: `RV${yy}-%` })
+      .orderBy('CAST(SUBSTRING_INDEX(jv.jvNumber, \'-\', -1) AS UNSIGNED)', 'ASC')
+      .getMany();
+
+    const result: Array<{
+      jvId: number;
+      entryId: number | null;
+      jvNumber: string;
+      seq: number;
+      expectedSeq: number;
+      isGap: boolean;        // gap BEFORE this entry (skipped numbers before it)
+      skippedBefore: number; // how many numbers were skipped before this entry
+      date: Date | null;
+      customerName: string | null;
+      cashNumber: number | null;
+      currency: string | null;
+      type: string | null;
+    }> = [];
+
+    let expectedSeq = 1;
+
+    for (const jv of rows) {
+      const rawSeq = parseInt((jv.jvNumber as string).split('-').pop()!, 10);
+      const entry = (jv as any).receiptEntries?.[0] ?? null;
+
+      const isGap = rawSeq > expectedSeq;
+      const skippedBefore = isGap ? rawSeq - expectedSeq : 0;
+
+      result.push({
+        jvId: jv.id,
+        entryId: entry?.id ?? null,
+        jvNumber: jv.jvNumber,
+        seq: rawSeq,
+        expectedSeq,
+        isGap,
+        skippedBefore,
+        date: jv.date ?? null,
+        customerName: entry?.customer?.customerName ?? null,
+        cashNumber: entry ? Number(entry.cashNumber) : null,
+        currency: entry?.currency ?? null,
+        type: entry?.type ?? (jv as any).jvType ?? null,
+      });
+
+      expectedSeq = rawSeq + 1;
+    }
+
+    return { year: `20${yy}`, prefix: `RV${yy}`, total: result.length, entries: result };
+  }
+
+  async fixJvNumber(entryId: number, newJvNumber: string) {
+    const entry = await this.entryRepo.findOne({
+      where: { id: entryId },
+      relations: ['journalVoucher', 'journalVoucher.details'],
+    });
+    if (!entry) throw new NotFoundException(`Receipt entry ${entryId} not found`);
+
+    const jv = entry.journalVoucher;
+    if (!jv) throw new NotFoundException(`Journal voucher not found for entry ${entryId}`);
+
+    // Check for duplicate
+    const existing = await this.jvRepo.findOne({ where: { jvNumber: newJvNumber } });
+    if (existing && existing.id !== jv.id) {
+      throw new Error(`JV number ${newJvNumber} is already in use`);
+    }
+
+    const oldNumber = jv.jvNumber;
+    jv.jvNumber = newJvNumber;
+    await this.jvRepo.save(jv);
+
+    // Update docNbr on all detail lines
+    if (jv.details?.length) {
+      for (const detail of jv.details) {
+        if ((detail as any).docNbr === oldNumber) {
+          (detail as any).docNbr = newJvNumber;
+        }
+      }
+      await this.jvDetailRepo.save(jv.details as any[]);
+    }
+
+    return { ok: true, entryId, oldJvNumber: oldNumber, newJvNumber };
+  }
+
 }
