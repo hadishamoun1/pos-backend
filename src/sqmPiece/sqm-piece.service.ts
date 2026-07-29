@@ -498,6 +498,7 @@ export class SqmPiecesService {
         piece.piecesCount = newCount;
         piece.sqmTotal = newSqmTotal;
         piece.sqmRemaining = Math.max(0, newSqmTotal - consumed);
+        piece.isActive = piece.sqmRemaining > 0;
         await manager.getRepository(SqmPiece).save(piece);
       }
 
@@ -1756,8 +1757,12 @@ async fixRemaining(): Promise<{ fixed: number }> {
   let fixed = 0;
   for (const p of pieces) {
     const correct = Math.max(0, num(p.sqmTotal) - num(p.sqmSold) - num(p.sqmTrash));
-    if (Math.abs(num(p.sqmRemaining) - correct) > 0.00005) {
+    const correctActive = correct > 0;
+    const remainingWrong = Math.abs(num(p.sqmRemaining) - correct) > 0.00005;
+    const activeWrong = p.isActive !== correctActive;
+    if (remainingWrong || activeWrong) {
       p.sqmRemaining = correct;
+      p.isActive = correctActive;
       await this.sqmPieceRepo.save(p);
       fixed++;
     }
