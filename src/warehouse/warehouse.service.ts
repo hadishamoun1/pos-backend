@@ -2,12 +2,15 @@ import { Injectable, NotFoundException, ConflictException } from "@nestjs/common
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Warehouse } from "../entities/warehouse.entity";
+import { ItemBatch } from "../entities/inventory/itemBatch.entity";
 
 @Injectable()
 export class WarehouseService {
   constructor(
     @InjectRepository(Warehouse)
-    private readonly repo: Repository<Warehouse>
+    private readonly repo: Repository<Warehouse>,
+    @InjectRepository(ItemBatch)
+    private readonly batchRepo: Repository<ItemBatch>,
   ) {}
 
   findAll(): Promise<Warehouse[]> {
@@ -40,5 +43,17 @@ export class WarehouseService {
     const wh = await this.repo.findOne({ where: { id } });
     if (!wh) throw new NotFoundException(`Warehouse #${id} not found`);
     await this.repo.delete(id);
+  }
+
+  async migrateBatches(): Promise<{ updated: number; homeName: string }> {
+    const home = await this.repo.findOne({ where: { isHome: true } });
+    if (!home) throw new NotFoundException("No home warehouse set. Please set a home warehouse first.");
+    const result = await this.batchRepo
+      .createQueryBuilder()
+      .update()
+      .set({ warehouse: home.name })
+      .where("warehouse = :old OR warehouse IS NULL", { old: "Shamoun" })
+      .execute();
+    return { updated: result.affected ?? 0, homeName: home.name };
   }
 }

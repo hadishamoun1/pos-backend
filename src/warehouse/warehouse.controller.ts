@@ -35,4 +35,9 @@ export class WarehouseController {
   remove(@Param("id", ParseIntPipe) id: number) {
     return this.warehouseService.remove(id);
   }
+
+  @Post("migrate-batches")
+  migrateBatches() {
+    return this.warehouseService.migrateBatches();
+  }
 }

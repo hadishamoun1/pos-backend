@@ -1321,6 +1321,7 @@ async updateTransfer(transferId: number, data: any): Promise<Transfer> {
           (sheetVariant as any).id,
           fromBatch.condition,
           fromBatch.dateReceived,
+          fromBatch.warehouse,
         );
 
         const txOut: any = manager.getRepository(InventoryTransaction).create({
@@ -1514,6 +1515,7 @@ if ((transfer as any).location === 'FJ') {
       boxVariant.id,
       fromBatch.condition,
       fromBatch.dateReceived,
+      fromBatch.warehouse,
     );
 
     // =====================================================================
@@ -1724,6 +1726,7 @@ if ((transfer as any).location === 'FJ') {
           (sqmVariant as any).id,
           fromBatch.condition,
           fromBatch.dateReceived,
+          fromBatch.warehouse,
         );
 
         const txOut: any = manager.getRepository(InventoryTransaction).create({
@@ -1859,6 +1862,7 @@ if ((transfer as any).location === 'FJ') {
           (sqmVariant as any).id,
           toBatch.condition,
           toBatch.dateReceived,
+          toBatch.warehouse,
         );
 
         const { prev: prevCosts } = await this.getPrevQtyAndCosts(manager, (sqmVariant as any).id, cut);
