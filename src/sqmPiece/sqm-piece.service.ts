@@ -1732,4 +1732,22 @@ async getPosPieces(opts?: { q?: string; onlyRemaining?: boolean }) {
     };
   });
 }
+
+async debugRawPieces() {
+  const pieces = await this.sqmPieceRepo.find({ order: { id: 'DESC' } });
+  return pieces.map((p) => ({
+    id: p.id,
+    transferItemId: p.transferItemId,
+    sqmVariantId: p.sqmVariantId,
+    sqmBatchId: p.sqmBatchId,
+    length: Number(p.length),
+    width: Number(p.width),
+    piecesCount: p.piecesCount,
+    sqmTotal: Number(p.sqmTotal),
+    sqmSold: Number(p.sqmSold),
+    sqmTrash: Number(p.sqmTrash),
+    sqmRemaining: Number(p.sqmRemaining),
+    isActive: p.isActive,
+  }));
+}
 }

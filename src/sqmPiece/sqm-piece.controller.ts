@@ -79,6 +79,15 @@ export class SqmPiecesController {
   }
 
   /**
+   * Debug: raw sqm_pieces rows with no filtering.
+   * GET /sqm-pieces/debug-raw
+   */
+  @Get('debug-raw')
+  async debugRaw() {
+    return this.svc.debugRawPieces();
+  }
+
+  /**
    * Trash some sqm from a single piece group.
    * POST /sqm-pieces/pieces/:pieceId/trash
    */
