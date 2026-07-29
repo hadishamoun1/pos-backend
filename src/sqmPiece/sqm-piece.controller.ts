@@ -79,12 +79,23 @@ export class SqmPiecesController {
   }
 
   /**
-   * Debug: raw sqm_pieces rows with no filtering.
+   * Maintenance: raw sqm_pieces rows with no filtering.
    * GET /sqm-pieces/debug-raw
    */
   @Get('debug-raw')
-  async debugRaw() {
+  @RequirePerms('sqm.view')
+  debugRaw() {
     return this.svc.debugRawPieces();
+  }
+
+  /**
+   * Maintenance: recompute sqmRemaining for all pieces where it is wrong.
+   * POST /sqm-pieces/fix-remaining
+   */
+  @Post('fix-remaining')
+  @RequirePerms('sqm.update')
+  fixRemaining() {
+    return this.svc.fixRemaining();
   }
 
   /**

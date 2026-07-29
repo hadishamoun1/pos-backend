@@ -1750,4 +1750,18 @@ async debugRawPieces() {
     isActive: p.isActive,
   }));
 }
+
+async fixRemaining(): Promise<{ fixed: number }> {
+  const pieces = await this.sqmPieceRepo.find();
+  let fixed = 0;
+  for (const p of pieces) {
+    const correct = Math.max(0, num(p.sqmTotal) - num(p.sqmSold) - num(p.sqmTrash));
+    if (Math.abs(num(p.sqmRemaining) - correct) > 0.00005) {
+      p.sqmRemaining = correct;
+      await this.sqmPieceRepo.save(p);
+      fixed++;
+    }
+  }
+  return { fixed };
+}
 }
