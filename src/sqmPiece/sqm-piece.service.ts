@@ -358,10 +358,6 @@ export class SqmPiecesService {
       const committedKeys = new Set(
         committedPieces.map((p) => `${num(p.length)}|${num(p.width)}`),
       );
-      const committedSqmTotal = committedPieces.reduce(
-        (sum, p) => sum + num(p.sqmTotal),
-        0,
-      );
 
       // Delete only clean pieces (no sales, no trash)
       const cleanIds = existingPieces
@@ -371,13 +367,55 @@ export class SqmPiecesService {
         await manager.getRepository(SqmPiece).delete(cleanIds);
       }
 
-      // From input, exclude pieces matching a committed piece (they stay in DB)
-      const newPiecesInput = piecesInput.filter((row) => {
-        const key = `${num(row.length)}|${num(row.width)}`;
-        return !committedKeys.has(key);
-      });
+      // Split user input: dimensions matching a committed piece are updates,
+      // everything else is a genuinely new piece group.
+      type CommittedUpdate = {
+        piece: SqmPiece;
+        newCount: number;
+        sqmPerPiece: number;
+      };
+      const committedUpdates = new Map<string, CommittedUpdate>();
+      const newPiecesInput: typeof piecesInput = [];
 
-      // Validate total sqm: committed + new pieces + unallocated trash <= line sqm
+      for (const row of piecesInput) {
+        const key = `${num(row.length)}|${num(row.width)}`;
+        if (committedKeys.has(key)) {
+          const piece = committedPieces.find(
+            (p) => `${num(p.length)}|${num(p.width)}` === key,
+          );
+          if (piece) {
+            const L = num(row.length);
+            const W = num(row.width);
+            committedUpdates.set(key, {
+              piece,
+              newCount: Math.max(0, Math.floor(num(row.count))),
+              sqmPerPiece: (L * W) / 10000,
+            });
+          }
+        } else {
+          newPiecesInput.push(row);
+        }
+      }
+
+      // Validate committed updates: new count must not go below already-consumed sqm
+      let updatedCommittedSqm = 0;
+      for (const { piece, newCount, sqmPerPiece } of committedUpdates.values()) {
+        const newSqmTotal = newCount * sqmPerPiece;
+        const consumed = num(piece.sqmSold) + num(piece.sqmTrash);
+        if (newSqmTotal + 0.0001 < consumed) {
+          throw new BadRequestException(
+            `Cannot set count ${newCount} for piece ${num(piece.length)}x${num(piece.width)}: already consumed ${consumed.toFixed(4)} sqm.`,
+          );
+        }
+        updatedCommittedSqm += newSqmTotal;
+      }
+
+      // Committed pieces the user didn't include keep their existing sqmTotal
+      const unchangedCommittedSqm = committedPieces
+        .filter((p) => !committedUpdates.has(`${num(p.length)}|${num(p.width)}`))
+        .reduce((sum, p) => sum + num(p.sqmTotal), 0);
+
+      // Validate total sqm: all committed + new pieces + unallocated trash <= line sqm
       let sumPiecesSqm = 0;
       for (const row of newPiecesInput) {
         const L = num(row.length);
@@ -386,9 +424,10 @@ export class SqmPiecesService {
         sumPiecesSqm += count * ((L * W) / 10000);
       }
 
-      if (committedSqmTotal + sumPiecesSqm + alreadyTrashUnallocated - totalSqmLine > 0.0001) {
+      const totalAllocatedSqm = updatedCommittedSqm + unchangedCommittedSqm + sumPiecesSqm;
+      if (totalAllocatedSqm + alreadyTrashUnallocated - totalSqmLine > 0.0001) {
         throw new BadRequestException(
-          `Allocated sqm (${(committedSqmTotal + sumPiecesSqm).toFixed(4)}) + trashed unallocated (${alreadyTrashUnallocated.toFixed(4)}) exceeds line sqm (${totalSqmLine.toFixed(4)}).`,
+          `Allocated sqm (${totalAllocatedSqm.toFixed(4)}) + trashed unallocated (${alreadyTrashUnallocated.toFixed(4)}) exceeds line sqm (${totalSqmLine.toFixed(4)}).`,
         );
       }
 
@@ -452,7 +491,17 @@ export class SqmPiecesService {
         await manager.getRepository(ItemBatch).save(sqmBatch);
       }
 
-      // 4) insert new pieces (clean pieces already deleted above)
+      // 4a) apply committed piece updates (user re-added or increased count for sold dimension)
+      for (const { piece, newCount, sqmPerPiece } of committedUpdates.values()) {
+        const newSqmTotal = newCount * sqmPerPiece;
+        const consumed = num(piece.sqmSold) + num(piece.sqmTrash);
+        piece.piecesCount = newCount;
+        piece.sqmTotal = newSqmTotal;
+        piece.sqmRemaining = Math.max(0, newSqmTotal - consumed);
+        await manager.getRepository(SqmPiece).save(piece);
+      }
+
+      // 4b) insert genuinely new pieces (clean pieces already deleted above)
       const toInsert: SqmPiece[] = [];
 
       for (const row of newPiecesInput) {
