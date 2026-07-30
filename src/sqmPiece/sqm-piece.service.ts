@@ -402,9 +402,11 @@ export class SqmPiecesService {
       for (const { piece, newCount, sqmPerPiece } of committedUpdates.values()) {
         const newSqmTotal = newCount * sqmPerPiece;
         const consumed = num(piece.sqmSold) + num(piece.sqmTrash);
-        if (newSqmTotal + 0.0001 < consumed) {
+        // Allow up to half a piece's worth of rounding difference (POS may compute sqm slightly differently)
+        const tolerance = Math.max(0.01, sqmPerPiece * 0.5);
+        if (newSqmTotal + tolerance < consumed) {
           throw new BadRequestException(
-            `Cannot set count ${newCount} for piece ${num(piece.length)}x${num(piece.width)}: already consumed ${consumed.toFixed(4)} sqm.`,
+            `Cannot set count ${newCount} for piece ${num(piece.length)}x${num(piece.width)}: already consumed ${consumed.toFixed(4)} sqm (need at least ${Math.ceil(consumed / sqmPerPiece)} pieces).`,
           );
         }
         updatedCommittedSqm += newSqmTotal;
