@@ -654,9 +654,17 @@ private numOrZero(v: any): number {
         const itemId = Number((item as any).id);
         let existingBatchId = batchIdByItemId.get(itemId) ?? null;
 
+        // Verify the old batch's warehouse still matches; if warehouse changed, don't reuse it
+        const invoiceWarehouse = (savedInvoice as any).warehouse ?? 'Shamoun';
+        if (existingBatchId) {
+          const oldBatch = await this.itemBatchRepo.findOne({ where: { id: existingBatchId } as any });
+          if (!oldBatch || (oldBatch as any).warehouse !== invoiceWarehouse) {
+            existingBatchId = null;
+          }
+        }
+
         if (!existingBatchId) {
           const condition = (item as any).condition || 'Clean';
-          const invoiceWarehouse = (savedInvoice as any).warehouse ?? 'Shamoun';
           const fallbackBatch = await this.itemBatchRepo.findOne({
             where: {
               itemVariant: { id: Number((item as any).itemVariantId) },
