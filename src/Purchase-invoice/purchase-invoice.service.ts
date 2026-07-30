@@ -649,7 +649,6 @@ private numOrZero(v: any): number {
     const invTxs: InventoryTransaction[] = [];
 
     // 1) recreate tx rows if posted
-    console.log(`[rebuildInv] invoiceId=${(savedInvoice as any).id} warehouse=${(savedInvoice as any).warehouse} isPosted=${isPosted} items=${items.length}`);
     if (isPosted && items.length) {
       for (const item of items) {
         const itemId = Number((item as any).id);
@@ -657,7 +656,6 @@ private numOrZero(v: any): number {
 
         // Verify the old batch's warehouse still matches; if warehouse changed, don't reuse it
         const invoiceWarehouse = (savedInvoice as any).warehouse ?? 'Shamoun';
-        console.log(`[rebuildInv] item=${itemId} invoiceWarehouse=${invoiceWarehouse} existingBatchId=${existingBatchId}`);
         if (existingBatchId) {
           const oldBatch = await this.itemBatchRepo.findOne({ where: { id: existingBatchId } as any });
           if (!oldBatch || (oldBatch as any).warehouse !== invoiceWarehouse) {
