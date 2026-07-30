@@ -1707,7 +1707,10 @@ async getPosPieces(opts?: { q?: string; onlyRemaining?: boolean }) {
     .where('p.isActive = 1');
 
   if (onlyRemaining) {
-    qb.andWhere('p.sqmRemaining > 0');
+    // Require at least 1 full piece remaining (not just a tiny rounding leftover)
+    qb.andWhere(
+      `p.length > 0 AND p.width > 0 AND FLOOR(p.sqmRemaining * 10000 / (p.length * p.width)) >= 1`,
+    );
   }
 
   if (qRaw) {
