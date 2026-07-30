@@ -410,6 +410,21 @@ export class SqmPiecesService {
         updatedCommittedSqm += newSqmTotal;
       }
 
+      // Reject deletions of committed pieces (sqmSold > 0 or sqmTrash > 0)
+      const committedNotIncluded = committedPieces.filter(
+        (p) => !committedUpdates.has(`${num(p.length)}|${num(p.width)}`),
+      );
+      if (committedNotIncluded.length > 0) {
+        const dims = committedNotIncluded
+          .map((p) => `${num(p.length)}×${num(p.width)} cm (sold: ${num(p.sqmSold).toFixed(4)} sqm)`)
+          .join(', ');
+        throw new BadRequestException(
+          `Cannot delete piece row(s) that have sales or trash records: ${dims}. ` +
+          `Reverse those sales from POS first, then try again. ` +
+          `If the data appears incorrect, use the "Fix Wrong Rows" button in Settings → SQM Pieces.`,
+        );
+      }
+
       // Committed pieces the user didn't include keep their existing sqmTotal
       const unchangedCommittedSqm = committedPieces
         .filter((p) => !committedUpdates.has(`${num(p.length)}|${num(p.width)}`))
@@ -1754,13 +1769,39 @@ async debugRawPieces() {
 
 async fixRemaining(): Promise<{ fixed: number }> {
   const pieces = await this.sqmPieceRepo.find();
+  const manager = this.sqmPieceRepo.manager;
   let fixed = 0;
+
   for (const p of pieces) {
-    const correct = Math.max(0, num(p.sqmTotal) - num(p.sqmSold) - num(p.sqmTrash));
+    // Compute actual sqmSold from invoice_items (S/G invoices add, RTN invoices subtract)
+    const soldRows: any[] = await manager.query(
+      `SELECT COALESCE(SUM(ii.sqm), 0) AS total
+       FROM invoice_items ii
+       JOIN invoices i ON i.id = ii.invoiceId
+       WHERE ii.sqmPieceId = ? AND i.invoiceType IN ('S', 'G')`,
+      [p.id],
+    );
+    const returnRows: any[] = await manager.query(
+      `SELECT COALESCE(SUM(ii.sqm), 0) AS total
+       FROM invoice_items ii
+       JOIN invoices i ON i.id = ii.invoiceId
+       WHERE ii.sqmPieceId = ? AND i.invoiceType = 'RTN'`,
+      [p.id],
+    );
+
+    const grossSold = Number(soldRows[0]?.total ?? 0);
+    const returned = Number(returnRows[0]?.total ?? 0);
+    const correctSqmSold = Number(Math.max(0, grossSold - returned).toFixed(4));
+
+    const correct = Number(Math.max(0, num(p.sqmTotal) - correctSqmSold - num(p.sqmTrash)).toFixed(4));
     const correctActive = correct > 0;
+
+    const sqmSoldWrong = Math.abs(num(p.sqmSold) - correctSqmSold) > 0.00005;
     const remainingWrong = Math.abs(num(p.sqmRemaining) - correct) > 0.00005;
     const activeWrong = p.isActive !== correctActive;
-    if (remainingWrong || activeWrong) {
+
+    if (sqmSoldWrong || remainingWrong || activeWrong) {
+      p.sqmSold = correctSqmSold;
       p.sqmRemaining = correct;
       p.isActive = correctActive;
       await this.sqmPieceRepo.save(p);
