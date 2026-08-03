@@ -271,7 +271,7 @@ export class RecomputeCostsService {
       .createQueryBuilder('inv')
       .select('inv.id', 'id')
       .where('inv.date >= :from', { from })
-      .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G', 'RVR'] })
+      .andWhere('inv.invoiceType IN (:...types)', { types: ['S', 'G', 'RVR', 'RTN'] })
       .getRawMany<{ id: string }>();
 
     const invoiceIds = invoiceIdsRaw.map((r) => Number(r.id)).filter(Number.isFinite);
