@@ -844,6 +844,14 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
           averageCostCVM: toNumOrNull((ti as any).averageCostCVM),
         };
       }
+
+      // Warehouse-to-warehouse transfers (WhMovedTo / ToShamoun etc.) never write
+      // averageCost onto the TransferItem — their cost lives on the InventoryTransaction
+      // as finalcostofr / finalcost (set by setTxCosts). Fall back to those when null.
+      if (!bundle.averageCost) {
+        bundle.averageCost   = toNumOrNull((lastTx as any).finalcostofr);
+        bundle.averageCostVM = toNumOrNull((lastTx as any).finalcost);
+      }
     } else if (lastTx?.inventoryCountId) {
       // ✅ last event = InventoryCount / OpeningCount
       // your rule:

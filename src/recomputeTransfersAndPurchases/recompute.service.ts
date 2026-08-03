@@ -423,8 +423,18 @@ export class RecomputeCostsService {
         }
       }
 
+      // Warehouse-to-warehouse transfers (WhMovedTo) never write averageCost onto the
+      // TransferItem — their cost lives on the InventoryTransaction as finalcostofr/finalcost.
+      // Use those as fallback whenever the TransferItem lookup returns null.
+      const txFallback = () => ({
+        averageCost:    toNumOrNull((lastTx as any).finalcostofr),
+        averageCostVM:  toNumOrNull((lastTx as any).finalcost),
+        averageCostC:   null as number | null,
+        averageCostCVM: null as number | null,
+      });
+
       if (!costBatchId) {
-        return { averageCost: null, averageCostVM: null, averageCostC: null, averageCostCVM: null };
+        return txFallback();
       }
 
       const ti = await this.transferItemRepo.findOne({
@@ -433,13 +443,13 @@ export class RecomputeCostsService {
       });
 
       if (!ti) {
-        return { averageCost: null, averageCostVM: null, averageCostC: null, averageCostCVM: null };
+        return txFallback();
       }
 
       return {
-        averageCost: toNumOrNull((ti as any).averageCost),
-        averageCostVM: toNumOrNull((ti as any).averageCostVM),
-        averageCostC: toNumOrNull((ti as any).averageCostC),
+        averageCost:    toNumOrNull((ti as any).averageCost)    ?? toNumOrNull((lastTx as any).finalcostofr),
+        averageCostVM:  toNumOrNull((ti as any).averageCostVM)  ?? toNumOrNull((lastTx as any).finalcost),
+        averageCostC:   toNumOrNull((ti as any).averageCostC),
         averageCostCVM: toNumOrNull((ti as any).averageCostCVM),
       };
     };
