@@ -186,6 +186,20 @@ searchBySeq(@Query() query: any) {
     });
   }
 
+  @Get('reports/net-positions')
+  @RequirePerms('journal.view')
+  async getAllCustomersNetPosition(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('type') type?: 'S' | 'G' | 'ALL',
+  ) {
+    return this.journalVoucherService.getAllCustomersNetPosition({
+      from,
+      to,
+      type: (type as any) || 'ALL',
+    });
+  }
+
   // GET /journal-vouchers/reports/customer-balances?to=2025-12-30&type=S
 @Get('reports/customer-balances')
 @RequirePerms('journal.view')

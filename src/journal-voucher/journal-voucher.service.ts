@@ -879,6 +879,92 @@ async getNetPositionStatement(params: {
   };
 }
 
+async getAllCustomersNetPosition(params: {
+  from?: string;
+  to?: string;
+  type?: 'S' | 'G' | 'ALL';
+}) {
+  const { from, to, type = 'ALL' } = params;
+
+  const ymdToStart = (ymd: string) => `${ymd} 00:00:00`;
+  const nextYMD = (ymd: string) => {
+    const d = new Date(`${ymd}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+
+  const fromStart = from ? ymdToStart(from) : null;
+  const toNext   = to   ? ymdToStart(nextYMD(to)) : null;
+
+  const isOfrRow = (jv: any) => String(jv?.jvNumber ?? '').toUpperCase().includes('G');
+  const getColsForRow = (useOfr: boolean) => useOfr
+    ? { drCol: 'drUSDOFR' as const, crCol: 'crUSDOFR' as const }
+    : { drCol: 'drUSD'    as const, crCol: 'crUSD'    as const };
+
+  const sumRows = async (whereField: string, whereVal: number, fStart: string | null, tNext: string | null) => {
+    const qb = this.journalVoucherDetailRepository
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.journalVoucher', 'jv')
+      .where(`d.${whereField} = :val`, { val: whereVal });
+    if (fStart) qb.andWhere('jv.date >= :fStart', { fStart });
+    if (tNext)  qb.andWhere('jv.date < :tNext',  { tNext });
+    if (type === 'G') qb.andWhere(`UPPER(jv.jvNumber) LIKE '%G%'`);
+    if (type === 'S') qb.andWhere(`UPPER(jv.jvNumber) NOT LIKE '%G%'`);
+    const rows = await qb.getMany();
+    let dr = 0, cr = 0;
+    for (const r of rows) {
+      const { drCol, crCol } = getColsForRow(isOfrRow(r.journalVoucher));
+      dr += Number((r as any)[drCol] || 0);
+      cr += Number((r as any)[crCol] || 0);
+    }
+    return { dr, cr };
+  };
+
+  const customers = await this.customerRepo.find({ order: { customerName: 'ASC' } as any });
+  const results: any[] = [];
+
+  for (const customer of customers) {
+    const customerId = customer.id;
+    const linkedSupplierId: number | null = (customer as any).linkedSupplierId ?? null;
+
+    const custRange = await sumRows('customerId', customerId, fromStart, toNext);
+
+    let suppRange = { dr: 0, cr: 0 };
+    let supplierName: string | null = null;
+    if (linkedSupplierId) {
+      const supplier = await this.supplierRepo.findOne({ where: { id: linkedSupplierId } as any });
+      supplierName = (supplier as any)?.supplierName ?? null;
+      suppRange = await sumRows('supplierId', linkedSupplierId, fromStart, toNext);
+    }
+
+    let openingBalance = 0;
+    if (fromStart) {
+      const custOpen = await sumRows('customerId', customerId, null, fromStart);
+      const suppOpen = linkedSupplierId ? await sumRows('supplierId', linkedSupplierId, null, fromStart) : { dr: 0, cr: 0 };
+      openingBalance = (custOpen.dr - custOpen.cr) + (suppOpen.dr - suppOpen.cr);
+    }
+
+    const totalDebit  = custRange.dr + suppRange.dr;
+    const totalCredit = custRange.cr + suppRange.cr;
+    const closingBalance = openingBalance + totalDebit - totalCredit;
+
+    if (totalDebit !== 0 || totalCredit !== 0 || openingBalance !== 0) {
+      results.push({
+        customerId,
+        customerName: (customer as any).customerName || '',
+        linkedSupplierId,
+        supplierName,
+        openingBalance: Math.round(openingBalance * 100) / 100,
+        totalDebit:    Math.round(totalDebit    * 100) / 100,
+        totalCredit:   Math.round(totalCredit   * 100) / 100,
+        closingBalance: Math.round(closingBalance * 100) / 100,
+      });
+    }
+  }
+
+  return { from: from ?? null, to: to ?? null, type, customers: results };
+}
+
 async getCustomerBalancesReport(params: {
   to?: string;
   type?: 'S' | 'G' | 'ALL';
