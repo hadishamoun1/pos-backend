@@ -53,10 +53,11 @@ export class ActivityLogService {
     from?: string;
     to?: string;
     action?: string;
+    search?: string;
     page?: number;
     limit?: number;
   }) {
-    const { userId, from, to, action, page = 1, limit = 50 } = filters;
+    const { userId, from, to, action, search, page = 1, limit = 50 } = filters;
     const qb = this.repo
       .createQueryBuilder('log')
       .orderBy('log.createdAt', 'DESC');
@@ -65,6 +66,7 @@ export class ActivityLogService {
     if (action) qb.andWhere('log.action = :action', { action });
     if (from) qb.andWhere('DATE(log.createdAt) >= :from', { from });
     if (to)   qb.andWhere('DATE(log.createdAt) <= :to', { to });
+    if (search) qb.andWhere('log.description LIKE :search', { search: `%${search}%` });
 
     qb.skip((page - 1) * limit).take(limit);
     const [items, total] = await qb.getManyAndCount();

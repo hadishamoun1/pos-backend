@@ -48,6 +48,7 @@ export class ActivityLogController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('action') action?: string,
+    @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
@@ -56,6 +57,7 @@ export class ActivityLogController {
       from,
       to,
       action,
+      search: search?.trim() || undefined,
       page: page ? Number(page) : 1,
       limit: limit ? Number(limit) : 50,
     });
