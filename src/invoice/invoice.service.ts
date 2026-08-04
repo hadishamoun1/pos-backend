@@ -951,6 +951,7 @@ async getInvoiceById(invoiceId: number): Promise<any> {
       "customer",
       "customer.currency",
       "customer.account",
+      "alternativeCustomer",
       "currency", // ✅ ADDED: Load invoice's own currency
       "items",
       "items.itemVariant",
@@ -966,6 +967,7 @@ async getInvoiceById(invoiceId: number): Promise<any> {
   }
 
   const cust = invoice.customer;
+  const altCust = (invoice as any).alternativeCustomer;
 
   const toNumOrNull = (v: any): number | null => {
     if (v === null || v === undefined || v === "") return null;
@@ -989,7 +991,8 @@ async getInvoiceById(invoiceId: number): Promise<any> {
 
     // ===== Customer (flat fields for preview convenience) =====
     customerId: cust?.id ?? null,
-    customerName: cust?.customerName ?? null,
+    alternativeCustomerId: altCust?.id ?? null,
+    customerName: altCust?.company ?? cust?.customerName ?? null,
     customerInvoiceType: cust?.invoiceType ?? null,
     customerAccountNumber: cust?.customerAccountNumber ?? null,
     customerAddress: cust?.address ?? null,
@@ -1183,7 +1186,7 @@ async getFilteredInvoices(
   const skip    = (pageNum - 1) * take;
 
   const [invoices, total] = await this.invoiceRepository.findAndCount({
-    relations: ['customer'],
+    relations: ['customer', 'alternativeCustomer'],
     order: { id: 'DESC' },
     skip,
     take,
@@ -1198,7 +1201,7 @@ async getFilteredInvoices(
       totalVAT: invoice.totalVAT,
       grandTotal: invoice.grandTotal,
       customerId: invoice.customer?.id,
-      customerName: invoice.customer?.customerName,
+      customerName: invoice.alternativeCustomer?.company ?? invoice.customer?.customerName,
       invoiceType: invoice.invoiceType,
     })),
     total,
@@ -2036,6 +2039,7 @@ async searchFilteredInvoices(
   const qb = this.invoiceRepository
     .createQueryBuilder("inv")
     .leftJoinAndSelect("inv.customer", "customer")
+    .leftJoinAndSelect("inv.alternativeCustomer", "altCustomer")
     .orderBy("inv.id", "DESC")
     .skip(skip)
     .take(take);
@@ -2066,7 +2070,7 @@ async searchFilteredInvoices(
         totalVAT: invoice.totalVAT,
         grandTotal: invoice.grandTotal,
         customerId: invoice.customer?.id,
-        customerName: invoice.customer?.customerName,
+        customerName: invoice.alternativeCustomer?.company ?? invoice.customer?.customerName,
         invoiceType: invoice.invoiceType,
       })),
       total,
@@ -2140,7 +2144,7 @@ async searchFilteredInvoices(
       totalVAT: invoice.totalVAT,
       grandTotal: invoice.grandTotal,
       customerId: invoice.customer?.id,
-      customerName: invoice.customer?.customerName,
+      customerName: invoice.alternativeCustomer?.company ?? invoice.customer?.customerName,
       invoiceType: invoice.invoiceType,
     })),
     total,
@@ -2441,6 +2445,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
        2) UPDATE INVOICE HEADER
        ----------------------------------------------------------- */
     (existingInvoice as any).customerId = data.customerId;
+    (existingInvoice as any).alternativeCustomerId = data.alternativeCustomerId ?? null;
     (existingInvoice as any).date = data.date;
     (existingInvoice as any).invoiceType = data.invoiceType;
     (existingInvoice as any).documentNumber = data.documentNumber;
@@ -2879,6 +2884,7 @@ const jvDetailsForInvoice: JournalVoucherDetail[] = [];
 const isReturnDirection = isRTN || isRRVR;
 const d1 = jvDetailRepo.create({
   customerId: (savedInvoice as any).customerId,
+  alternativeCustomerId: (savedInvoice as any).alternativeCustomerId ?? null,
   description: isReturnDirection ? "فاتورة مرتجع" : "فاتورة",
   currency: currencyCode,
   docNbr,
@@ -3130,7 +3136,28 @@ if (useVAT && vatAccount && !isG && !isRTNofG) {
   }
 }
 
+// Sets/clears the alternative customer on an invoice without touching items/inventory.
+async updateAlternativeCustomer(
+  invoiceId: number,
+  alternativeCustomerId: number | null,
+): Promise<Invoice> {
+  const invoice = await this.invoiceRepository.findOne({ where: { id: invoiceId } });
+  if (!invoice) {
+    throw new BadRequestException(`Invoice ${invoiceId} not found`);
+  }
 
+  (invoice as any).alternativeCustomerId = alternativeCustomerId;
+  const saved = await this.invoiceRepository.save(invoice);
+
+  await this.journalVoucherDetailRepo
+    .createQueryBuilder()
+    .update(JournalVoucherDetail)
+    .set({ alternativeCustomerId } as any)
+    .where('docNbr = :docNbr AND customerId IS NOT NULL', { docNbr: invoice.invoiceNumber })
+    .execute();
+
+  return saved;
+}
 
 
 
@@ -4391,6 +4418,7 @@ createdItems.push(item);
     const qb = this.invoiceRepository
       .createQueryBuilder('inv')
       .leftJoinAndSelect('inv.customer', 'cust')
+      .leftJoinAndSelect('inv.alternativeCustomer', 'altCust')
       .leftJoinAndSelect('inv.branch', 'br')
       .leftJoinAndSelect('inv.currency', 'cur')
       .leftJoinAndSelect('inv.items', 'ii')
@@ -4423,6 +4451,10 @@ createdItems.push(item);
 
       customer: inv.customer
         ? { id: inv.customer.id, name: inv.customer.customerName ?? null }
+        : null,
+
+      alternativeCustomer: inv.alternativeCustomer
+        ? { id: inv.alternativeCustomer.id, name: inv.alternativeCustomer.company ?? null }
         : null,
 
       branch: inv.branch

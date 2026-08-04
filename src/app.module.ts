@@ -48,6 +48,7 @@ import { CompanyModule } from './company/company.module';
 import { SecurityAlertModule } from './securityAlert/security-alert.module';
 import { PosControlsModule } from './pos-controls/pos-controls.module';
 import { BulkRvrScheduleModule } from './bulk-rvr-schedule/bulk-rvr-schedule.module';
+import { AlternativeCustomerModule } from './alternative-customer/alternative-customer.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
@@ -123,6 +124,7 @@ TypeOrmModule.forRootAsync({
     SecurityAlertModule,
     PosControlsModule,
     BulkRvrScheduleModule,
+    AlternativeCustomerModule,
     ActivityLogModule,
     RecordingModule,
     FileBrowserModule,

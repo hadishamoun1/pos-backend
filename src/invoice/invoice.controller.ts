@@ -302,4 +302,14 @@ createReturnInvoice(
   ): Promise<Invoice> {
     return this.invoiceService.updateInvoice(id, body);
   }
+
+  // UPDATE only the alternative customer (no item/inventory changes)
+  @Patch(":id/alternative-customer")
+  @RequirePerms("invoices.update")
+  async updateAlternativeCustomer(
+    @Param("id", ParseIntPipe) id: number,
+    @Body("alternativeCustomerId") alternativeCustomerId: number | null,
+  ): Promise<Invoice> {
+    return this.invoiceService.updateAlternativeCustomer(id, alternativeCustomerId ?? null);
+  }
 }

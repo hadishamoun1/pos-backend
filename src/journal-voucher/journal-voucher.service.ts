@@ -17,6 +17,7 @@ import { Invoice } from '../entities/invoice.entity';
 import { ReceiptEntry } from '../entities/recievables.entities'; // ✅ adjust path
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity'; // ✅ adjust path
 import { Supplier } from '../entities/supplier.entity'; // ✅ adjust path
+import { AlternativeCustomer } from '../entities/alternative-customer.entity';
 
 
 
@@ -33,6 +34,8 @@ export class JournalVoucherService {
     private readonly currencyRateRepository: Repository<CurrencyRate>,
     @InjectRepository(Customer)
     private readonly customerRepo: Repository<Customer>,
+    @InjectRepository(AlternativeCustomer)
+    private readonly alternativeCustomerRepo: Repository<AlternativeCustomer>,
        @InjectRepository(Supplier)
     private readonly supplierRepo: Repository<Supplier>,
      @InjectRepository(Settings)
@@ -257,6 +260,7 @@ async createJournalVoucher(data: {
         'details',
         'details.account',
         'details.customer',
+        'details.alternativeCustomer',
         'details.supplier',
         'paymentVoucher', // linked payment voucher
       ],
@@ -272,6 +276,7 @@ async createJournalVoucher(data: {
       accountName:
         detail.account?.accountName ||
         detail.supplier?.supplierName ||
+        (detail as any).alternativeCustomer?.company ||
         detail.customer?.customerName ||
         null,
     }));
@@ -331,6 +336,7 @@ async getVoucherSummary(params?: {
       .leftJoin('customers', 'rcust', 'rcust.id = re.customerId')
       .leftJoin('invoices', 'sinv', 'sinv.id = re.invoiceId')
       .leftJoin('customers', 'sinvCust', 'sinvCust.id = sinv.customerId')
+      .leftJoin('alternative_customers', 'sinvAltCust', 'sinvAltCust.id = sinv.alternativeCustomerId')
 
       // purchase invoice (explicit FK join; does NOT require jv.invoice relation)
       .leftJoin(PurchaseInvoice, 'pinv', 'pinv.id = jv.purchaseInvoiceId')
@@ -338,7 +344,8 @@ async getVoucherSummary(params?: {
 
       // ✅ IMPORTANT: detect ANY sales invoice type (S/G/RVR/RTN) using docNbr
       .leftJoin('invoices', 'dinv', 'dinv.invoiceNumber = d.docNbr')
-      .leftJoin('customers', 'dinvCust', 'dinvCust.id = dinv.customerId');
+      .leftJoin('customers', 'dinvCust', 'dinvCust.id = dinv.customerId')
+      .leftJoin('alternative_customers', 'dinvAltCust', 'dinvAltCust.id = dinv.alternativeCustomerId');
   };
 
   const applySearch = (qb: SelectQueryBuilder<JournalVoucher>) => {
@@ -426,12 +433,14 @@ async getVoucherSummary(params?: {
     .addSelect('MAX(sinv.invoiceNumber)', 'receiptInvoiceNumber')
     .addSelect('MAX(sinv.invoiceType)', 'receiptInvoiceType')
     .addSelect('MAX(sinvCust.customerName)', 'receiptInvoiceCustomerName')
+    .addSelect('MAX(sinvAltCust.company)', 'receiptInvoiceAltCustomerName')
 
     // ✅ docNbr -> invoice (this fixes G/RTN/RVR)
     .addSelect('MAX(dinv.id)', 'docInvoiceId')
     .addSelect('MAX(dinv.invoiceNumber)', 'docInvoiceNumber')
     .addSelect('MAX(dinv.invoiceType)', 'docInvoiceType')
     .addSelect('MAX(dinvCust.customerName)', 'docInvoiceCustomerName')
+    .addSelect('MAX(dinvAltCust.company)', 'docInvoiceAltCustomerName')
 
     // purchase
     .addSelect('MAX(pinv.id)', 'purchaseInvoiceId')
@@ -460,11 +469,13 @@ async getVoucherSummary(params?: {
       receiptInvoiceNumber: string | null;
       receiptInvoiceType: 'S' | 'G' | 'RVR' | 'RTN' | null;
       receiptInvoiceCustomerName: string | null;
+      receiptInvoiceAltCustomerName: string | null;
 
       docInvoiceId: number | null;
       docInvoiceNumber: string | null;
       docInvoiceType: 'S' | 'G' | 'RVR' | 'RTN' | null;
       docInvoiceCustomerName: string | null;
+      docInvoiceAltCustomerName: string | null;
 
       purchaseInvoiceId: number | null;
       purchaseInvoiceNumber: string | null;
@@ -485,8 +496,9 @@ async getVoucherSummary(params?: {
 
     const invoiceNumber = r.receiptInvoiceNumber ?? r.docInvoiceNumber ?? null;
     const invoiceType = r.receiptInvoiceType ?? r.docInvoiceType ?? null;
-    const invoiceCustomerName =
-      r.receiptInvoiceCustomerName ?? r.docInvoiceCustomerName ?? null;
+    const receiptInvoiceCustomerName = r.receiptInvoiceAltCustomerName ?? r.receiptInvoiceCustomerName ?? null;
+    const docInvoiceCustomerName = r.docInvoiceAltCustomerName ?? r.docInvoiceCustomerName ?? null;
+    const invoiceCustomerName = receiptInvoiceCustomerName ?? docInvoiceCustomerName ?? null;
 
     const purchaseInvoiceId =
       r.purchaseInvoiceId != null ? Number(r.purchaseInvoiceId) : null;
@@ -728,6 +740,169 @@ async getCustomerStatementOFR(params: {
   };
 }
 
+// Same shape as getCustomerStatementOFR, but scoped to JournalVoucherDetail rows
+// tagged with a specific alternativeCustomerId instead of the real customerId.
+async getAlternativeCustomerStatementOFR(params: {
+  alternativeCustomerId: number;
+  type?: "S" | "G" | "ALL";
+  from?: string;
+  to?: string;
+}) {
+  const { alternativeCustomerId, type = "ALL", from, to } = params;
+
+  const ymdToStart = (ymd: string) => `${ymd} 00:00:00`;
+  const nextYMD = (ymd: string) => {
+    const d = new Date(`${ymd}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+
+  const fromStart = from ? ymdToStart(from) : null;
+  const toNext = to ? ymdToStart(nextYMD(to)) : null;
+
+  const altCustomer = await this.alternativeCustomerRepo.findOne({ where: { id: alternativeCustomerId } });
+  if (!altCustomer) throw new NotFoundException(`Alternative customer ${alternativeCustomerId} not found`);
+
+  const statementCurrency = "USD" as const;
+
+  const isOfrRow = (jv: any) => {
+    const jvNumber = String(jv?.jvNumber ?? "").trim().toUpperCase();
+    return jvNumber.includes("G");
+  };
+
+  const getColsForRow = (useOfr: boolean) => {
+    return useOfr
+      ? ({
+          drCol: "drUSDOFR" as keyof JournalVoucherDetail,
+          crCol: "crUSDOFR" as keyof JournalVoucherDetail,
+        })
+      : ({
+          drCol: "drUSD" as keyof JournalVoucherDetail,
+          crCol: "crUSD" as keyof JournalVoucherDetail,
+        });
+  };
+
+  const applyTypeFilter = (
+    qb: ReturnType<typeof this.journalVoucherDetailRepository.createQueryBuilder>
+  ) => {
+    if (type === "G") {
+      qb.andWhere(`UPPER(jv.jvNumber) LIKE '%G%'`);
+    } else if (type === "S") {
+      qb.andWhere(`UPPER(jv.jvNumber) NOT LIKE '%G%'`);
+    }
+    return qb;
+  };
+
+  const qb = this.journalVoucherDetailRepository
+    .createQueryBuilder("d")
+    .leftJoinAndSelect("d.journalVoucher", "jv")
+    .where("d.alternativeCustomerId = :alternativeCustomerId", { alternativeCustomerId });
+
+  if (fromStart) qb.andWhere("jv.date >= :fromStart", { fromStart });
+  if (toNext) qb.andWhere("jv.date < :toNext", { toNext });
+
+  applyTypeFilter(qb);
+  qb.orderBy("jv.date", "ASC").addOrderBy("d.id", "ASC");
+
+  const rows = await qb.getMany();
+
+  let openingBalance = 0;
+  if (fromStart) {
+    const beforeQb = this.journalVoucherDetailRepository
+      .createQueryBuilder("d")
+      .leftJoinAndSelect("d.journalVoucher", "jv")
+      .where("d.alternativeCustomerId = :alternativeCustomerId", { alternativeCustomerId })
+      .andWhere("jv.date < :fromStart", { fromStart });
+
+    applyTypeFilter(beforeQb);
+
+    const beforeRows = await beforeQb.getMany();
+
+    let openingDr = 0;
+    let openingCr = 0;
+
+    for (const r of beforeRows) {
+      const useOfr = isOfrRow(r.journalVoucher);
+      const { drCol, crCol } = getColsForRow(useOfr);
+      openingDr += Number((r as any)[drCol] || 0);
+      openingCr += Number((r as any)[crCol] || 0);
+    }
+
+    openingBalance = openingDr - openingCr;
+  }
+
+  let running = openingBalance;
+
+  const fmtLL = (n: number) =>
+    Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
+
+  const items = rows.map((r) => {
+    const useOfr = isOfrRow(r.journalVoucher);
+    const { drCol, crCol } = getColsForRow(useOfr);
+
+    const debit = Number((r as any)[drCol] || 0);
+    const credit = Number((r as any)[crCol] || 0);
+
+    let description = (r.description ?? null) as string | null;
+    if (description && description.includes("دفعة نقدا LL")) {
+      const llDrCol = useOfr ? "drLLOFR" : "drLL";
+      const llCrCol = useOfr ? "crLLOFR" : "crLL";
+
+      const llAmount =
+        debit > 0
+          ? Number((r as any)[llDrCol] || 0)
+          : credit > 0
+          ? Number((r as any)[llCrCol] || 0)
+          : 0;
+
+      description = `${description} (${fmtLL(llAmount)})`;
+    }
+
+    running += debit - credit;
+
+    return {
+      journalVoucherId: r.journalVoucherId,
+      date: r.journalVoucher?.date,
+      jvNumber: r.journalVoucher?.jvNumber,
+      jvType: r.journalVoucher?.jvType,
+      description,
+      docNbr: r.docNbr ?? null,
+      usesOfr: useOfr,
+      debit,
+      credit,
+      balanceAfter: running,
+      exRateUSD: Number((r as any).exRateUSD || 0),
+      exRateEUROToUSD: Number((r as any).exRateEUROToUSD || 0),
+    };
+  });
+
+  const totals = items.reduce(
+    (acc, li) => {
+      acc.totalDebit += li.debit;
+      acc.totalCredit += li.credit;
+      return acc;
+    },
+    { totalDebit: 0, totalCredit: 0 }
+  );
+
+  return {
+    alternativeCustomerId,
+    customerId: alternativeCustomerId,
+    statementCurrency,
+    customerAccountNumber: null,
+    customerInvoiceType: null,
+    customerName: altCustomer.company,
+    from: from ?? null,
+    to: to ?? null,
+    openingBalance,
+    totals,
+    closingBalance: running,
+    items,
+  };
+}
 
 
 
@@ -1372,6 +1547,7 @@ async searchBySeq(params?: {
       // Receipt -> Invoice (sales)
       .leftJoin("invoices", "sinv", "sinv.id = re.invoiceId")
       .leftJoin("customers", "sinvCust", "sinvCust.id = sinv.customerId")
+      .leftJoin("alternative_customers", "sinvAltCust", "sinvAltCust.id = sinv.alternativeCustomerId")
 
       // Purchase invoice
       .leftJoin(PurchaseInvoice, "pinv", "pinv.id = jv.purchaseInvoiceId")
@@ -1379,7 +1555,8 @@ async searchBySeq(params?: {
 
       // DocNbr -> Invoice (fixes G / RTN / RVR)
       .leftJoin("invoices", "dinv", "dinv.invoiceNumber = d.docNbr")
-      .leftJoin("customers", "dinvCust", "dinvCust.id = dinv.customerId");
+      .leftJoin("customers", "dinvCust", "dinvCust.id = dinv.customerId")
+      .leftJoin("alternative_customers", "dinvAltCust", "dinvAltCust.id = dinv.alternativeCustomerId");
   };
 
   const applySeqFilter = (qb: SelectQueryBuilder<JournalVoucher>) => {
@@ -1526,12 +1703,14 @@ async searchBySeq(params?: {
     .addSelect("MAX(sinv.invoiceNumber)", "receiptInvoiceNumber")
     .addSelect("MAX(sinv.invoiceType)", "receiptInvoiceType")
     .addSelect("MAX(sinvCust.customerName)", "receiptInvoiceCustomerName")
+    .addSelect("MAX(sinvAltCust.company)", "receiptInvoiceAltCustomerName")
 
     // docNbr->invoice
     .addSelect("MAX(dinv.id)", "docInvoiceId")
     .addSelect("MAX(dinv.invoiceNumber)", "docInvoiceNumber")
     .addSelect("MAX(dinv.invoiceType)", "docInvoiceType")
     .addSelect("MAX(dinvCust.customerName)", "docInvoiceCustomerName")
+    .addSelect("MAX(dinvAltCust.company)", "docInvoiceAltCustomerName")
 
     // purchase
     .addSelect("MAX(pinv.id)", "purchaseInvoiceId")
@@ -1564,7 +1743,8 @@ async searchBySeq(params?: {
     const invoiceType = r.receiptInvoiceType ?? r.docInvoiceType ?? null;
 
     const invoiceCustomerName =
-      r.receiptInvoiceCustomerName ?? r.docInvoiceCustomerName ?? null;
+      r.receiptInvoiceAltCustomerName ?? r.receiptInvoiceCustomerName ??
+      r.docInvoiceAltCustomerName ?? r.docInvoiceCustomerName ?? null;
 
     let kind: "INVOICE" | "RECEIVABLE" | "PURCHASE" | "PURCHASE_RETURN" | "JV" = "JV";
     let name = `قيد يومية - ${r.jvNumber}`.trim();

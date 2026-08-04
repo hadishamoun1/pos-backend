@@ -10,6 +10,7 @@ import { CurrencyRate } from '../currencyRate.entity';
 import { JournalVoucher } from './journalVoucher.entity';
 import { Supplier } from '../supplier.entity';
 import { Customer } from '../customer.entity';
+import { AlternativeCustomer } from '../alternative-customer.entity';
 
 @Entity('journal_voucher_details')
 export class JournalVoucherDetail {
@@ -36,6 +37,13 @@ export class JournalVoucherDetail {
   @ManyToOne(() => Customer, { nullable: true })
   @JoinColumn({ name: 'customerId' })
   customer: Customer;
+
+  @Column({ name: 'alternativeCustomerId', type: 'int', nullable: true })
+  alternativeCustomerId: number;
+
+  @ManyToOne(() => AlternativeCustomer, { nullable: true })
+  @JoinColumn({ name: 'alternativeCustomerId' })
+  alternativeCustomer: AlternativeCustomer;
 
   @Column({ type: 'varchar', nullable: true, name: 'check' })
   check: string;

@@ -11,6 +11,7 @@ import { Customer } from './customer.entity';
 import { JournalVoucher } from './Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from './Vouchers/journalVoucherDetails.entity';
 import { Invoice } from "./invoice.entity";
+import { AlternativeCustomer } from './alternative-customer.entity';
 
 @Entity('receipt_entries')
 export class ReceiptEntry {
@@ -23,6 +24,13 @@ export class ReceiptEntry {
 
   @Column()
   customerId: number;
+
+  @ManyToOne(() => AlternativeCustomer, { nullable: true })
+  @JoinColumn({ name: 'alternativeCustomerId' })
+  alternativeCustomer?: AlternativeCustomer | null;
+
+  @Column({ type: 'int', nullable: true })
+  alternativeCustomerId: number | null;
 
   @Column({ type: 'varchar', length: 3 })
   type: string;

@@ -11,6 +11,7 @@ import { Branch } from './branch.entity';
 import { Currency } from './currency.entity';
 import { InvoiceItem } from './invoiceItem.entity';
 import { SqmPiece } from './inventory/SqmPiece.entity';
+import { AlternativeCustomer } from './alternative-customer.entity';
 
 @Entity('invoices')
 export class Invoice {
@@ -23,6 +24,13 @@ export class Invoice {
 
   @Column()
   customerId: number; // Foreign key for Customer
+
+  @ManyToOne(() => AlternativeCustomer, { nullable: true })
+  @JoinColumn({ name: 'alternativeCustomerId' })
+  alternativeCustomer?: AlternativeCustomer | null;
+
+  @Column({ type: 'int', nullable: true })
+  alternativeCustomerId?: number | null;
 
   @Column({ type: 'date' })
   date: Date;

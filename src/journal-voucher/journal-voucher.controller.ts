@@ -186,6 +186,23 @@ searchBySeq(@Query() query: any) {
     });
   }
 
+  // Statement scoped to a specific alternative customer (not the real customer's account)
+  @Get('statements/alternative-customers/:alternativeCustomerId')
+  @RequirePerms('journal.view')
+  async getAlternativeCustomerStmt(
+    @Param('alternativeCustomerId', ParseIntPipe) alternativeCustomerId: number,
+    @Query('type') type?: 'S' | 'G' | 'ALL',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.journalVoucherService.getAlternativeCustomerStatementOFR({
+      alternativeCustomerId,
+      type: (type as any) || 'ALL',
+      from,
+      to,
+    });
+  }
+
   @Get('reports/net-positions')
   @RequirePerms('journal.view')
   async getAllCustomersNetPosition(
