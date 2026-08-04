@@ -4415,6 +4415,32 @@ createdItems.push(item);
     to?: string;   // YYYY-MM-DD
     limit?: number;
   }) {
+    // ✅ default: only Sales/Glass (as you said before)
+    const types = opts?.type ? [opts.type] : ['S', 'G'];
+
+    // Step 1: resolve the target invoice IDs first (no one-to-many join here),
+    // so LIMIT/ORDER apply to distinct invoices, not to joined item rows.
+    const idQb = this.invoiceRepository
+      .createQueryBuilder('inv')
+      .select('inv.id', 'id')
+      .andWhere('inv.invoiceType IN (:...types)', { types })
+      .orderBy('inv.date', 'DESC')
+      .addOrderBy('inv.id', 'DESC');
+
+    if (opts?.from) idQb.andWhere('inv.date >= :from', { from: opts.from });
+    if (opts?.to) idQb.andWhere('inv.date <= :to', { to: opts.to });
+
+    if (opts?.limit && Number.isFinite(opts.limit) && opts.limit > 0) {
+      idQb.take(opts.limit);
+    }
+
+    const idRows = await idQb.getRawMany<{ id: number }>();
+    const ids = idRows.map((r) => Number(r.id));
+
+    if (!ids.length) return [];
+
+    // Step 2: fetch full invoice + items for exactly those IDs — no LIMIT here,
+    // so the item join can't truncate the invoice list.
     const qb = this.invoiceRepository
       .createQueryBuilder('inv')
       .leftJoinAndSelect('inv.customer', 'cust')
@@ -4425,21 +4451,10 @@ createdItems.push(item);
       .leftJoinAndSelect('ii.itemVariant', 'iv')
       .leftJoinAndSelect('iv.thickness', 'th')
       .leftJoinAndSelect('iv.itemNameDescription', 'desc')
+      .where('inv.id IN (:...ids)', { ids })
       .orderBy('inv.date', 'DESC')
       .addOrderBy('inv.id', 'DESC')
       .addOrderBy('ii.id', 'ASC');
-
-    // ✅ default: only Sales/Glass (as you said before)
-    const types = opts?.type ? [opts.type] : ['S', 'G'];
-    qb.andWhere('inv.invoiceType IN (:...types)', { types });
-
-    // optional date filters (DATE column safe as strings)
-    if (opts?.from) qb.andWhere('inv.date >= :from', { from: opts.from });
-    if (opts?.to) qb.andWhere('inv.date <= :to', { to: opts.to });
-
-    if (opts?.limit && Number.isFinite(opts.limit) && opts.limit > 0) {
-      qb.take(opts.limit);
-    }
 
     const invoices = await qb.getMany();
 
