@@ -270,7 +270,8 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
     return {
       id: e.id,
       customerid: e.customerId,
-      customerName: e.customer.customerName,
+      customerName: (e as any).alternativeCustomer?.company ?? e.customer.customerName,
+      alternativeCustomerId: (e as any).alternativeCustomerId ?? null,
       currency: e.currency,
       exchangeRate: e.exchangeRate,
       amountExchanged: e.amountExchanged,
@@ -286,7 +287,7 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
 
   async findSummary() {
     const entries = await this.entryRepo.find({
-      relations: ['customer', 'journalVoucher'],
+      relations: ['customer', 'alternativeCustomer', 'journalVoucher'],
       order: { id: 'DESC' },
     });
     return entries.map((e) => this.mapEntry(e));
@@ -306,6 +307,7 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
     const qb = this.entryRepo
       .createQueryBuilder('entry')
       .leftJoinAndSelect('entry.customer', 'customer')
+      .leftJoinAndSelect('entry.alternativeCustomer', 'alternativeCustomer')
       .leftJoinAndSelect('entry.journalVoucher', 'jv')
       .orderBy('entry.id', 'DESC')
       .take(limit)
@@ -366,13 +368,74 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
       );
     }
 
+    const newCashNumber = Number(invoice.grandTotal) || 0;
+    const exchangeRate = Number(entry.exchangeRate) || 0;
+    // amountExchanged is always cashNumber × exchangeRate — cashNumber is the
+    // real received amount (now matching the invoice), amountExchanged is derived.
+    const newAmountExchanged = newCashNumber * exchangeRate;
+
     entry.invoiceId = invoice.id;
-    (entry as any).amountExchanged = invoice.grandTotal;
+    (entry as any).cashNumber = newCashNumber;
+    (entry as any).amountExchanged = newAmountExchanged;
+    // Mirror the invoice's customer identity onto the receivable — including
+    // the alternative customer, if the invoice has one set.
+    entry.customerId = invoice.customerId;
+    (entry as any).alternativeCustomerId = (invoice as any).alternativeCustomerId ?? null;
     await this.entryRepo.save(entry);
+
+    // Also correct the receivable's own journal voucher: both the customer on
+    // the "CR: Customer" line, and the dr/cr amounts on both lines (the
+    // drLine carries the cash account, not a customer — its customer stays untouched).
+    if (entry.journalVoucherId) {
+      // Same usdPart/llPart split used at creation time (recievables.service.ts:create),
+      // just re-derived with the corrected cashNumber/amountExchanged.
+      const usdPart = entry.currency === 'LL' ? newAmountExchanged : newCashNumber;
+      const llPart = entry.currency === 'LL' ? newCashNumber : newAmountExchanged;
+
+      await this.jvDetailRepo
+        .createQueryBuilder()
+        .update(JournalVoucherDetail)
+        .set({
+          customerId: invoice.customerId,
+          alternativeCustomerId: (invoice as any).alternativeCustomerId ?? null,
+          cr: usdPart,
+          crUSD: usdPart,
+          crLL: llPart,
+        } as any)
+        .where('journalVoucherId = :jvId AND customerId IS NOT NULL', {
+          jvId: entry.journalVoucherId,
+        })
+        .execute();
+
+      await this.jvDetailRepo
+        .createQueryBuilder()
+        .update(JournalVoucherDetail)
+        .set({
+          dr: usdPart,
+          drUSD: usdPart,
+          drLL: llPart,
+        } as any)
+        .where('journalVoucherId = :jvId AND customerId IS NULL', {
+          jvId: entry.journalVoucherId,
+        })
+        .execute();
+
+      await this.jvRepo.update(
+        { id: entry.journalVoucherId } as any,
+        {
+          totalDr: usdPart,
+          totalDrUSD: usdPart,
+          totalDrLL: llPart,
+          totalCr: usdPart,
+          totalCrUSD: usdPart,
+          totalCrLL: llPart,
+        } as any,
+      );
+    }
 
     const saved = await this.entryRepo.findOne({
       where: { id: entry.id },
-      relations: ['customer', 'journalVoucher'],
+      relations: ['customer', 'alternativeCustomer', 'journalVoucher'],
     });
 
     const all = await this.findSummary();
