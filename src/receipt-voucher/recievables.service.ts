@@ -300,6 +300,7 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
       cashNumber?: string;
       dateFrom?: string;
       dateTo?: string;
+      type?: string;
     },
   ) {
     const qb = this.entryRepo
@@ -326,10 +327,60 @@ if (!cashAcct) throw new NotFoundException(`Cash role ${cashRole} not mapped to 
     if (filters?.dateTo) {
       qb.andWhere('entry.date <= :dateTo', { dateTo: filters.dateTo });
     }
+    if (filters?.type) {
+      qb.andWhere('entry.type = :type', { type: filters.type });
+    }
 
     const [entries, total] = await qb.getManyAndCount();
     return { data: entries.map((e) => this.mapEntry(e)), total };
   }
+
+  // Links an RVR receivable to the RVR invoice it was manually collected for
+  // (same-day pairing done outside the DB when these were created), and
+  // corrects the receivable's recorded amount to match the invoice's grand total.
+  // Note: this does NOT regenerate the receivable's journal voucher — only the
+  // ReceiptEntry row (amountExchanged, invoiceId) is updated.
+  async linkInvoiceToReceivable(receivableId: number, invoiceId: number) {
+    const entry = await this.entryRepo.findOne({ where: { id: receivableId } });
+    if (!entry) throw new NotFoundException(`Receivable ${receivableId} not found`);
+
+    const invoice = await this.invoiceRepo.findOne({ where: { id: invoiceId } });
+    if (!invoice) throw new NotFoundException(`Invoice ${invoiceId} not found`);
+
+    if (invoice.invoiceType !== 'RVR') {
+      throw new BadRequestException(`Invoice ${invoiceId} is not an RVR invoice`);
+    }
+
+    const entryDateStr = String(entry.date).slice(0, 10);
+    const invoiceDateStr = String(invoice.date).slice(0, 10);
+    if (entryDateStr !== invoiceDateStr) {
+      throw new BadRequestException(
+        `Invoice date (${invoiceDateStr}) does not match receivable date (${entryDateStr})`,
+      );
+    }
+
+    const alreadyLinked = await this.entryRepo.findOne({ where: { invoiceId } });
+    if (alreadyLinked && alreadyLinked.id !== entry.id) {
+      throw new BadRequestException(
+        `Invoice ${invoiceId} is already linked to receivable ${alreadyLinked.id}`,
+      );
+    }
+
+    entry.invoiceId = invoice.id;
+    (entry as any).amountExchanged = invoice.grandTotal;
+    await this.entryRepo.save(entry);
+
+    const saved = await this.entryRepo.findOne({
+      where: { id: entry.id },
+      relations: ['customer', 'journalVoucher'],
+    });
+
+    const all = await this.findSummary();
+    this.gateway.broadcastAll(all);
+
+    return this.mapEntry(saved);
+  }
+
   /*update an existing reciept + its jv */
   async update(
   id: number,

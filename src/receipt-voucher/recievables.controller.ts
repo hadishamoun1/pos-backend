@@ -71,6 +71,7 @@ export class RecievablesController {
     @Query('cashNumber') cashNumber?: string,
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
+    @Query('type') type?: string,
   ) {
     if (limit) {
       return this.service.findSummaryPaginated(
@@ -81,10 +82,19 @@ export class RecievablesController {
           cashNumber: cashNumber?.trim() || undefined,
           dateFrom: dateFrom?.trim() || undefined,
           dateTo: dateTo?.trim() || undefined,
+          type: type?.trim() || undefined,
         },
       );
     }
     return this.service.findSummary();
+  }
+
+  @Patch(':id/link-invoice')
+  linkInvoice(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('invoiceId', ParseIntPipe) invoiceId: number,
+  ) {
+    return this.service.linkInvoiceToReceivable(id, invoiceId);
   }
 
 
