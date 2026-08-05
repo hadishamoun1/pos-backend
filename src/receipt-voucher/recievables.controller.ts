@@ -10,9 +10,13 @@ import {
   ParseIntPipe,
   Delete,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { RecievablesService } from './recievables.service';
 import { ReceiptEntry } from '../entities/recievables.entities';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PermissionsGuard } from '../auth/permissions.guard';
+import { RequirePerms } from '../auth/permissions.decorator';
 
 @Controller('recievables')
 export class RecievablesController {
@@ -89,6 +93,10 @@ export class RecievablesController {
     return this.service.findSummary();
   }
 
+  // RVR-Receivables-page-only action: gated separately since GET v1/summary
+  // above is shared with the general (unguarded) Receivables page.
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePerms('rvrRecievables.view')
   @Patch(':id/link-invoice')
   linkInvoice(
     @Param('id', ParseIntPipe) id: number,
