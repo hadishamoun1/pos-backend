@@ -76,6 +76,22 @@ export class InvoiceController {
     });
   }
 
+  @Get("v1/zero-vat")
+  @RequirePerms("invoices.view")
+  getZeroVatInvoices(
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.invoiceService.getZeroVatInvoices({
+      from,
+      to,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
   // browsing search
   @Get("v1/browsing/:customerId/search")
   @RequirePerms("invoices.view")

@@ -1177,6 +1177,48 @@ async getInvoicesByIds(ids: number[], concurrency = 12): Promise<any[]> {
   return results.filter(Boolean);
 }
 
+async getZeroVatInvoices(opts?: {
+  from?: string; // YYYY-MM-DD
+  to?: string;   // YYYY-MM-DD
+  page?: number;
+  limit?: number;
+}): Promise<{ data: any[]; total: number; totalPages: number }> {
+  const page  = Math.max(1, Number(opts?.page ?? 1));
+  const take  = Math.min(500, Math.max(1, Number(opts?.limit ?? 200)));
+  const skip  = (page - 1) * take;
+
+  const qb = this.invoiceRepository
+    .createQueryBuilder('inv')
+    .leftJoinAndSelect('inv.customer', 'cust')
+    .leftJoinAndSelect('inv.alternativeCustomer', 'altCust')
+    .where('inv.invoiceType IN (:...types)', { types: ['S', 'RVR'] })
+    .andWhere('inv.vatPercentage = 0')
+    .orderBy('inv.date', 'DESC')
+    .addOrderBy('inv.id', 'DESC');
+
+  if (opts?.from) qb.andWhere('inv.date >= :from', { from: opts.from });
+  if (opts?.to) qb.andWhere('inv.date <= :to', { to: opts.to });
+
+  const [invoices, total] = await qb.take(take).skip(skip).getManyAndCount();
+
+  return {
+    data: invoices.map((invoice) => ({
+      id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      date: invoice.date,
+      invoiceType: invoice.invoiceType,
+      totalWithoutVAT: invoice.totalWithoutVAT,
+      totalVAT: invoice.totalVAT,
+      grandTotal: invoice.grandTotal,
+      vatPercentage: invoice.vatPercentage,
+      customerId: invoice.customer?.id,
+      customerName: invoice.alternativeCustomer?.company ?? invoice.customer?.customerName,
+    })),
+    total,
+    totalPages: Math.max(1, Math.ceil(total / take)),
+  };
+}
+
 async getFilteredInvoices(
   page: number,
   limit: number,
