@@ -112,4 +112,13 @@ export class ItemVariant {
 
     @Column({ type: 'varchar', length: 255, nullable: true })
   invoiceDisplayName: string | null;
+
+  // Free-text notes about this specific item (distinct from the structured
+  // ItemNameDescription/RealDescription category/color/design lookups above).
+  @Column({ type: 'text', nullable: true })
+  productDescription: string | null;
+
+  // Path to an uploaded photo of this item, e.g. "/uploads/items/<file>".
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  pictureUrl: string | null;
 }

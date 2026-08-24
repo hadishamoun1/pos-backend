@@ -16,7 +16,12 @@ import {
   HttpStatus,
   Patch,
   UseGuards,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname } from 'path';
 import { ItemsService } from './items.service';
 import { Item } from '../entities/inventory/item.entity';
 import { Thickness } from '../entities/inventory/thickness.entity';
@@ -184,6 +189,7 @@ export class ItemsController {
     @Query('asOf') asOf?: string, // "YYYY-MM-DD"
     @Query('includeSqm') includeSqmRaw?: string,
     @Query('warehouse') warehouse?: string,
+    @Query('hasMedia') hasMediaRaw?: string,
   ) {
     const variantIds = (variantIdsRaw || '')
       .split(',')
@@ -205,6 +211,7 @@ export class ItemsController {
       asOf: asOf?.trim() || undefined,
       includeSqm: includeSqmRaw === 'true',
       warehouse: warehouse?.trim() || undefined,
+      hasMedia: hasMediaRaw === 'true',
     });
   }
 
@@ -581,6 +588,54 @@ export class ItemsController {
   ): Promise<ItemVariant> {
     createItemVariantDto.thickness = { id: thicknessId } as Thickness;
     return this.itemsService.createItemVariant(createItemVariantDto);
+  }
+
+  @Get('v1/variants/:id/product-info')
+  @RequirePerms('items.view')
+  async getVariantProductInfo(@Param('id', ParseIntPipe) id: number) {
+    return this.itemsService.getVariantProductInfo(id);
+  }
+
+  // Free-text notes about a specific item — distinct from the structured
+  // ItemNameDescription/RealDescription relinking at PUT variants/:id/description above.
+  @Patch('v1/variants/:id/product-info')
+  @RequirePerms('items.update')
+  async updateVariantProductDescription(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('productDescription') productDescription: string | null,
+  ) {
+    return this.itemsService.updateVariantProductDescription(id, productDescription ?? null);
+  }
+
+  @Post('v1/variants/:id/picture')
+  @RequirePerms('items.update')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: './uploads/items',
+        filename: (req, file, cb) => {
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+          const ext = extname(file.originalname);
+          const basename = file.originalname.replace(ext, '').replace(/[^a-zA-Z0-9]/g, '_');
+          cb(null, `${basename}-${uniqueSuffix}${ext}`);
+        },
+      }),
+      fileFilter: (req, file, cb) => {
+        if (file.mimetype.match(/\/(jpg|jpeg|png|webp)$/)) {
+          cb(null, true);
+        } else {
+          cb(new Error('Only JPG, PNG, and WEBP images are allowed!'), false);
+        }
+      },
+      limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
+    }),
+  )
+  async uploadVariantPicture(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    return this.itemsService.setVariantPicture(id, `/uploads/items/${file.filename}`);
   }
 
   @Delete('thicknesses/:id')

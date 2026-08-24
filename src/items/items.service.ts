@@ -89,6 +89,32 @@ private readonly dataSource: DataSource
     await this.itemVariantRepository.delete(id);
   }
 
+  async getVariantProductInfo(id: number): Promise<{ productDescription: string | null; pictureUrl: string | null }> {
+    const variant = await this.itemVariantRepository.findOne({
+      where: { id },
+      select: ['id', 'productDescription', 'pictureUrl'],
+    });
+    if (!variant) throw new NotFoundException(`Item variant ${id} not found`);
+    return { productDescription: variant.productDescription, pictureUrl: variant.pictureUrl };
+  }
+
+  async updateVariantProductDescription(
+    id: number,
+    productDescription: string | null,
+  ): Promise<ItemVariant> {
+    const variant = await this.itemVariantRepository.findOne({ where: { id } });
+    if (!variant) throw new NotFoundException(`Item variant ${id} not found`);
+    variant.productDescription = productDescription;
+    return this.itemVariantRepository.save(variant);
+  }
+
+  async setVariantPicture(id: number, pictureUrl: string): Promise<ItemVariant> {
+    const variant = await this.itemVariantRepository.findOne({ where: { id } });
+    if (!variant) throw new NotFoundException(`Item variant ${id} not found`);
+    variant.pictureUrl = pictureUrl;
+    return this.itemVariantRepository.save(variant);
+  }
+
   async getAllItemsWithDetails(): Promise<Item[]> {
     return await this.itemRepository.find({
       relations: ['thicknesses', 'thicknesses.variants'],
@@ -118,6 +144,8 @@ async getSelectedItemDetailsPaginated(opts?: {
       'v.width',
       'v.sheetsPerBox',
       'v.origin',
+      'v.productDescription',
+      'v.pictureUrl',
 
       // Thickness (for ordering)
       't.id',
@@ -216,6 +244,8 @@ async getSelectedItemDetailsPaginated(opts?: {
         width: v.width,
         sheetsPerBox: v.sheetsPerBox,
         origin: v.origin,
+        productDescription: v.productDescription ?? null,
+        pictureUrl: v.pictureUrl ?? null,
 
         thicknessId: v.thickness.id,
         thickness: v.thickness.thickness,
@@ -274,6 +304,8 @@ async getSelectedItemDetailsByNamePaginated(opts?: {
       'v.width',
       'v.sheetsPerBox',
       'v.origin',
+      'v.productDescription',
+      'v.pictureUrl',
 
       // Thickness
       't.id',
@@ -366,6 +398,8 @@ async getSelectedItemDetailsByNamePaginated(opts?: {
       width: v.width,
       sheetsPerBox: v.sheetsPerBox,
       origin: v.origin,
+      productDescription: v.productDescription ?? null,
+      pictureUrl: v.pictureUrl ?? null,
 
       // Thickness
       thicknessId: v.thickness.id,
@@ -3771,6 +3805,8 @@ async searchSmart(q: string, page = 1, limit = 50) {
       'COALESCE(v.width, 0) AS width',
       'COALESCE(v.sheetsPerBox, 0) AS sheetsPerBox',
       'COALESCE(v.origin, \'\') AS origin',
+      'v.productDescription AS productDescription',
+      'v.pictureUrl AS pictureUrl',
       'd.id AS descId',
       'd.itemNumber AS itemNumber',
       'd.categoryName AS categoryName',
@@ -3835,6 +3871,8 @@ async searchSmart(q: string, page = 1, limit = 50) {
     .addGroupBy('v.width')
     .addGroupBy('v.sheetsPerBox')
     .addGroupBy('v.origin')
+    .addGroupBy('v.productDescription')
+    .addGroupBy('v.pictureUrl')
     .addGroupBy('d.id')
     .addGroupBy('d.itemNumber')
     .addGroupBy('d.categoryName')
@@ -3864,6 +3902,8 @@ async searchSmart(q: string, page = 1, limit = 50) {
     width: Number(r.width ?? 0),
     sheetsPerBox: Number(r.sheetsPerBox ?? 0),
     origin: r.origin ?? null,
+    productDescription: r.productDescription ?? null,
+    pictureUrl: r.pictureUrl ?? null,
     description: {
       id: r.descId ? Number(r.descId) : null,
       itemNumber: r.itemNumber ?? null,
@@ -3898,6 +3938,8 @@ async searchSmartReal(q: string, page = 1, limit = 50) {
       'COALESCE(v.width, 0) AS width',
       'COALESCE(v.sheetsPerBox, 0) AS sheetsPerBox',
       'COALESCE(v.origin, \'\') AS origin',
+      'v.productDescription AS productDescription',
+      'v.pictureUrl AS pictureUrl',
       'rd.id AS descId',
       'rd.itemNumber AS itemNumber',
       'rd.categoryName AS categoryName',
@@ -3966,6 +4008,8 @@ async searchSmartReal(q: string, page = 1, limit = 50) {
     .addGroupBy('v.width')
     .addGroupBy('v.sheetsPerBox')
     .addGroupBy('v.origin')
+    .addGroupBy('v.productDescription')
+    .addGroupBy('v.pictureUrl')
     .addGroupBy('rd.id')
     .addGroupBy('rd.itemNumber')
     .addGroupBy('rd.categoryName')
@@ -3996,6 +4040,8 @@ async searchSmartReal(q: string, page = 1, limit = 50) {
     width: Number(r.width ?? 0),
     sheetsPerBox: Number(r.sheetsPerBox ?? 0),
     origin: r.origin ?? null,
+    productDescription: r.productDescription ?? null,
+    pictureUrl: r.pictureUrl ?? null,
     // Keep the frontend-friendly unified key name:
     description: {
       id: r.descId ? Number(r.descId) : null,
@@ -4961,6 +5007,7 @@ async getVariantLedgerByRealDesc(params?: {
   asOf?: string;
   includeSqm?: boolean;
   warehouse?: string;
+  hasMedia?: boolean;
 }) {
   const toNum = (v: any) => {
     const n = Number(v);
@@ -5100,6 +5147,7 @@ async getVariantLedgerByRealDesc(params?: {
       'v.totalStart','v.totalIn','v.totalOut','v.totalBalance',
       'v.totalStartOFR','v.totalInOFR','v.totalOutOFR','v.totalBalanceOFR',
       'v.averageCost','v.lastCost',
+      'v.productDescription','v.pictureUrl',
       't.id','t.thickness','t.sort_index',
       'i.id','i.itemName','i.type','i.stockMode',
       'b.id','b.condition','b.dateReceived','b.warehouse','b.start','b.in','b.out','b.balance',
@@ -5107,6 +5155,10 @@ async getVariantLedgerByRealDesc(params?: {
       'r.id','r.categoryName','r.subCategory','r.colorName','r.designName',
       'r.itemNumber','r.sort_index_real_description',
     ]);
+
+  if (params?.hasMedia) {
+    qb.andWhere('(v.pictureUrl IS NOT NULL OR v.productDescription IS NOT NULL)');
+  }
 
   // sqm items typically have no realDescription — allow them through when type=sqm is explicit or includeSqm=true
   if (params?.type !== 'sqm' && !params?.includeSqm) {
@@ -5597,6 +5649,8 @@ async getVariantLedgerByRealDesc(params?: {
       width:        wid,
       sheetsPerBox: spbSelf,
       origin:       v.origin,
+      productDescription: (v as any).productDescription ?? null,
+      pictureUrl:   (v as any).pictureUrl ?? null,
 
       ones: ofrTotalsUnits,  // ones.balance            = SUM(quantityofr) → Balance (Qty)
       ofrTotalsSqm,          // ofrTotalsSqm.balanceOFR = SUM(sqmofr)      → Balance (SQM)
