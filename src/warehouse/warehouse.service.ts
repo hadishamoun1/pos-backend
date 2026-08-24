@@ -78,7 +78,9 @@ export class WarehouseService {
       .orderBy("b.id", "DESC");
 
     if (params?.emptyOnly) {
-      qb.andWhere("b.warehouse IS NULL");
+      // Some batches have warehouse stored as an empty string rather than
+      // NULL (depending on which code path created them) — catch both.
+      qb.andWhere("(b.warehouse IS NULL OR b.warehouse = '')");
     } else if (params?.warehouse) {
       qb.andWhere("b.warehouse = :warehouse", { warehouse: params.warehouse });
     }
