@@ -73,8 +73,7 @@ export class WarehouseService {
       .leftJoinAndSelect("v.thickness", "th")
       .leftJoinAndSelect("th.item", "item")
       .leftJoinAndSelect("v.itemNameDescription", "desc")
-      // only rows that actually carry stock — skip fully-drained batches
-      .andWhere("(b.balance <> 0 OR b.balanceOFR <> 0)")
+      .leftJoinAndSelect("v.realDescription", "rd")
       .orderBy("b.id", "DESC");
 
     if (params?.emptyOnly) {
@@ -88,24 +87,53 @@ export class WarehouseService {
     if (params?.q?.trim()) {
       const like = `%${params.q.trim()}%`;
       qb.andWhere(
-        "(desc.name LIKE :like OR desc.description LIKE :like OR v.invoiceDisplayName LIKE :like)",
+        "(desc.name LIKE :like OR desc.description LIKE :like OR rd.categoryName LIKE :like OR v.invoiceDisplayName LIKE :like)",
         { like },
       );
     }
 
-    const [rows, total] = await qb
-      .take(limit)
-      .skip((page - 1) * limit)
-      .getManyAndCount();
+    // Fetch matching batches WITHOUT filtering by the stored balance columns —
+    // those can be stale/out of sync with the real inventory_transaction ledger
+    // (confirmed: a unit item showed live balance 1 but stored balanceOFR 0).
+    // Cap at a safety limit since this now happens before pagination.
+    const allRows = await qb.take(5000).getMany();
 
-    const data = rows.map((b) => {
+    // Compute the REAL, live balance per batch the same way the rest of the
+    // app does (StockTab / real-variant-ledger) — summing inventory_transaction,
+    // not trusting ItemBatch.balance/balanceOFR directly.
+    const batchIds = allRows.map((b) => b.id);
+    const liveBalanceMap = new Map<number, number>();
+    if (batchIds.length) {
+      const placeholders = batchIds.map(() => "?").join(",");
+      const sumRows = await this.batchRepo.query(
+        `SELECT itemBatchId, SUM(COALESCE(quantityofr, 0)) AS bal
+         FROM inventory_transaction
+         WHERE itemBatchId IN (${placeholders})
+         GROUP BY itemBatchId`,
+        batchIds,
+      );
+      for (const r of sumRows) {
+        liveBalanceMap.set(Number(r.itemBatchId), Number(r.bal) || 0);
+      }
+    }
+
+    const withStock = allRows
+      .map((b) => ({ batch: b, liveBalance: liveBalanceMap.get(b.id) ?? 0 }))
+      .filter((x) => x.liveBalance !== 0);
+
+    const total = withStock.length;
+    const start = (page - 1) * limit;
+    const pageItems = withStock.slice(start, start + limit);
+
+    const data = pageItems.map(({ batch: b, liveBalance }) => {
       const v: any = b.itemVariant;
       const item = v?.thickness?.item;
       const desc = v?.itemNameDescription;
+      const rd = (v as any)?.realDescription;
       return {
         batchId: b.id,
         itemVariantId: v?.id ?? null,
-        itemName: desc?.name ?? desc?.description ?? v?.invoiceDisplayName ?? null,
+        itemName: desc?.name ?? desc?.description ?? rd?.categoryName ?? v?.invoiceDisplayName ?? null,
         type: item?.type ?? null,
         stockMode: item?.stockMode ?? null,
         thickness: v?.thickness?.thickness != null ? Number(v.thickness.thickness) : null,
@@ -116,8 +144,8 @@ export class WarehouseService {
         condition: b.condition,
         dateReceived: b.dateReceived,
         warehouse: b.warehouse,
-        balance: Number(b.balance || 0),
-        balanceOFR: Number(b.balanceOFR || 0),
+        balance: liveBalance,
+        balanceOFR: liveBalance,
       };
     });
 
