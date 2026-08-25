@@ -483,7 +483,13 @@ async createInvoice(data: any): Promise<Invoice> {
       return { usd: a, ll: a * rate };
     };
 
-    const salesRole = currencyCode === "USD" ? "Sales_USD" : "Sales_LL";
+    // S/RVR invoices billed at 0% VAT post to a separate, dedicated Sales
+    // account (configured under Account Roles) instead of the normal one.
+    const isZeroVatSalesLine =
+      (data.invoiceType === "S" || data.invoiceType === "RVR") && Number(data.vatPercentage) === 0;
+    const salesRole = isZeroVatSalesLine
+      ? (currencyCode === "USD" ? "SalesZeroVat_USD" : "SalesZeroVat_LL")
+      : (currencyCode === "USD" ? "Sales_USD" : "Sales_LL");
     const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
 
     const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
@@ -2848,8 +2854,14 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
       return { usd: a, ll: a * rate };
     };
 
+    const invoiceTypeForRole = (savedInvoice as any).invoiceType;
+    const isZeroVatSalesLine =
+      (invoiceTypeForRole === "S" || invoiceTypeForRole === "RVR") &&
+      Number((savedInvoice as any).vatPercentage) === 0;
     const salesRole = (isRTN || isRRVR)
       ? (currencyCode === "USD" ? "SalesReturn_USD" : "SalesReturn_LL")
+      : isZeroVatSalesLine
+      ? (currencyCode === "USD" ? "SalesZeroVat_USD" : "SalesZeroVat_LL")
       : (currencyCode === "USD" ? "Sales_USD" : "Sales_LL");
     const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
 
