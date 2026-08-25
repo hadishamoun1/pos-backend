@@ -566,7 +566,7 @@ async createInvoice(data: any): Promise<Invoice> {
     details.push(
       this.journalVoucherDetailRepo.create({
         accountId: salesAccount.id,
-        description: "مبيعات خاضعة للضريبة على القيمة المضافة",
+        description: isZeroVatSalesLine ? "مبيعات خارجية - تصدير" : "مبيعات خاضعة للضريبة على القيمة المضافة",
         currency: currencyCode,
         docNbr,
         ...addRateFields(),              // ✅ SAVED HERE
@@ -2950,7 +2950,11 @@ jvDetailsForInvoice.push(d1);
 // Sales/SalesReturn line: CR for sales, DR for returns
 const d2 = jvDetailRepo.create({
   accountId: (salesAccount as any).id,
-  description: isReturnDirection ? "مرتجع مبيعات" : "مبيعات خاضعة للضريبة على القيمة المضافة",
+  description: isReturnDirection
+    ? "مرتجع مبيعات"
+    : isZeroVatSalesLine
+    ? "مبيعات خارجية - تصدير"
+    : "مبيعات خاضعة للضريبة على القيمة المضافة",
   currency: currencyCode,
   docNbr,
   ...addRateFields(),
