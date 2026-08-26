@@ -215,6 +215,26 @@ export class ItemsController {
     });
   }
 
+  @Get('v1/sales-history')
+  @RequirePerms('inventory.view')
+  async getItemSalesHistory(
+    @Query('q') q?: string,
+    @Query('length') length?: string,
+    @Query('customerName') customerName?: string,
+    @Query('invoiceNumber') invoiceNumber?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.itemsService.getItemSalesHistory({
+      q,
+      length: length !== undefined ? Number(length) : undefined,
+      customerName,
+      invoiceNumber,
+      page: Number(page),
+      limit: Number(limit),
+    });
+  }
+
   @Get('v2/filtered-items')
   @RequirePerms('items.view')
   async getItemColumns(

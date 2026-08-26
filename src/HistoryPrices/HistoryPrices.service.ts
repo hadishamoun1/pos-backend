@@ -109,11 +109,11 @@ export class CsvImportService {
 async getCustomerHistory(
   customerName: string,
   page: number = 1,
-  limit: number = 10000000,
-  filters?: { itemName?: string; length?: number; width?: number }
+  limit: number = 50,
+  filters?: { itemName?: string; length?: string | number; width?: string | number; q?: string }
 ) {
   const safePage = Math.max(1, Number(page) || 1);
-  const safeLimit = Math.min(10000000, Math.max(1, Number(limit) || 50));
+  const safeLimit = Math.min(500, Math.max(1, Number(limit) || 50));
   const skip = (safePage - 1) * safeLimit;
 
   const conditions: string[] = [];
@@ -123,20 +123,35 @@ async getCustomerHistory(
   conditions.push("customerName = ?");
   params.push(customerName);
 
-  // ✅ Optional filters
-  if (filters?.itemName) {
-    conditions.push("itemName LIKE ?");
-    params.push(`%${filters.itemName}%`);
-  }
+  const q = (filters?.q ?? '').toString().trim();
 
-  if (filters?.length !== undefined && filters?.length !== null) {
-    conditions.push("length = ?");
-    params.push(filters.length);
-  }
+  if (q) {
+    // "Quick search while typing" mode: broad OR match, ignores the pinned
+    // itemName/dimensions filters below (mirrors the old client-side behavior
+    // where live typing bypassed the pinned filters entirely).
+    conditions.push(
+      "(itemName LIKE ? OR itemNumber LIKE ? OR invoiceNbr LIKE ? OR propertyCode LIKE ? OR itemBrand LIKE ?)"
+    );
+    const like = `%${q}%`;
+    params.push(like, like, like, like, like);
+  } else {
+    // Pinned filters
+    if (filters?.itemName) {
+      conditions.push("itemName LIKE ?");
+      params.push(`%${filters.itemName}%`);
+    }
 
-  if (filters?.width !== undefined && filters?.width !== null) {
-    conditions.push("width = ?");
-    params.push(filters.width);
+    // Substring match on the rounded value, matching the old client-side
+    // `.includes()` comparison (not strict equality) so partial dims still work.
+    if (filters?.length !== undefined && filters?.length !== null && filters?.length !== '') {
+      conditions.push("CAST(ROUND(length) AS CHAR) LIKE ?");
+      params.push(`%${filters.length}%`);
+    }
+
+    if (filters?.width !== undefined && filters?.width !== null && filters?.width !== '') {
+      conditions.push("CAST(ROUND(width) AS CHAR) LIKE ?");
+      params.push(`%${filters.width}%`);
+    }
   }
 
   const whereClause = `WHERE ${conditions.join(" AND ")}`;

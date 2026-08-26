@@ -67,6 +67,7 @@ async getCustomerHistory(
   @Query('itemName') itemName?: string,
   @Query('length') length?: string,
   @Query('width') width?: string,
+  @Query('q') q?: string,
 ) {
   return await this.csvImportService.getCustomerHistory(
     decodeURIComponent(customerName),
@@ -74,8 +75,9 @@ async getCustomerHistory(
     parseInt(limit),
     {
       itemName,
-      length: length ? parseFloat(length) : undefined,
-      width: width ? parseFloat(width) : undefined,
+      length,
+      width,
+      q,
     }
   );
 }
