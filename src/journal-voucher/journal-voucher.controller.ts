@@ -91,6 +91,16 @@ export class JournalVoucherController {
     return this.journalVoucherService.getVoucherSummary({ page: p, limit: l, q });
   }
 
+  // Scans journal vouchers for duplicate double-posted lines (same account
+  // + amounts posted twice under one voucher — nets "balanced" so it's easy
+  // to miss by eye) and vouchers whose lines don't actually balance.
+  // ?from=YYYY-MM-DD&to=YYYY-MM-DD optionally narrows the scan.
+  @Get('v1/audit')
+  @RequirePerms('journal.view')
+  async auditJournalVouchers(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.journalVoucherService.auditJournalVouchers({ from, to });
+  }
+
 // journal-voucher.controller.ts
 @Get("v1/search-by-seq")
 searchBySeq(@Query() query: any) {

@@ -2245,4 +2245,183 @@ async getCustomerActivityReport(params: {
   };
 }
 
+  // ────────────────────────────────────────────────────────────
+  // Journal Audit — surfaces the specific failure mode seen in practice:
+  // the same debit/credit line posted twice under the same voucher (e.g. a
+  // save/posting path that ran twice), which still nets to a "balanced"
+  // total so it's easy to miss just eyeballing the totals. Also flags
+  // vouchers whose lines don't actually balance at all, as a broader
+  // sanity check. Scans in JS rather than a grouped SQL query — this
+  // dataset is small enough that correctness/simplicity wins over a
+  // fancier HAVING-COUNT query across several decimal columns.
+  // ────────────────────────────────────────────────────────────
+  async auditJournalVouchers(params?: { from?: string; to?: string }) {
+    const qb = this.journalVoucherRepository
+      .createQueryBuilder('jv')
+      .leftJoinAndSelect('jv.details', 'detail')
+      .leftJoinAndSelect('detail.account', 'account')
+      .orderBy('jv.date', 'DESC')
+      .addOrderBy('jv.id', 'DESC');
+
+    if (params?.from) qb.andWhere('jv.date >= :from', { from: params.from });
+    if (params?.to) qb.andWhere('jv.date <= :to', { to: params.to });
+
+    const vouchers = await qb.getMany();
+
+    const duplicateGroups: any[] = [];
+    const unbalancedVouchers: any[] = [];
+    const duplicateVouchers: any[] = [];
+    const EPSILON = 0.01;
+
+    // Per-line signature reused by both the within-voucher and
+    // across-voucher duplicate checks below.
+    //
+    // - customerId/supplierId/alternativeCustomerId matter, not just
+    //   accountId — who the line is actually with is tracked in those
+    //   separate fields (e.g. a customer payment line's ledger account can
+    //   be the same generic receivable/cash account for every customer,
+    //   with only customerId distinguishing which one it actually is), and
+    //   the description is often just a generic boilerplate note ("cash
+    //   payment") reused across many different customers/suppliers, so it
+    //   doesn't discriminate either.
+    // - Every dr/cr amount pair the entity has is included, not just one —
+    //   which pair actually holds the real amount depends on the voucher
+    //   type (jvType). A "G – Opening / OFR only" voucher leaves dr/cr at 0
+    //   and puts the real amount in drOFR/crOFR; other types may do the
+    //   opposite, or only populate drUSD/crUSD, etc. Checking only one pair
+    //   already caused a false match once (two G-type invoices for the same
+    //   customer with completely different amounts, 969.10 vs 3,246.63,
+    //   both read as "0.00 vs 0.00" on the pair that was checked). Rather
+    //   than special-case each jvType's convention as it's discovered,
+    //   this includes all of them — harmless for a genuine duplicate (every
+    //   field matches identically either way), but closes off this whole
+    //   class of false negative/positive regardless of voucher type.
+    const lineSignature = (r: JournalVoucherDetail) =>
+      [
+        r.accountId,
+        r.customerId,
+        r.supplierId,
+        r.alternativeCustomerId,
+        Number(r.dr).toFixed(2),
+        Number(r.cr).toFixed(2),
+        Number(r.drUSD).toFixed(2),
+        Number(r.crUSD).toFixed(2),
+        Number(r.drLL).toFixed(2),
+        Number(r.crLL).toFixed(2),
+        Number(r.drOFR).toFixed(2),
+        Number(r.crOFR).toFixed(2),
+        Number(r.drUSDOFR).toFixed(2),
+        Number(r.crUSDOFR).toFixed(2),
+        Number(r.drLLOFR).toFixed(2),
+        Number(r.crLLOFR).toFixed(2),
+        (r.docNbr || '').trim(),
+        (r.description || '').trim(),
+      ].join('|');
+
+    // Cross-voucher duplicate detection — two entirely SEPARATE voucher
+    // records (different id/jvNumber) whose full set of lines is identical
+    // (same date, same accounts, same amounts, same descriptions, line
+    // order ignored). This is the "whole thing got saved as two different
+    // vouchers" version of the same underlying bug, rather than two copies
+    // living inside one voucher.
+    const voucherSignatures = new Map<string, JournalVoucher[]>();
+    for (const jv of vouchers) {
+      const rows = jv.details ?? [];
+      if (!rows.length) continue;
+      const sortedLineKeys = rows.map(lineSignature).sort();
+      const dateKey = jv.date ? String(jv.date).slice(0, 10) : '';
+      const signature = [dateKey, ...sortedLineKeys].join('~~');
+      if (!voucherSignatures.has(signature)) voucherSignatures.set(signature, []);
+      voucherSignatures.get(signature)!.push(jv);
+    }
+    for (const group of voucherSignatures.values()) {
+      if (group.length < 2) continue;
+      duplicateVouchers.push({
+        date: group[0].date,
+        lineCount: (group[0].details ?? []).length,
+        vouchers: group.map((v) => ({ journalVoucherId: v.id, jvNumber: v.jvNumber })),
+      });
+    }
+
+    for (const jv of vouchers) {
+      const rows = jv.details ?? [];
+      if (!rows.length) continue;
+
+      // Duplicate-VOUCHER detection (not duplicate-LINE) — checking single
+      // lines in isolation turned out to false-positive constantly on
+      // legitimate batch vouchers (e.g. a "monthly bank fees" JV covering
+      // many different bank accounts, where two unrelated fee lines just
+      // happen to share the same amount/account/description — same debit
+      // side, but paired with a *different* credit account each time, so
+      // they're real, separate transactions). A genuine double-post instead
+      // duplicates the WHOLE voucher: every single line reappears the same
+      // number of times. That's the much stronger, high-precision signal
+      // checked here — only fires when every distinct line in the voucher
+      // has the exact same repeat count (2 or more), i.e. the voucher is
+      // uniformly N copies of the same content, not just a couple of lines
+      // that coincidentally match inside an otherwise-varied batch.
+      const seen = new Map<string, JournalVoucherDetail[]>();
+      for (const r of rows) {
+        // Same customer/supplier-aware signature as the cross-voucher check
+        // above — see lineSignature's comment for why accountId+amount+
+        // description alone isn't enough.
+        if (!seen.has(lineSignature(r))) seen.set(lineSignature(r), []);
+        seen.get(lineSignature(r))!.push(r);
+      }
+      const groupSizes = Array.from(seen.values()).map((g) => g.length);
+      const wholeVoucherDuplicated =
+        groupSizes.length > 0 && groupSizes[0] >= 2 && groupSizes.every((n) => n === groupSizes[0]);
+
+      if (wholeVoucherDuplicated) {
+        for (const group of seen.values()) {
+          const first = group[0];
+          duplicateGroups.push({
+            journalVoucherId: jv.id,
+            jvNumber: jv.jvNumber,
+            date: jv.date,
+            docNbr: first.docNbr,
+            accountId: first.accountId,
+            accountNumber: first.account?.accountNumber ?? null,
+            accountName: first.account?.accountName ?? null,
+            description: first.description,
+            dr: Number(first.dr),
+            cr: Number(first.cr),
+            drOFR: Number(first.drOFR),
+            crOFR: Number(first.crOFR),
+            occurrences: group.length,
+            detailIds: group.map((g) => g.id),
+          });
+        }
+      }
+
+      // Balance check — must use a currency-NORMALIZED total (USD-
+      // equivalent, matching what the voucher's own "Total Debit/Credit
+      // (Base)" footer already computes), not the raw dr/cr or drOFR/crOFR
+      // fields. Those hold each line's amount in ITS OWN native currency
+      // (USD for a USD line, LL for an LL line), so a voucher mixing
+      // currencies — completely normal — would sum wildly "unbalanced"
+      // numbers that are really just USD and LL magnitudes added together.
+      const totalDrUSD = rows.reduce((s, r) => s + Number(r.drUSD || 0), 0);
+      const totalCrUSD = rows.reduce((s, r) => s + Number(r.crUSD || 0), 0);
+      if (Math.abs(totalDrUSD - totalCrUSD) > EPSILON) {
+        unbalancedVouchers.push({
+          journalVoucherId: jv.id,
+          jvNumber: jv.jvNumber,
+          date: jv.date,
+          lineCount: rows.length,
+          totalDrUSD: Number(totalDrUSD.toFixed(2)),
+          totalCrUSD: Number(totalCrUSD.toFixed(2)),
+          difference: Number((totalDrUSD - totalCrUSD).toFixed(2)),
+        });
+      }
+    }
+
+    return {
+      scannedVouchers: vouchers.length,
+      duplicateGroups,
+      unbalancedVouchers,
+      duplicateVouchers,
+    };
+  }
+
 }
