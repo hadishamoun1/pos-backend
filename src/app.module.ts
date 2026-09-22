@@ -53,6 +53,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
 import { RecordingModule } from './recording/recording.module';
+import { PdfRenderModule } from './pdf-render/pdf-render.module';
 import { FileBrowserModule } from './file-browser/file-browser.module';
 import { DelayModule } from './delay/delay.module';
 import { DelayMiddleware } from './delay/delay.middleware';
@@ -127,6 +128,7 @@ TypeOrmModule.forRootAsync({
     AlternativeCustomerModule,
     ActivityLogModule,
     RecordingModule,
+    PdfRenderModule,
     FileBrowserModule,
     DelayModule,
     WarehouseModule,
