@@ -1977,6 +1977,21 @@ if ((transfer as any).location === 'FJ') {
           this.startOfDay(new Date((transfer as any).date)),
         );
 
+        // Warehouse-to-warehouse moves don't change the unit cost, but the
+        // transfer line itself used to carry no cost at all (null), leaving
+        // any reader of TransferItem.averageCost with nothing — relying
+        // entirely on a fallback to the paired InventoryTransaction row.
+        // Write it here directly so the line is self-sufficient.
+        await manager.getRepository(TransferItem).update(
+          { id: (ti as any).id } as any,
+          {
+            averageCost: prevCosts.ofr,
+            averageCostVM: prevCosts.vm,
+            averageCostC: prevCosts.c,
+            averageCostCVM: prevCosts.cvm,
+          } as any,
+        );
+
         const toBatch = await this.ensureBatch(
           manager,
           variant.id,
@@ -2048,6 +2063,21 @@ if ((transfer as any).location === 'FJ') {
         const variant: any = batch.itemVariant;
 
         const { prev: prevCosts } = await this.getPrevQtyAndCosts(manager, variant.id, cut);
+
+        // Breakage/Defects don't change the unit cost of what remains, but
+        // the transfer line itself used to carry no cost at all (null),
+        // leaving any reader of TransferItem.averageCost with nothing —
+        // relying entirely on a fallback to the paired InventoryTransaction
+        // row. Write it here directly so the line is self-sufficient.
+        await manager.getRepository(TransferItem).update(
+          { id: (ti as any).id } as any,
+          {
+            averageCost: prevCosts.ofr,
+            averageCostVM: prevCosts.vm,
+            averageCostC: prevCosts.c,
+            averageCostCVM: prevCosts.cvm,
+          } as any,
+        );
 
         const txOut: any = manager.getRepository(InventoryTransaction).create({
           itemVariantId: variant.id,

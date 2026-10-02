@@ -737,8 +737,17 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
   const cache = new Map<number, AvgBundle>();
 
   for (const variantId of uniqVariantIds) {
-    // ✅ last event before this invoice date
-    const lastTx = await txRepo
+    // Walk backward through qualifying events (newest first) until one
+    // actually yields a real, non-zero cost. A Breakage/Defects/warehouse
+    // transfer event can be "the last event" chronologically without ever
+    // carrying its own cost (by design — it relies on a cost copied forward
+    // from whatever came before it), and if that copied value was ever
+    // empty, this used to just accept $0 for the sale instead of continuing
+    // to look further back. CANDIDATE_LIMIT bounds how far back we search so
+    // a variant with no cost history at all doesn't turn into an unbounded
+    // scan — it just falls back to null, same as before.
+    const CANDIDATE_LIMIT = 20;
+    const candidates = await txRepo
       .createQueryBuilder('tx')
       .where('tx.itemVariantId = :variantId', { variantId })
       .andWhere('tx.dateForEachInvoice <= :cut', { cut: cutStr })
@@ -751,9 +760,18 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
       )
       .orderBy('tx.dateForEachInvoice', 'DESC')
       .addOrderBy('tx.id', 'DESC')
-      .getOne();
+      .take(CANDIDATE_LIMIT)
+      .getMany();
 
     let bundle: AvgBundle = {
+      averageCost: null,
+      averageCostVM: null,
+      averageCostC: null,
+      averageCostCVM: null,
+    };
+
+    for (const lastTx of candidates) {
+    let candidateBundle: AvgBundle = {
       averageCost: null,
       averageCostVM: null,
       averageCostC: null,
@@ -767,7 +785,7 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
       });
 
       if (pii) {
-        bundle = {
+        candidateBundle = {
           averageCost: toNumOrNull((pii as any).averageCost),
           averageCostVM: toNumOrNull((pii as any).averageCostVM),
           averageCostC: toNumOrNull((pii as any).averageCostC),
@@ -843,7 +861,7 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
       }
 
       if (ti) {
-        bundle = {
+        candidateBundle = {
           averageCost: toNumOrNull((ti as any).averageCost),
           averageCostVM: toNumOrNull((ti as any).averageCostVM),
           averageCostC: toNumOrNull((ti as any).averageCostC),
@@ -851,12 +869,17 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
         };
       }
 
-      // Warehouse-to-warehouse transfers (WhMovedTo / ToShamoun etc.) never write
-      // averageCost onto the TransferItem — their cost lives on the InventoryTransaction
-      // as finalcostofr / finalcost (set by setTxCosts). Fall back to those when null.
-      if (!bundle.averageCost) {
-        bundle.averageCost   = toNumOrNull((lastTx as any).finalcostofr);
-        bundle.averageCostVM = toNumOrNull((lastTx as any).finalcost);
+      // Warehouse-to-warehouse transfers (WhMovedTo / ToShamoun etc.) and
+      // Breakage/Defects never wrote averageCost onto the TransferItem —
+      // their cost lives on the InventoryTransaction as finalcostofr /
+      // finalcost (set by setTxCosts). Fall back to those when null. (As of
+      // this fix those transfer types also write averageCost onto the
+      // TransferItem directly — see transfers.service.ts — so this fallback
+      // should rarely be needed now, but stays as a safety net for older
+      // rows created before that fix.)
+      if (!candidateBundle.averageCost) {
+        candidateBundle.averageCost   = toNumOrNull((lastTx as any).finalcostofr);
+        candidateBundle.averageCostVM = toNumOrNull((lastTx as any).finalcost);
       }
     } else if (lastTx?.inventoryCountId) {
       // ✅ last event = InventoryCount / OpeningCount
@@ -868,8 +891,8 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
       });
 
       if (ic) {
-        bundle.averageCost = toNumOrNull((ic as any).finalCostOfr);
-        bundle.averageCostVM = toNumOrNull((ic as any).finalCost);
+        candidateBundle.averageCost = toNumOrNull((ic as any).finalCostOfr);
+        candidateBundle.averageCostVM = toNumOrNull((ic as any).finalCost);
 
         // ✅ derive C / CVM from InventoryCount like your PO fallback (DESC-level weighted avg)
         const v = await vRepo.findOne({
@@ -905,12 +928,23 @@ private async fillSalesInvoiceAvgCostsFromLastEvent(
             const sumQtyVm = Number(raw?.sumQtyVm ?? 0);
             const sumValVm = Number(raw?.sumValVm ?? 0);
 
-            bundle.averageCostC = safeAvgOrNull(sumValOfr, sumQtyOfr);   // C uses OFR lane
-            bundle.averageCostCVM = safeAvgOrNull(sumValVm, sumQtyVm);   // CVM uses VM lane
+            candidateBundle.averageCostC = safeAvgOrNull(sumValOfr, sumQtyOfr);   // C uses OFR lane
+            candidateBundle.averageCostCVM = safeAvgOrNull(sumValVm, sumQtyVm);   // CVM uses VM lane
           }
         }
       }
     }
+
+    // A real purchase cost of exactly $0.00 doesn't happen in practice for
+    // this business — treat 0 the same as null (missing) and keep walking
+    // back to an older event, instead of silently costing this sale at $0.
+    const found =
+      Number.isFinite(candidateBundle.averageCost) && candidateBundle.averageCost !== 0;
+    if (found) {
+      bundle = candidateBundle;
+      break;
+    }
+    } // end for (const lastTx of candidates)
 
     cache.set(variantId, bundle);
   }
