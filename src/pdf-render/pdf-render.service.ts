@@ -1,5 +1,21 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import puppeteer, { Browser } from 'puppeteer';
+import type { Browser } from 'puppeteer';
+
+// Puppeteer ships as a pure ESM package (no CommonJS build) as of v24+,
+// which only loads via `require()` on Node ≥22.12 (the version that added
+// support for require() to synchronously load ESM). This backend compiles
+// to CommonJS and older Node builds crash with ERR_REQUIRE_ESM on a plain
+// `import puppeteer from 'puppeteer'` (TypeScript compiles that to
+// `require('puppeteer')`) — and even `await import('puppeteer')` doesn't
+// help, since TypeScript downlevels dynamic import() to
+// `Promise.resolve().then(() => require(...))` when targeting CommonJS,
+// which still hits the same wall. Routing it through `new Function(...)`
+// hides the import from TypeScript's downleveler entirely, so this performs
+// a genuine native dynamic import at runtime — which works on any Node
+// version with ESM support, not just ≥22.12.
+const importPuppeteer: () => Promise<typeof import('puppeteer')> = new Function(
+  'return import("puppeteer")',
+) as any;
 
 // Renders arbitrary print-ready HTML (already self-contained — its own
 // <style>, RTL/Arabic text, etc.) to a PDF using a real headless browser.
@@ -19,11 +35,13 @@ export class PdfRenderService implements OnModuleDestroy {
   // per-request would be slow and wasteful) — a fresh page/tab per render.
   private async getBrowser(): Promise<Browser> {
     if (!this.browserPromise) {
-      this.browserPromise = puppeteer
-        .launch({
-          headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        })
+      this.browserPromise = importPuppeteer()
+        .then((puppeteer) =>
+          puppeteer.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+          }),
+        )
         .catch((err) => {
           this.browserPromise = null;
           throw err;
