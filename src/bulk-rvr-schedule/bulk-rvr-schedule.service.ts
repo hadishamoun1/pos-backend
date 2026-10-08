@@ -84,6 +84,7 @@ export class BulkRvrScheduleService implements OnModuleInit {
 
     const today = new Date().toISOString().slice(0, 10);
     const unitPrice = Number(config.invoiceUnitPrice) || 0;
+    const invoiceExchangeRate = Number(config.invoiceExchangeRate) || 89500;
     const vatRate = 0.11;
     const vatAmount = parseFloat((unitPrice * vatRate).toFixed(2));
     const grandTotal = parseFloat((unitPrice + vatAmount).toFixed(2));
@@ -99,7 +100,7 @@ export class BulkRvrScheduleService implements OnModuleInit {
           totalWithoutVAT: unitPrice,
           totalVAT: vatAmount,
           grandTotal,
-          currencyRate: 1,
+          currencyRate: invoiceExchangeRate,
           vatPercentage: 11,
           items: [
             {

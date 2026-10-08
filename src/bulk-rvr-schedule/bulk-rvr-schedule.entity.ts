@@ -36,6 +36,9 @@ export class BulkRvrSchedule {
   @Column({ type: 'decimal', precision: 20, scale: 2, default: 0 })
   invoiceUnitPrice: number;
 
+  @Column({ type: 'decimal', precision: 20, scale: 2, default: 89500 })
+  invoiceExchangeRate: number;
+
   // Receivable fields
   @Column({ nullable: true })
   receivableCustomerId: number;
