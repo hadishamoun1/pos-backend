@@ -220,6 +220,29 @@ export class InvoiceController {
     });
   }
 
+  // Flags sales invoices whose currencyRate doesn't match the standard rate
+  // selectable in the POS page's exchange-rate dropdown (89,500 as of this
+  // writing — see EXCHANGE_RATE_OPTIONS in CustomerDetails.jsx) — catches
+  // invoices saved with a stale/broken rate (e.g. "1") like the one that
+  // prompted fixing that dropdown in the first place.
+  @Get("v1/exchange-rate-audit")
+  @RequirePerms("invoices.view")
+  async auditExchangeRates(
+    @Query("expectedRate") expectedRate?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+  ) {
+    const rate = expectedRate != null && expectedRate.trim() !== '' ? parseFloat(expectedRate) : 89500;
+    if (!Number.isFinite(rate)) {
+      throw new BadRequestException(`Invalid expectedRate: ${expectedRate}`);
+    }
+    return this.invoiceService.auditExchangeRates({
+      expectedRate: rate,
+      from: from?.trim() || undefined,
+      to: to?.trim() || undefined,
+    });
+  }
+
   @Get("v1/:id")
   @RequirePerms("invoices.view")
   async getInvoiceById(@Param("id") id: string): Promise<Invoice> {

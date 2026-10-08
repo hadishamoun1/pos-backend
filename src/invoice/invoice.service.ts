@@ -1360,7 +1360,56 @@ async getInvoiceReport(params: {
   };
 }
 
+// Flags sales invoices whose currencyRate doesn't match the standard rate
+// selectable in the POS page's exchange-rate dropdown — catches invoices
+// saved with a stale/broken rate (e.g. "1") like the one that prompted
+// fixing that dropdown (CustomerDetails.jsx) in the first place. Compares
+// as rounded numbers (not exact equality) since a rate can come back from
+// the DB as e.g. "89500.0000" — a real mismatch, not a formatting quirk.
+async auditExchangeRates(params: {
+  expectedRate: number;
+  from?: string;
+  to?: string;
+}) {
+  const { expectedRate, from, to } = params;
 
+  const qb = this.invoiceRepository
+    .createQueryBuilder('inv')
+    .leftJoinAndSelect('inv.customer', 'customer')
+    .leftJoinAndSelect('inv.alternativeCustomer', 'altCustomer')
+    .orderBy('inv.date', 'DESC')
+    .addOrderBy('inv.id', 'DESC');
+
+  if (from) qb.andWhere('inv.date >= :from', { from });
+  if (to) qb.andWhere('inv.date <= :to', { to });
+
+  const invoices = await qb.getMany();
+
+  const mismatches = invoices
+    .filter((inv) => {
+      const rate = Number(inv.currencyRate);
+      return Number.isFinite(rate) && Math.round(rate * 100) !== Math.round(expectedRate * 100);
+    })
+    .map((inv) => ({
+      invoiceId: inv.id,
+      invoiceNumber: inv.invoiceNumber,
+      date: inv.date,
+      invoiceType: inv.invoiceType,
+      grandTotal: Number(inv.grandTotal),
+      currencyRate: Number(inv.currencyRate),
+      expectedRate,
+      customerId: inv.customer?.id ?? null,
+      customerName:
+        (inv.alternativeCustomer as any)?.company ?? inv.customer?.customerName ?? null,
+    }));
+
+  return {
+    scannedInvoices: invoices.length,
+    expectedRate,
+    mismatchCount: mismatches.length,
+    mismatches,
+  };
+}
 
 
 
