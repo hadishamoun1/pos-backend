@@ -49,12 +49,12 @@ import { SecurityAlertModule } from './securityAlert/security-alert.module';
 import { PosControlsModule } from './pos-controls/pos-controls.module';
 import { BulkRvrScheduleModule } from './bulk-rvr-schedule/bulk-rvr-schedule.module';
 import { AlternativeCustomerModule } from './alternative-customer/alternative-customer.module';
+import { ShipsgoModule } from './shipsgo/shipsgo.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { ActivityLogInterceptor } from './activity-log/activity-log.interceptor';
 import { RecordingModule } from './recording/recording.module';
 import { PdfRenderModule } from './pdf-render/pdf-render.module';
-import { OrderCaptureModule } from './order-capture/order-capture.module';
 import { FileBrowserModule } from './file-browser/file-browser.module';
 import { DelayModule } from './delay/delay.module';
 import { DelayMiddleware } from './delay/delay.middleware';
@@ -127,10 +127,10 @@ TypeOrmModule.forRootAsync({
     PosControlsModule,
     BulkRvrScheduleModule,
     AlternativeCustomerModule,
+    ShipsgoModule,
     ActivityLogModule,
     RecordingModule,
     PdfRenderModule,
-    OrderCaptureModule,
     FileBrowserModule,
     DelayModule,
     WarehouseModule,
