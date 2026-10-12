@@ -1,19 +1,31 @@
 // src/Purchase-invoice/purchase-invoice.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository, } from '@nestjs/typeorm';
+import { Cron } from '@nestjs/schedule';
 import {
   Repository,
   In,
+  Not,
+  IsNull,
   EntityManager,
   SelectQueryBuilder,
   Brackets,
-  DeepPartial 
+  DeepPartial
 } from 'typeorm';
+import { ShipsgoService } from '../shipsgo/shipsgo.service';
+import { VesselTrackingService, NAV_STATUS } from '../vessel-tracking/vessel-tracking.service';
+import { BlExtractionService } from './bl-extraction.service';
 import { Transfer } from '../entities/inventory/transfer.entity';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { PurchaseInvoice } from '../entities/Purchase-Invoice/purchase-invoice.entity';
 import { PurchaseInvoiceItem } from '../entities/Purchase-Invoice/purchase-invoice-item.entity';
+import { PurchaseInvoiceDocument } from '../entities/Purchase-Invoice/purchase-invoice-document.entity';
+import { compressUploadedFile } from '../common/compress-uploaded-file';
 import { UnitPriceModalRow } from '../entities/Purchase-Invoice/unit-price-modal-row.entity';
+import { SharedCharge } from '../entities/Purchase-Invoice/shared-charge.entity';
+import { SharedChargeAllocation } from '../entities/Purchase-Invoice/shared-charge-allocation.entity';
 import { PurchaseVoucher } from '../entities/Vouchers/purchaseVoucher.entity';
 import { PurchaseVoucherDetail } from '../entities/Vouchers/purchaseVoucherDetails.entity';
 import { Account } from '../entities/account.entity';
@@ -34,6 +46,26 @@ import { computeDiff } from '../common/compute-diff';
 
 
 export type Chain = 'OFR' | 'VM';
+
+// Used to set a real Content-Type when streaming an attached file back —
+// without it, the browser has no idea what it's looking at and can render
+// garbage (e.g. Firefox trying to parse an untyped blob as XML).
+const EXTENSION_MIME_TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+
+function mimeTypeFromExtension(fileName: string): string {
+  const ext = path.extname(fileName).toLowerCase();
+  return EXTENSION_MIME_TYPES[ext] || 'application/octet-stream';
+}
 
 export const num = (v: any, fb = 0) =>
   Number.isFinite(Number(v)) ? Number(v) : fb;
@@ -56,8 +88,71 @@ export const getItemCost = (it: any, chain: Chain) =>
       )
     : num(it?.finalCost ?? it?.finalcost ?? it?.finalcostvm ?? 0);
 
+// ShipsGo's ocean status enum, bucketed into what it means for a purchase
+// invoice: null = still just booked, not sailing yet, so no invoice status
+// change; 'Shipped' = vessel is under way; 'Recieved' = it has arrived at the
+// discharge port. Mirrors the frontend's grouping in ShipmentTrackingMap.jsx.
+const SHIPSGO_STATUS_TO_INVOICE_STATUS: Record<string, 'Shipped' | 'Recieved' | null> = {
+  NEW: null,
+  BOOKED: null,
+  UNTRACKED: null,
+  INPROGRESS: 'Shipped',
+  LOADED: 'Shipped',
+  SAILING: 'Shipped',
+  ARRIVED: 'Recieved',
+  DISCHARGED: 'Recieved',
+};
+
+const INVOICE_STATUS_RANK: Record<string, number> = {
+  Proforma: -1,
+  Ordered: 0,
+  Shipped: 1,
+  Recieved: 2,
+};
+
+// Known discharge ports for arrival detection on vessel-tracked (charter/
+// bulk) invoices — deliberately just the handful actually used, rather than
+// a full geocoding lookup. Add ports here as needed.
+const KNOWN_PORTS: { name: string; lat: number; lon: number }[] = [
+  { name: 'Beirut Port', lat: 33.9025, lon: 35.5188 },
+  { name: 'Saida Port', lat: 33.5606, lon: 35.3706 },
+  { name: 'Tripoli Port', lat: 34.4489, lon: 35.8362 },
+];
+
+// Meters within which the vessel counts as "at" a known port. Deliberately
+// wide (250km) by request — every tracked shipment is inbound to one of
+// these ports as its actual final destination (no transit-through case to
+// worry about), and this radius needs to be generous enough to still catch
+// arrival even when a vessel's position feed has stalled well before the
+// real approach (seen in practice). Tradeoff accepted: this can mark an
+// invoice Recieved while the vessel is still up to a day or so out.
+const PORT_ARRIVAL_RADIUS_METERS = 250000;
+
+// Haversine distance in meters between two lat/lon points.
+function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function findArrivedPort(lat: number, lon: number): string | null {
+  for (const port of KNOWN_PORTS) {
+    if (distanceMeters(lat, lon, port.lat, port.lon) <= PORT_ARRIVAL_RADIUS_METERS) {
+      return port.name;
+    }
+  }
+  return null;
+}
+
 @Injectable()
 export class PurchaseInvoiceService {
+  private readonly logger = new Logger(PurchaseInvoiceService.name);
+
   constructor(
     @InjectRepository(PurchaseInvoice)
     private readonly invoiceRepo: Repository<PurchaseInvoice>,
@@ -98,8 +193,784 @@ export class PurchaseInvoiceService {
     @InjectRepository(Settings)
 private readonly settingsRepo: Repository<Settings>,
 
+    @InjectRepository(PurchaseInvoiceDocument)
+    private readonly documentRepo: Repository<PurchaseInvoiceDocument>,
+
+    @InjectRepository(SharedCharge)
+    private readonly sharedChargeRepo: Repository<SharedCharge>,
+
+    @InjectRepository(SharedChargeAllocation)
+    private readonly sharedChargeAllocationRepo: Repository<SharedChargeAllocation>,
+
 private readonly accountingResolver: AccountingResolverService,
+
+    private readonly shipsgoService: ShipsgoService,
+
+    private readonly vesselTrackingService: VesselTrackingService,
+
+    private readonly blExtractionService: BlExtractionService,
   ) {}
+
+  // ────────────────────────────────────────────────────────────
+  // ShipsGo shipment tracking link
+  // ────────────────────────────────────────────────────────────
+
+  // Minimal list of invoices that have a linked ShipsGo shipment, so the
+  // Shipment Tracking page can label each tracked shipment with its PO /
+  // invoice number instead of just the raw ShipsGo reference.
+  async getShipmentLinks() {
+    const invoices = await this.invoiceRepo.find({
+      where: { shipsgoShipmentId: Not(IsNull()) } as any,
+      relations: ['supplier'],
+    });
+    return invoices.map((inv) => ({
+      shipsgoShipmentId: inv.shipsgoShipmentId,
+      invoiceId: inv.id,
+      // Still just Ordered/Shipped invoices won't have a real invoiceNumber
+      // yet — fall back to the order number so the tracking page has
+      // something meaningful to show instead of blank.
+      invoiceNumber:
+        inv.invoiceNumber ||
+        (inv as any).orderNumber ||
+        (inv as any).proformaNumber ||
+        inv.supplierInvoiceNumber ||
+        null,
+      isOrderNumber: !inv.invoiceNumber && !!((inv as any).orderNumber || (inv as any).proformaNumber),
+      supplierName: (inv as any).supplier?.supplierName ?? null,
+      status: inv.status,
+    }));
+  }
+
+  // Same idea as getShipmentLinks() above, but for charter/bulk invoices
+  // tracked by vessel (AIS) instead of a ShipsGo booking — the Shipment
+  // Tracking map renders both lists as two marker types on the same map.
+  async getVesselLinks() {
+    const invoices = await this.invoiceRepo.find({
+      where: [
+        { vesselImo: Not(IsNull()) } as any,
+        { vesselMmsi: Not(IsNull()) } as any,
+      ],
+      relations: ['supplier'],
+    });
+    return invoices.map((inv) => ({
+      invoiceId: inv.id,
+      invoiceNumber:
+        inv.invoiceNumber ||
+        (inv as any).orderNumber ||
+        (inv as any).proformaNumber ||
+        inv.supplierInvoiceNumber ||
+        null,
+      isOrderNumber: !inv.invoiceNumber && !!((inv as any).orderNumber || (inv as any).proformaNumber),
+      supplierName: (inv as any).supplier?.supplierName ?? null,
+      status: inv.status,
+      vesselName: inv.vesselName,
+      vesselImo: inv.vesselImo,
+      vesselMmsi: inv.vesselMmsi,
+      lat: inv.vesselLastLat != null ? Number(inv.vesselLastLat) : null,
+      lon: inv.vesselLastLon != null ? Number(inv.vesselLastLon) : null,
+      navStatus: inv.vesselNavStatus,
+      speedKnots: inv.vesselSpeedKnots != null ? Number(inv.vesselSpeedKnots) : null,
+      arrivedAtPort: inv.vesselArrivedAtPort,
+      lastCheckedAt: inv.vesselLastCheckedAt,
+      positionAt: inv.vesselPositionAt,
+    }));
+  }
+
+  // Saves the uploaded scanned BL document and tries to auto-fill blNumber
+  // (or containerNumber / vesselName, depending on mode) from it via Claude.
+  // Extraction failing (bad scan, no key configured) never blocks the
+  // upload itself — the file is saved either way and the caller can see
+  // whether anything was actually found.
+  //
+  // mode/modeLocked mirror Summary View 2's tracking-method picker: once
+  // the user has deliberately chosen a method, this only ever writes the
+  // one field that method uses — even if Claude also happens to find a
+  // vessel name or container number on the document (e.g. a normal liner
+  // BL always has *a* "Vessel" field too; that's not what this invoice's
+  // vesselName means unless it's actually being tracked as a charter).
+  // Before a mode is chosen (a still-untouched invoice), it opportunistically
+  // fills whatever it finds, so the frontend can auto-detect a charter BL.
+  async uploadBlDocument(
+    id: number,
+    file: Express.Multer.File,
+    mode?: string,
+    modeLocked?: boolean,
+  ) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (!file) throw new BadRequestException('No file uploaded.');
+
+    // Clean up whatever was attached before, so we don't accumulate orphaned
+    // scans on disk every time a new one is uploaded.
+    if (invoice.blDocumentPath) {
+      const oldPath = path.join(process.cwd(), 'uploads', invoice.blDocumentPath);
+      fs.unlink(oldPath, () => {});
+    }
+
+    const { blNumber, found, vesselName, containerNumber, shippingLine } =
+      await this.blExtractionService.extractBlNumber(file.path, file.mimetype);
+
+    // Compressed *after* extraction runs against the original, full-quality
+    // scan — keeps Claude's reading accuracy unaffected while still shrinking
+    // what actually ends up stored long-term.
+    const compressed = await compressUploadedFile(file.path, file.mimetype);
+    invoice.blDocumentPath = path.join('bl-documents', path.basename(compressed.absolutePath));
+
+    if (modeLocked) {
+      if (mode === 'bl' && found && blNumber) {
+        invoice.blNumber = blNumber;
+      } else if (mode === 'container' && containerNumber) {
+        invoice.containerNumber = containerNumber;
+      } else if (mode === 'vessel' && vesselName && !invoice.vesselImo && !invoice.vesselMmsi) {
+        invoice.vesselName = vesselName;
+      }
+      // Shipping Line is shared by both liner modes (bl/container) rather
+      // than being mode-exclusive like the fields above — it's the same
+      // carrier hint either way, and matters for ShipsGo's booking-number
+      // lookup specifically (see trackShipment()'s carrier resolution).
+      if ((mode === 'bl' || mode === 'container') && shippingLine) {
+        invoice.shippingLine = shippingLine;
+      }
+    } else {
+      if (found && blNumber) {
+        invoice.blNumber = blNumber;
+      }
+      if (containerNumber) {
+        invoice.containerNumber = containerNumber;
+      }
+      if (shippingLine) {
+        invoice.shippingLine = shippingLine;
+      }
+      // Don't clobber a name the user already confirmed tracking against.
+      if (vesselName && !invoice.vesselName) {
+        invoice.vesselName = vesselName;
+      }
+    }
+
+    const saved = await this.invoiceRepo.save(invoice);
+    return { invoice: saved, extracted: { blNumber, found, vesselName, containerNumber, shippingLine } };
+  }
+
+  // Absolute path to the invoice's attached BL scan, for viewing/downloading.
+  async getBlDocumentAbsolutePath(
+    id: number,
+  ): Promise<{ absolutePath: string; fileName: string; mimeType: string }> {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice?.blDocumentPath) {
+      throw new NotFoundException('No BL document has been uploaded for this invoice.');
+    }
+    const absolutePath = path.join(process.cwd(), 'uploads', invoice.blDocumentPath);
+    if (!fs.existsSync(absolutePath)) {
+      throw new NotFoundException('The BL document file is missing on the server.');
+    }
+    const fileName = path.basename(invoice.blDocumentPath);
+    return { absolutePath, fileName, mimeType: mimeTypeFromExtension(fileName) };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Plain supporting documents (packing list, invoice copy, certificate of
+  // origin, etc.) — just stored and served back as-is, any number per
+  // invoice, no Claude extraction. Separate from blDocumentPath above.
+  // ────────────────────────────────────────────────────────────
+
+  async uploadDocuments(id: number, files: Express.Multer.File[]) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (!files?.length) throw new BadRequestException('No files uploaded.');
+
+    // Sequential (not Promise.all) so several large PDFs don't all spawn
+    // Ghostscript at once.
+    const docs: PurchaseInvoiceDocument[] = [];
+    for (const file of files) {
+      const compressed = await compressUploadedFile(file.path, file.mimetype);
+      docs.push(
+        this.documentRepo.create({
+          purchaseInvoiceId: id,
+          filePath: path.join('purchase-invoice-documents', path.basename(compressed.absolutePath)),
+          originalFileName: file.originalname,
+          mimeType: compressed.mimetype,
+          fileSize: compressed.size,
+        }),
+      );
+    }
+    return this.documentRepo.save(docs);
+  }
+
+  async listDocuments(id: number) {
+    return this.documentRepo.find({
+      where: { purchaseInvoiceId: id } as any,
+      order: { uploadedAt: 'DESC' },
+    });
+  }
+
+  async getDocumentAbsolutePath(
+    id: number,
+    docId: number,
+  ): Promise<{ absolutePath: string; fileName: string; mimeType: string }> {
+    const doc = await this.documentRepo.findOne({ where: { id: docId, purchaseInvoiceId: id } as any });
+    if (!doc) throw new NotFoundException('Document not found.');
+    const absolutePath = path.join(process.cwd(), 'uploads', doc.filePath);
+    if (!fs.existsSync(absolutePath)) {
+      throw new NotFoundException('The document file is missing on the server.');
+    }
+    return {
+      absolutePath,
+      fileName: doc.originalFileName,
+      mimeType: doc.mimeType || mimeTypeFromExtension(absolutePath),
+    };
+  }
+
+  async deleteDocument(id: number, docId: number) {
+    const doc = await this.documentRepo.findOne({ where: { id: docId, purchaseInvoiceId: id } as any });
+    if (!doc) throw new NotFoundException('Document not found.');
+    const absolutePath = path.join(process.cwd(), 'uploads', doc.filePath);
+    fs.unlink(absolutePath, () => {});
+    await this.documentRepo.remove(doc);
+    return { success: true };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Shared charges — a single cost (typically customs clearance) that
+  // actually covers two or more invoices, e.g. two separate orders that
+  // arrived on the same vessel and were cleared through customs together.
+  // Split proportionally by each invoice's grand amount (grandAmount),
+  // matching how the existing cost formulas already spread shipping/charges
+  // across items WITHIN one invoice — by dollar value, not SQM (see
+  // realCalculatePriceCFR/getCostPercentage in purchases-invoice.jsx). Each
+  // invoice's computed share is written as a normal charge row (the same
+  // UnitPriceModalRow shape a manually-entered charge uses), so it flows
+  // through the exact same downstream calculations — both the backend's
+  // SQM-weighted average-cost recompute and the frontend's live Summary 1
+  // final-cost display — with no separate calculation path of its own.
+  // ────────────────────────────────────────────────────────────
+
+  async createSharedCharge(dto: {
+    description: string;
+    totalAmount: number;
+    currency: string;
+    invoiceIds: number[];
+    chargeName?: string;
+    addToItemCost?: boolean;
+    shipping?: boolean;
+  }) {
+    const invoiceIds = Array.from(new Set((dto.invoiceIds || []).map((n) => Number(n))));
+    if (invoiceIds.length < 2) {
+      throw new BadRequestException('Select at least two invoices to split a shared charge across.');
+    }
+
+    const total = Number(dto.totalAmount);
+    if (!Number.isFinite(total) || total <= 0) {
+      throw new BadRequestException('Enter a valid total amount.');
+    }
+
+    if (!dto.description?.trim()) {
+      throw new BadRequestException('Enter a description for this shared charge.');
+    }
+
+    const invoices = await this.invoiceRepo.find({ where: { id: In(invoiceIds) } as any });
+    if (invoices.length !== invoiceIds.length) {
+      throw new BadRequestException('One or more selected invoices could not be found.');
+    }
+
+    // By value — proportional to each invoice's grand amount.
+    const weights = invoices.map((inv) => Number((inv as any).grandAmount || 0));
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    if (totalWeight <= 0) {
+      throw new BadRequestException(
+        'Selected invoices have no value to split proportionally by.',
+      );
+    }
+
+    // Round each share to 2dp; the last invoice absorbs the rounding
+    // remainder so the allocated amounts always sum exactly to the entered
+    // total.
+    const shares = weights.map((w) => Math.round((w / totalWeight) * total * 100) / 100);
+    const roundedSum = shares.reduce((a, b) => a + b, 0);
+    const diff = Math.round((total - roundedSum) * 100) / 100;
+    if (diff !== 0) shares[shares.length - 1] = Math.round((shares[shares.length - 1] + diff) * 100) / 100;
+
+    const chargeName = dto.chargeName?.trim() || dto.description.trim();
+    const addToItemCost = dto.addToItemCost ?? true;
+    const shipping = dto.shipping ?? false;
+
+    const sharedCharge = await this.sharedChargeRepo.save(
+      this.sharedChargeRepo.create({
+        description: dto.description.trim(),
+        totalAmount: total,
+        currency: dto.currency || 'USD',
+        allocationMethod: 'value',
+      } as any),
+    );
+
+    const results: any[] = [];
+
+    for (let i = 0; i < invoices.length; i++) {
+      const inv = invoices[i];
+      const amount = shares[i];
+
+      const row = await this.rowRepo.save(
+        this.rowRepo.create({
+          invoiceId: inv.id,
+          chargeName,
+          chargeType: 'amount',
+          value: amount,
+          valueOFR: amount,
+          currency: dto.currency || 'USD',
+          valueExch: 0,
+          valueExchOFR: 0,
+          addToItemCost,
+          shipping,
+        } as any),
+      );
+
+      await this.sharedChargeAllocationRepo.save(
+        this.sharedChargeAllocationRepo.create({
+          sharedChargeId: (sharedCharge as any).id,
+          purchaseInvoiceId: inv.id,
+          allocatedAmount: amount,
+          weight: weights[i],
+          unitPriceRowId: (row as any).id,
+        } as any),
+      );
+
+      await this.computeAndWriteCostsForInvoice(inv.id);
+
+      results.push({
+        invoiceId: inv.id,
+        invoiceNumber:
+          (inv as any).invoiceNumber || (inv as any).orderNumber || (inv as any).proformaNumber || null,
+        weight: weights[i],
+        allocatedAmount: amount,
+      });
+    }
+
+    return { sharedCharge, allocations: results };
+  }
+
+  // Every shared charge this invoice has ever been part of, plus which
+  // other invoices it was split with — for tracing where a charge row on
+  // this invoice actually came from.
+  async getSharedChargesForInvoice(invoiceId: number) {
+    const myAllocations = await this.sharedChargeAllocationRepo.find({
+      where: { purchaseInvoiceId: invoiceId } as any,
+      relations: ['sharedCharge'],
+    });
+    if (!myAllocations.length) return [];
+
+    const sharedChargeIds = Array.from(
+      new Set(myAllocations.map((a: any) => a.sharedChargeId)),
+    );
+    const allAllocations = await this.sharedChargeAllocationRepo.find({
+      where: { sharedChargeId: In(sharedChargeIds) } as any,
+      relations: ['purchaseInvoice'],
+    });
+
+    return myAllocations.map((a: any) => ({
+      sharedChargeId: a.sharedChargeId,
+      description: a.sharedCharge?.description,
+      totalAmount: Number(a.sharedCharge?.totalAmount || 0),
+      currency: a.sharedCharge?.currency,
+      myAllocatedAmount: Number(a.allocatedAmount || 0),
+      otherInvoices: allAllocations
+        .filter((x: any) => x.sharedChargeId === a.sharedChargeId && x.purchaseInvoiceId !== invoiceId)
+        .map((x: any) => ({
+          invoiceId: x.purchaseInvoiceId,
+          invoiceNumber:
+            x.purchaseInvoice?.invoiceNumber ||
+            x.purchaseInvoice?.orderNumber ||
+            x.purchaseInvoice?.proformaNumber ||
+            null,
+          allocatedAmount: Number(x.allocatedAmount || 0),
+        })),
+    }));
+  }
+
+  // Starts ShipsGo tracking for this invoice's BL number and/or container
+  // number — either is enough (ShipsGo accepts one, the other, or both).
+  // The container number matters when shipping via a freight forwarder:
+  // they hold the real BL and issue a house bill whose number ShipsGo can't
+  // resolve, but the container number is carrier-agnostic and always works.
+  // Manual/on-demand because each call spends 1 ShipsGo credit — never
+  // fired automatically.
+  async trackShipment(id: number) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    const blNumber = invoice.blNumber?.trim();
+    const containerNumber = invoice.containerNumber?.trim();
+    if (!blNumber && !containerNumber) {
+      throw new BadRequestException(
+        'Enter a BL number or a container number before starting shipment tracking.',
+      );
+    }
+    if (invoice.shipsgoShipmentId) {
+      throw new BadRequestException('This invoice is already linked to a ShipsGo shipment.');
+    }
+
+    const reference = invoice.invoiceNumber || invoice.supplierInvoiceNumber || `PI-${invoice.id}`;
+    // Tell ShipsGo which carrier this booking number belongs to when we can
+    // resolve one — without it, ShipsGo can only guess from the booking
+    // number's format, which works for a handful of major lines and can
+    // silently fail to resolve smaller/regional ones (e.g. SITC). The
+    // `carrier` field only accepts a code from ShipsGo's own list (a 422
+    // "invalid format" means whatever we sent wasn't in it) — free text like
+    // the shipping-line name typed on the invoice, or a made-up fallback,
+    // gets rejected outright. So: try to resolve a real code, and if we
+    // can't, omit the field rather than send something guaranteed-invalid —
+    // that's still strictly better than the 422 this used to cause.
+    const carrierCode = await this.resolveShipsgoCarrierCode(invoice.shippingLine);
+    const result = await this.shipsgoService.createShipment({
+      reference,
+      ...(blNumber ? { booking_number: blNumber } : {}),
+      ...(containerNumber ? { container_number: containerNumber } : {}),
+      ...(carrierCode ? { carrier: carrierCode } : {}),
+    });
+
+    // Actual shape is { message: "SUCCESS", shipment: { id, ... } } — kept
+    // the other fallbacks in case that ever changes.
+    const shipmentId =
+      result?.shipment?.id ?? result?.id ?? result?.shipmentId ?? result?.data?.id ?? null;
+    if (!shipmentId) {
+      throw new BadRequestException(
+        `ShipsGo didn't return a shipment id for this BL number. Raw response: ${JSON.stringify(result)}`,
+      );
+    }
+
+    invoice.shipsgoShipmentId = String(shipmentId);
+    invoice.shipsgoStatus = result?.shipment?.status ?? result?.status ?? null;
+    invoice.shipsgoLastCheckedAt = new Date();
+    await this.invoiceRepo.save(invoice);
+
+    return { invoice, shipsgoResponse: result };
+  }
+
+  // Looks up the shipping-line text typed on the invoice against ShipsGo's
+  // own carrier list and returns the matching code, or null if there's no
+  // confident match (blank field, or nothing close enough). The list's
+  // exact field names aren't nailed down from docs, so this reads
+  // defensively across a few likely shapes and logs the raw list once if
+  // none of them work, rather than silently resolving nothing forever.
+  private async resolveShipsgoCarrierCode(shippingLine: string | null | undefined): Promise<string | null> {
+    const query = shippingLine?.trim().toLowerCase();
+    if (!query) return null;
+
+    let carriers: any[];
+    try {
+      carriers = await this.shipsgoService.listCarriers();
+    } catch (err: any) {
+      this.logger.warn(`Couldn't fetch ShipsGo carrier list: ${err?.message || err}`);
+      return null;
+    }
+
+    if (!Array.isArray(carriers) || carriers.length === 0) {
+      this.logger.warn(`ShipsGo carrier list came back empty/unexpected: ${JSON.stringify(carriers)}`);
+      return null;
+    }
+
+    const nameOf = (c: any) => String(c?.name ?? c?.carrier_name ?? c?.carrierName ?? '').toLowerCase();
+    const codeOf = (c: any) => c?.code ?? c?.scac ?? c?.carrier_code ?? c?.carrierCode ?? null;
+
+    const exact = carriers.find((c) => nameOf(c) === query);
+    const partial = exact || carriers.find((c) => nameOf(c).includes(query) || query.includes(nameOf(c)));
+    const code = partial ? codeOf(partial) : null;
+
+    if (!code) {
+      this.logger.warn(
+        `No ShipsGo carrier match for "${shippingLine}" — tracking without a carrier hint. Sample of list: ${JSON.stringify(carriers.slice(0, 3))}`,
+      );
+    }
+    return code ? String(code) : null;
+  }
+
+  // Re-applies the current invoice status + a fresh ShipsGo status check, on
+  // demand (e.g. a "Refresh" button) rather than waiting for the next cron tick.
+  async syncShipmentStatus(id: number) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (!invoice.shipsgoShipmentId) {
+      throw new BadRequestException('This invoice has no linked ShipsGo shipment yet.');
+    }
+    await this.applyShipsgoStatusToInvoice(invoice);
+    return this.invoiceRepo.findOne({ where: { id } as any });
+  }
+
+  // Unlinks this invoice from its ShipsGo shipment — for when the wrong BL
+  // was tracked by mistake. Best-effort deletes the shipment on ShipsGo's
+  // side too (frees the credit/slot); if that fails (already gone, API
+  // hiccup) we still clear our own link rather than leave the user stuck.
+  async untrackShipment(id: number) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (!invoice.shipsgoShipmentId) {
+      throw new BadRequestException('This invoice has no linked ShipsGo shipment to remove.');
+    }
+
+    try {
+      await this.shipsgoService.deleteShipment(invoice.shipsgoShipmentId);
+    } catch (err: any) {
+      this.logger.warn(
+        `Couldn't delete ShipsGo shipment ${invoice.shipsgoShipmentId} (invoice ${id}): ${err?.message || err}. Unlinking locally anyway.`,
+      );
+    }
+
+    invoice.shipsgoShipmentId = null;
+    invoice.shipsgoStatus = null;
+    invoice.shipsgoLastCheckedAt = null;
+    await this.invoiceRepo.save(invoice);
+    return invoice;
+  }
+
+  // Checks ShipsGo for every invoice with a linked shipment that hasn't been
+  // marked Recieved yet, and promotes Ordered -> Shipped -> Recieved as the
+  // shipment sails and arrives. Runs the same `update()` path a manual save
+  // would, so the receiving side effects (inventory tx, cost, JVs) fire
+  // exactly like they would if a person had flipped the status by hand.
+  @Cron('*/30 * * * *')
+  async autoSyncShipmentStatuses() {
+    const invoices = await this.invoiceRepo.find({
+      where: {
+        shipsgoShipmentId: Not(IsNull()),
+        status: Not('Recieved'),
+      } as any,
+    });
+
+    for (const invoice of invoices) {
+      try {
+        await this.applyShipsgoStatusToInvoice(invoice);
+      } catch (err: any) {
+        this.logger.error(
+          `Shipment status sync failed for invoice ${invoice.id} (shipsgo ${invoice.shipsgoShipmentId}): ${err?.message || err}`,
+        );
+      }
+    }
+  }
+
+  private async applyShipsgoStatusToInvoice(invoice: PurchaseInvoice) {
+    const shipment = await this.shipsgoService.getShipment(invoice.shipsgoShipmentId);
+    // createShipment()'s response turned out to wrap the object as
+    // { shipment: {...} } rather than returning it directly — checking the
+    // same shape here too in case getShipment() follows the same pattern.
+    const rawStatus: string | undefined =
+      shipment?.status ?? shipment?.shipment?.status ?? shipment?.data?.status;
+
+    // Logged every check (not just failures) — the only way to tell whether
+    // a shipment that "hasn't moved" is genuinely stalled on ShipsGo's own
+    // end (their last-updated timestamp, if any, staying frozen) versus
+    // something in our own parsing not finding the right field, the same
+    // ambiguity that turned out to matter for VesselAPI.
+    this.logger.log(
+      `ShipsGo check for invoice ${invoice.id} (shipment ${invoice.shipsgoShipmentId}): rawStatus=${rawStatus} fetched_at=${new Date().toISOString()} raw=${JSON.stringify(shipment)}`,
+    );
+
+    if (!rawStatus) return;
+
+    const mapped = SHIPSGO_STATUS_TO_INVOICE_STATUS[rawStatus] ?? null;
+    const shouldPromote =
+      mapped && INVOICE_STATUS_RANK[mapped] > (INVOICE_STATUS_RANK[invoice.status] ?? 0);
+
+    if (!shouldPromote) {
+      // Nothing to promote — just record what we saw so the next tick can
+      // skip work if the status hasn't actually changed.
+      await this.invoiceRepo.update(invoice.id, {
+        shipsgoStatus: rawStatus,
+        shipsgoLastCheckedAt: new Date(),
+      } as any);
+      return;
+    }
+
+    // Re-submit the invoice's current items/unit-price rows unchanged, with
+    // only the status (and shipsgo bookkeeping columns) updated — mirrors
+    // exactly what a manual save with the status dropdown flipped would send.
+    const existing = await this.invoiceRepo.findOne({
+      where: { id: invoice.id } as any,
+      relations: ['items'],
+    });
+    if (!existing) return;
+    const unitPriceRows = await this.rowRepo.find({ where: { invoiceId: invoice.id } as any });
+
+    await this.update(invoice.id, {
+      status: mapped,
+      shipsgoStatus: rawStatus,
+      shipsgoLastCheckedAt: new Date(),
+      // update() has an etd-specific quirk: a payload that omits `etd`
+      // entirely still gets it coerced to null. Round-trip the current
+      // value explicitly so this status-only sync can't wipe it.
+      etd: existing.etd,
+      items: existing.items as any,
+      unitPriceRows: unitPriceRows as any,
+    } as any);
+
+    this.logger.log(`Invoice ${invoice.id} auto-set to ${mapped} (ShipsGo status: ${rawStatus})`);
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Vessel (AIS) tracking — for charter-party/bulk shipments that have no
+  // liner carrier/booking number at all, only a named vessel off the BL.
+  // Separate from ShipsGo above: this only ever auto-promotes as far as
+  // 'Shipped', since raw AIS position can't confirm cargo was unloaded —
+  // the final flip to 'Recieved' stays a manual confirmation.
+  // ────────────────────────────────────────────────────────────
+
+  // Name search is ambiguous (vessel names aren't unique) — returns
+  // candidates for the frontend to show a picker; nothing is saved yet.
+  async searchVessel(id: number, name: string) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (!name?.trim()) {
+      throw new BadRequestException('Enter a vessel name to search for.');
+    }
+    return this.vesselTrackingService.searchByName(name.trim());
+  }
+
+  // Saves the user's picked vessel (from searchVessel's results) onto the
+  // invoice and does an initial position fetch right away.
+  async trackVessel(
+    id: number,
+    selection: { imo?: string; mmsi?: string; name: string },
+  ) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (!selection?.imo && !selection?.mmsi) {
+      throw new BadRequestException('No vessel selected — pick one from the search results first.');
+    }
+
+    invoice.vesselName = selection.name;
+    invoice.vesselImo = selection.imo ? String(selection.imo) : null;
+    invoice.vesselMmsi = selection.mmsi ? String(selection.mmsi) : null;
+    await this.invoiceRepo.save(invoice);
+
+    await this.applyVesselStatusToInvoice(invoice);
+    return this.invoiceRepo.findOne({ where: { id } as any });
+  }
+
+  // On-demand re-check of the tracked vessel's position (e.g. a "Refresh"
+  // button) rather than waiting for the next cron tick.
+  async syncVesselPosition(id: number) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (!invoice.vesselImo && !invoice.vesselMmsi) {
+      throw new BadRequestException('This invoice has no tracked vessel yet.');
+    }
+    await this.applyVesselStatusToInvoice(invoice);
+    return this.invoiceRepo.findOne({ where: { id } as any });
+  }
+
+  // Unlinks the tracked vessel — for when the wrong one was picked from the
+  // name-search results. Leaves vesselName as-is so the field goes back to
+  // editable/re-searchable instead of forcing the user to retype it; there's
+  // no remote side to clean up here (unlike ShipsGo, VesselAPI is just a
+  // stateless position lookup, nothing was "created").
+  async untrackVessel(id: number) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (!invoice.vesselImo && !invoice.vesselMmsi) {
+      throw new BadRequestException('This invoice has no tracked vessel to remove.');
+    }
+
+    invoice.vesselImo = null;
+    invoice.vesselMmsi = null;
+    invoice.vesselLastLat = null;
+    invoice.vesselLastLon = null;
+    invoice.vesselNavStatus = null;
+    invoice.vesselSpeedKnots = null;
+    invoice.vesselArrivedAtPort = null;
+    invoice.vesselArrivedAt = null;
+    invoice.vesselLastCheckedAt = null;
+    await this.invoiceRepo.save(invoice);
+    return invoice;
+  }
+
+  // Checks every invoice with a tracked vessel that hasn't been marked
+  // Recieved yet, refreshes its position, and promotes Ordered -> Shipped
+  // once it's under way. Runs once a day (not every 30 min like the ShipsGo
+  // sync) — a multi-week voyage doesn't need half-hourly checks, and
+  // VesselAPI bills per request, unlike ShipsGo's flat per-shipment pricing,
+  // so cutting the polling frequency directly cuts the monthly cost here.
+  @Cron('0 6 * * *')
+  async autoSyncVesselPositions() {
+    const invoices = await this.invoiceRepo.find({
+      where: [
+        { vesselImo: Not(IsNull()), status: Not('Recieved') } as any,
+        { vesselMmsi: Not(IsNull()), status: Not('Recieved') } as any,
+      ],
+    });
+
+    for (const invoice of invoices) {
+      try {
+        await this.applyVesselStatusToInvoice(invoice);
+      } catch (err: any) {
+        this.logger.error(
+          `Vessel position sync failed for invoice ${invoice.id} (vessel ${invoice.vesselName}): ${err?.message || err}`,
+        );
+      }
+    }
+  }
+
+  private async applyVesselStatusToInvoice(invoice: PurchaseInvoice) {
+    const idType = invoice.vesselImo ? 'imo' : 'mmsi';
+    const id = invoice.vesselImo || invoice.vesselMmsi;
+    if (!id) return;
+
+    const position = await this.vesselTrackingService.getPosition(idType, id);
+    if (!position) return;
+
+    // Distance-only: originally also required a stopped/anchored reading,
+    // but a stalled AIS feed (seen in practice — a vessel's position/speed
+    // can freeze on the provider's end for days) means that reading may
+    // just never refresh even after real arrival. Being within range of a
+    // known port is treated as arrived on its own.
+    const arrivedPort = findArrivedPort(position.latitude, position.longitude);
+    const isMoored = Boolean(arrivedPort);
+
+    await this.invoiceRepo.update(invoice.id, {
+      vesselLastLat: position.latitude,
+      vesselLastLon: position.longitude,
+      vesselNavStatus: position.nav_status ?? null,
+      vesselSpeedKnots: position.sog ?? null,
+      vesselLastCheckedAt: new Date(),
+      // VesselAPI's own reported AIS fix time — the honest freshness
+      // signal, distinct from vesselLastCheckedAt (when we merely asked).
+      vesselPositionAt: position.timestamp ? new Date(position.timestamp) : null,
+      ...(isMoored && !invoice.vesselArrivedAt
+        ? { vesselArrivedAtPort: arrivedPort, vesselArrivedAt: new Date() }
+        : {}),
+    } as any);
+
+    // Auto-promote Ordered -> Shipped once it's under way, and all the way
+    // to Recieved once it's anchored/moored at a known discharge port — per
+    // request, mirrors how the ShipsGo path auto-sets Recieved on arrival.
+    // Note this posts inventory/accounting the moment it's near port, not
+    // when the cargo is actually confirmed offloaded.
+    const mapped: 'Shipped' | 'Recieved' | null = isMoored
+      ? 'Recieved'
+      : position.nav_status === NAV_STATUS.UNDER_WAY_USING_ENGINE
+      ? 'Shipped'
+      : null;
+
+    const shouldPromote =
+      mapped && INVOICE_STATUS_RANK[mapped] > (INVOICE_STATUS_RANK[invoice.status] ?? 0);
+
+    if (!shouldPromote) return;
+
+    const existing = await this.invoiceRepo.findOne({
+      where: { id: invoice.id } as any,
+      relations: ['items'],
+    });
+    if (!existing) return;
+    const unitPriceRows = await this.rowRepo.find({ where: { invoiceId: invoice.id } as any });
+
+    await this.update(invoice.id, {
+      status: mapped,
+      etd: existing.etd,
+      items: existing.items as any,
+      unitPriceRows: unitPriceRows as any,
+    } as any);
+
+    this.logger.log(
+      `Invoice ${invoice.id} auto-set to ${mapped} (vessel ${invoice.vesselName}${
+        mapped === 'Recieved' ? ` arrived at ${arrivedPort}` : ' under way'
+      })`,
+    );
+  }
 
   // ────────────────────────────────────────────────────────────
   // helpers
@@ -1186,6 +2057,39 @@ const creditLine = this.journalVoucherDetailRepo.create(
   return String(setting.year).slice(-2);
 }
 
+// getNextPurchaseInvoiceNumber() reads MAX(invoiceNumber)+1 with no
+// row-level locking — under real concurrency (e.g. two invoices on the same
+// vessel both auto-promoting to Recieved around the same tracking-sync
+// moment) two calls can read the same "next" number before either commits,
+// crashing the second save with a duplicate-key error and leaving that
+// invoice stuck at its old status. Retrying with a freshly recomputed
+// number on that specific collision is simpler and safer here than
+// restructuring this to a locked sequence table, since invoiceNumber is the
+// only thing ever raced on and the JV rebuild that depends on it only runs
+// after this save succeeds.
+private async saveInvoiceAssigningNumberIfNeeded(
+  invoice: PurchaseInvoice,
+  opts: { needsNewNumber: boolean; type: 'S' | 'G' | 'SR' | 'RVR' },
+  maxAttempts = 5,
+): Promise<PurchaseInvoice> {
+  if (!opts.needsNewNumber) {
+    return this.invoiceRepo.save(invoice as any);
+  }
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    (invoice as any).invoiceNumber = await this.getNextPurchaseInvoiceNumber(opts.type);
+    try {
+      return await this.invoiceRepo.save(invoice as any);
+    } catch (err: any) {
+      const code = err?.code ?? err?.driverError?.code;
+      if (code !== 'ER_DUP_ENTRY' || attempt === maxAttempts) throw err;
+      this.logger.warn(
+        `Purchase invoice number collision (attempt ${attempt}/${maxAttempts}) on ${(invoice as any).invoiceNumber} — retrying with a fresh number.`,
+      );
+    }
+  }
+  throw new Error('Failed to assign a unique purchase invoice number after retries.');
+}
+
 private async getNextPurchaseInvoiceNumber(type: 'S' | 'G' | 'SR' | 'RVR'): Promise<string> {
   const yy = await this.getActiveYearYY();
 
@@ -1196,7 +2100,13 @@ private async getNextPurchaseInvoiceNumber(type: 'S' | 'G' | 'SR' | 'RVR'): Prom
     .createQueryBuilder('pi')
     .select(['pi.id', 'pi.invoiceNumber'])
     .where('pi.invoiceNumber LIKE :p', { p: `${prefix}%` })
-    .orderBy('pi.id', 'DESC')
+    // Ordered by the number itself, not id — numbers are assigned when an
+    // invoice reaches Recieved, which can happen out of creation order (two
+    // invoices promoted around the same time via async tracking syncs), so
+    // whichever row has the highest id isn't reliably the one with the
+    // highest sequence number. Same-width zero-padded prefix means string
+    // DESC order matches numeric order.
+    .orderBy('pi.invoiceNumber', 'DESC')
     .getOne();
 
   let lastSeq = 0;
@@ -1210,18 +2120,86 @@ private async getNextPurchaseInvoiceNumber(type: 'S' | 'G' | 'SR' | 'RVR'): Prom
   return `${prefix}${String(nextSeq).padStart(3, '0')}`; // PV25-001
 }
 
+// Independent sequence for invoices that haven't been Recieved yet — same
+// shape as getNextPurchaseInvoiceNumber but its own prefix/counter, so it
+// never collides with (or consumes from) the PV/PVG series.
+private async getNextOrderNumber(): Promise<string> {
+  const yy = await this.getActiveYearYY();
+  const prefix = `ORD${yy}-`;
+
+  const last = await this.invoiceRepo
+    .createQueryBuilder('pi')
+    .select(['pi.id', 'pi.orderNumber'])
+    .where('pi.orderNumber LIKE :p', { p: `${prefix}%` })
+    .orderBy('pi.orderNumber', 'DESC')
+    .getOne();
+
+  let lastSeq = 0;
+  if ((last as any)?.orderNumber?.startsWith(prefix)) {
+    const part = (last as any).orderNumber.replace(prefix, '');
+    const n = parseInt(part, 10);
+    if (Number.isFinite(n)) lastSeq = n;
+  }
+
+  const nextSeq = lastSeq + 1;
+  return `${prefix}${String(nextSeq).padStart(3, '0')}`; // ORD25-001
+}
+
+// Own sequence for invoices starting at Proforma — separate from
+// orderNumber/invoiceNumber, same shape as getNextOrderNumber.
+private async getNextProformaNumber(): Promise<string> {
+  const yy = await this.getActiveYearYY();
+  const prefix = `PRO${yy}-`;
+
+  const last = await this.invoiceRepo
+    .createQueryBuilder('pi')
+    .select(['pi.id', 'pi.proformaNumber'])
+    .where('pi.proformaNumber LIKE :p', { p: `${prefix}%` })
+    .orderBy('pi.proformaNumber', 'DESC')
+    .getOne();
+
+  let lastSeq = 0;
+  if ((last as any)?.proformaNumber?.startsWith(prefix)) {
+    const part = (last as any).proformaNumber.replace(prefix, '');
+    const n = parseInt(part, 10);
+    if (Number.isFinite(n)) lastSeq = n;
+  }
+
+  const nextSeq = lastSeq + 1;
+  return `${prefix}${String(nextSeq).padStart(3, '0')}`; // PRO25-001
+}
+
   // ────────────────────────────────────────────────────────────
   // CREATE (no recompute functions, no applyPurchaseCostsForInvoice)
   // ────────────────────────────────────────────────────────────
 async create(data: Partial<PurchaseInvoice>) {
   const type = (data as any).type ?? 'S';
   (data as any).supplierInvoiceNumber = (data as any).invoiceNumber ?? null;
-  (data as any).invoiceNumber = await this.getNextPurchaseInvoiceNumber(type);
+
+  // The real PV/PVG purchase-invoice number is reserved for invoices that
+  // have actually been Recieved. Before that: Proforma-status invoices get
+  // their own PRO number (see getNextProformaNumber); anything else not yet
+  // Recieved (created directly as Ordered/Shipped) gets an ORD order number
+  // instead (see getNextOrderNumber). Either way, only promoted to a PV
+  // number in update() when it reaches Recieved.
+  const needsNewInvoiceNumber = (data as any).status === 'Recieved';
+  if (needsNewInvoiceNumber) {
+    (data as any).invoiceNumber = null;
+  } else if ((data as any).status === 'Proforma') {
+    (data as any).proformaNumber = await this.getNextProformaNumber();
+    (data as any).invoiceNumber = null;
+  } else {
+    (data as any).orderNumber = await this.getNextOrderNumber();
+    (data as any).invoiceNumber = null;
+  }
   if ((data as any).etd === '' || (data as any).etd === undefined) (data as any).etd = null;
 
   // 1) save invoice + items
   const invoice = this.invoiceRepo.create(data as any);
-  const savedInvoice = await this.invoiceRepo.save(invoice as any);
+  const savedInvoice = await this.saveInvoiceAssigningNumberIfNeeded(invoice as any, {
+    needsNewNumber: needsNewInvoiceNumber,
+    type,
+  });
 
   // 2) record inventory tx + batch updates + variant totals
   if ((savedInvoice as any).status === 'Recieved') {
@@ -1417,6 +2395,183 @@ invoiceNbTax: this.intOrNull(row.invoiceNbTax),
 }
 
   // ────────────────────────────────────────────────────────────
+  // Proforma -> Order splitting. A Proforma can be split into several
+  // separate orders shipped at different times — this reports each
+  // Proforma line's original quantity/sqm alongside however much has
+  // already been claimed by earlier orders, so the "Create Order" picker
+  // can show what's actually still available per line.
+  // ────────────────────────────────────────────────────────────
+  async getProformaItemsWithRemaining(proformaId: number) {
+    const proforma = await this.invoiceRepo.findOne({
+      where: { id: proformaId } as any,
+      relations: ['items', 'items.itemVariant', 'items.itemVariant.thickness', 'items.itemVariant.thickness.item'],
+    });
+    if (!proforma) throw new NotFoundException(`PurchaseInvoice ${proformaId} not found`);
+    if ((proforma as any).status !== 'Proforma') {
+      throw new BadRequestException(`Invoice ${proformaId} is not a Proforma.`);
+    }
+
+    const orders = await this.invoiceRepo.find({
+      where: { sourceProformaId: proformaId } as any,
+      relations: ['items'],
+    });
+
+    // Sum quantity/sqm already claimed per item VARIANT (not per proforma
+    // item row id) — editing the proforma deletes and recreates its item
+    // rows with fresh ids (see update()), which would orphan an id-based
+    // link on every edit. itemVariantId is stable across that, since it
+    // identifies the actual item, not a row.
+    const claimed = new Map<number, { quantity: number; sqm: number }>();
+    for (const order of orders) {
+      for (const item of ((order as any).items ?? []) as any[]) {
+        const key = item.itemVariantId;
+        if (!key) continue;
+        const prev = claimed.get(key) ?? { quantity: 0, sqm: 0 };
+        claimed.set(key, {
+          quantity: prev.quantity + Number(item.quantity || 0),
+          sqm: prev.sqm + Number(item.sqm || 0),
+        });
+      }
+    }
+
+    // Same field shape/derivation the main items table already uses (see
+    // purchases-invoice.jsx's fullInvoice.items mapping) — itemName/type
+    // come off thickness.item, origin/length/width/sheetsPerBox off the
+    // variant directly — so the picker reads like the same table, not a
+    // different one.
+    return ((proforma as any).items ?? []).map((it: any) => {
+      const used = claimed.get(it.itemVariantId) ?? { quantity: 0, sqm: 0 };
+      const quantity = Number(it.quantity || 0);
+      const sqm = Number(it.sqm || 0);
+      const variant = it.itemVariant;
+      const thicknessRow = variant?.thickness;
+      const baseItem = thicknessRow?.item;
+      const thicknessNum = Number(thicknessRow?.thickness);
+      const thickness = Number.isFinite(thicknessNum) ? thicknessNum : null;
+
+      return {
+        proformaItemId: it.id,
+        itemVariantId: it.itemVariantId,
+        itemName: baseItem?.itemName ?? `Item #${it.itemVariantId}`,
+        type: baseItem?.type ?? null,
+        origin: variant?.origin ?? null,
+        length: variant?.length != null ? Number(variant.length) : null,
+        width: variant?.width != null ? Number(variant.width) : null,
+        sheetsPerBox: variant?.sheetsPerBox ?? null,
+        thickness,
+        unitPrice: Number(it.unitPrice || 0),
+        sqmOfr: Number(it.sqmOfr || 0),
+        totalAmount: Number(it.totalAmount || 0),
+        totalOFR: it.totalOFR != null ? Number(it.totalOFR) : null,
+        priceOFR: it.priceOFR != null ? Number(it.priceOFR) : null,
+        numberOfContainers: it.numberOfContainers ?? null,
+        quantity,
+        sqm,
+        orderedQuantity: used.quantity,
+        orderedSqm: used.sqm,
+        remainingQuantity: Math.max(0, quantity - used.quantity),
+        remainingSqm: Math.max(0, sqm - used.sqm),
+      };
+    });
+  }
+
+  // Spin off an Ordered invoice from a Proforma — the Proforma itself is
+  // never touched (no status mutation, nothing recomputed on it); this
+  // creates a brand new, separate invoice record with its own orderNumber,
+  // containing only the selected lines/quantities, linked back via
+  // sourceProformaId (and each item's sourceProformaItemId). A Proforma can
+  // have more than one order spun off it — e.g. splitting quantities across
+  // shipments — so selections are validated against what's actually still
+  // remaining on each line.
+  async createOrderFromProforma(
+    proformaId: number,
+    selections: { proformaItemId: number; quantity: number; sqm: number }[],
+  ): Promise<PurchaseInvoice> {
+    if (!selections?.length) {
+      throw new BadRequestException('Select at least one item to include in the order.');
+    }
+
+    const proforma = await this.invoiceRepo.findOne({
+      where: { id: proformaId } as any,
+      relations: ['items'],
+    });
+    if (!proforma) throw new NotFoundException(`PurchaseInvoice ${proformaId} not found`);
+    if ((proforma as any).status !== 'Proforma') {
+      throw new BadRequestException(
+        `Invoice ${proformaId} is "${(proforma as any).status}", not Proforma — only a Proforma can be used to create an order.`,
+      );
+    }
+
+    const remaining = await this.getProformaItemsWithRemaining(proformaId);
+    const remainingByItemId = new Map<number, any>(remaining.map((r: any) => [r.proformaItemId, r]));
+    const sourceItemsById = new Map(
+      (((proforma as any).items ?? []) as any[]).map((it) => [it.id, it]),
+    );
+
+    const items = selections.map((sel) => {
+      const sourceItem = sourceItemsById.get(sel.proformaItemId);
+      if (!sourceItem) {
+        throw new BadRequestException(`Proforma has no item ${sel.proformaItemId}.`);
+      }
+      const avail = remainingByItemId.get(sel.proformaItemId);
+      const qty = Number(sel.quantity || 0);
+      const sqm = Number(sel.sqm || 0);
+      if (qty <= 0 && sqm <= 0) {
+        throw new BadRequestException(`Enter a quantity for item ${sel.proformaItemId}.`);
+      }
+      // Small epsilon for float rounding, not a hard exact-match requirement.
+      if (avail && (qty > avail.remainingQuantity + 0.01 || sqm > avail.remainingSqm + 0.01)) {
+        throw new BadRequestException(
+          `${avail.itemName}: only ${avail.remainingSqm} sqm / ${avail.remainingQuantity} remaining, but ${sqm} sqm / ${qty} was requested.`,
+        );
+      }
+
+      const unitPrice = Number(sourceItem.unitPrice || 0);
+      const priceOFR = sourceItem.priceOFR != null ? Number(sourceItem.priceOFR) : null;
+
+      return {
+        itemVariantId: sourceItem.itemVariantId,
+        sourceProformaItemId: sourceItem.id,
+        quantity: qty,
+        sqm,
+        sqmOfr: sqm, // no separate OFR-quantity input in the picker; mirrors sqm
+        unitPrice,
+        totalAmount: Number((unitPrice * sqm).toFixed(2)),
+        euroPrice: sourceItem.euroPrice ?? null,
+        euroOFRPrice: sourceItem.euroOFRPrice ?? null,
+        priceOFR,
+        totalOFR: priceOFR != null ? Number((priceOFR * sqm).toFixed(2)) : null,
+        numberOfContainers: sourceItem.numberOfContainers ?? null,
+      };
+    });
+
+    const grandTotal = items.reduce((sum, it) => sum + it.totalAmount, 0);
+
+    const payload: Partial<PurchaseInvoice> = {
+      supplierId: (proforma as any).supplierId,
+      date: (proforma as any).date,
+      poDate: (proforma as any).poDate,
+      jvDate: (proforma as any).jvDate,
+      expectedArrivalDate: (proforma as any).expectedArrivalDate,
+      type: (proforma as any).type,
+      returnBaseType: (proforma as any).returnBaseType,
+      vatPercent: (proforma as any).vatPercent,
+      vatAmount: Number(((Number((proforma as any).vatPercent) || 0) / 100 * grandTotal).toFixed(2)),
+      grandAmount: grandTotal,
+      exchangeRate: (proforma as any).exchangeRate,
+      shippingLine: (proforma as any).shippingLine,
+      etd: (proforma as any).etd,
+      numberOfContainers: (proforma as any).numberOfContainers,
+      warehouse: (proforma as any).warehouse,
+      status: 'Ordered',
+      sourceProformaId: proformaId,
+      items: items as any,
+    } as any;
+
+    return this.create(payload);
+  }
+
+  // ────────────────────────────────────────────────────────────
   // PURCHASE RETURN
   // ────────────────────────────────────────────────────────────
 async createPurchaseReturn(data: any): Promise<PurchaseInvoice> {
@@ -1429,7 +2584,7 @@ async createPurchaseReturn(data: any): Promise<PurchaseInvoice> {
     .createQueryBuilder('pi')
     .select(['pi.id', 'pi.invoiceNumber'])
     .where('pi.invoiceNumber LIKE :p', { p: `${prefix}%` })
-    .orderBy('pi.id', 'DESC')
+    .orderBy('pi.invoiceNumber', 'DESC')
     .getOne();
 
   let lastSeq = 0;
@@ -1505,9 +2660,20 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
     ...headerPayload
   } = (data as any) || {};
 
+  const statusBeforeUpdate = (existing as any).status;
+
   if (headerPayload.etd === "" || headerPayload.etd === undefined) (headerPayload as any).etd = null;
   Object.assign(existing as any, headerPayload);
   (existing as any).unitPriceRows = undefined;
+
+  // The real PV/PVG invoice number is only assigned once goods are actually
+  // Recieved (see create()) — assigned at save time below (see
+  // saveInvoiceAssigningNumberIfNeeded), before the JV rebuild further down,
+  // since that copies invoiceNumber into jvNumber/docNbr.
+  const needsNewInvoiceNumber =
+    (existing as any).status === 'Recieved' &&
+    statusBeforeUpdate !== 'Recieved' &&
+    !(existing as any).invoiceNumber;
 
   // upsert items
   const incomingItems = (incomingItemsPayload ?? []).map((it: any) => ({ ...it }));
@@ -1541,7 +2707,10 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
   });
 
   // save header
-  const savedInvoice = await this.invoiceRepo.save(existing as any);
+  const savedInvoice = await this.saveInvoiceAssigningNumberIfNeeded(existing as any, {
+    needsNewNumber: needsNewInvoiceNumber,
+    type: (existing as any).type,
+  });
 
   // delete ALL old txs for previous items (safe)
   if (prevItemIds.length) {
@@ -1707,12 +2876,31 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
       .select([
         'invoice.id',
         'invoice.invoiceNumber',
+        'invoice.orderNumber',
+        'invoice.proformaNumber',
+        'invoice.sourceProformaId',
+        'invoice.status',
         'invoice.date',
         'invoice.grandAmount',
+        'invoice.isCompleted',
         'supplier.supplierName',
       ])
       .orderBy('invoice.id', 'DESC')
       .getMany();
+  }
+
+  // Manual mark — see the isCompleted column comment on the entity. Only
+  // meaningful on a Proforma; kept simple (no item-diff/recompute side
+  // effects unlike the main update() path) since it touches nothing else.
+  async setProformaCompleted(id: number, completed: boolean) {
+    const invoice = await this.invoiceRepo.findOne({ where: { id } as any });
+    if (!invoice) throw new NotFoundException(`PurchaseInvoice ${id} not found`);
+    if (invoice.status !== 'Proforma') {
+      throw new BadRequestException('Only a Proforma invoice can be marked completed.');
+    }
+    invoice.isCompleted = completed;
+    await this.invoiceRepo.save(invoice);
+    return invoice;
   }
 
   // ────────────────────────────────────────────────────────────

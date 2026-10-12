@@ -20,6 +20,14 @@ export class PurchaseInvoiceItem {
   @Column()
   invoiceId: number;
 
+  // Set on an order-invoice item created via "Create Order" from a Proforma
+  // — points back to the specific Proforma line it was split off from, so
+  // the picker can show how much of that line has already been ordered
+  // across however many separate orders (a Proforma can be split into
+  // several orders shipped separately).
+  @Column({ type: 'int', nullable: true })
+  sourceProformaItemId: number | null;
+
   @ManyToOne(() => ItemVariant)
   @JoinColumn({ name: 'itemVariantId' })
   itemVariant: ItemVariant;
