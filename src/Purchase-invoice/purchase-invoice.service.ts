@@ -2881,6 +2881,7 @@ async update(id: number, data: Partial<PurchaseInvoice>) {
         'invoice.sourceProformaId',
         'invoice.status',
         'invoice.date',
+        'invoice.poDate',
         'invoice.grandAmount',
         'invoice.isCompleted',
         'supplier.supplierName',
