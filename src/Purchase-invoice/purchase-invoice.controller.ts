@@ -54,7 +54,12 @@ export class PurchaseInvoiceController {
 
   @Post()
   @RequirePerms('purchases.create')
-  async create(@Body() body: any) {
+  async create(@Body() body: any, @Req() req: Request) {
+    // Same rule as guardManualStatusChange(): creating an invoice straight
+    // as Recieved is an admin-only manual override (Purchase Returns exempt).
+    if (body?.status === 'Recieved' && body?.type !== 'PR' && (req as any).user?.role !== 'ADMIN') {
+      throw new ForbiddenException('Only an admin can manually set an invoice to Recieved.');
+    }
     return this.service.create(body);
   }
 
@@ -387,19 +392,12 @@ export class PurchaseInvoiceController {
 
     if ((current as any).status === nextStatus) return; // no actual change
 
-    // Safety valve for vessel (AIS) tracked invoices: automation drives this
-    // by default, but AIS data quality is out of our control (a provider's
-    // feed for a given vessel can just stall — seen in practice), and there
-    // needs to be a way to manually finish Shipped -> Recieved if it never
-    // fires. Shipped stays auto-only; only the final step is overridable —
-    // and only by an admin, so it's not something any purchases.update user
-    // can casually flip.
-    const isVesselTracked = Boolean((current as any).vesselImo || (current as any).vesselMmsi);
-    if (isVesselTracked && nextStatus === 'Recieved' && (current as any).status === 'Shipped') {
+    // Recieved can be set by hand as a manual override (e.g. tracking data
+    // stalled or the shipment was never tracked) — but only by an admin,
+    // since it books the stock and JVs. Shipped stays tracking-only.
+    if (nextStatus === 'Recieved') {
       if ((req as any).user?.role !== 'ADMIN') {
-        throw new ForbiddenException(
-          'Only an admin can manually confirm this shipment as Recieved.',
-        );
+        throw new ForbiddenException('Only an admin can manually set an invoice to Recieved.');
       }
       return;
     }
