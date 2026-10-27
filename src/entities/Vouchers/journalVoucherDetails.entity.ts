@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { Account } from '../account.entity';
 import { CurrencyRate } from '../currencyRate.entity';
@@ -128,6 +129,8 @@ export class JournalVoucherDetail {
   @Column({ type: 'decimal', precision: 50, scale: 2, default: 0 })
   exRateUSD: number;
 
+  // Indexed: voucher list/search joins lines to sales invoices by this.
+  @Index()
   @Column({ type: 'varchar', nullable: true })
   docNbr: string;
 

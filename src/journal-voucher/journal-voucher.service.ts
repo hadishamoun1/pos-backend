@@ -377,7 +377,15 @@ async getVoucherSummary(params?: {
   // -----------------------------
   // 1) COUNT DISTINCT (total)
   // -----------------------------
-  const countQb = applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'));
+  // The joins are only needed to match a search term — with no search they
+  // just fan every voucher out across its lines and the docNbr->invoice
+  // string join, which made opening the list scan the whole ledger.
+  const baseQb = () => {
+    const qb = this.journalVoucherRepository.createQueryBuilder('jv');
+    return qRaw ? applyJoins(qb) : qb;
+  };
+
+  const countQb = baseQb();
   applySearch(countQb);
 
   const countRow = await countQb
@@ -395,13 +403,13 @@ async getVoucherSummary(params?: {
   // -----------------------------
   // 2) PAGE OF IDS
   // -----------------------------
-  const idQb = applyJoins(this.journalVoucherRepository.createQueryBuilder('jv'))
-    .select('jv.id', 'id');
+  const idQb = baseQb().select('jv.id', 'id');
 
   applySearch(idQb);
 
   const idRows = await idQb
     .groupBy('jv.id')
+    .addGroupBy('jv.date')
     .orderBy('jv.date', 'DESC')
     .addOrderBy('jv.id', 'DESC')
     .skip((page - 1) * limit)
@@ -1567,89 +1575,80 @@ async searchBySeq(params?: {
     );
   };
 
-  // ✅ NEW: text filter (customer/supplier/account)
-  const applyTextFilter = (qb: SelectQueryBuilder<JournalVoucher>) => {
+  // Count + page-of-ids filter with targeted IN/EXISTS subqueries instead of
+  // the full applyJoins() fan-out (every voucher x every line x the
+  // docNbr->invoice string join), which made each search scan the whole
+  // ledger. applyJoins() is still used below, but only for the page's own
+  // ids (to build each row's label).
+  const hasReceipt = `EXISTS (SELECT 1 FROM receipt_entries fre WHERE fre.journalVoucherId = jv.id)`;
+  const hasReceiptInvoice = `EXISTS (SELECT 1 FROM receipt_entries fre JOIN invoices fi ON fi.id = fre.invoiceId WHERE fre.journalVoucherId = jv.id)`;
+  const hasDocInvoice = `EXISTS (SELECT 1 FROM journal_voucher_details fd JOIN invoices fi ON fi.invoiceNumber = fd.docNbr WHERE fd.journalVoucherId = jv.id)`;
+  const hasPurchase = `EXISTS (SELECT 1 FROM purchase_invoices fp WHERE fp.id = jv.purchaseInvoiceId)`;
+
+  const applyFastFilters = (qb: SelectQueryBuilder<JournalVoucher>) => {
+    applySeqFilter(qb);
+
     const raw = (params?.q ?? "").trim();
-    if (!raw) return;
-
-    const q = raw.replace(/\s+/g, " ");
-    const like = `%${q}%`;
-    const digits = q.replace(/\D+/g, "");
-
-    qb.andWhere(
-      new Brackets((w) => {
-        // customers (receipt + invoice)
-        w.where("rcust.customerName LIKE :like", { like })
-          .orWhere("sinvCust.customerName LIKE :like", { like })
-          .orWhere("dinvCust.customerName LIKE :like", { like })
-
-          // supplier
-          .orWhere("psup.supplierName LIKE :like", { like })
-
-          // account
-          .orWhere("acc.accountName LIKE :like", { like })
-          .orWhere("acc.accountNumber LIKE :like", { like });
-
-        // optional exact account number match if digits exist
-        if (digits) {
-          w.orWhere("acc.accountNumber = :accNum", { accNum: digits });
-        }
-      })
-    );
-  };
-
-  // ✅ Type filter
-  const applyTypeFilter = (qb: SelectQueryBuilder<JournalVoucher>) => {
-    if (!normType) return;
-
-    if (normType === "INVOICE") {
+    if (raw) {
+      const like = `%${raw.replace(/\s+/g, " ")}%`;
+      const digits = raw.replace(/\D+/g, "");
       qb.andWhere(
         new Brackets((w) => {
-          w.where("sinv.id IS NOT NULL")
-            .orWhere("dinv.id IS NOT NULL")
-            .orWhere("pinv.id IS NOT NULL");
-        })
+          // receipt customer
+          w.where(
+            `jv.id IN (SELECT fre.journalVoucherId FROM receipt_entries fre JOIN customers fc ON fc.id = fre.customerId WHERE fc.customerName LIKE :like)`,
+            { like },
+          )
+            // receipt -> invoice customer
+            .orWhere(
+              `jv.id IN (SELECT fre.journalVoucherId FROM receipt_entries fre JOIN invoices fi ON fi.id = fre.invoiceId JOIN customers fc ON fc.id = fi.customerId WHERE fc.customerName LIKE :like)`,
+              { like },
+            )
+            // docNbr -> invoice customer
+            .orWhere(
+              `jv.id IN (SELECT fd.journalVoucherId FROM customers fc JOIN invoices fi ON fi.customerId = fc.id JOIN journal_voucher_details fd ON fd.docNbr = fi.invoiceNumber WHERE fc.customerName LIKE :like)`,
+              { like },
+            )
+            // supplier
+            .orWhere(
+              `jv.purchaseInvoiceId IN (SELECT fp.id FROM purchase_invoices fp JOIN suppliers fs ON fs.id = fp.supplierId WHERE fs.supplierName LIKE :like)`,
+              { like },
+            )
+            // account name / number
+            .orWhere(
+              `jv.id IN (SELECT fd.journalVoucherId FROM accounts fa JOIN journal_voucher_details fd ON fd.accountId = fa.id WHERE fa.accountName LIKE :like OR fa.accountNumber LIKE :like${digits ? " OR fa.accountNumber = :accNum" : ""})`,
+              digits ? { like, accNum: digits } : { like },
+            );
+        }),
       );
-      return;
     }
 
-    if (normType === "RECEIVABLE") {
-      qb.andWhere("re.id IS NOT NULL")
-        .andWhere("sinv.id IS NULL")
-        .andWhere("dinv.id IS NULL")
-        .andWhere("pinv.id IS NULL");
-      return;
-    }
-
-    if (normType === "JV") {
-      qb.andWhere("re.id IS NULL")
-        .andWhere("sinv.id IS NULL")
-        .andWhere("dinv.id IS NULL")
-        .andWhere("pinv.id IS NULL");
-      return;
-    }
-
-    if (normType === "PURCHASE") {
-      qb.andWhere("pinv.id IS NOT NULL").andWhere("jv.jvType != 'PR'");
-      return;
-    }
-
-    if (normType === "PURCHASE_RETURN") {
-      qb.andWhere("pinv.id IS NOT NULL").andWhere("jv.jvType = 'PR'");
-      return;
+    if (normType === "INVOICE") {
+      qb.andWhere(`(${hasReceiptInvoice} OR ${hasDocInvoice} OR ${hasPurchase})`);
+    } else if (normType === "RECEIVABLE") {
+      qb.andWhere(hasReceipt)
+        .andWhere(`NOT ${hasReceiptInvoice}`)
+        .andWhere(`NOT ${hasDocInvoice}`)
+        .andWhere(`NOT ${hasPurchase}`);
+    } else if (normType === "JV") {
+      qb.andWhere(`NOT ${hasReceipt}`)
+        .andWhere(`NOT ${hasDocInvoice}`)
+        .andWhere(`NOT ${hasPurchase}`);
+    } else if (normType === "PURCHASE") {
+      qb.andWhere(hasPurchase).andWhere("jv.jvType != 'PR'");
+    } else if (normType === "PURCHASE_RETURN") {
+      qb.andWhere(hasPurchase).andWhere("jv.jvType = 'PR'");
     }
   };
 
   // -----------------------------
   // 1) COUNT
   // -----------------------------
-  const countQb = applyJoins(this.journalVoucherRepository.createQueryBuilder("jv"));
-  applySeqFilter(countQb);
-  applyTextFilter(countQb);   // ✅ NEW
-  applyTypeFilter(countQb);
+  const countQb = this.journalVoucherRepository.createQueryBuilder("jv");
+  applyFastFilters(countQb);
 
   const countRow = await countQb
-    .select("COUNT(DISTINCT jv.id)", "cnt")
+    .select("COUNT(jv.id)", "cnt")
     .getRawOne();
 
   const total = Number(countRow?.cnt || 0);
@@ -1663,19 +1662,15 @@ async searchBySeq(params?: {
   // -----------------------------
   // 2) PAGE OF IDS
   // -----------------------------
-  const idQb = applyJoins(this.journalVoucherRepository.createQueryBuilder("jv"))
+  const idQb = this.journalVoucherRepository.createQueryBuilder("jv")
     .select("jv.id", "id");
-
-  applySeqFilter(idQb);
-  applyTextFilter(idQb);      // ✅ NEW
-  applyTypeFilter(idQb);
+  applyFastFilters(idQb);
 
   const idRows = await idQb
-    .groupBy("jv.id")
     .orderBy("jv.date", "DESC")
     .addOrderBy("jv.id", "DESC")
-    .skip((page - 1) * limit)
-    .take(limit)
+    .offset((page - 1) * limit)
+    .limit(limit)
     .getRawMany();
 
   const ids = (idRows || []).map((r: any) => Number(r.id)).filter(Boolean);
