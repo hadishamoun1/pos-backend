@@ -55,8 +55,12 @@ export class InventoryTransactionController {
 
   @Get("activity")
   @RequirePerms("inventoryTx.view")
-  async getActivity() {
-    return this.inventoryTransactionService.getActivity();
+  async getActivity(@Query('page') page?: string, @Query('pageSize') pageSize?: string) {
+    // Previously ignored these, so "Load more" on the unfiltered list kept
+    // returning page 1 again.
+    const p = Math.max(1, parseInt(page ?? '1', 10) || 1);
+    const size = Math.min(500, Math.max(1, parseInt(pageSize ?? '50', 10) || 50));
+    return this.inventoryTransactionService.getActivity(p, size);
   }
 
   @Get("activity/v1/filtered")

@@ -186,9 +186,21 @@ async getActivity(
     .leftJoinAndSelect('tx.transfer', 'transfer')
     .orderBy('tx.id', 'DESC');
 
-  // totals & count
-  const allForTotals = await qb.clone().getMany();
-  const totalRecords = allForTotals.length;
+  // totals & count — computed in SQL on the transactions table alone. This
+  // used to load every transaction (with all the joins above) just to count
+  // and sum them, which made opening the page slower the more history there
+  // was. Warehouse moves don't count toward quantity/sqm (same rule as
+  // formatTx below).
+  const isMove = "tx.transactionType IN ('WhMovedFrom', 'WhMovedTo')";
+  const totalsRaw = await this.inventoryTransactionRepository
+    .createQueryBuilder('tx')
+    .select('COUNT(tx.id)', 'cnt')
+    .addSelect(`COALESCE(SUM(CASE WHEN ${isMove} THEN 0 ELSE COALESCE(tx.quantity, 0) END), 0)`, 'totalQuantity')
+    .addSelect('COALESCE(SUM(tx.quantityofr), 0)', 'totalQuantityOFR')
+    .addSelect(`COALESCE(SUM(CASE WHEN ${isMove} THEN 0 ELSE COALESCE(tx.sqm, 0) END), 0)`, 'totalSQM')
+    .addSelect('COALESCE(SUM(tx.sqmofr), 0)', 'totalSQMOFR')
+    .getRawOne();
+  const totalRecords = Number(totalsRaw?.cnt ?? 0);
 
   // paged slice
   const pageData = await qb
@@ -283,15 +295,12 @@ async getActivity(
   };
 
   const data = pageData.map(formatTx);
-  const totals = allForTotals.map(formatTx).reduce(
-    (acc, cur) => ({
-      totalQuantity: acc.totalQuantity + cur.quantity,
-      totalQuantityOFR: acc.totalQuantityOFR + cur.quantityofr,
-      totalSQM: acc.totalSQM + cur.sqm,
-      totalSQMOFR: acc.totalSQMOFR + cur.sqmofr,
-    }),
-    { totalQuantity: 0, totalQuantityOFR: 0, totalSQM: 0, totalSQMOFR: 0 },
-  );
+  const totals = {
+    totalQuantity: Number(totalsRaw?.totalQuantity ?? 0),
+    totalQuantityOFR: Number(totalsRaw?.totalQuantityOFR ?? 0),
+    totalSQM: Number(totalsRaw?.totalSQM ?? 0),
+    totalSQMOFR: Number(totalsRaw?.totalSQMOFR ?? 0),
+  };
 
   this.gateway.sendActivityUpdate(data);
   return { data, totals, totalRecords };
