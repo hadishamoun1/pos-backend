@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In, IsNull ,DeepPartial,Brackets, QueryRunner } from 'typeorm';
+import { Repository, DataSource, In, IsNull ,DeepPartial,Brackets, QueryRunner, EntityManager } from 'typeorm';
 import { ItemVariant } from '../entities/inventory/itemVariant.entity';
 import { InventoryTransaction } from '../entities/inventory/inventoryTransactions.entity';
 import { Invoice } from '../entities/invoice.entity';
@@ -1411,6 +1411,56 @@ async auditExchangeRates(params: {
   };
 }
 
+// Bulk fix for the exchange-rate audit: sets currencyRate on each invoice and
+// rebuilds its JV exactly as saving it from the POS page would. Totals, items
+// and inventory are untouched — the rate only feeds the JV's USD/LL columns.
+// One transaction per invoice so a bad one doesn't block the rest.
+async bulkUpdateExchangeRate(invoiceIds: number[], newRate: number) {
+  const updated: { invoiceId: number; invoiceNumber: string; oldRate: number }[] = [];
+  const failed: { invoiceId: number; invoiceNumber?: string; error: string }[] = [];
+
+  for (const invoiceId of invoiceIds) {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    let invoiceNumber: string | undefined;
+    try {
+      const invoiceRepo = queryRunner.manager.getRepository(Invoice);
+      const invoice = await invoiceRepo.findOne({ where: { id: invoiceId } });
+      if (!invoice) throw new NotFoundException(`Invoice ${invoiceId} not found`);
+      invoiceNumber = invoice.invoiceNumber;
+
+      // updateInvoice gets the code from the POS payload; here it comes from
+      // the stored currencyId, with the same USD fallback.
+      let currencyCode = "USD";
+      if ((invoice as any).currencyId) {
+        const currency = await queryRunner.manager
+          .getRepository("Currency")
+          .findOne({ where: { id: (invoice as any).currencyId } });
+        if (currency) {
+          currencyCode = String((currency as any).currencyCode || "USD").trim().toUpperCase();
+        }
+      }
+
+      const oldRate = Number(invoice.currencyRate);
+      (invoice as any).currencyRate = newRate;
+      const savedInvoice = await invoiceRepo.save(invoice);
+
+      await this.syncInvoiceJournalVoucher(queryRunner.manager, savedInvoice, currencyCode, invoice.invoiceNumber);
+
+      await queryRunner.commitTransaction();
+      updated.push({ invoiceId, invoiceNumber: invoice.invoiceNumber, oldRate });
+    } catch (err: any) {
+      await queryRunner.rollbackTransaction();
+      failed.push({ invoiceId, invoiceNumber, error: err?.message || String(err) });
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  return { newRate, updatedCount: updated.length, updated, failed };
+}
+
 
 
 async getBrowsingInvoices(
@@ -2283,6 +2333,251 @@ async searchFilteredInvoices(
   };
 }
 
+// Rebuilds the invoice's JV lines (matched by docNbr) from the invoice's
+// saved totals + currencyRate — shared by updateInvoice and the bulk
+// exchange-rate fix so both produce exactly the same voucher.
+private async syncInvoiceJournalVoucher(
+  manager: EntityManager,
+  savedInvoice: Invoice,
+  currencyCode: string,
+  docNbr: string,
+): Promise<void> {
+    const jvRepo = manager.getRepository(JournalVoucher);
+    const jvDetailRepo = manager.getRepository(JournalVoucherDetail);
+
+    const isReturn = (savedInvoice as any).invoiceType === "RVR";
+    const isG = (savedInvoice as any).invoiceType === "G";
+    const isRTN = (savedInvoice as any).invoiceType === "RTN";
+    const isRRVR = (savedInvoice as any).invoiceType === "RRVR";
+    const isRTNofG = isRTN && String((savedInvoice as any).invoiceNumber || "").startsWith("RG");
+
+    const useVAT = Number((savedInvoice as any).vatPercentage) > 0;
+    const rate = Number((savedInvoice as any).currencyRate);
+
+    if (!Number.isFinite(rate) || rate <= 0) {
+      throw new BadRequestException(`Invalid saved invoice currencyRate: ${(savedInvoice as any).currencyRate}`);
+    }
+
+    // ✅ Save the exchange rate on each JV detail row
+    const addRateFields = () => ({
+      exRateUSD: rate,
+      exRateEUROToUSD: 0,
+    });
+
+    // Assumption: rate = LL per 1 USD
+    const toUsdLl = (amountInInvoiceCurrency: number) => {
+      const a = Number(amountInInvoiceCurrency) || 0;
+      if (currencyCode === "USD") return { usd: a, ll: a * rate };
+      if (currencyCode === "LL") return { usd: a / rate, ll: a };
+      return { usd: a, ll: a * rate };
+    };
+
+    const invoiceTypeForRole = (savedInvoice as any).invoiceType;
+    const isZeroVatSalesLine =
+      (invoiceTypeForRole === "S" || invoiceTypeForRole === "RVR") &&
+      Number((savedInvoice as any).vatPercentage) === 0;
+    const salesRole = (isRTN || isRRVR)
+      ? (currencyCode === "USD" ? "SalesReturn_USD" : "SalesReturn_LL")
+      : isZeroVatSalesLine
+      ? (currencyCode === "USD" ? "SalesZeroVat_USD" : "SalesZeroVat_LL")
+      : (currencyCode === "USD" ? "Sales_USD" : "Sales_LL");
+    const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
+
+    const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
+    const vatAccount = useVAT ? await this.accountingResolver.resolveAccount(vatRole, null) : null;
+
+    const total = Number((savedInvoice as any).grandTotal) || 0;
+    const totalWithoutVAT = Number((savedInvoice as any).totalWithoutVAT) || 0;
+    const totalVAT = Number((savedInvoice as any).totalVAT) || 0;
+    const salesCrAmount = (isG || isRTNofG) ? totalWithoutVAT + totalVAT : totalWithoutVAT;
+
+    const getJVFields = (type: "dr" | "cr", amount: number): Partial<JournalVoucherDetail> => {
+      const { usd, ll } = toUsdLl(amount);
+
+      const fields: any = {
+        dr: 0,
+        drUSD: 0,
+        drLL: 0,
+        drOFR: 0,
+        drUSDOFR: 0,
+        drLLOFR: 0,
+        cr: 0,
+        crUSD: 0,
+        crLL: 0,
+        crOFR: 0,
+        crUSDOFR: 0,
+        crLLOFR: 0,
+      };
+
+      if (type === "dr") {
+        if (isG || isRTNofG) {
+          fields.drOFR = amount;
+          fields.drUSDOFR = usd;
+          fields.drLLOFR = ll;
+        } else if (isReturn || isRRVR) {
+          // RVR and RRVR: standard fields only, no OFR
+          fields.dr = amount;
+          fields.drUSD = usd;
+          fields.drLL = ll;
+        } else {
+          fields.dr = amount;
+          fields.drUSD = usd;
+          fields.drLL = ll;
+          fields.drOFR = amount;
+          fields.drUSDOFR = usd;
+          fields.drLLOFR = ll;
+        }
+      } else {
+        if (isG || isRTNofG) {
+          fields.crOFR = amount;
+          fields.crUSDOFR = usd;
+          fields.crLLOFR = ll;
+        } else if (isReturn || isRRVR) {
+          // RVR and RRVR: standard fields only, no OFR
+          fields.cr = amount;
+          fields.crUSD = usd;
+          fields.crLL = ll;
+        } else {
+          fields.cr = amount;
+          fields.crUSD = usd;
+          fields.crLL = ll;
+          fields.crOFR = amount;
+          fields.crUSDOFR = usd;
+          fields.crLLOFR = ll;
+        }
+      }
+
+      return fields;
+    };
+
+const jvDetailsForInvoice: JournalVoucherDetail[] = [];
+
+// Customer line: DR for sales, CR for returns
+const isReturnDirection = isRTN || isRRVR;
+const d1 = jvDetailRepo.create({
+  customerId: (savedInvoice as any).customerId,
+  alternativeCustomerId: (savedInvoice as any).alternativeCustomerId ?? null,
+  description: isReturnDirection ? "فاتورة مرتجع" : "فاتورة",
+  currency: currencyCode,
+  docNbr,
+  ...addRateFields(),
+  ...getJVFields(isReturnDirection ? "cr" : "dr", total),
+} as DeepPartial<JournalVoucherDetail>);
+jvDetailsForInvoice.push(d1);
+
+// Sales/SalesReturn line: CR for sales, DR for returns
+const d2 = jvDetailRepo.create({
+  accountId: (salesAccount as any).id,
+  description: isReturnDirection
+    ? "مرتجع مبيعات"
+    : isZeroVatSalesLine
+    ? "مبيعات خارجية - تصدير"
+    : "مبيعات خاضعة للضريبة على القيمة المضافة",
+  currency: currencyCode,
+  docNbr,
+  ...addRateFields(),
+  ...getJVFields(isReturnDirection ? "dr" : "cr", salesCrAmount),
+} as DeepPartial<JournalVoucherDetail>);
+jvDetailsForInvoice.push(d2);
+
+// VAT line: CR for sales, DR for returns (excluded for G and RTN-of-G)
+if (useVAT && vatAccount && !isG && !isRTNofG) {
+  const d3 = jvDetailRepo.create({
+    accountId: (vatAccount as any).id,
+    description: isReturnDirection ? "مرتجع ضريبة القيمة المضافة" : "ضريبة القيمة المضافة - مبيع VAT",
+    currency: currencyCode,
+    docNbr,
+    ...addRateFields(),
+    ...getJVFields(isReturnDirection ? "dr" : "cr", totalVAT),
+  } as DeepPartial<JournalVoucherDetail>);
+  jvDetailsForInvoice.push(d3);
+}
+
+    const sumFrom = (arr: JournalVoucherDetail[], field: keyof JournalVoucherDetail) =>
+      arr.reduce((acc, row) => acc + Number((row as any)[field] || 0), 0);
+
+    // Find existing JV details by docNbr (your current strategy)
+    const existingDetailsForDoc = await jvDetailRepo.find({ where: { docNbr } } as any);
+
+    if (existingDetailsForDoc.length > 0) {
+      const jvId = (existingDetailsForDoc[0] as any).journalVoucherId;
+      console.log("🔁 Reusing existing JV id:", jvId);
+
+      // remove old details then insert new ones
+      await jvDetailRepo.remove(existingDetailsForDoc as any);
+
+      for (const d of jvDetailsForInvoice) (d as any).journalVoucherId = jvId;
+      await jvDetailRepo.save(jvDetailsForInvoice as any);
+
+      const allDetails = await jvDetailRepo.find({ where: { journalVoucherId: jvId } } as any);
+      const jvHeader = await jvRepo.findOne({ where: { id: jvId } } as any);
+
+      if (jvHeader) {
+        (jvHeader as any).date    = (savedInvoice as any).date as any;
+        (jvHeader as any).jvType  = isRRVR ? "RVR" : (savedInvoice as any).invoiceType;
+
+        (jvHeader as any).totalDr = sumFrom(allDetails as any, "dr");
+        (jvHeader as any).totalDrUSD = sumFrom(allDetails as any, "drUSD");
+        (jvHeader as any).totalDrLL = sumFrom(allDetails as any, "drLL");
+        (jvHeader as any).totalDrOFR = sumFrom(allDetails as any, "drOFR");
+        (jvHeader as any).totalDrUSDOFR = sumFrom(allDetails as any, "drUSDOFR");
+        (jvHeader as any).totalDrLLOFR = sumFrom(allDetails as any, "drLLOFR");
+
+        (jvHeader as any).totalCr = sumFrom(allDetails as any, "cr");
+        (jvHeader as any).totalCrUSD = sumFrom(allDetails as any, "crUSD");
+        (jvHeader as any).totalCrLL = sumFrom(allDetails as any, "crLL");
+        (jvHeader as any).totalCrOFR = sumFrom(allDetails as any, "crOFR");
+        (jvHeader as any).totalCrUSDOFR = sumFrom(allDetails as any, "crUSDOFR");
+        (jvHeader as any).totalCrLLOFR = sumFrom(allDetails as any, "crLLOFR");
+
+        await jvRepo.save(jvHeader as any);
+        console.log("✅ Journal voucher updated:", (jvHeader as any).jvNumber);
+      }
+    } else {
+      // create new JV if not found
+      const setting2 = await this.settingsRepo.findOneBy({ isActive: true });
+      if (!setting2) throw new NotFoundException("Active year not found");
+
+      const yearSuffix2 = String((setting2 as any).year).slice(-2);
+      const jvPrefix2 = (isG || isRTNofG) ? "JVG" : "JV";
+
+      const lastJV = await jvRepo
+        .createQueryBuilder("jv")
+        .where("jv.jvNumber LIKE :prefix", { prefix: `${jvPrefix2}${yearSuffix2}-%` })
+        .orderBy("jv.id", "DESC")
+        .getOne();
+
+      const jvSequence = (lastJV as any)?.jvNumber
+        ? parseInt(String((lastJV as any).jvNumber).split("-")[1], 10) + 1
+        : 1;
+
+      const jvNumber = `${jvPrefix2}${yearSuffix2}-${String(jvSequence).padStart(3, "0")}`;
+
+      const resolvedJvType = isRRVR ? "RVR" : (savedInvoice as any).invoiceType;
+      const journalVoucher = jvRepo.create({
+        jvNumber,
+        jvType: resolvedJvType,
+        date: (savedInvoice as any).date,
+        totalDr: sumFrom(jvDetailsForInvoice, "dr"),
+        totalDrUSD: sumFrom(jvDetailsForInvoice, "drUSD"),
+        totalDrLL: sumFrom(jvDetailsForInvoice, "drLL"),
+        totalDrOFR: sumFrom(jvDetailsForInvoice, "drOFR"),
+        totalDrUSDOFR: sumFrom(jvDetailsForInvoice, "drUSDOFR"),
+        totalDrLLOFR: sumFrom(jvDetailsForInvoice, "drLLOFR"),
+        totalCr: sumFrom(jvDetailsForInvoice, "cr"),
+        totalCrUSD: sumFrom(jvDetailsForInvoice, "crUSD"),
+        totalCrLL: sumFrom(jvDetailsForInvoice, "crLL"),
+        totalCrOFR: sumFrom(jvDetailsForInvoice, "crOFR"),
+        totalCrUSDOFR: sumFrom(jvDetailsForInvoice, "crUSDOFR"),
+        totalCrLLOFR: sumFrom(jvDetailsForInvoice, "crLLOFR"),
+        details: jvDetailsForInvoice,
+      } as any);
+
+      await manager.save(JournalVoucher, journalVoucher as any);
+      console.log("✅ Journal voucher created:", jvNumber);
+    }
+}
+
 async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
   const queryRunner = this.dataSource.createQueryRunner();
   await queryRunner.connect();
@@ -2916,231 +3211,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
     /* -----------------------------------------------------------
        8) UPDATE JOURNAL VOUCHER (✅ FIXED like createInvoice)
        ----------------------------------------------------------- */
-    const useVAT = Number((savedInvoice as any).vatPercentage) > 0;
-    const rate = Number((savedInvoice as any).currencyRate);
-
-    if (!Number.isFinite(rate) || rate <= 0) {
-      throw new BadRequestException(`Invalid saved invoice currencyRate: ${(savedInvoice as any).currencyRate}`);
-    }
-
-    // ✅ Save the exchange rate on each JV detail row
-    const addRateFields = () => ({
-      exRateUSD: rate,
-      exRateEUROToUSD: 0,
-    });
-
-    // Assumption: rate = LL per 1 USD
-    const toUsdLl = (amountInInvoiceCurrency: number) => {
-      const a = Number(amountInInvoiceCurrency) || 0;
-      if (currencyCode === "USD") return { usd: a, ll: a * rate };
-      if (currencyCode === "LL") return { usd: a / rate, ll: a };
-      return { usd: a, ll: a * rate };
-    };
-
-    const invoiceTypeForRole = (savedInvoice as any).invoiceType;
-    const isZeroVatSalesLine =
-      (invoiceTypeForRole === "S" || invoiceTypeForRole === "RVR") &&
-      Number((savedInvoice as any).vatPercentage) === 0;
-    const salesRole = (isRTN || isRRVR)
-      ? (currencyCode === "USD" ? "SalesReturn_USD" : "SalesReturn_LL")
-      : isZeroVatSalesLine
-      ? (currencyCode === "USD" ? "SalesZeroVat_USD" : "SalesZeroVat_LL")
-      : (currencyCode === "USD" ? "Sales_USD" : "Sales_LL");
-    const vatRole = currencyCode === "USD" ? "Vat_USD" : "Vat_LL";
-
-    const salesAccount = await this.accountingResolver.resolveAccount(salesRole, null);
-    const vatAccount = useVAT ? await this.accountingResolver.resolveAccount(vatRole, null) : null;
-
-    const total = Number((savedInvoice as any).grandTotal) || 0;
-    const totalWithoutVAT = Number((savedInvoice as any).totalWithoutVAT) || 0;
-    const totalVAT = Number((savedInvoice as any).totalVAT) || 0;
-    const salesCrAmount = (isG || isRTNofG) ? totalWithoutVAT + totalVAT : totalWithoutVAT;
-
-    const getJVFields = (type: "dr" | "cr", amount: number): Partial<JournalVoucherDetail> => {
-      const { usd, ll } = toUsdLl(amount);
-
-      const fields: any = {
-        dr: 0,
-        drUSD: 0,
-        drLL: 0,
-        drOFR: 0,
-        drUSDOFR: 0,
-        drLLOFR: 0,
-        cr: 0,
-        crUSD: 0,
-        crLL: 0,
-        crOFR: 0,
-        crUSDOFR: 0,
-        crLLOFR: 0,
-      };
-
-      if (type === "dr") {
-        if (isG || isRTNofG) {
-          fields.drOFR = amount;
-          fields.drUSDOFR = usd;
-          fields.drLLOFR = ll;
-        } else if (isReturn || isRRVR) {
-          // RVR and RRVR: standard fields only, no OFR
-          fields.dr = amount;
-          fields.drUSD = usd;
-          fields.drLL = ll;
-        } else {
-          fields.dr = amount;
-          fields.drUSD = usd;
-          fields.drLL = ll;
-          fields.drOFR = amount;
-          fields.drUSDOFR = usd;
-          fields.drLLOFR = ll;
-        }
-      } else {
-        if (isG || isRTNofG) {
-          fields.crOFR = amount;
-          fields.crUSDOFR = usd;
-          fields.crLLOFR = ll;
-        } else if (isReturn || isRRVR) {
-          // RVR and RRVR: standard fields only, no OFR
-          fields.cr = amount;
-          fields.crUSD = usd;
-          fields.crLL = ll;
-        } else {
-          fields.cr = amount;
-          fields.crUSD = usd;
-          fields.crLL = ll;
-          fields.crOFR = amount;
-          fields.crUSDOFR = usd;
-          fields.crLLOFR = ll;
-        }
-      }
-
-      return fields;
-    };
-
-const jvDetailsForInvoice: JournalVoucherDetail[] = [];
-
-// Customer line: DR for sales, CR for returns
-const isReturnDirection = isRTN || isRRVR;
-const d1 = jvDetailRepo.create({
-  customerId: (savedInvoice as any).customerId,
-  alternativeCustomerId: (savedInvoice as any).alternativeCustomerId ?? null,
-  description: isReturnDirection ? "فاتورة مرتجع" : "فاتورة",
-  currency: currencyCode,
-  docNbr,
-  ...addRateFields(),
-  ...getJVFields(isReturnDirection ? "cr" : "dr", total),
-} as DeepPartial<JournalVoucherDetail>);
-jvDetailsForInvoice.push(d1);
-
-// Sales/SalesReturn line: CR for sales, DR for returns
-const d2 = jvDetailRepo.create({
-  accountId: (salesAccount as any).id,
-  description: isReturnDirection
-    ? "مرتجع مبيعات"
-    : isZeroVatSalesLine
-    ? "مبيعات خارجية - تصدير"
-    : "مبيعات خاضعة للضريبة على القيمة المضافة",
-  currency: currencyCode,
-  docNbr,
-  ...addRateFields(),
-  ...getJVFields(isReturnDirection ? "dr" : "cr", salesCrAmount),
-} as DeepPartial<JournalVoucherDetail>);
-jvDetailsForInvoice.push(d2);
-
-// VAT line: CR for sales, DR for returns (excluded for G and RTN-of-G)
-if (useVAT && vatAccount && !isG && !isRTNofG) {
-  const d3 = jvDetailRepo.create({
-    accountId: (vatAccount as any).id,
-    description: isReturnDirection ? "مرتجع ضريبة القيمة المضافة" : "ضريبة القيمة المضافة - مبيع VAT",
-    currency: currencyCode,
-    docNbr,
-    ...addRateFields(),
-    ...getJVFields(isReturnDirection ? "dr" : "cr", totalVAT),
-  } as DeepPartial<JournalVoucherDetail>);
-  jvDetailsForInvoice.push(d3);
-}
-
-    const sumFrom = (arr: JournalVoucherDetail[], field: keyof JournalVoucherDetail) =>
-      arr.reduce((acc, row) => acc + Number((row as any)[field] || 0), 0);
-
-    // Find existing JV details by docNbr (your current strategy)
-    const existingDetailsForDoc = await jvDetailRepo.find({ where: { docNbr } } as any);
-
-    if (existingDetailsForDoc.length > 0) {
-      const jvId = (existingDetailsForDoc[0] as any).journalVoucherId;
-      console.log("🔁 Reusing existing JV id:", jvId);
-
-      // remove old details then insert new ones
-      await jvDetailRepo.remove(existingDetailsForDoc as any);
-
-      for (const d of jvDetailsForInvoice) (d as any).journalVoucherId = jvId;
-      await jvDetailRepo.save(jvDetailsForInvoice as any);
-
-      const allDetails = await jvDetailRepo.find({ where: { journalVoucherId: jvId } } as any);
-      const jvHeader = await jvRepo.findOne({ where: { id: jvId } } as any);
-
-      if (jvHeader) {
-        (jvHeader as any).date    = (savedInvoice as any).date as any;
-        (jvHeader as any).jvType  = isRRVR ? "RVR" : (savedInvoice as any).invoiceType;
-
-        (jvHeader as any).totalDr = sumFrom(allDetails as any, "dr");
-        (jvHeader as any).totalDrUSD = sumFrom(allDetails as any, "drUSD");
-        (jvHeader as any).totalDrLL = sumFrom(allDetails as any, "drLL");
-        (jvHeader as any).totalDrOFR = sumFrom(allDetails as any, "drOFR");
-        (jvHeader as any).totalDrUSDOFR = sumFrom(allDetails as any, "drUSDOFR");
-        (jvHeader as any).totalDrLLOFR = sumFrom(allDetails as any, "drLLOFR");
-
-        (jvHeader as any).totalCr = sumFrom(allDetails as any, "cr");
-        (jvHeader as any).totalCrUSD = sumFrom(allDetails as any, "crUSD");
-        (jvHeader as any).totalCrLL = sumFrom(allDetails as any, "crLL");
-        (jvHeader as any).totalCrOFR = sumFrom(allDetails as any, "crOFR");
-        (jvHeader as any).totalCrUSDOFR = sumFrom(allDetails as any, "crUSDOFR");
-        (jvHeader as any).totalCrLLOFR = sumFrom(allDetails as any, "crLLOFR");
-
-        await jvRepo.save(jvHeader as any);
-        console.log("✅ Journal voucher updated:", (jvHeader as any).jvNumber);
-      }
-    } else {
-      // create new JV if not found
-      const setting2 = await this.settingsRepo.findOneBy({ isActive: true });
-      if (!setting2) throw new NotFoundException("Active year not found");
-
-      const yearSuffix2 = String((setting2 as any).year).slice(-2);
-      const jvPrefix2 = (isG || isRTNofG) ? "JVG" : "JV";
-
-      const lastJV = await jvRepo
-        .createQueryBuilder("jv")
-        .where("jv.jvNumber LIKE :prefix", { prefix: `${jvPrefix2}${yearSuffix2}-%` })
-        .orderBy("jv.id", "DESC")
-        .getOne();
-
-      const jvSequence = (lastJV as any)?.jvNumber
-        ? parseInt(String((lastJV as any).jvNumber).split("-")[1], 10) + 1
-        : 1;
-
-      const jvNumber = `${jvPrefix2}${yearSuffix2}-${String(jvSequence).padStart(3, "0")}`;
-
-      const resolvedJvType = isRRVR ? "RVR" : (savedInvoice as any).invoiceType;
-      const journalVoucher = jvRepo.create({
-        jvNumber,
-        jvType: resolvedJvType,
-        date: (savedInvoice as any).date,
-        totalDr: sumFrom(jvDetailsForInvoice, "dr"),
-        totalDrUSD: sumFrom(jvDetailsForInvoice, "drUSD"),
-        totalDrLL: sumFrom(jvDetailsForInvoice, "drLL"),
-        totalDrOFR: sumFrom(jvDetailsForInvoice, "drOFR"),
-        totalDrUSDOFR: sumFrom(jvDetailsForInvoice, "drUSDOFR"),
-        totalDrLLOFR: sumFrom(jvDetailsForInvoice, "drLLOFR"),
-        totalCr: sumFrom(jvDetailsForInvoice, "cr"),
-        totalCrUSD: sumFrom(jvDetailsForInvoice, "crUSD"),
-        totalCrLL: sumFrom(jvDetailsForInvoice, "crLL"),
-        totalCrOFR: sumFrom(jvDetailsForInvoice, "crOFR"),
-        totalCrUSDOFR: sumFrom(jvDetailsForInvoice, "crUSDOFR"),
-        totalCrLLOFR: sumFrom(jvDetailsForInvoice, "crLLOFR"),
-        details: jvDetailsForInvoice,
-      } as any);
-
-      await queryRunner.manager.save(JournalVoucher, journalVoucher as any);
-      console.log("✅ Journal voucher created:", jvNumber);
-    }
+    await this.syncInvoiceJournalVoucher(queryRunner.manager, savedInvoice, currencyCode, docNbr);
 
     await queryRunner.commitTransaction();
 

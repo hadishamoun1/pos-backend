@@ -243,6 +243,26 @@ export class InvoiceController {
     });
   }
 
+  // Applies one exchange rate to the invoices picked in the audit, rebuilding
+  // each one's JV the same way a POS save does.
+  @Patch("v1/exchange-rate-audit/apply")
+  @RequirePerms("invoices.update")
+  async applyExchangeRate(
+    @Body() body: { invoiceIds?: number[]; newRate?: number | string },
+  ) {
+    const rate = Number(body?.newRate);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      throw new BadRequestException(`Invalid newRate: ${body?.newRate}`);
+    }
+    const ids = Array.from(
+      new Set((body?.invoiceIds || []).map(Number).filter((x) => Number.isInteger(x) && x > 0)),
+    );
+    if (!ids.length) {
+      throw new BadRequestException("No invoices selected.");
+    }
+    return this.invoiceService.bulkUpdateExchangeRate(ids, rate);
+  }
+
   @Get("v1/:id")
   @RequirePerms("invoices.view")
   async getInvoiceById(@Param("id") id: string): Promise<Invoice> {
