@@ -71,6 +71,84 @@ export class InvoiceService {
   
 
 
+// Blocks an Issue/Offer when a line asks for more than the search modal's
+// balance. Same source as that modal: SUM(quantityofr / sqmofr) per batch from
+// inventory_transaction. Lines on the same batch are added together first.
+// `held` is what an edited invoice already took out of each batch: that stock
+// is available to it again, and a batch whose amount doesn't grow is never
+// blocked, so an already-negative batch can't stop a price or date correction.
+private async assertItemsWithinBalance(
+  manager: EntityManager,
+  items: any[],
+  held: Map<number, { qty: number; sqm: number }> = new Map(),
+): Promise<void> {
+  const requested = new Map<number, { qty: number; sqm: number }>();
+  for (const line of items || []) {
+    const batchId = Number(line.itemBatchId);
+    if (!Number.isInteger(batchId) || batchId <= 0) continue;
+    const entry = requested.get(batchId) ?? { qty: 0, sqm: 0 };
+    entry.qty += Number(line.quantity) || 0;
+    entry.sqm += Number(line.sqm) || 0;
+    requested.set(batchId, entry);
+  }
+  if (!requested.size) return;
+
+  const batchIds = Array.from(requested.keys());
+  const batches = await manager.getRepository(ItemBatch).find({
+    where: { id: In(batchIds) },
+    relations: ["itemVariant", "itemVariant.thickness", "itemVariant.thickness.item"],
+  });
+  const balanceRows = await manager.query(
+    `SELECT itemBatchId AS batchId,
+            SUM(COALESCE(quantityofr,0)) AS balU,
+            SUM(COALESCE(sqmofr,0)) AS balSqm
+     FROM inventory_transaction
+     WHERE itemBatchId IN (${batchIds.map(() => "?").join(",")})
+     GROUP BY itemBatchId`,
+    batchIds,
+  );
+  const balances = new Map<number, { balU: number; balSqm: number }>(
+    (balanceRows || []).map((r: any) => [
+      Number(r.batchId),
+      { balU: Number(r.balU ?? 0), balSqm: Number(r.balSqm ?? 0) },
+    ]),
+  );
+
+  const problems: string[] = [];
+  const exceeded: { batchId: number; limit: number; bySqm: boolean }[] = [];
+  for (const batch of batches) {
+    const variant: any = (batch as any).itemVariant;
+    const item = variant?.thickness?.item;
+    if (String(item?.stockMode ?? "").trim().toLowerCase() === "none") continue;
+
+    // SQM-type items are sold by area; box, sheet and unit items by count.
+    const bySqm = String(item?.type ?? "").trim().toLowerCase() === "sqm";
+    const wanted = requested.get(batch.id)!;
+    const balance = balances.get(batch.id);
+    const asked = bySqm ? wanted.sqm : wanted.qty;
+    const alreadyHeld = bySqm ? held.get(batch.id)?.sqm ?? 0 : held.get(batch.id)?.qty ?? 0;
+    const available = Number(((bySqm ? balance?.balSqm ?? 0 : balance?.balU ?? 0) + alreadyHeld).toFixed(2));
+
+    if (asked > alreadyHeld + 0.005 && asked > available + 0.005) {
+      const label = [
+        variant?.thickness?.thickness != null ? `${variant.thickness.thickness} ملم` : "",
+        item?.itemName ?? `Batch ${batch.id}`,
+        variant?.length && variant?.width ? `${variant.length}×${variant.width}` : "",
+      ].filter(Boolean).join(" ");
+      problems.push(`${label}: requested ${Number(asked.toFixed(2))}, balance ${available}${bySqm ? " SQM" : ""}`);
+      exceeded.push({ batchId: batch.id, limit: available, bySqm });
+    }
+  }
+
+  if (problems.length) {
+    // exceeded lets the POS table mark the offending rows.
+    throw new BadRequestException({
+      message: `Quantity exceeds the available balance — ${problems.join(" | ")}`,
+      exceeded,
+    });
+  }
+}
+
 async createInvoice(data: any): Promise<Invoice> {
   const queryRunner = this.dataSource.createQueryRunner();
   await queryRunner.connect();
@@ -79,6 +157,10 @@ async createInvoice(data: any): Promise<Invoice> {
   try {
     let deletedRequestId: number | null = null;
     console.log("🟢 Starting invoice creation");
+
+    if (data.invoiceType === "S" || data.invoiceType === "G") {
+      await this.assertItemsWithinBalance(queryRunner.manager, data.items);
+    }
 
     const setting = await this.settingsRepo.findOneBy({ isActive: true });
     if (!setting) throw new NotFoundException("Active year not found");
@@ -684,6 +766,7 @@ async createInvoice(data: any): Promise<Invoice> {
   } catch (error: any) {
     console.error("❌ Invoice creation failed:", error.message);
     await queryRunner.rollbackTransaction();
+    if (error?.getResponse?.()?.exceeded) throw error;
     throw new BadRequestException(error.message || "Invoice creation failed");
   } finally {
     await queryRunner.release();
@@ -2727,6 +2810,21 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
 
     console.log("📦 Existing invoice items from DB:", existingItems);
 
+    if (data.invoiceType === "S" || data.invoiceType === "G") {
+      // Only S and G take stock out of the balance the search modal shows.
+      const held = new Map<number, { qty: number; sqm: number }>();
+      if (oldInvoiceType === "S" || oldInvoiceType === "G") {
+        for (const old of existingItems) {
+          const batchId = Number((old as any).itemBatchId);
+          const entry = held.get(batchId) ?? { qty: 0, sqm: 0 };
+          entry.qty += Number((old as any).quantity) || 0;
+          entry.sqm += Number((old as any).sqm) || 0;
+          held.set(batchId, entry);
+        }
+      }
+      await this.assertItemsWithinBalance(queryRunner.manager, data.items, held);
+    }
+
     const affectedVariantIds = new Set<number>();
 
     const oldVariantIds = Array.from(
@@ -3342,6 +3440,7 @@ async updateInvoice(invoiceId: number, data: any): Promise<Invoice> {
   } catch (error: any) {
     console.error("❌ Invoice update failed:", error?.message, error);
     await queryRunner.rollbackTransaction();
+    if (error?.getResponse?.()?.exceeded) throw error;
     throw new BadRequestException(error.message || "Invoice update failed");
   } finally {
     await queryRunner.release();
