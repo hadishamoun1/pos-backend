@@ -12,6 +12,7 @@ import { RecievablesGateway } from './recievables.broadcast';
 import { Sequence } from 'mysql2/typings/mysql/lib/protocol/sequences/Sequence';
 import { Currency } from '../entities/currency.entity';
 import { Invoice } from '../entities/invoice.entity';
+import { CashCollection } from '../entities/cash-collection.entity';
 import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 import { computeDiff } from '../common/compute-diff';
 
@@ -42,6 +43,9 @@ export class RecievablesService {
 
      @InjectRepository(Invoice)
     private readonly invoiceRepo: Repository<Invoice>,
+
+    @InjectRepository(CashCollection)
+    private readonly cashCollectionRepo: Repository<CashCollection>,
 
     private readonly gateway: RecievablesGateway,
      private readonly accountingResolver: AccountingResolverService,
@@ -1210,6 +1214,67 @@ async getDailyReceivables(params: {
     if (to) qb.andWhere('entry.date <= :to', { to });
     const entries = await qb.getMany();
 
+    // Cash collections confirm real money: a receivable with a matching
+    // collection (same customer and date) is backed; one without is the
+    // suspicious extra. Linked collections (receivableEntryId) match first,
+    // then the rest by currency + amount within the tolerance.
+    const cashQb = this.cashCollectionRepo
+      .createQueryBuilder('cc')
+      .leftJoinAndSelect('cc.employee', 'employee')
+      .leftJoinAndSelect('cc.currency', 'ccCurrency');
+    if (from) cashQb.andWhere('cc.date >= :from', { from });
+    if (to) cashQb.andWhere('cc.date <= :to', { to });
+    const collections = await cashQb.getMany();
+
+    const curOf = (raw: any) => this.normalizeCurrencyCode(String(raw || 'USD'));
+    const shapeCash = (c: any, how: 'link' | 'amount') => ({
+      id: c.id,
+      date: c.date,
+      amount: Number(c.amount) || 0,
+      currency: curOf(c.currency?.currencyCode),
+      method: c.method,
+      driverName: c.driverName ?? null,
+      employeeName: c.employee?.username ?? c.employee?.name ?? null,
+      how,
+    });
+    const cashMatch = new Map<number, any[]>();
+    const usedCash = new Set<number>();
+    const receiptIds = new Set(entries.map((e) => e.id));
+    for (const c of collections) {
+      const rid = Number(c.receivableEntryId);
+      if (rid && receiptIds.has(rid)) {
+        cashMatch.set(rid, [...(cashMatch.get(rid) ?? []), shapeCash(c, 'link')]);
+        usedCash.add(c.id);
+      }
+    }
+    const freeCash = new Map<string, CashCollection[]>();
+    for (const c of collections) {
+      if (usedCash.has(c.id)) continue;
+      const key = `${c.customerId}|${String(c.date).slice(0, 10)}`;
+      freeCash.set(key, [...(freeCash.get(key) ?? []), c]);
+    }
+    for (const e of entries) {
+      if (cashMatch.has(e.id)) continue;
+      const pool = freeCash.get(`${e.customerId}|${String(e.date).slice(0, 10)}`) ?? [];
+      const cur = curOf(e.currency);
+      // tolerance is in USD; scale it for LL amounts.
+      const tol = cur === 'LL' ? params.tolerance * (Number(e.exchangeRate) || 89500) : params.tolerance;
+      let best = -1;
+      let bestDiff = Infinity;
+      pool.forEach((c, i) => {
+        if (usedCash.has(c.id) || curOf(c.currency?.currencyCode) !== cur) return;
+        const diff = Math.abs((Number(c.amount) || 0) - (Number(e.cashNumber) || 0));
+        if (diff <= tol + 0.0001 && diff < bestDiff) {
+          best = i;
+          bestDiff = diff;
+        }
+      });
+      if (best >= 0) {
+        usedCash.add(pool[best].id);
+        cashMatch.set(e.id, [shapeCash(pool[best], 'amount')]);
+      }
+    }
+
     // Same rule the JV uses: the USD part of an LL receipt is amountExchanged.
     const usdOf = (e: any) =>
       Number(String(e.currency).toUpperCase() === 'LL' ? e.amountExchanged : e.cashNumber) || 0;
@@ -1229,6 +1294,8 @@ async getDailyReceivables(params: {
       invoiceNumber: e.invoice?.invoiceNumber ?? null,
       customerId: e.customerId,
       customerName: e.alternativeCustomer?.company ?? e.customer?.customerName ?? null,
+      // null = no collection found; undefined = outside the scanned range.
+      cashCollections: receiptIds.has(e.id) ? cashMatch.get(e.id) ?? null : undefined,
     });
 
     // 1) Invoices received for more than their total. All receipts of an
@@ -1314,6 +1381,7 @@ async getDailyReceivables(params: {
           minAmountUsd: Math.min(...amounts),
           maxAmountUsd: Math.max(...amounts),
           sameInvoice: cluster.every((e) => e.invoiceId && e.invoiceId === cluster[0].invoiceId),
+          withoutCashCount: cluster.filter((e) => !cashMatch.has(e.id)).length,
           receipts: cluster.map(shape),
         });
       }
@@ -1324,6 +1392,7 @@ async getDailyReceivables(params: {
 
     return {
       scannedReceipts: entries.length,
+      scannedCollections: collections.length,
       windowDays,
       tolerance,
       overpaidCount: overpaid.length,
