@@ -1,7 +1,7 @@
 // src/receipt-voucher/recievables.service.ts
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like } from 'typeorm';
+import { Repository, Like, In } from 'typeorm';
 import { ReceiptEntry } from '../entities/recievables.entities';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
@@ -13,6 +13,7 @@ import { Sequence } from 'mysql2/typings/mysql/lib/protocol/sequences/Sequence';
 import { Currency } from '../entities/currency.entity';
 import { Invoice } from '../entities/invoice.entity';
 import { CashCollection } from '../entities/cash-collection.entity';
+import { ReceivableAuditReview } from '../entities/receivable-audit-review.entity';
 import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 import { computeDiff } from '../common/compute-diff';
 
@@ -46,6 +47,9 @@ export class RecievablesService {
 
     @InjectRepository(CashCollection)
     private readonly cashCollectionRepo: Repository<CashCollection>,
+
+    @InjectRepository(ReceivableAuditReview)
+    private readonly auditReviewRepo: Repository<ReceivableAuditReview>,
 
     private readonly gateway: RecievablesGateway,
      private readonly accountingResolver: AccountingResolverService,
@@ -1275,6 +1279,13 @@ async getDailyReceivables(params: {
       }
     }
 
+    // Receipts already checked by someone and marked correct.
+    const reviews = entries.length
+      ? await this.auditReviewRepo.find({ where: { receiptEntryId: In(entries.map((e) => e.id)) } })
+      : [];
+    const reviewByReceipt = new Map(reviews.map((r) => [r.receiptEntryId, r]));
+    const isSuspect = (e: any) => !cashMatch.has(e.id) && !reviewByReceipt.has(e.id);
+
     // Same rule the JV uses: the USD part of an LL receipt is amountExchanged.
     const usdOf = (e: any) =>
       Number(String(e.currency).toUpperCase() === 'LL' ? e.amountExchanged : e.cashNumber) || 0;
@@ -1296,6 +1307,13 @@ async getDailyReceivables(params: {
       customerName: e.alternativeCustomer?.company ?? e.customer?.customerName ?? null,
       // null = no collection found; undefined = outside the scanned range.
       cashCollections: receiptIds.has(e.id) ? cashMatch.get(e.id) ?? null : undefined,
+      reviewed: reviewByReceipt.has(e.id)
+        ? {
+            by: reviewByReceipt.get(e.id)!.reviewedByUsername,
+            at: reviewByReceipt.get(e.id)!.createdAt,
+            note: reviewByReceipt.get(e.id)!.note,
+          }
+        : null,
     });
 
     // 1) Invoices received for more than their total. All receipts of an
@@ -1381,7 +1399,8 @@ async getDailyReceivables(params: {
           minAmountUsd: Math.min(...amounts),
           maxAmountUsd: Math.max(...amounts),
           sameInvoice: cluster.every((e) => e.invoiceId && e.invoiceId === cluster[0].invoiceId),
-          withoutCashCount: cluster.filter((e) => !cashMatch.has(e.id)).length,
+          withoutCashCount: cluster.filter(isSuspect).length,
+          reviewedCount: cluster.filter((e) => reviewByReceipt.has(e.id)).length,
           receipts: cluster.map(shape),
         });
       }
@@ -1400,6 +1419,39 @@ async getDailyReceivables(params: {
       overpaid,
       duplicates,
     };
+  }
+
+  async markAuditReviewed(
+    receiptIds: number[],
+    user: { userId?: number; username?: string },
+    note?: string,
+  ) {
+    const ids = Array.from(new Set(receiptIds.map(Number).filter((x) => Number.isInteger(x) && x > 0)));
+    if (!ids.length) throw new BadRequestException('No receipts selected.');
+    const existing = await this.auditReviewRepo.find({ where: { receiptEntryId: In(ids) } });
+    const have = new Set(existing.map((r) => r.receiptEntryId));
+    const rows = ids
+      .filter((id) => !have.has(id))
+      .map((receiptEntryId) =>
+        this.auditReviewRepo.create({
+          receiptEntryId,
+          reviewedByUserId: user?.userId ?? null,
+          reviewedByUsername: user?.username ?? null,
+          note: note?.trim() ? note.trim().slice(0, 500) : null,
+        }),
+      );
+    const saved = await this.auditReviewRepo.save(rows);
+    return [...existing, ...saved].map((r) => ({
+      receiptEntryId: r.receiptEntryId,
+      by: r.reviewedByUsername,
+      at: r.createdAt,
+      note: r.note,
+    }));
+  }
+
+  async unmarkAuditReviewed(receiptId: number) {
+    await this.auditReviewRepo.delete({ receiptEntryId: receiptId });
+    return { receiptEntryId: receiptId, reviewed: null };
   }
 
   async sequenceAudit(yy: string) {

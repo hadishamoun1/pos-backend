@@ -13,6 +13,7 @@ import { RecievablesGateway } from './recievables.broadcast';
 import { Currency } from '../entities/currency.entity';
 import { Invoice } from '../entities/invoice.entity';
 import { CashCollection } from '../entities/cash-collection.entity';
+import { ReceivableAuditReview } from '../entities/receivable-audit-review.entity';
 import { AccountingModule } from '../accountRoleMap/accounting.module';
 
 @Module({
@@ -27,6 +28,7 @@ import { AccountingModule } from '../accountRoleMap/accounting.module';
       Currency,
       Invoice,
       CashCollection,
+      ReceivableAuditReview,
     ]),
      AccountingModule,
   ],

@@ -11,6 +11,7 @@ import {
   Delete,
   Query,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { RecievablesService } from './recievables.service';
 import { ReceiptEntry } from '../entities/recievables.entities';
@@ -164,6 +165,21 @@ async getDailyReceivables(
       windowDays: days,
       tolerance: tol,
     });
+  }
+
+  // Mark receipts as checked-and-correct so the audit stops flagging them.
+  @Post('duplicate-audit/review')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePerms('receivableDuplicateAudit.view')
+  markAuditReviewed(@Body() body: { receiptIds?: number[]; note?: string }, @Req() req: any) {
+    return this.service.markAuditReviewed(body?.receiptIds || [], req.user, body?.note);
+  }
+
+  @Delete('duplicate-audit/review/:receiptId')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePerms('receivableDuplicateAudit.view')
+  unmarkAuditReviewed(@Param('receiptId', ParseIntPipe) receiptId: number) {
+    return this.service.unmarkAuditReviewed(receiptId);
   }
 
   @Get('sequence-audit')
