@@ -145,6 +145,27 @@ async getDailyReceivables(
   });
 }
 
+  // Receipts that look entered twice: invoices received more than their total,
+  // and same-customer same-amount receipts a few days apart.
+  @Get('duplicate-audit')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePerms('receivableDuplicateAudit.view')
+  duplicateAudit(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('windowDays') windowDays?: string,
+    @Query('tolerance') tolerance?: string,
+  ) {
+    const days = Math.min(365, Math.max(0, parseInt(windowDays ?? '7', 10) || 0));
+    const tol = Math.max(0, parseFloat(tolerance ?? '1') || 0);
+    return this.service.duplicateAudit({
+      from: from?.trim() || undefined,
+      to: to?.trim() || undefined,
+      windowDays: days,
+      tolerance: tol,
+    });
+  }
+
   @Get('sequence-audit')
   sequenceAudit(@Query('year') year?: string) {
     const yy = year ? String(year).slice(-2) : String(new Date().getFullYear()).slice(-2);

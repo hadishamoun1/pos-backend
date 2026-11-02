@@ -1191,6 +1191,148 @@ async getDailyReceivables(params: {
     return { ...saved, jvNumber: jv.jvNumber } as any;
   }
 
+  async duplicateAudit(params: { from?: string; to?: string; windowDays: number; tolerance: number }) {
+    const { from, to, windowDays, tolerance } = params;
+
+    const baseQuery = () =>
+      this.entryRepo
+        .createQueryBuilder('entry')
+        .leftJoinAndSelect('entry.customer', 'customer')
+        .leftJoinAndSelect('entry.alternativeCustomer', 'altCustomer')
+        .leftJoinAndSelect('entry.journalVoucher', 'jv')
+        .leftJoinAndSelect('entry.invoice', 'invoice')
+        .leftJoinAndSelect('invoice.currency', 'invCurrency')
+        .orderBy('entry.date', 'ASC')
+        .addOrderBy('entry.id', 'ASC');
+
+    const qb = baseQuery();
+    if (from) qb.andWhere('entry.date >= :from', { from });
+    if (to) qb.andWhere('entry.date <= :to', { to });
+    const entries = await qb.getMany();
+
+    // Same rule the JV uses: the USD part of an LL receipt is amountExchanged.
+    const usdOf = (e: any) =>
+      Number(String(e.currency).toUpperCase() === 'LL' ? e.amountExchanged : e.cashNumber) || 0;
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    const shape = (e: any) => ({
+      id: e.id,
+      jvNumber: e.journalVoucher?.jvNumber ?? null,
+      date: e.date,
+      createdAt: e.createdAt,
+      type: e.type,
+      pmtType: e.pmtType,
+      currency: e.currency,
+      cashNumber: Number(e.cashNumber) || 0,
+      usdAmount: r2(usdOf(e)),
+      comments: e.comments ?? null,
+      invoiceId: e.invoiceId ?? null,
+      invoiceNumber: e.invoice?.invoiceNumber ?? null,
+      customerId: e.customerId,
+      customerName: e.alternativeCustomer?.company ?? e.customer?.customerName ?? null,
+    });
+
+    // 1) Invoices received for more than their total. All receipts of an
+    //    invoice count, even ones outside the date range, so a duplicate made
+    //    weeks after the first payment is still caught.
+    const invoiceIds = Array.from(
+      new Set(entries.map((e) => e.invoiceId).filter((id): id is number => !!id)),
+    );
+    const byInvoice = new Map<number, any[]>();
+    if (invoiceIds.length) {
+      const linked = await baseQuery()
+        .where('entry.invoiceId IN (:...invoiceIds)', { invoiceIds })
+        .getMany();
+      for (const e of linked) {
+        const list = byInvoice.get(e.invoiceId!) ?? [];
+        list.push(e);
+        byInvoice.set(e.invoiceId!, list);
+      }
+    }
+
+    const overpaid: any[] = [];
+    for (const list of byInvoice.values()) {
+      const inv: any = list[0].invoice;
+      if (!inv) continue;
+      const rate = Number(inv.currencyRate) || 0;
+      const isLL = String(inv.currency?.currencyCode ?? '').toUpperCase() === 'LL';
+      const invoiceUsd = isLL ? (rate > 0 ? Number(inv.grandTotal) / rate : 0) : Number(inv.grandTotal) || 0;
+      const received = list.reduce((sum, e) => sum + usdOf(e), 0);
+      // Small overpayments are rounding, not a second receipt.
+      if (received > invoiceUsd + tolerance + 0.01) {
+        overpaid.push({
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          invoiceType: inv.invoiceType,
+          invoiceDate: inv.date,
+          customerName: shape(list[0]).customerName,
+          invoiceTotalUsd: r2(invoiceUsd),
+          receivedUsd: r2(received),
+          overByUsd: r2(received - invoiceUsd),
+          receipts: list.map(shape),
+        });
+      }
+    }
+    overpaid.sort((a, b) => b.overByUsd - a.overByUsd);
+
+    // 2) Same customer, amounts within `tolerance` of each other, dates within
+    //    windowDays — staff round differently (299 vs 299.50), so an exact
+    //    match would miss most real duplicates. Pairs are chained into groups.
+    const dayMs = 24 * 60 * 60 * 1000;
+    const dayOf = (d: any) => new Date(String(d).slice(0, 10) + 'T00:00:00Z').getTime();
+    const byCustomer = new Map<string, any[]>();
+    for (const e of entries) {
+      if (usdOf(e) <= 0) continue;
+      const key = `${e.customerId}|${e.alternativeCustomerId ?? ''}`;
+      const list = byCustomer.get(key) ?? [];
+      list.push(e);
+      byCustomer.set(key, list);
+    }
+
+    const duplicates: any[] = [];
+    for (const list of byCustomer.values()) {
+      if (list.length < 2) continue;
+      const parent = list.map((_, i) => i);
+      const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          if (dayOf(list[j].date) - dayOf(list[i].date) > windowDays * dayMs) break;
+          if (Math.abs(usdOf(list[i]) - usdOf(list[j])) <= tolerance + 0.0001) {
+            parent[find(j)] = find(i);
+          }
+        }
+      }
+      const clusters = new Map<number, any[]>();
+      list.forEach((e, i) => {
+        const root = find(i);
+        clusters.set(root, [...(clusters.get(root) ?? []), e]);
+      });
+      for (const cluster of clusters.values()) {
+        if (cluster.length < 2) continue;
+        const amounts = cluster.map((e) => r2(usdOf(e)));
+        duplicates.push({
+          customerName: shape(cluster[0]).customerName,
+          minAmountUsd: Math.min(...amounts),
+          maxAmountUsd: Math.max(...amounts),
+          sameInvoice: cluster.every((e) => e.invoiceId && e.invoiceId === cluster[0].invoiceId),
+          receipts: cluster.map(shape),
+        });
+      }
+    }
+    duplicates.sort((a, b) =>
+      String(b.receipts[b.receipts.length - 1].date).localeCompare(String(a.receipts[a.receipts.length - 1].date)),
+    );
+
+    return {
+      scannedReceipts: entries.length,
+      windowDays,
+      tolerance,
+      overpaidCount: overpaid.length,
+      duplicateCount: duplicates.length,
+      overpaid,
+      duplicates,
+    };
+  }
+
   async sequenceAudit(yy: string) {
     // Fetch all RV entries for the year, ordered by numeric part of jvNumber
     const rows = await this.jvRepo
