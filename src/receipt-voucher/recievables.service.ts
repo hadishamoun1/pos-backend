@@ -1220,8 +1220,12 @@ async getDailyReceivables(params: {
 
     // Cash collections confirm real money: a receivable with a matching
     // collection (same customer and date) is backed; one without is the
-    // suspicious extra. Linked collections (receivableEntryId) match first,
-    // then the rest by currency + amount within the tolerance.
+    // suspicious extra. Always the receipt's own date, never when it was
+    // entered. Linked collections (receivableEntryId) match first, but only
+    // when the linked receipt has the same customer and date — some links
+    // point at the wrong receivable (another customer entered minutes
+    // apart), and those collections go back to amount matching instead.
+    // The rest match by currency + amount within the tolerance.
     const cashQb = this.cashCollectionRepo
       .createQueryBuilder('cc')
       .leftJoinAndSelect('cc.employee', 'employee')
@@ -1231,9 +1235,17 @@ async getDailyReceivables(params: {
     const collections = await cashQb.getMany();
 
     const curOf = (raw: any) => this.normalizeCurrencyCode(String(raw || 'USD'));
+    // YYYY-MM-DD from either a 'date' string or a Date (local calendar day).
+    const ymd = (d: any) => {
+      if (d instanceof Date) {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      }
+      return String(d ?? '').slice(0, 10);
+    };
     const shapeCash = (c: any, how: 'link' | 'amount') => ({
       id: c.id,
-      date: c.date,
+      date: ymd(c.date),
       amount: Number(c.amount) || 0,
       currency: curOf(c.currency?.currencyCode),
       method: c.method,
@@ -1244,9 +1256,11 @@ async getDailyReceivables(params: {
     const cashMatch = new Map<number, any[]>();
     const usedCash = new Set<number>();
     const receiptIds = new Set(entries.map((e) => e.id));
+    const receiptById = new Map(entries.map((e) => [e.id, e]));
     for (const c of collections) {
       const rid = Number(c.receivableEntryId);
-      if (rid && receiptIds.has(rid)) {
+      const linked = rid ? receiptById.get(rid) : undefined;
+      if (linked && linked.customerId === c.customerId && ymd(linked.date) === ymd(c.date)) {
         cashMatch.set(rid, [...(cashMatch.get(rid) ?? []), shapeCash(c, 'link')]);
         usedCash.add(c.id);
       }
@@ -1254,12 +1268,12 @@ async getDailyReceivables(params: {
     const freeCash = new Map<string, CashCollection[]>();
     for (const c of collections) {
       if (usedCash.has(c.id)) continue;
-      const key = `${c.customerId}|${String(c.date).slice(0, 10)}`;
+      const key = `${c.customerId}|${ymd(c.date)}`;
       freeCash.set(key, [...(freeCash.get(key) ?? []), c]);
     }
     for (const e of entries) {
       if (cashMatch.has(e.id)) continue;
-      const pool = freeCash.get(`${e.customerId}|${String(e.date).slice(0, 10)}`) ?? [];
+      const pool = freeCash.get(`${e.customerId}|${ymd(e.date)}`) ?? [];
       const cur = curOf(e.currency);
       // tolerance is in USD; scale it for LL amounts.
       const tol = cur === 'LL' ? params.tolerance * (Number(e.exchangeRate) || 89500) : params.tolerance;
