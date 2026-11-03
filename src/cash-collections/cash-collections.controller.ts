@@ -14,6 +14,7 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import { CashCollectionsService } from "./cash-collections.service";
+import { CashCollectionsGateway } from "./cash-collections.gateway";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import { RequirePerms } from "../auth/permissions.decorator";
@@ -21,13 +22,18 @@ import { RequirePerms } from "../auth/permissions.decorator";
 @Controller("cash-collections")
 @UseGuards(JwtAuthGuard)
 export class CashCollectionsController {
-  constructor(private readonly service: CashCollectionsService) {}
+  constructor(
+    private readonly service: CashCollectionsService,
+    private readonly gateway: CashCollectionsGateway,
+  ) {}
 
   // employees create entries
   @Post()
   async create(@Body() body: any, @Req() req: any) {
     const employeeId = req.user.userId; // ✅ IMPORTANT
-    return this.service.create(body, employeeId);
+    const row = await this.service.create(body, employeeId);
+    this.gateway.emitChanged("created", [row.id]);
+    return row;
   }
 
   /**
@@ -43,12 +49,14 @@ export class CashCollectionsController {
     const perms: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
     const canViewAny = req.user.role === "ADMIN" || perms.includes("cashFlow.viewAny");
 
-    return this.service.markReceivableLink({
+    const result = await this.service.markReceivableLink({
       ids,
       receivableEntryId,
       employeeId: req.user.userId,
       canViewAny,
     });
+    this.gateway.emitChanged("linked", ids.map(Number));
+    return result;
   }
 
   /**
@@ -73,7 +81,9 @@ export class CashCollectionsController {
   /** Any employee can submit a duplicate-override request */
   @Post("approval-requests")
   async createApprovalRequest(@Body() body: any, @Req() req: any) {
-    return this.service.createApprovalRequest(body, req.user.userId);
+    const result = await this.service.createApprovalRequest(body, req.user.userId);
+    this.gateway.emitChanged("approval-requested");
+    return result;
   }
 
   /** Admin/manager lists pending (or all) approval requests */
@@ -90,7 +100,9 @@ export class CashCollectionsController {
     const perms: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
     const canViewAny = req.user.role === "ADMIN" || perms.includes("cashFlow.viewAny");
     if (!canViewAny) throw new ForbiddenException("Admin access required");
-    return this.service.approveRequest(id, req.user.userId);
+    const result = await this.service.approveRequest(id, req.user.userId);
+    this.gateway.emitChanged("approval-approved");
+    return result;
   }
 
   @Post("approval-requests/:id/reject")
@@ -98,7 +110,9 @@ export class CashCollectionsController {
     const perms: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
     const canViewAny = req.user.role === "ADMIN" || perms.includes("cashFlow.viewAny");
     if (!canViewAny) throw new ForbiddenException("Admin access required");
-    return this.service.rejectRequest(id, req.user.userId);
+    const result = await this.service.rejectRequest(id, req.user.userId);
+    this.gateway.emitChanged("approval-rejected");
+    return result;
   }
 
   // ── Wildcard :id routes (must come after all literal paths) ──────
@@ -120,13 +134,17 @@ export class CashCollectionsController {
   // Only allowed while the collection isn't created as a receivable yet.
   @Patch(":id")
   async update(@Param("id", ParseIntPipe) id: number, @Body() body: any) {
-    return this.service.update(id, body);
+    const row = await this.service.update(id, body);
+    this.gateway.emitChanged("updated", [id]);
+    return row;
   }
 
   @Delete(":id")
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePerms("cashFlow.delete")
   async remove(@Param("id", ParseIntPipe) id: number) {
-    return this.service.remove(id);
+    const result = await this.service.remove(id);
+    this.gateway.emitChanged("deleted", [id]);
+    return result;
   }
 }

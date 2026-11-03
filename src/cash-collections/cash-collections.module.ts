@@ -5,11 +5,12 @@ import { CashCollection } from "../entities/cash-collection.entity";
 import { CashCollectionApprovalRequest } from "../entities/cash-collection-approval.entity";
 import { CashCollectionsController } from "./cash-collections.controller";
 import { CashCollectionsService } from "./cash-collections.service";
+import { CashCollectionsGateway } from "./cash-collections.gateway";
 
 @Module({
   imports: [TypeOrmModule.forFeature([CashCollection, CashCollectionApprovalRequest])],
   controllers: [CashCollectionsController],
-  providers: [CashCollectionsService],
+  providers: [CashCollectionsService, CashCollectionsGateway],
   exports: [CashCollectionsService],
 })
 export class CashCollectionsModule {}
