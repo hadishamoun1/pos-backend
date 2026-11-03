@@ -11,6 +11,10 @@ export class PosControls {
   @Column({ name: "block_viewing", type: "boolean", default: false })
   blockViewing: boolean;
 
+  // Hide Edit on invoices, receivables and journal vouchers dated 2+ days ago.
+  @Column({ name: "lock_old_edits", type: "boolean", default: false })
+  lockOldEdits: boolean;
+
   @UpdateDateColumn({ name: "updated_at" })
   updatedAt: Date;
 }

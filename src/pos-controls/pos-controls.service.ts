@@ -24,9 +24,13 @@ export class PosControlsService implements OnModuleInit {
   }
 
   async update(
-    data: Partial<Pick<PosControls, "blockCreation" | "blockViewing">>
+    data: Partial<Pick<PosControls, "blockCreation" | "blockViewing" | "lockOldEdits">>
   ): Promise<PosControls> {
-    await this.repo.update(1, data);
+    const patch: Partial<PosControls> = {};
+    for (const key of ["blockCreation", "blockViewing", "lockOldEdits"] as const) {
+      if (typeof data?.[key] === "boolean") patch[key] = data[key];
+    }
+    if (Object.keys(patch).length) await this.repo.update(1, patch);
     return this.getStatus();
   }
 }
