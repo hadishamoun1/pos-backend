@@ -282,6 +282,75 @@ export class CashCollectionsService {
    * The linked receivable entry (if any) in the receivables table remains intact.
    * This won't affect any posted receivable entries.
    */
+  // Edit a collection that hasn't been turned into a receivable yet. Once it
+  // has (receivableEntryId set — green on the page) it is locked, so the
+  // receivable and its collection can't drift apart.
+  async update(id: number, body: any) {
+    const row = await this.repo.findOne({ where: { id } });
+    if (!row) throw new BadRequestException("not found");
+    if (row.receivableEntryId) {
+      throw new BadRequestException(
+        "This collection was already created as a receivable and can no longer be edited.",
+      );
+    }
+
+    const date = body?.date !== undefined ? String(body.date).trim() : row.date;
+    const customerId = body?.customerId !== undefined ? Number(body.customerId) : row.customerId;
+    const amountNum = body?.amount !== undefined ? Number(body.amount) : Number(row.amount);
+    const currencyId =
+      body?.currencyId === undefined
+        ? row.currencyId ?? null
+        : body.currencyId === null || body.currencyId === ""
+        ? null
+        : Number(body.currencyId);
+    const method = body?.method !== undefined ? String(body.method).toUpperCase() : row.method;
+    const text = (v: any, current: any) =>
+      v === undefined ? current ?? null : v === null || String(v).trim() === "" ? null : String(v).trim();
+
+    if (!customerId || !Number.isFinite(customerId)) {
+      throw new BadRequestException("customerId is required");
+    }
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      throw new BadRequestException("amount must be > 0");
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException("date must be YYYY-MM-DD");
+    }
+    if (!["CASH", "WHISH", "CHEQUE", "OTHER"].includes(method)) {
+      throw new BadRequestException("invalid method");
+    }
+
+    // Same duplicate rule as create, ignoring this row itself.
+    const duplicateQb = this.repo
+      .createQueryBuilder("cc")
+      .where("cc.id <> :id", { id })
+      .andWhere("cc.customerId = :customerId", { customerId })
+      .andWhere("cc.amount = :amount", { amount: amountNum.toFixed(2) })
+      .andWhere("cc.date = :date", { date });
+    if (currencyId === null) duplicateQb.andWhere("cc.currencyId IS NULL");
+    else duplicateQb.andWhere("cc.currencyId = :currencyId", { currencyId });
+    const existing = await duplicateQb.getOne();
+    if (existing) {
+      throw new ConflictException({
+        message: `Another collection #${existing.id} already has this customer, amount, currency and date.`,
+        conflictingEntry: { id: existing.id, date: existing.date, amount: existing.amount },
+      });
+    }
+
+    await this.repo.update(id, {
+      date,
+      customerId,
+      amount: amountNum.toFixed(2),
+      currencyId: currencyId ?? null,
+      method: method as any,
+      reference: text(body?.reference, row.reference),
+      notes: text(body?.notes, row.notes),
+      driverName: text(body?.driverName, row.driverName),
+    } as any);
+
+    return this.repo.findOne({ where: { id } });
+  }
+
   async remove(id: number) {
     if (!id) throw new BadRequestException("id required");
     const row = await this.repo.findOne({ where: { id } });

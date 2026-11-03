@@ -4,6 +4,7 @@ import {
   Get,
   Post,
   Delete,
+  Patch,
   Param,
   Query,
   Body,
@@ -114,6 +115,12 @@ export class CashCollectionsController {
     }
 
     return row;
+  }
+
+  // Only allowed while the collection isn't created as a receivable yet.
+  @Patch(":id")
+  async update(@Param("id", ParseIntPipe) id: number, @Body() body: any) {
+    return this.service.update(id, body);
   }
 
   @Delete(":id")
