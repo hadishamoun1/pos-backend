@@ -1,8 +1,8 @@
 // src/company/company.service.ts
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { Company } from "../entities/company.entity";
+import { Company, COMPANY_COUNTRIES } from "../entities/company.entity";
 
 @Injectable()
 export class CompanyService {
@@ -37,6 +37,15 @@ export class CompanyService {
   await this.companyRepository.update(id, { vatInclusive });
   return this.findOne(id);
 }
+
+  async setCountry(id: number, country: string): Promise<Company> {
+    if (!(COMPANY_COUNTRIES as readonly string[]).includes(country)) {
+      throw new BadRequestException(`Country must be one of: ${COMPANY_COUNTRIES.join(", ")}`);
+    }
+    await this.findOne(id); // throws if not found
+    await this.companyRepository.update(id, { country });
+    return this.findOne(id);
+  }
 
   async setActive(id: number): Promise<Company> {
     await this.findOne(id); // throws if not found

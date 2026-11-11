@@ -19,6 +19,8 @@ import { ItemBatch } from '../entities/inventory/itemBatch.entity';
 import { ItemNameDescription } from '../entities/inventory/itemNameDescription.entity';
 import { InvoiceItem } from '../entities/invoiceItem.entity';
 import { Settings } from '../entities/settings.entity';
+import { Company } from '../entities/company.entity';
+import { User } from '../entities/user.entity';
 import { AccountingModule } from '../accountRoleMap/accounting.module';
 import { ShipsgoModule } from '../shipsgo/shipsgo.module';
 import { VesselTrackingModule } from '../vessel-tracking/vessel-tracking.module';
@@ -45,6 +47,8 @@ import { RecomputeModule } from '../recomputeTransfersAndPurchases/recompute.mod
       ItemBatch,
       InvoiceItem,
       Settings,
+      Company,
+      User,
      
     ]),
      AccountingModule,

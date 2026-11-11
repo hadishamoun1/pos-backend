@@ -1350,19 +1350,25 @@ async createInventoryCheck(
     if (!itemVariantId) throw new BadRequestException('Batch has no variant');
 
 
-    const ensureEnough = async (needSqm: number) => {
+    // Same rule as the POS stock check and the batch picker: box/sheet items
+    // are compared by count (SUM(quantityofr)), sqm items by sqm (SUM(sqmofr)).
+    const ensureEnough = async (needSqm: number, needQty: number) => {
+      const bySqm = type === 'sqm';
       const rows: any[] = await txnRepo.query(
-        `SELECT SUM(sqmofr) AS balOFR FROM inventory_transaction WHERE itemBatchId = ?`,
+        `SELECT SUM(quantityofr) AS balU, SUM(sqmofr) AS balSqm FROM inventory_transaction WHERE itemBatchId = ?`,
         [(originalBatch as any).id],
       );
-      const txnSum = rows?.[0]?.balOFR;
+      const txnSum = bySqm ? rows?.[0]?.balSqm : rows?.[0]?.balU;
       // Fall back to entity balanceOFR when no transaction records exist yet
-      const have = txnSum != null
+      const have = round2(txnSum != null
         ? Number(txnSum)
-        : Number((originalBatch as any).balanceOFR || 0);
-      if (have + 0.5 < needSqm) {
+        : Number((originalBatch as any).balanceOFR || 0));
+      const need = bySqm ? needSqm : needQty;
+      const tolerance = bySqm ? 0.5 : 0.001;
+      if (have + tolerance < need) {
+        const unit = bySqm ? 'sqm' : type === 'box' ? 'boxes' : 'sheets';
         throw new BadRequestException(
-          `Not enough stock in source batch (need ${needSqm}, have ${have})`,
+          `Not enough stock in source batch (need ${need} ${unit}, have ${have} ${unit})`,
         );
       }
     };
@@ -1408,7 +1414,7 @@ async createInventoryCheck(
       // breakage : out only
       // -------------------------
       if (rec.status === 'breakage') {
-        await ensureEnough(totalSQM);
+        await ensureEnough(totalSQM, qty);
 
         (originalBatch as any).outOFR = round2(Number((originalBatch as any).outOFR || 0) + totalSQM);
         recomputeBalanceOFR(originalBatch);
@@ -1440,7 +1446,7 @@ async createInventoryCheck(
       // adj- : out from source; if new condition/date provided, move stock to a new/existing batch
       // -------------------------
       if (rec.status === 'adj-') {
-        await ensureEnough(totalSQM);
+        await ensureEnough(totalSQM, qty);
 
         (originalBatch as any).outOFR = round2(Number((originalBatch as any).outOFR || 0) + totalSQM);
         recomputeBalanceOFR(originalBatch);

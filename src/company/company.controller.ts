@@ -47,6 +47,14 @@ setVatInclusive(
   return this.companyService.setVatInclusive(id, vatInclusive);
 }
 
+  @Patch(":id/country")
+  setCountry(
+    @Param("id", ParseIntPipe) id: number,
+    @Body("country") country: string,
+  ) {
+    return this.companyService.setCountry(id, country);
+  }
+
   @Delete(":id")
   remove(@Param("id", ParseIntPipe) id: number) {
     return this.companyService.remove(id);

@@ -41,6 +41,13 @@ import { Item } from '../entities/inventory/item.entity';
 import { JournalVoucher } from '../entities/Vouchers/journalVoucher.entity';
 import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails.entity';
 import { Settings } from '../entities/settings.entity';
+import { Company } from '../entities/company.entity';
+import { User } from '../entities/user.entity';
+
+// Settings → Purchase Status Access: non-admin users holding these may set an
+// invoice to Shipped / Recieved by hand (admins always can).
+export const MANUAL_SHIPPED_PERM = 'purchases.manualShipped';
+export const MANUAL_RECEIVED_PERM = 'purchases.manualReceived';
 import { AccountingResolverService } from '../accountRoleMap/accounting-resolver.service';
 import { computeDiff } from '../common/compute-diff';
 
@@ -112,12 +119,21 @@ const INVOICE_STATUS_RANK: Record<string, number> = {
 
 // Known discharge ports for arrival detection on vessel-tracked (charter/
 // bulk) invoices — deliberately just the handful actually used, rather than
-// a full geocoding lookup. Add ports here as needed.
-const KNOWN_PORTS: { name: string; lat: number; lon: number }[] = [
-  { name: 'Beirut Port', lat: 33.9025, lon: 35.5188 },
-  { name: 'Saida Port', lat: 33.5606, lon: 35.3706 },
-  { name: 'Tripoli Port', lat: 34.4489, lon: 35.8362 },
-];
+// a full geocoding lookup. Add ports here as needed. Only the active
+// company's country (Settings → Company) is checked, so a Syria-bound ship
+// passing the Lebanese coast isn't marked arrived, and vice versa.
+type KnownPort = { name: string; lat: number; lon: number };
+const PORTS_BY_COUNTRY: Record<string, KnownPort[]> = {
+  Lebanon: [
+    { name: 'Beirut Port', lat: 33.9025, lon: 35.5188 },
+    { name: 'Saida Port', lat: 33.5606, lon: 35.3706 },
+    { name: 'Tripoli Port', lat: 34.4489, lon: 35.8362 },
+  ],
+  Syria: [
+    { name: 'Latakia Port', lat: 35.5235, lon: 35.7680 },
+  ],
+};
+const DEFAULT_PORTS_COUNTRY = 'Lebanon';
 
 // Meters within which the vessel counts as "at" a known port. Deliberately
 // wide (250km) by request — every tracked shipment is inbound to one of
@@ -140,8 +156,8 @@ function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number):
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function findArrivedPort(lat: number, lon: number): string | null {
-  for (const port of KNOWN_PORTS) {
+function findArrivedPort(lat: number, lon: number, ports: KnownPort[]): string | null {
+  for (const port of ports) {
     if (distanceMeters(lat, lon, port.lat, port.lon) <= PORT_ARRIVAL_RADIUS_METERS) {
       return port.name;
     }
@@ -192,6 +208,12 @@ export class PurchaseInvoiceService {
 
     @InjectRepository(Settings)
 private readonly settingsRepo: Repository<Settings>,
+
+    @InjectRepository(Company)
+    private readonly companyRepo: Repository<Company>,
+
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
 
     @InjectRepository(PurchaseInvoiceDocument)
     private readonly documentRepo: Repository<PurchaseInvoiceDocument>,
@@ -918,7 +940,11 @@ private readonly accountingResolver: AccountingResolverService,
     // can freeze on the provider's end for days) means that reading may
     // just never refresh even after real arrival. Being within range of a
     // known port is treated as arrived on its own.
-    const arrivedPort = findArrivedPort(position.latitude, position.longitude);
+    const arrivedPort = findArrivedPort(
+      position.latitude,
+      position.longitude,
+      await this.getActiveCountryPorts(),
+    );
     const isMoored = Boolean(arrivedPort);
 
     await this.invoiceRepo.update(invoice.id, {
@@ -970,6 +996,83 @@ private readonly accountingResolver: AccountingResolverService,
         mapped === 'Recieved' ? ` arrived at ${arrivedPort}` : ' under way'
       })`,
     );
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Manual status access (Settings → Purchase Status Access)
+  // ────────────────────────────────────────────────────────────
+
+  // Read from the DB, not the login token, so a change in Settings applies
+  // immediately without the user logging out and back in.
+  async getManualStatusAccess(user: { userId?: number; role?: string } | undefined) {
+    if (user?.role === 'ADMIN') return { shipped: true, received: true };
+    if (!user?.userId) return { shipped: false, received: false };
+    const dbUser = await this.userRepo.findOne({
+      where: { id: user.userId } as any,
+      select: ['id', 'role', 'permissions'] as any,
+    });
+    if (dbUser?.role === 'ADMIN') return { shipped: true, received: true };
+    const perms: string[] = Array.isArray(dbUser?.permissions) ? dbUser!.permissions : [];
+    return {
+      shipped: perms.includes(MANUAL_SHIPPED_PERM),
+      received: perms.includes(MANUAL_RECEIVED_PERM),
+    };
+  }
+
+  // Non-admin users with their current manual-status access.
+  async listManualStatusAccessUsers() {
+    const users = await this.userRepo.find({
+      select: ['id', 'username', 'role', 'permissions'] as any,
+      order: { username: 'ASC' } as any,
+    });
+    return users
+      .filter((u) => u.role !== 'ADMIN')
+      .map((u) => {
+        const perms = Array.isArray(u.permissions) ? u.permissions : [];
+        return {
+          id: u.id,
+          username: u.username,
+          role: u.role,
+          shipped: perms.includes(MANUAL_SHIPPED_PERM),
+          received: perms.includes(MANUAL_RECEIVED_PERM),
+        };
+      });
+  }
+
+  // Adds/removes only the two manual-status permissions; the user's other
+  // permissions are left untouched.
+  async setManualStatusAccess(userId: number, body: { shipped?: boolean; received?: boolean }) {
+    const user = await this.userRepo.findOne({ where: { id: userId } as any });
+    if (!user) throw new NotFoundException(`User #${userId} not found`);
+    if (user.role === 'ADMIN') {
+      throw new BadRequestException('Admins can always change the status; nothing to set.');
+    }
+
+    const perms = new Set(Array.isArray(user.permissions) ? user.permissions : []);
+    const apply = (perm: string, on?: boolean) => {
+      if (typeof on !== 'boolean') return;
+      if (on) perms.add(perm);
+      else perms.delete(perm);
+    };
+    apply(MANUAL_SHIPPED_PERM, body?.shipped);
+    apply(MANUAL_RECEIVED_PERM, body?.received);
+
+    user.permissions = Array.from(perms).sort();
+    await this.userRepo.save(user);
+    return {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      shipped: perms.has(MANUAL_SHIPPED_PERM),
+      received: perms.has(MANUAL_RECEIVED_PERM),
+    };
+  }
+
+  // Ports of the active company's country (Settings → Company → Country).
+  private async getActiveCountryPorts(): Promise<KnownPort[]> {
+    const company = await this.companyRepo.findOne({ where: { isActive: true } as any });
+    const country = company?.country || DEFAULT_PORTS_COUNTRY;
+    return PORTS_BY_COUNTRY[country] ?? PORTS_BY_COUNTRY[DEFAULT_PORTS_COUNTRY];
   }
 
   // ────────────────────────────────────────────────────────────

@@ -56,9 +56,10 @@ export class PurchaseInvoiceController {
   @RequirePerms('purchases.create')
   async create(@Body() body: any, @Req() req: Request) {
     // Same rule as guardManualStatusChange(): creating an invoice straight
-    // as Recieved is an admin-only manual override (Purchase Returns exempt).
-    if (body?.status === 'Recieved' && body?.type !== 'PR' && (req as any).user?.role !== 'ADMIN') {
-      throw new ForbiddenException('Only an admin can manually set an invoice to Recieved.');
+    // as Shipped/Recieved needs manual-status access (Purchase Returns exempt).
+    const status = body?.status;
+    if ((status === 'Shipped' || status === 'Recieved') && body?.type !== 'PR') {
+      await this.assertManualStatusAccess(status, req);
     }
     return this.service.create(body);
   }
@@ -136,6 +137,29 @@ export class PurchaseInvoiceController {
   @RequirePerms('purchases.view')
   getVesselLinks() {
     return this.service.getVesselLinks();
+  }
+
+  // Whether the current user may set Shipped / Recieved by hand — drives
+  // which Status options the purchase invoice page enables.
+  @Get('status-access/me')
+  getMyManualStatusAccess(@Req() req: Request) {
+    return this.service.getManualStatusAccess((req as any).user);
+  }
+
+  // Settings → Purchase Status Access
+  @Get('status-access/users')
+  @RequirePerms('settings.purchaseStatusAccess')
+  listManualStatusAccessUsers() {
+    return this.service.listManualStatusAccessUsers();
+  }
+
+  @Put('status-access/users/:userId')
+  @RequirePerms('settings.purchaseStatusAccess')
+  setManualStatusAccess(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() body: { shipped?: boolean; received?: boolean },
+  ) {
+    return this.service.setManualStatusAccess(userId, body);
   }
 
   // A single cost (typically customs clearance) that covers two or more
@@ -392,18 +416,19 @@ export class PurchaseInvoiceController {
 
     if ((current as any).status === nextStatus) return; // no actual change
 
-    // Recieved can be set by hand as a manual override (e.g. tracking data
-    // stalled or the shipment was never tracked) — but only by an admin,
-    // since it books the stock and JVs. Shipped stays tracking-only.
-    if (nextStatus === 'Recieved') {
-      if ((req as any).user?.role !== 'ADMIN') {
-        throw new ForbiddenException('Only an admin can manually set an invoice to Recieved.');
-      }
-      return;
-    }
+    // Shipped/Recieved by hand is a manual override (tracking stalled, or the
+    // shipment was never tracked). Admins always may; other users only when
+    // granted in Settings → Purchase Status Access, since Recieved books the
+    // stock and JVs.
+    await this.assertManualStatusAccess(nextStatus, req);
+  }
 
-    throw new BadRequestException(
-      `Status can't be set to "${nextStatus}" manually — it's updated automatically by shipment tracking once this invoice's BL is tracked. Use "Track Shipment" on the BL field instead.`,
+  private async assertManualStatusAccess(status: 'Shipped' | 'Recieved', req: Request) {
+    const access = await this.service.getManualStatusAccess((req as any).user);
+    const allowed = status === 'Shipped' ? access.shipped : access.received;
+    if (allowed) return;
+    throw new ForbiddenException(
+      `You are not allowed to set an invoice to "${status}" manually — it's updated automatically by shipment tracking. An admin can grant access in Settings → Purchase Status Access.`,
     );
   }
 }
