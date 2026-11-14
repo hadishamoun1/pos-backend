@@ -139,6 +139,29 @@ export class PurchaseInvoiceController {
     return this.service.getVesselLinks();
   }
 
+  // Item Purchase History (Purchase Invoice page) — declared before ':id'.
+  @Get('item-history')
+  @RequirePerms('purchases.view')
+  getItemPurchaseHistory(
+    @Query('q') q?: string,
+    @Query('length') length?: string,
+    @Query('supplierName') supplierName?: string,
+    @Query('invoiceNumber') invoiceNumber?: string,
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.getItemPurchaseHistory({
+      q,
+      length: length !== undefined && length !== '' ? Number(length) : undefined,
+      supplierName,
+      invoiceNumber,
+      status,
+      page: Number(page),
+      limit: Number(limit),
+    });
+  }
+
   // Whether the current user may set Shipped / Recieved by hand — drives
   // which Status options the purchase invoice page enables.
   @Get('status-access/me')

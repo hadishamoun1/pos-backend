@@ -43,6 +43,7 @@ import { JournalVoucherDetail } from '../entities/Vouchers/journalVoucherDetails
 import { Settings } from '../entities/settings.entity';
 import { Company } from '../entities/company.entity';
 import { User } from '../entities/user.entity';
+import { applyItemHistoryFilters } from '../common/item-history-query';
 
 // Settings → Purchase Status Access: non-admin users holding these may set an
 // invoice to Shipped / Recieved by hand (admins always can).
@@ -996,6 +997,112 @@ private readonly accountingResolver: AccountingResolverService,
         mapped === 'Recieved' ? ` arrived at ${arrivedPort}` : ' under way'
       })`,
     );
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Item Purchase History — the purchase-side twin of the POS "Item Sales
+  // History" (ItemsService.getItemSalesHistory): every purchase line for the
+  // searched item, newest first.
+  // status: 'active' (default) = Ordered/Shipped/Recieved, i.e. without
+  // Proformas, whose lines reappear on the orders spun off them; 'all'; or
+  // one exact status.
+  // ────────────────────────────────────────────────────────────
+  async getItemPurchaseHistory(params?: {
+    q?: string;
+    length?: number;
+    supplierName?: string;
+    invoiceNumber?: string;
+    status?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(1, Number(params?.page) || 1);
+    const limit = Math.min(500, Math.max(1, Number(params?.limit) || 50));
+    const skip = (page - 1) * limit;
+
+    const qb = this.itemRepo
+      .createQueryBuilder('pii')
+      .innerJoin('pii.invoice', 'inv')
+      .innerJoin('pii.itemVariant', 'v')
+      .innerJoin('v.thickness', 't')
+      .innerJoin('t.item', 'i')
+      .leftJoin('inv.supplier', 's')
+      .select([
+        'pii.id AS purchaseItemId', 'pii.quantity AS quantity', 'pii.sqm AS sqm',
+        'pii.unitPrice AS unitPrice', 'pii.totalAmount AS totalAmount',
+        'pii.priceOFR AS priceOFR', 'pii.finalCost AS finalCost', 'pii.finalOFR AS finalOFR',
+        'inv.id AS invoiceId', 'inv.invoiceNumber AS invoiceNumber',
+        'inv.orderNumber AS orderNumber', 'inv.proformaNumber AS proformaNumber',
+        'inv.supplierInvoiceNumber AS supplierInvoiceNumber',
+        'inv.type AS invoiceType', 'inv.status AS status',
+        'v.length AS length', 'v.width AS width', 'v.sheetsPerBox AS sheetsPerBox',
+        't.thickness AS thickness',
+        'i.itemName AS itemName', 'i.type AS type',
+        's.supplierName AS supplierName',
+      ])
+      // Dated by the PO date; older invoices without one fall back to the
+      // invoice date.
+      .addSelect('COALESCE(inv.poDate, inv.date)', 'invoiceDate')
+      .orderBy('COALESCE(inv.poDate, inv.date)', 'DESC')
+      .addOrderBy('inv.id', 'DESC')
+      .addOrderBy('pii.id', 'DESC');
+
+    applyItemHistoryFilters(qb, params?.q, params?.length);
+
+    const status = String(params?.status || 'active');
+    if (status === 'active') {
+      qb.andWhere('inv.status <> :proforma', { proforma: 'Proforma' });
+    } else if (status !== 'all') {
+      qb.andWhere('inv.status = :st', { st: status });
+    }
+
+    if (params?.supplierName?.trim()) {
+      qb.andWhere('s.supplierName LIKE :snm', { snm: `%${params.supplierName.trim()}%` });
+    }
+
+    if (params?.invoiceNumber?.trim()) {
+      const no = `%${params.invoiceNumber.trim()}%`;
+      qb.andWhere(
+        `(inv.invoiceNumber LIKE :invNo OR inv.orderNumber LIKE :invNo
+          OR inv.proformaNumber LIKE :invNo OR inv.supplierInvoiceNumber LIKE :invNo)`,
+        { invNo: no },
+      );
+    }
+
+    const total = await qb.clone().getCount();
+
+    // Same raw LIMIT/OFFSET approach as getItemSalesHistory (skip/take were
+    // unreliable with these raw selects).
+    const [rawSql, rawParams] = qb.getQueryAndParameters();
+    const rows = await this.itemRepo.query(`${rawSql} LIMIT ? OFFSET ?`, [...rawParams, limit, skip]);
+
+    const numOrNull = (v: any) => (v != null ? Number(v) : null);
+    const data = rows.map((r: any) => ({
+      purchaseItemId: Number(r.purchaseItemId),
+      invoiceId: Number(r.invoiceId),
+      // The number the purchase page shows: PV once Recieved, else ORD / PRO.
+      documentNumber: r.invoiceNumber || r.orderNumber || r.proformaNumber || null,
+      supplierInvoiceNumber: r.supplierInvoiceNumber || null,
+      invoiceType: r.invoiceType,
+      status: r.status,
+      invoiceDate: r.invoiceDate,
+      supplierName: r.supplierName || null,
+      itemName: r.itemName,
+      type: r.type,
+      thickness: numOrNull(r.thickness),
+      length: numOrNull(r.length),
+      width: numOrNull(r.width),
+      sheetsPerBox: numOrNull(r.sheetsPerBox),
+      quantity: Number(r.quantity) || 0,
+      sqm: numOrNull(r.sqm),
+      unitPrice: Number(r.unitPrice) || 0,
+      totalAmount: numOrNull(r.totalAmount),
+      priceOFR: numOrNull(r.priceOFR),
+      finalCost: numOrNull(r.finalCost),
+      finalOFR: numOrNull(r.finalOFR),
+    }));
+
+    return { data, total, page, limit };
   }
 
   // ────────────────────────────────────────────────────────────

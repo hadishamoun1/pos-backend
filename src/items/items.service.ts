@@ -10,6 +10,7 @@ import { ItemBatch } from '../entities/inventory/itemBatch.entity';
   // items.service.ts (add these imports at top if missing)
 import { RealDescription } from '../entities/inventory/itemNameRealDescription.entity';
 import { InvoiceItem } from '../entities/invoiceItem.entity';
+import { applyItemHistoryFilters } from '../common/item-history-query';
 
 
 
@@ -7356,51 +7357,6 @@ async getItemsStockTotals(opts?: any) {
     page?: number;
     limit?: number;
   }) {
-    const ARABIC_INDIC_MAP: Record<string, string> = {
-      '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
-      '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
-    };
-    const normalizeDigitsAll = (input: string) =>
-      String(input || '').replace(/[٠-٩۰-۹]/g, d => ARABIC_INDIC_MAP[d] ?? d);
-    const normalizeArabicAlef = (s: string) =>
-      String(s || '').replace(/أ|إ|آ/g, 'ا');
-
-    const parseItemQuery = (qRaw: string): {
-      thickness?: number;
-      length?: number;
-      width?: number;
-      nameTokens?: string[];
-    } => {
-      if (!qRaw) return {};
-      let working = normalizeDigitsAll(qRaw).trim().replace(/\s+/g, ' ');
-
-      const thMatch = working.match(/(\d+(?:[.,]\d+)?)\s*(?:ملم|مم|م)(?=$|\s|[-\/xX×*])/);
-      let thickness: number | undefined;
-      if (thMatch) {
-        const th = Number((thMatch[1] || '').replace(',', '.'));
-        if (Number.isFinite(th)) thickness = th;
-        working = working.replace(thMatch[0], ' ').replace(/\s+/g, ' ').trim();
-      }
-
-      const dimRe = /(\d{2,5})\s*[xX×*]\s*(\d{2,5})/;
-      const dimMatch = working.match(dimRe);
-      let lengthN: number | undefined;
-      let widthN: number | undefined;
-      if (dimMatch) {
-        lengthN = Number(dimMatch[1]);
-        widthN = Number(dimMatch[2]);
-        working = working.replace(dimMatch[0], ' ').replace(/\s+/g, ' ').trim();
-      }
-
-      let nameTokens: string[] | undefined;
-      if (working) {
-        const tokens = working.split(/\s+/).map(t => t.trim()).filter(t => t.length >= 2);
-        if (tokens.length) nameTokens = tokens;
-      }
-
-      return { thickness, length: lengthN, width: widthN, nameTokens };
-    };
-
     const page = Math.max(1, Number(params?.page ?? 1));
     const limit = Math.min(500, Math.max(1, Number(params?.limit ?? 50)));
     const skip = (page - 1) * limit;
@@ -7428,33 +7384,7 @@ async getItemsStockTotals(opts?: any) {
       .addOrderBy('inv.id', 'DESC')
       .addOrderBy('ii.id', 'DESC');
 
-    if (params?.q) {
-      const parsed = parseItemQuery(params.q);
-      if (Number.isFinite(parsed.thickness)) {
-        qb.andWhere('ROUND(t.thickness, 1) = ROUND(:pth, 1)', { pth: Number(parsed.thickness) });
-      }
-      if (Number.isFinite(parsed.length)) qb.andWhere('v.length = :plen', { plen: Number(parsed.length) });
-      if (Number.isFinite(parsed.width)) qb.andWhere('v.width = :pwid', { pwid: Number(parsed.width) });
-      if (parsed.nameTokens?.length) {
-        parsed.nameTokens.forEach((tok, idx) => {
-          const tokenNorm = `%${normalizeArabicAlef(tok)}%`;
-          const tokenRaw = `%${tok}%`;
-          qb.andWhere(
-            `(
-              REPLACE(REPLACE(REPLACE(i.itemName,'أ','ا'),'إ','ا'),'آ','ا') LIKE :tokN${idx}
-              OR i.itemName LIKE :tokR${idx}
-            )`,
-            { [`tokN${idx}`]: tokenNorm, [`tokR${idx}`]: tokenRaw },
-          );
-        });
-      }
-    }
-
-    // Matches the "single bare number" case from the POS Stock tab search
-    // (e.g. typing just "225" without a *width pairs it against variant length).
-    if (Number.isFinite(params?.length)) {
-      qb.andWhere('v.length = :plen2', { plen2: Number(params!.length) });
-    }
+    applyItemHistoryFilters(qb, params?.q, params?.length);
 
     if (params?.customerName) {
       const nm = `%${params.customerName.trim()}%`;
