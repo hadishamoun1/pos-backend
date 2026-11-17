@@ -190,6 +190,7 @@ export class ItemsController {
     @Query('includeSqm') includeSqmRaw?: string,
     @Query('warehouse') warehouse?: string,
     @Query('hasMedia') hasMediaRaw?: string,
+    @Query('costFromEvents') costFromEventsRaw?: string,
   ) {
     const variantIds = (variantIdsRaw || '')
       .split(',')
@@ -212,6 +213,7 @@ export class ItemsController {
       includeSqm: includeSqmRaw === 'true',
       warehouse: warehouse?.trim() || undefined,
       hasMedia: hasMediaRaw === 'true',
+      costFromEvents: costFromEventsRaw === 'true',
     });
   }
 

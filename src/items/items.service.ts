@@ -4996,6 +4996,76 @@ async getVariantLedgerByItemNameDesc(params?: {
 
 
 
+// Average cost (OFR) of each variant as of `cutYmd`, taken from its last
+// purchase or count in Inventory Activity — the same idea as a sale's cost
+// snapshot (InvoiceService.fillSalesInvoiceAvgCostsFromLastEvent): newest
+// first, the first event with a real (non-zero) cost wins.
+//   purchase → that purchase line's averageCost
+//   count    → the count's finalCostOfr
+// Transfers are ignored on purpose: an item's cost only changes on a
+// purchase or a count. (For unit items both costs are per piece.)
+// Variants with no such event are left out (caller keeps the stored average).
+private async costsFromLastEvent(variantIds: number[], cutYmd: string): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  const ids = Array.from(new Set(variantIds.filter((n) => Number.isFinite(n) && n > 0)));
+  if (!ids.length) return out;
+
+  const MAX_LOOKBACK = 20; // same bound as the sales snapshot
+  const candidates: any[] = await this.itemVariantRepository.query(
+    `
+    SELECT z.variantId, z.piiId, z.icId, z.rn FROM (
+      SELECT tx.itemVariantId AS variantId,
+             tx.purchaseInvoiceItemId AS piiId,
+             tx.inventoryCountId AS icId,
+             ROW_NUMBER() OVER (
+               PARTITION BY tx.itemVariantId
+               ORDER BY tx.dateForEachInvoice DESC, tx.id DESC
+             ) AS rn
+      FROM inventory_transaction tx
+      WHERE tx.itemVariantId IN (${ids.map(() => '?').join(',')})
+        AND tx.dateForEachInvoice <= ?
+        AND (tx.purchaseInvoiceItemId IS NOT NULL OR tx.inventoryCountId IS NOT NULL)
+    ) z
+    WHERE z.rn <= ?
+    ORDER BY z.variantId, z.rn
+    `,
+    [...ids, cutYmd, MAX_LOOKBACK],
+  );
+  if (!candidates.length) return out;
+
+  const piiIds = Array.from(new Set(candidates.map((c) => Number(c.piiId)).filter((n) => n > 0)));
+  const icIds = Array.from(new Set(candidates.map((c) => Number(c.icId)).filter((n) => n > 0)));
+
+  const piiCost = new Map<number, number>();
+  if (piiIds.length) {
+    const rows: any[] = await this.itemVariantRepository.query(
+      `SELECT id, averageCost FROM purchase_invoice_items WHERE id IN (${piiIds.map(() => '?').join(',')})`,
+      piiIds,
+    );
+    for (const r of rows) if (r.averageCost != null) piiCost.set(Number(r.id), Number(r.averageCost));
+  }
+
+  const icCost = new Map<number, number>();
+  if (icIds.length) {
+    const rows: any[] = await this.itemVariantRepository.query(
+      `SELECT id, finalCostOfr FROM inventory_count WHERE id IN (${icIds.map(() => '?').join(',')})`,
+      icIds,
+    );
+    for (const r of rows) if (r.finalCostOfr != null) icCost.set(Number(r.id), Number(r.finalCostOfr));
+  }
+
+  // Candidates arrive newest first per variant; keep the first real cost.
+  for (const c of candidates) {
+    const vid = Number(c.variantId);
+    if (out.has(vid)) continue;
+    let cost: number | null = null;
+    if (c.piiId != null) cost = piiCost.get(Number(c.piiId)) ?? null;
+    else if (c.icId != null) cost = icCost.get(Number(c.icId)) ?? null;
+    if (cost != null && Number.isFinite(cost) && cost !== 0) out.set(vid, cost);
+  }
+  return out;
+}
+
 async getVariantLedgerByRealDesc(params?: {
   q?: string;
   itemName?: string;
@@ -5012,6 +5082,9 @@ async getVariantLedgerByRealDesc(params?: {
   includeSqm?: boolean;
   warehouse?: string;
   hasMedia?: boolean;
+  // Inventory Report: cost boxes, SQM and unit items from their last purchase
+  // or count (see costsFromLastEvent). Off for everyone else (POS search etc.).
+  costFromEvents?: boolean;
 }) {
   const toNum = (v: any) => {
     const n = Number(v);
@@ -5539,6 +5612,20 @@ async getVariantLedgerByRealDesc(params?: {
     }
   }
 
+  // Inventory Report: average cost of boxes, SQM and unit items from their
+  // last purchase or count up to the report date (asOf, or today). Sheets
+  // aren't looked up — the report prices sheets at their box's cost.
+  let eventCost = new Map<number, number>();
+  if (params?.costFromEvents && variants.length) {
+    const costedIds = (variants as any[])
+      .filter((v) => v.thickness?.item?.type !== 'sheet')
+      .map((v) => Number(v.id))
+      .filter((n) => Number.isFinite(n));
+    const now = new Date();
+    const todayYmd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    eventCost = await this.costsFromLastEvent(costedIds, asOfRaw || todayYmd);
+  }
+
   // ---- Enrichment pass (SPB list) ----
   const thicknessIds = new Set<number>();
   const lengths      = new Set<number>();
@@ -5634,7 +5721,10 @@ async getVariantLedgerByRealDesc(params?: {
     const rd: any = (v as any).realDescription ?? null;
 
     const c      = asOfRaw ? costSnap.get(Number(v.id)) : null;
-    const avgOut  = asOfRaw
+    const eventAvg = eventCost.get(Number(v.id));
+    const avgOut  = eventAvg != null
+      ? Number(eventAvg.toFixed(2))
+      : asOfRaw
       ? (c?.avg  != null ? c.avg  : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null))
       : (v.averageCost != null ? Number(toNum(v.averageCost).toFixed(2)) : null);
     const lastOut = asOfRaw
