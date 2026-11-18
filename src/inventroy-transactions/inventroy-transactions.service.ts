@@ -209,8 +209,10 @@ async getActivity(
     .getMany();
 
   const formatTx = (tx: any) => {
-    // pick the correct date & number
-    let dateSrc: Date | string = tx.transactionDate;
+    // pick the correct date & number. Movements with no linked document (SQM
+    // trash, inventory-check adjustments/breakage) use their own movement
+    // date — not the moment the row was created.
+    let dateSrc: Date | string = tx.dateForEachInvoice ?? tx.transactionDate;
     let numberSrc = '—';
 
     if (tx.purchaseInvoiceItemId && tx.purchaseInvoiceItem?.invoice) {
