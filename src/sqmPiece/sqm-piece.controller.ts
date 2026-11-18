@@ -99,6 +99,17 @@ export class SqmPiecesController {
   }
 
   /**
+   * Maintenance: re-create SQM trash movements missing from Inventory
+   * Activity (deleted by earlier transfer rebuilds).
+   * POST /sqm-pieces/repair-trash-movements   body: { dryRun?: boolean }
+   */
+  @Post('repair-trash-movements')
+  @RequirePerms('sqm.update')
+  repairTrashMovements(@Body() body: { dryRun?: boolean }) {
+    return this.svc.rebuildMissingUnallocatedTrash({ dryRun: body?.dryRun !== false });
+  }
+
+  /**
    * Trash some sqm from a single piece group.
    * POST /sqm-pieces/pieces/:pieceId/trash
    */

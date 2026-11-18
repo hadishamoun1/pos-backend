@@ -548,10 +548,15 @@ private async rollbackTransfer(
 ): Promise<void> {
   const num = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
-  const txs = await manager.getRepository(InventoryTransaction).find({
+  // SQM page trash/restore movements aren't made by the transfer — they're
+  // the user's own actions on the SQM page. Older ones still carry the BOSTS
+  // transfer's id; rebuilding the transfer must leave them alone.
+  const KEEP_TYPES = ['SqmTrash', 'SqmTrashRestore', 'SqmTrashUnallocated', 'SqmTrashUnallocatedRestore'];
+
+  const txs = (await manager.getRepository(InventoryTransaction).find({
     where: { transferId } as any,
     relations: ['itemBatch', 'itemBatch.itemVariant'],
-  });
+  })).filter((tx: any) => !KEEP_TYPES.includes(tx.transactionType));
 
   for (const tx of txs) {
     const batch: any = (tx as any).itemBatch;
@@ -599,8 +604,10 @@ private async rollbackTransfer(
     await manager.getRepository(ItemVariant).save(variant);
   }
 
-  // always delete derived tx
-  await manager.getRepository(InventoryTransaction).delete({ transferId } as any);
+  // always delete derived tx (but not the SQM page's trash/restore movements)
+  if (txs.length) {
+    await manager.getRepository(InventoryTransaction).delete({ id: In(txs.map((t: any) => t.id)) } as any);
+  }
 
   // ✅ only delete transfer_items when you REALLY want to destroy lines
   if (!opts?.keepItems) {

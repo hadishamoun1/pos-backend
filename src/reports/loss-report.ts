@@ -12,6 +12,12 @@
 // saves the SQM item's average rather than its source's.
 import { DataSource } from 'typeorm';
 
+// SQM page trash/restore movement types. The *Unallocated* names were used by
+// the first version of the SQM page (Nov 2025) and still exist in old data.
+const SQM_TRASH_TYPES = ['SqmTrash', 'SqmTrashUnallocated'];
+const SQM_RESTORE_TYPES = ['SqmTrashRestore', 'SqmTrashUnallocatedRestore'];
+const LOSS_TYPES = [...SQM_TRASH_TYPES, ...SQM_RESTORE_TYPES, 'Breakage', 'Defects', 'Cuts Loss'];
+
 export type LossCategory = 'sqmTrash' | 'cutsLoss' | 'breakage' | 'defects';
 
 export const LOSS_CATEGORY_LABEL: Record<LossCategory, string> = {
@@ -49,14 +55,14 @@ export async function buildLossReport(
             tr.transferNumber, tr.location
        FROM inventory_transaction tx
        LEFT JOIN transfers tr ON tr.id = tx.transferId
-      WHERE tx.transactionType IN ('SqmTrash','SqmTrashRestore','Breakage','Defects','Cuts Loss')
+      WHERE tx.transactionType IN (${inList(LOSS_TYPES as any)})
         AND tx.dateForEachInvoice BETWEEN ? AND ?
       ORDER BY tx.dateForEachInvoice, tx.id`,
-    [from, to],
+    [...LOSS_TYPES, from, to],
   );
 
   const categoryOf = (tt: string): LossCategory =>
-    tt === 'SqmTrash' || tt === 'SqmTrashRestore'
+    SQM_TRASH_TYPES.includes(tt) || SQM_RESTORE_TYPES.includes(tt)
       ? 'sqmTrash'
       : tt === 'Cuts Loss'
       ? 'cutsLoss'
@@ -239,7 +245,7 @@ export async function buildLossReport(
       date,
       category: cat,
       categoryLabel: LOSS_CATEGORY_LABEL[cat],
-      isRestore: t.tt === 'SqmTrashRestore',
+      isRestore: SQM_RESTORE_TYPES.includes(t.tt),
       fromInventoryCheck: cat === 'breakage' && !t.transferId,
       transferNumber: t.transferNumber || null,
       item: describe(v),
