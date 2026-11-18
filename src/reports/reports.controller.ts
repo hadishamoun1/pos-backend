@@ -32,6 +32,20 @@ export class ReportsController {
     });
   }
 
+  // Loss Report: SQM trash, cuts loss, breakage and defects, valued at cost.
+  @Get('loss')
+  @RequirePerms('reports.loss')
+  async getLossReport(@Query() q: any) {
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const isYmd = (s: any) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+    return this.reportsService.getLossReport({
+      from: isYmd(q.from) ? q.from : `${now.getFullYear()}-01-01`,
+      to: isYmd(q.to) ? q.to : today,
+      category: q.category,
+    });
+  }
+
   // NEW: Standard (flat per-account, hierarchical order, parent info)
   @Get('trial-balance/standard')
   @RequirePerms('reports.view')

@@ -9,6 +9,7 @@ import { AccountRoleMap } from "../entities/accountRoleMap.entity";
 import { Customer } from '../entities/customer.entity';
 import { Supplier } from '../entities/supplier.entity';
 import { CompanyService } from '../company/company.service';
+import { buildLossReport } from './loss-report';
 
 import { Invoice } from '../entities/invoice.entity';
 import { InvoiceItem } from '../entities/invoiceItem.entity';
@@ -111,6 +112,11 @@ export class ReportsService {
    private readonly companyService: CompanyService,
   
   ) {}
+
+  // Loss Report (trash + breakage valued at OFR cost on the day) — see loss-report.ts
+  getLossReport(params: { from: string; to: string; category?: string }) {
+    return buildLossReport(this.dataSource, params);
+  }
 
   /* ===== small helpers ===== */
   private cmp(a: string, b: string) {

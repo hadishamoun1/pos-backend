@@ -87,4 +87,10 @@ export class InventoryTransaction {
   transferId?: number;
 
   @Column({ type: 'date', nullable: true }) dateForEachInvoice: Date;
+
+  // SQM page trash/restore only: the BOSTS transfer line the trashed sqm was
+  // cut from (Loss Report). The movement itself is booked on the SQM pile,
+  // which can be fed by several transfer lines.
+  @Column({ type: 'int', nullable: true })
+  sqmSourceTransferItemId?: number | null;
 }

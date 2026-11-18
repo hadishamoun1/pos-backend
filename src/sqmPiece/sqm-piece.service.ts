@@ -765,6 +765,7 @@ const costs = {
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: piece.sqmVariantId,
         itemBatchId: piece.sqmBatchId,
+        sqmSourceTransferItemId: piece.transferItemId,
         transactionType: 'SqmTrash',
         quantity: 0,
         quantityofr: -sqmToTrash,
@@ -865,6 +866,7 @@ const costs = {
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: piece.sqmVariantId,
         itemBatchId: piece.sqmBatchId,
+        sqmSourceTransferItemId: piece.transferItemId,
         transactionType: 'SqmTrashRestore', // 👈 choose any code you like
         quantity: 0,
         quantityofr: sqmToRestore, // positive (add back)
@@ -1051,6 +1053,7 @@ const costs = {
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: sqmVariant.id,
         itemBatchId: sqmBatch.id,
+        sqmSourceTransferItemId: transferItemId,
         transactionType: 'SqmTrash',
         quantity: 0,
         quantityofr: -sqmToTrash,
@@ -1248,6 +1251,7 @@ async trashUnallocatedForLine(
     const invTx = manager.getRepository(InventoryTransaction).create({
       itemVariantId: sqmVariant.id,
       itemBatchId: sqmBatch.id,
+      sqmSourceTransferItemId: transferItemId,
       transactionType: 'SqmTrash',
       quantity: 0,           // ✅ Zero for regular quantity
       quantityofr: -sqmToTrash, // ✅ Negative for OFR quantity
@@ -1424,6 +1428,7 @@ async trashUnallocatedForLine(
       const invTx = manager.getRepository(InventoryTransaction).create({
         itemVariantId: sqmVariant.id,
         itemBatchId: sqmBatch.id,
+        sqmSourceTransferItemId: transferItemId,
         transactionType: 'SqmTrashRestore', // <── new type
         quantity: 0,
         quantityofr: sqmToRestore,
