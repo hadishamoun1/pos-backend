@@ -11,10 +11,15 @@ export class ShipsgoController {
 
   @Get('shipments')
   @RequirePerms('shipmentTracking.view')
-  async listShipments(@Query('skip') skip?: string, @Query('take') take?: string) {
+  async listShipments(
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+    @Query('fresh') fresh?: string, // the page's Refresh button skips the cache
+  ) {
     return this.shipsgoService.listShipments({
       skip: skip ? Number(skip) : undefined,
       take: take ? Number(take) : undefined,
+      fresh: fresh === 'true',
     });
   }
 
